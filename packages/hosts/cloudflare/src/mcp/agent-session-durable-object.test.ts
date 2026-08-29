@@ -984,6 +984,15 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     getConnections: () => Iterable<unknown>;
     getSessionId: () => string;
     init: () => Promise<void>;
+    // Re-exposed for the harness only, same idiom as `evictResidentRuntimeForCap`
+    // below: the `AbortController` backing the CURRENTLY in-flight `init`
+    // call's root fiber, so a test can interrupt it deterministically at a
+    // chosen suspension point instead of only exercising the failure/defect
+    // path.
+    initAbortController: AbortController | null;
+    // Same idiom, for the disposal path — see `disposeAbortController`'s doc
+    // comment on the class.
+    disposeAbortController: AbortController | null;
     initialized: boolean;
     lastActivityMs: number;
     pendingApprovalLeases: Map<string, never>;
@@ -997,7 +1006,7 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
       mcpServer: McpServer;
       engine: ExecutionEngine<Cause.YieldableError>;
     }>;
-    openSessionDb: () => { readonly end: () => void };
+    openSessionDb: () => { readonly end: () => void } | Promise<{ readonly end: () => void }>;
     resolveSessionMeta: () => Effect.Effect<SessionMeta>;
     supportsCapEviction: () => boolean;
     requestSelfEviction: () => Promise<void>;
@@ -1331,6 +1340,77 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     ).toBe(2);
   });
 
+  // The reservation used to be released only by an `Effect.ensuring` scoped to
+  // the build block that starts right after `evictForCapIfNeeded` admits —
+  // leaving a gap between the admission itself and that narrower wrap's own
+  // coverage beginning. An interrupt landing in that gap leaked the
+  // reservation permanently: nothing ever decremented it, so the isolate's
+  // in-flight counter drifted up forever and every later admission saw false
+  // cap pressure. The fix moves the release to a single `Effect.ensuring`
+  // around init's entire program, so there is no window between acquiring the
+  // reservation and being covered by its release. This interrupts `init`
+  // itself (via the `AbortController` `initAbortController` exposes for
+  // exactly this) while it is genuinely suspended opening the session db
+  // handle — the first async step after admission — rather than merely
+  // failing the build, which the pre-existing test above already covers.
+  it("releases the in-flight cold-build reservation when init is interrupted after cap admission, before the build finishes", async () => {
+    const { session: sessionA } = makeResidencySession({ id: "session-interrupt-a", cap: 2 });
+    await sessionA.init();
+    expect(currentResidentRuntimeCount(), "one session resident, one below the cap").toBe(1);
+
+    const dbHandleEntered = makeDeferred();
+    const dbHandleGate = makeDeferred();
+    const { session: sessionB } = makeResidencySession({ id: "session-interrupt-b", cap: 2 });
+    sessionB.openSessionDb = () => {
+      dbHandleEntered.resolve();
+      // Never resolves — the interrupt below is what ends this suspension,
+      // not the gate. `dbHandleGate.promise` only carries a `void` payload;
+      // `.then` produces the right shape without a cast, and without ever
+      // actually resolving — the callback here never runs.
+      return dbHandleGate.promise.then(() => ({ end: () => undefined }));
+    };
+
+    const initPromise = sessionB.init();
+    // Deterministic: wait for sessionB's admission to have actually reserved
+    // a slot and for its build to be genuinely suspended opening the db
+    // handle, instead of guessing a number of microtask ticks.
+    await dbHandleEntered.promise;
+    expect(
+      currentInFlightColdBuildCount(),
+      "admission reserved a slot before the build's own db-handle open resolves",
+    ).toBe(1);
+
+    sessionB.initAbortController?.abort();
+
+    await expect(
+      initPromise,
+      "an interrupted init rejects rather than silently resolving",
+    ).rejects.toThrow();
+    expect(
+      currentInFlightColdBuildCount(),
+      "the reservation was released by init's outer ensuring instead of leaking",
+    ).toBe(0);
+    expect(sessionB.initialized, "the interrupted build never became resident").toBe(false);
+
+    // The reservation not leaking is what lets a later admission still see
+    // the isolate as under the cap.
+    const { session: sessionC, storage: storageC } = makeResidencySession({
+      id: "session-interrupt-c",
+      cap: 2,
+    });
+    await sessionC.init();
+    await storageC.drainWaitUntil();
+
+    expect(
+      sessionA.initialized,
+      "no residual in-flight pressure from the interrupted init, so sessionC's admission stays under the cap",
+    ).toBe(true);
+    expect(
+      currentResidentRuntimeCount(),
+      "sessionA and sessionC both resident, under the cap",
+    ).toBe(2);
+  });
+
   // `initialized` used to stay `true` across the async closes inside
   // `closeRuntime` (`server.close()`, `dbHandle.end()`), so a request landing
   // mid-teardown took `init`'s early-return path and ran against a
@@ -1381,6 +1461,93 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     expect(
       session.engine,
       "a fresh engine was installed, not the one that was mid-teardown",
+    ).not.toBe(originalEngine);
+  });
+
+  // The `Effect.ensuring` that resolves `disposingRuntime` used to sit outside
+  // any interruptibility guard, so an interrupt landing while `closeRuntime`
+  // was genuinely suspended (mid `server.close()`, same seam as the test
+  // above) still ran that `ensuring` and resolved `disposingRuntime`
+  // immediately — before `dbHandle.end()`, the engine clear, or the residency
+  // release ever ran. A concurrently waiting `init` would see the gate open
+  // and rebuild against that half-released state. Wrapping the teardown body
+  // in `Effect.uninterruptible` makes the interrupt request wait until the
+  // body — including the still-gated `server.close()` — actually finishes,
+  // so `disposingRuntime` cannot resolve early. This interrupts the disposal
+  // itself (via `disposeAbortController`, exposed for exactly this) instead
+  // of just failing a step, which the double-close test above doesn't cover.
+  it("keeps a waiting init blocked when the disposal is interrupted mid-teardown, until the uninterruptible teardown actually finishes", async () => {
+    const { session } = makeResidencySession({ id: "session-interrupted-disposal" });
+    await session.init();
+    expect(session.initialized).toBe(true);
+    const originalEngine = session.engine;
+
+    const closeEntered = makeDeferred();
+    const closeGate = makeDeferred();
+    let closeCalls = 0;
+    const server = makeServer();
+    server.close = () => {
+      closeCalls += 1;
+      closeEntered.resolve();
+      return closeGate.promise;
+    };
+    session.server = server;
+
+    const disposal = session.evictResidentRuntimeForCap();
+    // Deterministic: wait for disposal to actually be mid-teardown (inside
+    // `server.close()`), instead of guessing a number of microtask ticks.
+    await closeEntered.promise;
+
+    // A concurrent init is the observable proof: it only proceeds once
+    // `disposingRuntime` resolves, so it stays pending for exactly as long as
+    // the teardown is genuinely still running.
+    const rebuild = session.init();
+    let rebuildSettled = false;
+    void rebuild.then(() => {
+      rebuildSettled = true;
+    });
+
+    // Interrupt the disposal fiber while it is still suspended inside the
+    // gated `server.close()`. On the old (interruptible) code this would let
+    // the outer `Effect.ensuring` resolve `disposingRuntime` right here,
+    // before `closeGate` ever resolves — letting `rebuild` proceed against a
+    // still-open server / un-cleared engine.
+    session.disposeAbortController?.abort();
+    // Interrupt delivery hops through more than a couple of microtasks (it is
+    // not itself under test here), so give it a real macrotask tick before
+    // asserting anything stayed blocked — a few `Promise.resolve()`s alone
+    // are not enough ticks for the abort to even be delivered, uninterruptible
+    // or not, and would make this assertion true vacuously either way.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      rebuildSettled,
+      "the interrupt must not resolve disposingRuntime early — the teardown is still genuinely suspended inside server.close()",
+    ).toBe(false);
+    expect(
+      session.engine,
+      "the interrupt must not let the engine be cleared before server.close() actually returns",
+    ).toBe(originalEngine);
+
+    closeGate.resolve();
+    // The interrupt may still surface once the now-uninterruptible body has
+    // actually finished; only completeness of the teardown itself — not the
+    // outer promise's resolve/reject outcome — is under test here.
+    try {
+      await disposal;
+    } catch {
+      // Expected: the interrupt requested above can still land once the
+      // uninterruptible teardown finishes.
+    }
+    await rebuild;
+
+    expect(closeCalls, "server.close was actually called, not skipped").toBe(1);
+    expect(
+      session.initialized,
+      "the request that was waiting on the interrupted disposal rebuilt and is serving",
+    ).toBe(true);
+    expect(
+      session.engine,
+      "a fresh engine was installed once the teardown genuinely finished, not the one that was mid-teardown",
     ).not.toBe(originalEngine);
   });
 

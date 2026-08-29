@@ -58,8 +58,21 @@ const postJson = (mcpUrl: string, bearer: string, body: unknown, sessionId?: str
  * way separate browser tabs sharing one login would — so many of these under
  * one identity is a cheap way to grow the isolate's resident-runtime count
  * without a full OAuth round trip per session.
+ *
+ * `recordSession` is called the moment the session id is known — before the
+ * `notifications/initialized` round trip below, not after this function
+ * returns. A session is live on the server as soon as `initialize` responds
+ * with an `mcp-session-id`, regardless of whether the handshake ever
+ * completes; recording it only on a full return left a failed notification
+ * (or an interrupt landing between the two requests) with no cleanup entry,
+ * orphaning a real session on the target isolate.
  */
-const openSession = async (mcpUrl: string, bearer: string, label: string): Promise<string> => {
+const openSession = async (
+  mcpUrl: string,
+  bearer: string,
+  label: string,
+  recordSession: (sessionId: string) => void,
+): Promise<string> => {
   const initialized = await postJson(mcpUrl, bearer, {
     jsonrpc: "2.0" as const,
     id: "initialize",
@@ -77,6 +90,10 @@ const openSession = async (mcpUrl: string, bearer: string, label: string): Promi
     // oxlint-disable-next-line executor/no-error-constructor -- boundary: e2e setup precondition.
     throw new Error(`openSession (${label}): no mcp-session-id header`);
   }
+  // Recorded here, before the notification round trip: this is the earliest
+  // point the id is known, and the cleanup finalizer needs it regardless of
+  // whether the handshake below ever completes.
+  recordSession(sessionId);
   const notification = await postJson(
     mcpUrl,
     bearer,
@@ -136,8 +153,10 @@ scenario(
       const sessionIds = yield* Effect.forEach(
         Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
         (index) =>
-          Effect.promise(() => openSession(target.mcpUrl, bearer, `session-${index}`)).pipe(
-            Effect.tap((sessionId) => Effect.sync(() => openedSessionIds.push(sessionId))),
+          Effect.promise(() =>
+            openSession(target.mcpUrl, bearer, `session-${index}`, (sessionId) => {
+              openedSessionIds.push(sessionId);
+            }),
           ),
         { concurrency: 8 },
       );

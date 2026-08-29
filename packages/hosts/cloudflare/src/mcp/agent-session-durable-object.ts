@@ -279,6 +279,22 @@ export abstract class McpAgentSessionDOBase<
    *  (success or failure/interrupt) gets there first. */
   private reservedColdBuildSlot = false;
   /**
+   * The `AbortController` backing the currently in-flight `init` call's
+   * `Effect.runPromise`, so its root fiber can be interrupted from outside
+   * the Promise it returns. Nothing in production ever calls `.abort()` on
+   * it today — it exists so a unit test can interrupt `init` deterministically
+   * at a chosen suspension point (e.g. mid `openSessionDbHandle`) and assert
+   * the cold-build reservation is still released, rather than only ever being
+   * exercised through failure/defect paths.
+   */
+  private initAbortController: AbortController | null = null;
+  /** Same purpose as {@link initAbortController}, for `disposeIdleRuntime`'s
+   *  root effect (`closeRuntime` plus its alarm/activity bookkeeping) — lets
+   *  a unit test interrupt a disposal deterministically to confirm the
+   *  uninterruptible teardown in `closeRuntime` actually finishes rather than
+   *  being cut short. */
+  private disposeAbortController: AbortController | null = null;
+  /**
    * The in-progress runtime disposal, if one is running right now — from
    * whichever of `closeRuntime`'s callers (the idle alarm, a cap eviction
    * request, `cleanup`) got there first. Set at the very start of
@@ -799,7 +815,20 @@ export abstract class McpAgentSessionDOBase<
     // trace. It still has to be flushed explicitly — the alarm is not on any
     // request's response path, and without the flush the span dies with the
     // isolate and the mechanism stays unobservable in production.
-    await Effect.runPromise(this.withSpanFlush(this.withTelemetry(program)));
+    // See `disposeAbortController`'s doc comment: nothing in production aborts
+    // this signal today; it exists so a unit test can interrupt this exact
+    // fiber and confirm `closeRuntime`'s now-uninterruptible teardown still
+    // runs to completion instead of being cut short.
+    const abortController = new AbortController();
+    this.disposeAbortController = abortController;
+    await Effect.runPromise(this.withSpanFlush(this.withTelemetry(program)), {
+      signal: abortController.signal,
+    }).finally(() => {
+      // Only clear the field if it is still THIS call's controller — see the
+      // matching comment in `init` for why an overlapping later call's
+      // controller must not be clobbered.
+      if (this.disposeAbortController === abortController) this.disposeAbortController = null;
+    });
   }
 
   /**
@@ -1218,6 +1247,17 @@ export abstract class McpAgentSessionDOBase<
         releaseResidentSession(self.sessionIdForTelemetry());
       }
     }).pipe(
+      // Uninterruptible once teardown starts, so it always runs to
+      // completion. The `Effect.ensuring` below resolves `disposingRuntime`
+      // unconditionally — a waiting `init` treats that resolution as "the
+      // resources are actually released" and proceeds to rebuild — which is
+      // only correct if nothing here can be interrupted or half-run partway
+      // through. Every step above is already bounded and safe to run
+      // uninterruptibly: the two closes are `Effect.ignore`d, and
+      // `releaseAllPendingApprovalLeases` ignores its own failures
+      // (`deleteExecutionOwnerEntry` is `Effect.ignore`d too), so nothing
+      // here can defect either.
+      Effect.uninterruptible,
       Effect.ensuring(
         Effect.sync(() => {
           if (self.disposingRuntime === disposal) self.disposingRuntime = null;
@@ -1309,16 +1349,20 @@ export abstract class McpAgentSessionDOBase<
       // BEFORE `openSessionDbHandle`, not just before `buildRuntime`: the db
       // handle is one of the three things a resident runtime holds.
       yield* self.evictForCapIfNeeded();
-      // Wrapped so the in-flight cold-build reservation `evictForCapIfNeeded`
-      // just took is released exactly once this build finishes — success or
-      // failure/interrupt — rather than staying reserved (and over-counting
-      // against every other concurrent init's cap check) for the rest of this
-      // `init` call, which still has bookkeeping writes ahead of it.
+      // The in-flight cold-build reservation `evictForCapIfNeeded` just took
+      // is released exactly once — success, failure, or interrupt — by the
+      // single `Effect.ensuring` wrapped around this ENTIRE program below,
+      // not a narrower one scoped to just this build block. A narrower wrap
+      // still leaves a gap between the reservation being taken above and the
+      // wrap starting here: an interrupt landing in exactly that gap would
+      // leak the reservation forever (the module counter only drifts up),
+      // which is why the release is anchored to the same scope as the
+      // acquisition instead.
       const { dbHandle, mcpServer, engine } = yield* Effect.gen(function* () {
         const dbHandle = yield* self.openSessionDbHandle();
         const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
         return { dbHandle, mcpServer, engine };
-      }).pipe(Effect.ensuring(self.releaseColdBuildSlotIfReserved()));
+      });
       self.dbHandle = dbHandle;
       self.server = mcpServer;
       self.engine = engine;
@@ -1359,6 +1403,13 @@ export abstract class McpAgentSessionDOBase<
         .bestEffortBookkeeping("init.mark_activity", () => self.markActivity())
         .pipe(Effect.withSpan("McpSessionDO.markActivity"));
     }).pipe(
+      // Covers the ENTIRE program above, not just the build block: anything
+      // from `evictForCapIfNeeded`'s admission onward that ends this effect —
+      // success, failure, or interrupt — releases the cold-build reservation
+      // exactly once (`releaseColdBuildSlotIfReserved` is idempotent). Wrapping
+      // only the build block would leave the gap between admission and the
+      // build starting uncovered.
+      Effect.ensuring(self.releaseColdBuildSlotIfReserved()),
       // ONE capture owner for an init defect. `init` can only reject its
       // Promise, and the host's DO-level error instrumentation captures that
       // rejection too — so the DO claims the cause below and the host drops its
@@ -1396,13 +1447,26 @@ export abstract class McpAgentSessionDOBase<
       }),
     );
     const traced = this.withTelemetry(program, props?.propagation);
+    // See `initAbortController`'s doc comment: nothing in production aborts
+    // this signal today, but wiring it through `runPromise` gives a unit test
+    // a real handle to interrupt this exact fiber deterministically instead
+    // of only ever exercising the failure/defect path.
+    const abortController = new AbortController();
+    self.initAbortController = abortController;
     return Effect.runPromise(
       traced.pipe(
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object init method can only reject its Promise
         Effect.orDie,
         (effect) => self.withSpanFlush(effect),
       ),
-    );
+      { signal: abortController.signal },
+    ).finally(() => {
+      // Only clear the field if it is still THIS call's controller — an
+      // overlapping later `init` call may already have installed its own by
+      // the time this one settles, and clobbering that with `null` would
+      // leave a unit test unable to reach it.
+      if (self.initAbortController === abortController) self.initAbortController = null;
+    });
   }
 
   /**
