@@ -98,7 +98,7 @@ export default function CodexPluginAdd(props: {
             one the card still identifies its provider rather than showing a
             gap, which matters most on the machines that have no install. */}
         <img
-          src={plugin.icon ?? "https://integrations.sh/logo/openai.com"}
+          src={plugin.icon ?? plugin.fallbackIcon ?? "https://integrations.sh/logo/openai.com"}
           alt=""
           className="size-16 rounded-2xl"
         />
@@ -128,7 +128,7 @@ export default function CodexPluginAdd(props: {
             Status
           </span>
           <span className="font-mono text-[11px] text-muted-foreground">
-            {added ? "Added" : plugin.available ? "Ready" : "Requires Codex"}
+            {added ? "Added" : plugin.available ? "Ready" : "Not installed on this Mac"}
           </span>
         </div>
         {!plugin.available && plugin.setupHint !== undefined && (
@@ -159,14 +159,19 @@ export default function CodexPluginAdd(props: {
           <Button type="button" onClick={() => props.onComplete(plugin.slug)}>
             View integration
           </Button>
-        ) : (
-          <Button
-            type="button"
-            onClick={() => void handleAdd()}
-            disabled={!plugin.available}
-            loading={adding}
-          >
+        ) : plugin.available ? (
+          <Button type="button" onClick={() => void handleAdd()} loading={adding}>
             Add integration
+          </Button>
+        ) : (
+          <Button asChild>
+            <a
+              href={plugin.setupUrl ?? "https://openai.com/codex"}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Install Codex
+            </a>
           </Button>
         )}
       </FloatActions>

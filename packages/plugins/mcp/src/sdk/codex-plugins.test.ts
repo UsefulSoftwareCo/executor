@@ -177,6 +177,12 @@ describe("scanCodexPlugins", () => {
     // Each card's steps are about ITS requirement: Chrome needs the browser
     // extension, which no other card mentions.
     expect(byId.get("codex-chrome")?.setupHint).toContain("browser extension");
+    // A card that cannot be used still hands over where to go, and shows the
+    // plugin's published mark rather than a gap.
+    expect(byId.get("codex-messages")?.setupUrl).toBe("https://openai.com/codex");
+    expect(byId.get("codex-chrome")?.setupUrl).toContain("learn.chatgpt.com");
+    expect(byId.get("codex-computer-use")?.fallbackIcon).toContain("computer-use-plugin-icon");
+    expect(byId.get("codex-messages")?.fallbackIcon).toContain("integrations.sh");
     expect(byId.get("codex-messages")?.setupHint).not.toContain("browser extension");
     // And the steps are numbered and name the plugin the person clicked.
     expect(byId.get("codex-messages")?.setupHint).toContain("1. Install the Codex app");

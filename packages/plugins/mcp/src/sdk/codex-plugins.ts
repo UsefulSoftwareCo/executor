@@ -20,7 +20,12 @@ import * as path from "node:path";
 
 import { Option, Schema } from "effect";
 
-import { CURATED_CODEX_PLUGINS, setupHint, type CuratedCodexPlugin } from "./codex-plugin-presets";
+import {
+  CURATED_CODEX_PLUGINS,
+  setupHint,
+  setupUrl,
+  type CuratedCodexPlugin,
+} from "./codex-plugin-presets";
 
 export interface CodexPluginEntry {
   /** Stable card id, e.g. `codex-messages`. */
@@ -46,8 +51,11 @@ export interface CodexPluginEntry {
     readonly surface?: "sky" | "browser";
     readonly modulePath?: string;
   };
-  /** Shown when `available` is false. */
+  /** Shown when `available` is false: the ordered steps, and where to go. */
   readonly setupHint?: string;
+  readonly setupUrl?: string;
+  /** Public image for this plugin, for machines with no local install. */
+  readonly fallbackIcon?: string;
   /** The plugin's own icon from its local install, as a data URI. Read at
    *  runtime from the user's disk — never shipped with executor. */
   readonly icon?: string;
@@ -416,7 +424,10 @@ export const scanCodexPlugins = (options?: {
         ...(entry.surface === undefined ? {} : { surface: entry.surface }),
         ...(entry.surface === "browser" ? { modulePath: browserClient } : {}),
       },
-      ...(available ? {} : { setupHint: setupHint(entry.requires, entry.name) }),
+      ...(available
+        ? {}
+        : { setupHint: setupHint(entry.requires, entry.name), setupUrl: setupUrl(entry.requires) }),
+      fallbackIcon: entry.publicIcon ?? "https://integrations.sh/logo/openai.com",
       ...display,
     };
   });

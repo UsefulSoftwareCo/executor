@@ -163,6 +163,8 @@ const CodexPluginEntrySchema = Schema.Struct({
     }),
   ),
   setupHint: Schema.optional(Schema.String),
+  setupUrl: Schema.optional(Schema.String),
+  fallbackIcon: Schema.optional(Schema.String),
   /** The plugin's own icon from its local install, as a data URI. */
   icon: Schema.optional(Schema.String),
   /** The plugin's own display metadata from its local manifest. */

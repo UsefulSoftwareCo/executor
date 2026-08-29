@@ -49,7 +49,7 @@ const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map(
   // without Codex has none to read. Fall back to the provider's mark from the
   // same logo service every other preset uses, rather than vendoring OpenAI's
   // artwork into this repo.
-  fallbackIcon: "https://integrations.sh/logo/openai.com",
+  fallbackIcon: plugin.publicIcon ?? "https://integrations.sh/logo/openai.com",
   family: "codex",
   defaultSlug: plugin.slug,
   transport: "stdio",

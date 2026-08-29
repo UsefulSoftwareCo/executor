@@ -18,6 +18,10 @@ export interface CuratedCodexPlugin {
   /** The MCP server name this plugin registers inside Codex — the `server`
    *  the app-server bridge calls tools against. */
   readonly server: string;
+  /** A public image for this plugin, used when the machine-local icon cannot
+   *  be read (i.e. Codex is not installed here). Only some plugins have one
+   *  published; the rest fall back to the provider's mark. */
+  readonly publicIcon?: string;
   /** Present when the plugin has no MCP server of its own and its API is
    *  projected onto another one. Computer Use and Chrome both ship as
    *  skills/`node-repl` content: Codex never starts a server for either, and
@@ -68,6 +72,16 @@ export const setupHint = (requires: CuratedCodexPlugin["requires"], name: string
     .map((step, index) => `${index + 1}. ${step}`)
     .join("\n");
 
+/** Where a person goes to get what a card needs.
+ *
+ *  Linked rather than only described: a card that cannot be used is a dead end
+ *  unless it hands over the next step. Chrome's own requirement is documented
+ *  on the Computer Use page, so it points there instead of the app download. */
+export const setupUrl = (requires: CuratedCodexPlugin["requires"]): string =>
+  requires === "chrome-plugin"
+    ? "https://learn.chatgpt.com/docs/computer-use"
+    : "https://openai.com/codex";
+
 export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
   // Names are exactly the plugins' own displayNames — nothing invented, no
   // provenance suffix. Codex provenance shows in the summaries and on the
@@ -88,6 +102,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-use",
     name: "Computer Use",
     slug: "codex_computer_use",
+    publicIcon: "https://learn.chatgpt.com/images/codex/icons/computer-use-plugin-icon.png",
     requires: "computer-use-app",
     server: "node_repl",
     surface: "sky",
@@ -101,6 +116,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "chrome",
     name: "Chrome",
     slug: "codex_chrome",
+    publicIcon: "https://learn.chatgpt.com/images/codex/icons/chrome-production-large.png",
     server: "node_repl",
     surface: "browser",
     requires: "chrome-plugin",
