@@ -42,12 +42,13 @@ import type {
   ValidateConnectionInput,
 } from "./connection";
 import {
+  HealthCheckReason,
   HealthCheckResult,
   HealthCheckSpec,
   isToolSyncHealth,
   toolSyncHealthDetailPrefix,
 } from "./health-check";
-import type { HealthCheckCandidate, HealthCheckReason } from "./health-check";
+import type { HealthCheckCandidate } from "./health-check";
 import {
   ARTIFACT_SUMMARY_COLUMNS,
   coreSchema,
@@ -939,6 +940,12 @@ const decodeOAuthReauthRequiredProviderState = Schema.decodeUnknownOption(
   Schema.Struct({
     oauthReauthRequiredAt: Schema.Number,
     oauthReauthRequiredDetail: Schema.optional(Schema.String),
+    // The mechanism that killed the grant (a `HealthCheckReason` literal).
+    // Typed as a plain string ON PURPOSE: this struct guards the
+    // skip-dead-refresh gate, and a future reason literal this build does not
+    // know must degrade to "reason unknown", never fail the whole decode and
+    // resurrect the dead grant's refresh traffic. Narrow at the use site.
+    oauthReauthRequiredReason: Schema.optional(Schema.String),
   }),
 );
 
@@ -948,6 +955,15 @@ const oauthReauthRequiredFromProviderState = (value: unknown) =>
 type OAuthReauthRequiredState = NonNullable<
   ReturnType<typeof oauthReauthRequiredFromProviderState>
 >;
+
+const decodeHealthCheckReasonOption = Schema.decodeUnknownOption(HealthCheckReason);
+
+/** The recorded dead-grant mechanism, narrowed to a literal this build knows;
+ *  an absent or unrecognized value reads as undefined. */
+const recordedDeadGrantReason = (
+  reauthState: OAuthReauthRequiredState,
+): HealthCheckReason | undefined =>
+  Option.getOrUndefined(decodeHealthCheckReasonOption(reauthState.oauthReauthRequiredReason));
 
 // In-flight health probes, shared per connection across every executor holding
 // the same root db handle. Read-time revalidation makes `connections.list` a
@@ -986,11 +1002,6 @@ const healthProbeGateFor = (rootDb: object): HealthProbeGate => {
 const healthProbeGateKey = (tenant: string, row: ConnectionRow): string =>
   JSON.stringify([tenant, row.owner, row.subject, row.integration, row.name]);
 
-/** The verdict a recorded dead grant answers every health read with. The
- *  persisted `expired` verdict (written together with the dead-grant
- *  state) is served as-is; a row whose verdict a racing writer buried (or
- *  that somehow lacks one) gets an expired verdict synthesized from the
- *  recorded rejection, unpersisted. */
 /** The enumerable mechanism behind a credential-resolution failure, read
  *  off the error's structural fields — never the message. Admin policy and
  *  missing-material failures are NOT refresh rejections: no authorization
@@ -1003,19 +1014,25 @@ const credentialFailureReason = (failure: CredentialResolutionError): HealthChec
       ? "credential_missing"
       : "credential_refresh_rejected";
 
+/** The verdict a recorded dead grant answers every health read with. The
+ *  persisted `expired` verdict (written together with the dead-grant
+ *  state) is served as-is; a row whose verdict a racing writer buried (or
+ *  that somehow lacks one) gets an expired verdict synthesized from the
+ *  recorded rejection, unpersisted. */
 const deadGrantVerdict = (
   reauthState: OAuthReauthRequiredState,
   row: ConnectionRow,
 ): HealthCheckResult => {
+  // The mechanism recorded WITH the dead grant; older records carry none and
+  // read as a refresh rejection, which is what recording a dead grant meant
+  // before the mechanism was stored.
+  const recorded = recordedDeadGrantReason(reauthState) ?? "credential_refresh_rejected";
   const cached = Option.getOrNull(decodeLastHealth(row.last_health));
-  // A recorded dead grant IS a refresh rejection whatever the cached verdict
-  // says, so backfill the mechanism onto verdicts persisted before `reason`
-  // existed (or by writers that omit it) — otherwise every pre-existing dead
-  // grant would present reasonless spans indefinitely.
+  // Backfill the mechanism onto verdicts persisted before `reason` existed
+  // (or by writers that omit it) — otherwise every pre-existing dead grant
+  // would present reasonless spans indefinitely.
   if (cached !== null && cached.status === "expired") {
-    return cached.reason !== undefined
-      ? cached
-      : { ...cached, reason: "credential_refresh_rejected" };
+    return cached.reason !== undefined ? cached : { ...cached, reason: recorded };
   }
   return {
     status: "expired",
@@ -1023,7 +1040,7 @@ const deadGrantVerdict = (
     detail:
       reauthState.oauthReauthRequiredDetail ??
       "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
-    reason: "credential_refresh_rejected",
+    reason: recorded,
   };
 };
 
@@ -2172,6 +2189,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ...mergedState,
               oauthReauthRequiredAt: Date.now(),
               oauthReauthRequiredDetail: detail,
+              // Recorded beside the dead grant, not only in `last_health`: the
+              // verdict is best-effort and buryable, while this record is the
+              // authority every later read reconstructs from — without it, an
+              // admin-policy denial degrades to a generic refresh rejection on
+              // the second and every later read.
+              oauthReauthRequiredReason: reason,
             },
             last_health: health,
             updated_at: new Date(),
@@ -2407,7 +2430,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const owner = row.owner as Owner;
         const reauth = (
           message: string,
-          options?: { readonly credentialMissing?: boolean },
+          options?: { readonly credentialMissing?: boolean; readonly blockedByAdmin?: boolean },
         ): CredentialResolutionError =>
           new CredentialResolutionError({
             owner,
@@ -2416,6 +2439,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             message,
             reauthRequired: true,
             ...(options?.credentialMissing === true ? { credentialMissing: true } : {}),
+            ...(options?.blockedByAdmin === true ? { blockedByAdmin: true } : {}),
           });
 
         // A recorded invalid_grant is the AS's standing verdict on this grant:
@@ -2438,7 +2462,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               : recordedDetail.endsWith("Reconnect to continue.")
                 ? recordedDetail
                 : `${recordedDetail} Reconnect to continue.`;
-          return yield* reauth(detail);
+          // An admin-policy denial recorded on the dead grant must survive
+          // reconstruction: without the flag, callers past the first denial
+          // would show ordinary reconnect guidance — the interactive OAuth
+          // route the policy contract forbids offering.
+          return yield* reauth(detail, {
+            blockedByAdmin: recordedDeadGrantReason(reauthState) === "blocked_by_admin",
+          });
         }
 
         // Load the backing app. A `first-party:` slug resolves from host config

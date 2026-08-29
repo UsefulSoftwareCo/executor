@@ -396,6 +396,7 @@ const autoTransportFailure = (
     // for an unclassified fallback error.
     failureKind: sse.failureKind ?? "protocol",
     ...(sse.httpStatus !== undefined ? { httpStatus: sse.httpStatus } : {}),
+    ...(sse.insufficientScope !== undefined ? { insufficientScope: sse.insufficientScope } : {}),
     message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
   });
 
