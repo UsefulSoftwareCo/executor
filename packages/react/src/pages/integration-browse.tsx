@@ -394,10 +394,24 @@ export function IntegrationBrowsePage() {
   const excludeDomains = useMemo(() => new Set<string>(), []);
 
   const catalog = useCatalogBrowse({ query: listQuery });
-  const catalogEntries = useMemo(
-    () => filterCatalogEntries(catalog.entries, { excludeDomains, availableKinds }),
-    [catalog.entries, excludeDomains, availableKinds],
-  );
+  const catalogEntries = useMemo(() => {
+    const usable = filterCatalogEntries(catalog.entries, { excludeDomains, availableKinds });
+    if (!catalog.stale) return usable;
+    // Held-over results from the previous query: keep only what still reads
+    // as an answer to the live text. Every whitespace token must appear in
+    // the entry's name or domain — refining "google"→"google cal" keeps
+    // cloud.google.com rows (the match lives in the domain), while a new
+    // word drops the old rows instead of parading them under the wrong
+    // query, which is how a calendar search showed Gmail. An empty text
+    // (clearing back to browse) holds nothing.
+    const tokens = listQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return [];
+    return usable.filter((entry) => {
+      const haystack =
+        `${entry.name ?? domainDisplayName(entry.domain)} ${entry.domain}`.toLowerCase();
+      return tokens.every((token) => haystack.includes(token));
+    });
+  }, [catalog.entries, catalog.stale, listQuery, excludeDomains, availableKinds]);
 
   /** What is already connected, as `<slug>:<kind>`.
    *

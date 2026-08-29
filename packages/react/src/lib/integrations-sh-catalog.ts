@@ -351,6 +351,9 @@ const BROWSE_LIMIT = 60;
 export interface CatalogSearchState {
   readonly entries: readonly CatalogSearchEntry[];
   readonly loading: boolean;
+  /** The entries belong to a previous query, held over while the current one
+   *  loads. Callers must not render them as if they answered the live query. */
+  readonly stale: boolean;
   /** The registry could not be reached. The rest of the page still works, so
    *  this is a section-level notice rather than a page error. */
   readonly failed: boolean;
@@ -388,14 +391,20 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
   const query = input.query.trim().toLowerCase();
   const kind = input.kind;
   const limit = input.limit ?? BROWSE_LIMIT;
+  const requestKeyOf = (forQuery: string) =>
+    cacheKey({ query: forQuery, limit, ...(kind ? { kind } : {}) });
+  const requestKey = requestKeyOf(query);
   const [state, setState] = useState<{
     readonly entries: readonly CatalogSearchEntry[];
+    /** The request the entries belong to. Held-over results from a previous
+     *  query are DELIBERATE (no empty flash between keystrokes), but they
+     *  must be knowable as stale — rendering them unmarked is how a
+     *  "calendar" search showed Gmail cards. */
+    readonly forKey: string;
     readonly loading: boolean;
     readonly failed: boolean;
-  }>({ entries: [], loading: true, failed: false });
+  }>({ entries: [], forKey: requestKey, loading: true, failed: false });
   const generation = useRef(0);
-
-  const requestKey = cacheKey({ query, limit, ...(kind ? { kind } : {}) });
   // Pages beyond the first, keyed to the request they extend so a keystroke
   // discards them with the first page rather than leaking into new results.
   const [more, setMore] = useState<{
@@ -409,17 +418,29 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
   }>({ key: requestKey, entries: [], rawConsumed: 0, loadingMore: false, exhausted: false });
 
   useEffect(() => {
+    setMore({ key: requestKey, entries: [], rawConsumed: 0, loadingMore: false, exhausted: false });
+    // requestKey is derived from (query, kind, limit) — same trigger set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, kind, limit]);
+
+  useEffect(() => {
     const requestId = ++generation.current;
     // A partial word is not yet a query; leave the previous results in place
     // rather than flashing an empty list between keystrokes.
     if (query.length > 0 && query.length < MIN_QUERY_LENGTH) {
+      // Held entries keep their own forKey, so the hook reports them stale.
       setState((previous) => ({ ...previous, loading: false }));
       return;
     }
     const request: CatalogQuery = { query, limit, ...(kind ? { kind } : {}) };
     const cached = searchCache.get(cacheKey(request));
     if (cached && Date.now() - cached.at < SEARCH_TTL_MS) {
-      setState({ entries: cached.entries, loading: false, failed: false });
+      setState({
+        entries: cached.entries,
+        forKey: cacheKey(request),
+        loading: false,
+        failed: false,
+      });
       return;
     }
     setState((previous) => ({ ...previous, loading: true }));
@@ -432,6 +453,7 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
           if (generation.current !== requestId) return;
           setState({
             entries: Exit.isSuccess(exit) ? exit.value.entries : [],
+            forKey: cacheKey(request),
             loading: false,
             failed: Exit.isFailure(exit),
           });
@@ -514,7 +536,11 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
     entries,
     loading: state.loading,
     failed: state.failed,
-    hasMore,
+    /** The rendered entries belong to a PREVIOUS query (held over while the
+     *  current one loads, or while the input is one character). Callers
+     *  decide the treatment; unmarked stale results read as wrong results. */
+    stale: state.forKey !== requestKey,
+    hasMore: hasMore && state.forKey === requestKey,
     loadingMore: extras?.loadingMore ?? false,
     loadMore,
   };
