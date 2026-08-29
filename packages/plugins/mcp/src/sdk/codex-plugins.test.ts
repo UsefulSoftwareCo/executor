@@ -142,7 +142,7 @@ describe("scanCodexPlugins", () => {
     const scanned = entries.find((entry) => entry.id === "codex-sec-scan");
 
     expect(scanned).toMatchObject({
-      name: "sec-scan (Codex)",
+      name: "sec-scan",
       summary: "sec-scan server",
       available: true,
       slug: "codex_sec_scan",

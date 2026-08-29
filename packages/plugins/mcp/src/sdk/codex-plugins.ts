@@ -297,10 +297,7 @@ const scanCachedPlugin = (
     const idSuffix = localServers.length > 1 ? `-${sanitizeId(serverKey)}` : "";
     return {
       id: `codex-${sanitizeId(pluginName)}${idSuffix}`,
-      name:
-        localServers.length > 1
-          ? `${displayName} — ${serverKey} (Codex)`
-          : `${displayName} (Codex)`,
+      name: localServers.length > 1 ? `${displayName} — ${serverKey}` : displayName,
       summary,
       available,
       slug: `codex_${sanitizeSlug(pluginName)}${idSuffix.replace(/-/g, "_")}`,

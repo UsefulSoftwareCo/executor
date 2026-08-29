@@ -24,28 +24,32 @@ export const CODEX_SETUP_HINT =
   "Install the Codex app, sign in, and use this plugin once inside Codex so macOS grants its permissions (Full Disk Access, Contacts, Automation).";
 
 export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
+  // Names are exactly the plugins' own displayNames — nothing invented, no
+  // provenance suffix. Codex provenance shows in the summaries and on the
+  // focused add screen; search keywords people type ("imessage", "apple",
+  // "texts") live in the summaries.
   {
     id: "codex-messages",
     pluginName: "messages",
-    name: "Apple Messages (Codex)",
+    name: "Messages",
     slug: "codex_messages",
     args: ["messages", "mcp"],
     summary:
-      "Read, search, and send iMessage/SMS texts through the Messages app on this Mac. Reads and sends are approved in Codex's native dialogs.",
+      "Read, search, and send iMessage/SMS texts through Apple's Messages app on this Mac, via the Codex plugin. Reads and sends are approved in its native dialogs.",
   },
   {
     id: "codex-computer-use",
     pluginName: "computer-use",
-    name: "Computer Use (Codex)",
+    name: "Computer Use",
     slug: "codex_computer_use",
     args: ["mcp"],
     summary:
-      "Control macOS desktop apps: read the screen and accessibility tree, click, type, and scroll.",
+      "Control macOS desktop apps via the Codex plugin: read the screen and accessibility tree, click, type, and scroll.",
   },
   {
     id: "codex-computer-history",
     pluginName: "computer-history",
-    name: "Computer History (Codex)",
+    name: "Computer History",
     slug: "codex_computer_history",
     args: ["computer-history", "mcp"],
     summary:

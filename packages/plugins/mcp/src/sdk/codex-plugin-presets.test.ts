@@ -33,6 +33,7 @@ describe("codex catalog presets", () => {
     };
     expect(corpus("codex-messages")).toContain("imessage");
     expect(corpus("codex-messages")).toContain("texts");
+    expect(corpus("codex-messages")).toContain("apple");
     expect(corpus("codex-computer-use")).toContain("computer use");
     expect(corpus("codex-computer-history")).toContain("activity");
   });
