@@ -1228,14 +1228,27 @@ export abstract class McpAgentSessionDOBase<
       if (self.server) {
         const server = self.server;
         delete (self as { server?: McpServer }).server;
-        yield* Effect.promise(() => server.close()).pipe(Effect.ignore);
+        // `tryPromise`, not `promise`: a rejected close must land in the error
+        // channel where `ignore` absorbs it. With `Effect.promise` a rejection
+        // becomes a defect, which `ignore` does NOT absorb — the teardown
+        // would stop here while the `ensuring` below still resolved
+        // `disposingRuntime`, telling a waiting `init` the resources were
+        // released when the steps after this one never ran.
+        yield* Effect.tryPromise({
+          try: () => server.close(),
+          catch: (cause: unknown) => cause,
+        }).pipe(Effect.ignore);
       }
       Reflect.set(self, "_transport", undefined);
       self.engine = null;
       if (self.dbHandle) {
         const dbHandle = self.dbHandle;
         self.dbHandle = null;
-        yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
+        // Same `tryPromise` reasoning as the server close above.
+        yield* Effect.tryPromise({
+          try: () => Promise.resolve(dbHandle.end()),
+          catch: (cause: unknown) => cause,
+        }).pipe(Effect.ignore);
       }
       if (self.countedAsResident) {
         self.countedAsResident = false;
@@ -1253,7 +1266,9 @@ export abstract class McpAgentSessionDOBase<
       // resources are actually released" and proceeds to rebuild — which is
       // only correct if nothing here can be interrupted or half-run partway
       // through. Every step above is already bounded and safe to run
-      // uninterruptibly: the two closes are `Effect.ignore`d, and
+      // uninterruptibly: the two closes route rejections into the error
+      // channel via `tryPromise` and `ignore` them (a bare `Effect.promise`
+      // would turn a rejection into a defect `ignore` cannot absorb), and
       // `releaseAllPendingApprovalLeases` ignores its own failures
       // (`deleteExecutionOwnerEntry` is `Effect.ignore`d too), so nothing
       // here can defect either.

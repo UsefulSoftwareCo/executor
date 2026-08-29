@@ -84,16 +84,17 @@ const openSession = async (
     },
   });
   const sessionId = initialized.headers.get("mcp-session-id");
-  await initialized.text();
-  expect(initialized.status, `initialize (${label}) opens a session`).toBe(200);
   if (!sessionId) {
     // oxlint-disable-next-line executor/no-error-constructor -- boundary: e2e setup precondition.
     throw new Error(`openSession (${label}): no mcp-session-id header`);
   }
-  // Recorded here, before the notification round trip: this is the earliest
-  // point the id is known, and the cleanup finalizer needs it regardless of
-  // whether the handshake below ever completes.
+  // Recorded the moment the id exists — BEFORE the body read and status
+  // assertion below, either of which can throw with the session already live
+  // on the server. The cleanup finalizer needs the id on every one of those
+  // paths, not just a fully successful return.
   recordSession(sessionId);
+  await initialized.text();
+  expect(initialized.status, `initialize (${label}) opens a session`).toBe(200);
   const notification = await postJson(
     mcpUrl,
     bearer,
