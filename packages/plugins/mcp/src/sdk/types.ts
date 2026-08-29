@@ -61,6 +61,9 @@ export type McpStdioVersionNegotiation = typeof McpStdioVersionNegotiation.Type;
 //   oauth2 — the value is an OAuth access token, applied as a Bearer header
 //            via the MCP SDK's OAuthClientProvider. MCP oauth carries no
 //            stored endpoints: metadata is discovered live at connect time.
+//            A non-empty scope list may be declared when a server does not
+//            expose scopes through protected-resource metadata; otherwise they
+//            are discovered too.
 // ---------------------------------------------------------------------------
 
 /** Enterprise-Managed Authorization opt-in: which registered OAuth app plays the
@@ -80,6 +83,7 @@ export type McpEnterpriseIdentityProvider = typeof McpEnterpriseIdentityProvider
 export const McpOAuthMethod = Schema.Struct({
   slug: Schema.String,
   kind: Schema.Literal("oauth2"),
+  scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
   enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
 });
 export type McpOAuthMethod = typeof McpOAuthMethod.Type;
@@ -147,6 +151,7 @@ export const McpAuthMethodInput = Schema.Union([
   Schema.Struct({
     slug: Schema.optional(Schema.String),
     kind: Schema.Literal("oauth2"),
+    scopes: Schema.optional(Schema.NonEmptyArray(Schema.String)),
     enterpriseIdentityProvider: Schema.optional(McpEnterpriseIdentityProvider),
   }),
   // Credential methods are authored request-shaped — the ONE apikey input
@@ -210,6 +215,8 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 
 export const McpRemoteIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("remote"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The MCP server endpoint URL */
   endpoint: Schema.String,
   /** Transport preference for this remote server */
@@ -229,6 +236,8 @@ export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
 export const McpStdioIntegrationConfig = Schema.Struct({
   transport: Schema.Literal("stdio"),
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** The command to run */
   command: Schema.String,
   /** Arguments to the command */
@@ -281,6 +290,16 @@ export const McpToolAnnotations = Schema.Struct({
   openWorldHint: Schema.optional(Schema.Boolean),
 });
 export type McpToolAnnotations = typeof McpToolAnnotations.Type;
+
+// ---------------------------------------------------------------------------
+// Tool `_meta` — the reserved, implementation-defined map the MCP spec puts on
+// `Tool`. It is opaque to the executor and to the model: servers use it for
+// host-only routing and policy hints that do not belong in the closed
+// `annotations` set. It is carried through verbatim, never interpreted.
+// ---------------------------------------------------------------------------
+
+export const McpToolMeta = Schema.Record(Schema.String, Schema.Unknown);
+export type McpToolMeta = typeof McpToolMeta.Type;
 
 // ---------------------------------------------------------------------------
 // Tool binding — maps a persisted (sanitized) tool name back to its real MCP

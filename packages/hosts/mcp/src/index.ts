@@ -40,5 +40,6 @@ export {
   McpServingRoutes,
   McpDiscoveryRoutes,
   jsonRpcErrorBody,
+  preInitializeMethodNotFound,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
 } from "./envelope";

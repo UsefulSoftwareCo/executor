@@ -106,6 +106,17 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # apps/desktop/build/ holds committed static inputs (icon, entitlements)
+      # that no module imports, so a sweep can delete them without breaking a
+      # build or a test. v1.6.1 was tagged without them: both mac legs ran ~8
+      # minutes, then died inside codesign with "build/entitlements.mac.plist:
+      # cannot read entitlement data" against an arbitrary locale.pak, while
+      # the missing icon only ever produced a "default Electron icon is used"
+      # notice. Check the tag's own tree here so the failure names the cause.
+      - name: Check desktop build resources
+        run: bun ./scripts/check-build-resources.ts
+        working-directory: apps/desktop
+
       - name: Build web app
         run: bun run --filter @executor-js/local build
 

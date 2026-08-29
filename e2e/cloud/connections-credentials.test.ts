@@ -3,9 +3,11 @@
 // identified by (owner, integration, name), with its value stored through the
 // real vault. The product promises under test: the secret goes in but NEVER
 // comes back out of any endpoint; metadata round-trips; re-creating the same
-// connection replaces it instead of duplicating; removal really removes; and
-// unknown connections fail with a typed not-found error.
+// connection is rejected as a conflict instead of silently replacing it;
+// removal really removes; and unknown connections fail with a typed
+// not-found error.
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
@@ -22,7 +24,8 @@ type Client = HttpApiClient.ForApi<typeof api>;
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
 
-/** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
+/** Minimal OpenAPI spec with a single GET /ping — only the conflict scenario
+ *  ever contacts it, to prove which stored secret the connection resolves. */
 const pingSpec = JSON.stringify({
   openapi: "3.0.3",
   info: { title: "Ping API", version: "1.0.0" },
@@ -33,15 +36,58 @@ const pingSpec = JSON.stringify({
   },
 });
 
-/** Registers a fresh apiKey-authenticated integration for connections to bind to. */
-const registerIntegration = (client: Client) =>
+type CaptureUpstream = {
+  readonly url: string;
+  /** Every Authorization header `GET /ping` has received, in order. */
+  readonly authorizationHeaders: () => readonly string[];
+  readonly close: () => void;
+};
+
+/** Upstream on 127.0.0.1 that records the Authorization header of every
+ *  `GET /ping`. This is how a scenario proves WHICH stored secret a connection
+ *  resolves, since no endpoint ever echoes the value itself. */
+const serveCaptureUpstream = () =>
+  Effect.acquireRelease(
+    Effect.callback<CaptureUpstream>((resume) => {
+      const headers: string[] = [];
+      const server = createServer((request, response) => {
+        if (request.method === "GET" && (request.url ?? "").startsWith("/ping")) {
+          headers.push(request.headers.authorization ?? "");
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ pong: true }));
+          return;
+        }
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not_found" }));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        resume(
+          Effect.succeed({
+            url: `http://127.0.0.1:${port}`,
+            authorizationHeaders: () => [...headers],
+            close: () => {
+              server.close();
+              server.closeAllConnections();
+            },
+          }),
+        );
+      });
+    }),
+    (upstream) => Effect.sync(upstream.close),
+  );
+
+/** Registers a fresh apiKey-authenticated integration for connections to bind
+ *  to. Identifier-safe slug: it becomes a property path in sandbox code. */
+const registerIntegration = (client: Client, baseUrl = "http://127.0.0.1:59999") =>
   Effect.gen(function* () {
-    const slug = IntegrationSlug.make(`conn-scn-${randomBytes(4).toString("hex")}`);
+    const slug = IntegrationSlug.make(`connscn${randomBytes(4).toString("hex")}`);
     yield* client.openapi.addSpec({
       payload: {
         spec: { kind: "blob", value: pingSpec },
         slug,
-        baseUrl: "http://127.0.0.1:59999", // never contacted during registration
+        baseUrl, // the default is never contacted during registration
         authenticationTemplate: [
           {
             slug: "apiKey",
@@ -102,48 +148,82 @@ scenario(
 );
 
 scenario(
-  "Connections · re-creating the same connection replaces it instead of duplicating",
+  "Connections · re-creating the same connection is rejected and leaves the original intact",
   {},
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const { client: apiClient } = yield* Api;
-    const identity = yield* target.newIdentity();
-    const client = yield* apiClient(api, identity);
-    const integration = yield* registerIntegration(client);
-    const name = freshConnectionName();
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: apiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* apiClient(api, identity);
+      const upstream = yield* serveCaptureUpstream();
+      const integration = yield* registerIntegration(client, upstream.url);
+      const name = freshConnectionName();
 
-    yield* client.connections.create({
-      payload: {
-        owner: "org",
-        name,
-        integration,
-        template: TEMPLATE_API_KEY,
-        identityLabel: "first key",
-        value: "first-value",
-      },
-    });
-    const first = yield* client.connections.list({ query: { integration } });
-    expect(
-      first.filter((connection) => connection.name === name).map((c) => c.identityLabel),
-      "the first create stores one row with its label",
-    ).toEqual(["first key"]);
+      yield* client.connections.create({
+        payload: {
+          owner: "org",
+          name,
+          integration,
+          template: TEMPLATE_API_KEY,
+          identityLabel: "first key",
+          value: "first-value",
+        },
+      });
+      const first = yield* client.connections.list({ query: { integration } });
+      expect(
+        first.filter((connection) => connection.name === name).map((c) => c.identityLabel),
+        "the first create stores one row with its label",
+      ).toEqual(["first key"]);
 
-    yield* client.connections.create({
-      payload: {
-        owner: "org",
-        name,
-        integration,
-        template: TEMPLATE_API_KEY,
-        identityLabel: "rotated key",
-        value: "second-value",
-      },
-    });
-    const second = yield* client.connections.list({ query: { integration } });
-    expect(
-      second.filter((connection) => connection.name === name).map((c) => c.identityLabel),
-      "re-creating the same (owner, integration, name) updates the row in place",
-    ).toEqual(["rotated key"]);
-  }),
+      const error = yield* client.connections
+        .create({
+          payload: {
+            owner: "org",
+            name,
+            integration,
+            template: TEMPLATE_API_KEY,
+            identityLabel: "clobber attempt",
+            value: "second-value",
+          },
+        })
+        .pipe(Effect.flip);
+      expect(
+        (error as { _tag?: string })._tag,
+        "re-creating the same (owner, integration, name) fails with the typed conflict",
+      ).toBe("ConnectionAlreadyExistsError");
+
+      const second = yield* client.connections.list({ query: { integration } });
+      expect(
+        second.filter((connection) => connection.name === name).map((c) => c.identityLabel),
+        "the rejected create left the original row untouched",
+      ).toEqual(["first key"]);
+
+      // The stored SECRET is intact too, not just the metadata: invoking
+      // through the original connection must still authenticate upstream with
+      // the first value. The pasted value's provider item id is derived from
+      // the connection name, so a rejected create that wrote before losing
+      // would have replaced the credential while every metadata read above
+      // still looked untouched.
+      const tools = yield* client.tools.list({ query: { integration } });
+      const address = tools
+        .map((tool) => String(tool.address))
+        .find((toolAddress) => toolAddress.includes(".ping."));
+      expect(address, "the ping tool is in the catalog").toBeDefined();
+      if (address === undefined) return;
+
+      const execution = yield* client.executions.execute({
+        payload: {
+          code: [`const result = await ${address}({});`, "return result;"].join("\n"),
+        },
+      });
+      expect(execution.status, "the invoke completes").toBe("completed");
+      expect(
+        upstream.authorizationHeaders(),
+        "the original connection still authenticates with the first value",
+      ).toEqual(["Bearer first-value"]);
+    }),
+  ),
 );
 
 scenario(

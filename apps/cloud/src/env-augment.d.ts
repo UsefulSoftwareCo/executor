@@ -72,6 +72,16 @@ declare global {
       // unset pair simply ships no first-party app for that provider. The
       // registered callback on the provider side must be
       // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback`.
+      FIRST_PARTY_AIRTABLE_CLIENT_ID?: string;
+      FIRST_PARTY_AIRTABLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_ATLASSIAN_CLIENT_ID?: string;
+      FIRST_PARTY_ATLASSIAN_CLIENT_SECRET?: string;
+      FIRST_PARTY_BOX_CLIENT_ID?: string;
+      FIRST_PARTY_BOX_CLIENT_SECRET?: string;
+      FIRST_PARTY_CLICKUP_CLIENT_ID?: string;
+      FIRST_PARTY_CLICKUP_CLIENT_SECRET?: string;
+      FIRST_PARTY_FIGMA_CLIENT_ID?: string;
+      FIRST_PARTY_FIGMA_CLIENT_SECRET?: string;
       FIRST_PARTY_GITHUB_CLIENT_ID?: string;
       FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
       // Endpoint overrides for the GitHub first-party app, so tests/dev can
@@ -79,8 +89,18 @@ declare global {
       // production (the real github.com endpoints are the defaults).
       FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
       FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+      FIRST_PARTY_GITLAB_CLIENT_ID?: string;
+      FIRST_PARTY_GITLAB_CLIENT_SECRET?: string;
       FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
       FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_HUBSPOT_CLIENT_ID?: string;
+      FIRST_PARTY_HUBSPOT_CLIENT_SECRET?: string;
+      FIRST_PARTY_LINEAR_CLIENT_ID?: string;
+      FIRST_PARTY_LINEAR_CLIENT_SECRET?: string;
+      FIRST_PARTY_MICROSOFT_CLIENT_ID?: string;
+      FIRST_PARTY_MICROSOFT_CLIENT_SECRET?: string;
+      FIRST_PARTY_NOTION_CLIENT_ID?: string;
+      FIRST_PARTY_NOTION_CLIENT_SECRET?: string;
       FIRST_PARTY_SLACK_CLIENT_ID?: string;
       FIRST_PARTY_SLACK_CLIENT_SECRET?: string;
 

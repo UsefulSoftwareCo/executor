@@ -2,16 +2,15 @@ import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AtomHttpApi from "effect/unstable/reactivity/AtomHttpApi";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
-import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 import { ExecutorApi } from "@executor-js/api/client";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { reportHandledFrontendError } from "./error-reporting";
 import { notifyLocalAuthRequired } from "./local-auth";
+import { makeBrowserTracingLayer } from "./tracing";
 import {
   EXECUTOR_ORG_HEADER,
   getActiveOrgSlug,
@@ -85,29 +84,13 @@ const otlpSampleRatio = Number(
 // no export). addGlobalLayer is provideMerge'd into every runtime built by
 // the default factory, which is exactly what AtomHttpApi services use.
 //
-// TracerDisabledWhen must be URL-scoped, NOT a blanket `() => true` on the
-// exporter's client: addGlobalLayer leaks provided references into the
-// shared runtime context, and a blanket predicate silently disables
-// tracing for EVERY HttpClient — no spans, no traceparent, no export, no
-// error. URL-scoped, the leak is the desired behavior: any client posting
-// to the OTLP endpoint (the exporter) goes untraced, everything else is
-// traced.
 // Browser-only (this module is also evaluated during SSR, where the worker
 // has its own tracer and a relative exporter URL would be meaningless).
 if (otlpTracesUrl && typeof document !== "undefined" && Math.random() < otlpSampleRatio) {
   Atom.runtime.addGlobalLayer(
-    Layer.mergeAll(
-      OtlpTracer.layer({
-        // Relative paths (the prod shape: "/v1/traces" → the worker's
-        // forwarding route) resolve against the page's own origin.
-        url: new URL(otlpTracesUrl, window.location.origin).toString(),
-        resource: { serviceName: "executor-web" },
-        // Browser sessions are short; the 5s default loses the tail spans
-        // when the tab closes.
-        exportInterval: "1 second",
-      }).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(FetchHttpClient.layer)),
-      Layer.succeed(HttpClient.TracerDisabledWhen, (request) => request.url.includes("/v1/traces")),
-    ),
+    // Relative paths (the prod shape: "/v1/traces" → the worker's
+    // forwarding route) resolve against the page's own origin.
+    makeBrowserTracingLayer(new URL(otlpTracesUrl, window.location.origin).toString()),
   );
 }
 

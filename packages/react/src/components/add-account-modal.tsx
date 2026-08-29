@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   ConnectionName,
@@ -106,7 +108,14 @@ import {
 import { Input } from "./input";
 import { Label } from "./label";
 import { RadioGroup, RadioGroupItem } from "./radio-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "./combobox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 
 // ---------------------------------------------------------------------------
@@ -335,43 +344,77 @@ function PasteCredentialInputs(props: {
   );
 }
 
+type OnePasswordItem = {
+  readonly id: ProviderItemId;
+  readonly name: string;
+  readonly group?: string;
+};
+
 function OnePasswordItemSelect(props: {
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
-  const itemsResult = useAtomValue(providerItemsAtom(ONEPASSWORD_PROVIDER));
+  const itemsAtom = providerItemsAtom(ONEPASSWORD_PROVIDER);
+  const itemsResult = useAtomValue(itemsAtom);
+  const refreshItems = useAtomRefresh(itemsAtom);
+
+  // Stale-while-revalidate: with a retained value the list renders instantly
+  // and one background refresh per mount picks up vault changes (refreshing
+  // keeps the previous value, so nothing flashes). A cold mount is already
+  // fetching — refreshing it would only restart the request. The ref carries
+  // the latest cached-ness into the effect without re-running it.
+  const isCachedRef = useRef(false);
+  isCachedRef.current = AsyncResult.isSuccess(itemsResult);
+  useEffect(() => {
+    if (isCachedRef.current) refreshItems();
+  }, [refreshItems]);
   const state = AsyncResult.matchWithError(
-    itemsResult as AsyncResult.AsyncResult<
-      readonly { readonly id: ProviderItemId; readonly name: string }[],
-      Error
-    >,
+    itemsResult as AsyncResult.AsyncResult<readonly OnePasswordItem[], Error>,
     {
       onInitial: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: true,
         error: null as string | null,
       }),
       onError: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: false,
         error: "Failed to load 1Password items",
       }),
       onDefect: () => ({
-        items: [] as readonly {
-          readonly id: ProviderItemId;
-          readonly name: string;
-        }[],
+        items: [] as readonly OnePasswordItem[],
         loading: false,
         error: "Failed to load 1Password items",
       }),
       onSuccess: ({ value }) => ({ items: value, loading: false, error: null }),
     },
+  );
+
+  const stateItems = state.items;
+  const sorted = useMemo(
+    () =>
+      [...stateItems].sort(
+        (a, b) => a.name.localeCompare(b.name) || (a.group ?? "").localeCompare(b.group ?? ""),
+      ),
+    [stateItems],
+  );
+  const byId = useMemo(() => {
+    const map = new Map<string, OnePasswordItem>();
+    for (const item of sorted) map.set(String(item.id), item);
+    return map;
+  }, [sorted]);
+  const ids = useMemo(() => sorted.map((item) => String(item.id)), [sorted]);
+
+  const filter = useCallback(
+    (id: string, query: string) => {
+      const needle = query.trim().toLowerCase();
+      if (needle === "") return true;
+      const item = byId.get(id);
+      return [item?.name ?? "", item?.group ?? ""].some((part) =>
+        part.toLowerCase().includes(needle),
+      );
+    },
+    [byId],
   );
 
   if (state.loading) {
@@ -386,18 +429,36 @@ function OnePasswordItemSelect(props: {
 
   return (
     <div className="space-y-1" data-ph-block>
-      <Select value={props.value} onValueChange={props.onChange}>
-        <SelectTrigger>
-          <SelectValue placeholder="Select secret" />
-        </SelectTrigger>
-        <SelectContent>
-          {state.items.map((item) => (
-            <SelectItem key={String(item.id)} value={String(item.id)}>
-              {item.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Combobox
+        items={ids}
+        value={props.value.length > 0 ? props.value : null}
+        filter={filter}
+        limit={100}
+        itemToStringLabel={(id: string) => byId.get(id)?.name ?? id}
+        onValueChange={(id) => {
+          if (id !== null) props.onChange(id);
+        }}
+      >
+        <ComboboxInput placeholder="Search 1Password items…" className="w-full" />
+        <ComboboxContent>
+          <ComboboxEmpty>No items match.</ComboboxEmpty>
+          <ComboboxList>
+            {(id: string) => {
+              const item = byId.get(id);
+              return (
+                <ComboboxItem key={id} value={id}>
+                  <span className="min-w-0 flex-1 truncate">{item?.name ?? id}</span>
+                  {item?.group && (
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {item.group}
+                    </span>
+                  )}
+                </ComboboxItem>
+              );
+            }}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
     </div>
   );
 }
@@ -546,6 +607,19 @@ export const connectionLabelForHost = (
   integrationName: string,
   organizationId: string | null,
 ): string => label.trim() || `${ownerLabelForHost(owner, organizationId)} ${integrationName}`;
+
+/** The create endpoint rejected the name as taken (409). Like
+ *  `isIntegrationAlreadyExistsExit`: the error's `message` is a getter derived
+ *  from its fields, so it doesn't survive the wire — match the tag and rebuild
+ *  the message client-side. */
+export const isConnectionAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
+  Option.match(Exit.findErrorOption(exit), {
+    onNone: () => false,
+    onSome: Predicate.isTagged("ConnectionAlreadyExistsError"),
+  });
+
+export const connectionExistsMessage = (label: string): string =>
+  `A connection named "${label}" already exists. Pick a different name, or remove the existing connection first.`;
 
 /** The default owner a new connection is saved under when the user makes no
  *  explicit choice. Personal: a connection is most often a personal credential. */
@@ -1048,7 +1122,13 @@ function HealthStatusLine(props: {
 }) {
   const { status, identity, detail, httpStatus } = props.result;
   const healthy = status === "healthy";
-  const tone = healthy ? "text-muted-foreground" : "text-destructive";
+  // Misconfigured is amber everywhere (see health-display.ts): the credential
+  // being validated is fine, so the verdict must not read as a key failure.
+  const tone = healthy
+    ? "text-muted-foreground"
+    : status === "misconfigured"
+      ? "text-amber-600 dark:text-amber-500"
+      : "text-destructive";
   const font = props.variant === "response" ? "font-mono" : "";
   return (
     <div className={`flex min-w-0 items-center gap-2 text-xs ${tone} ${font}`}>
@@ -1682,7 +1762,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const showSavedToPicker = !oauthRegistering && savedToOptions.length > 1;
   // OAuth mints a NEW connection per connect, so its preview shows the
   // uniquified name (`personalGmail2`); credential saves keep the plain
-  // derivation (they surface an explicit overwrite through the same name).
+  // derivation, because a save under a taken name is a conflict the server
+  // rejects rather than something the client silently renames around.
   const callableName = isOAuth
     ? previewConnectionName(label, savedToOwner)
     : connectionNameFrom(label, savedToOwner, integrationName, organizationId);
@@ -1917,7 +1998,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
     });
     if (Exit.isFailure(exit)) {
       setSubmitting(false);
-      toast.error(messageFromExit(exit, "Failed to add connection"));
+      // The conflict error's message is a getter derived from its fields, so
+      // it doesn't survive the wire — rebuild it from the tag (the same
+      // pattern as isIntegrationAlreadyExistsExit).
+      toast.error(
+        isConnectionAlreadyExistsExit(exit)
+          ? connectionExistsMessage(
+              connectionLabelForHost(label, owner, integrationName, organizationId),
+            )
+          : messageFromExit(exit, "Failed to add connection"),
+      );
       return;
     }
     toast.success("Connection added");
@@ -2357,15 +2447,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
     // Non-modal for the same reason as the health-check editor sheet: a modal
     // dialog's react-remove-scroll locks the wheel to the dialog subtree, so
     // the operation combobox's PORTALED popup (and the modal body while it is
-    // open) cannot scroll. The overlay still dims and outside-click still
-    // closes; the portaled-popup guard in DialogContent keeps option clicks
-    // from dismissing.
+    // open) cannot scroll. The overlay still dims, so the dialog keeps its
+    // modal look. This form holds credentials and a half-built auth method, so
+    // it takes DialogContent's default: an outside click does not dismiss it.
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
         forceOverlay
-        onInteractOutside={
-          oauthClientHandoff?.action === "reconnect" ? (event) => event.preventDefault() : undefined
-        }
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing

@@ -18,14 +18,24 @@
 import { Schema } from "effect";
 
 // ---------------------------------------------------------------------------
-// Status: the four states a connection can be in. `expired` is the one this
+// Status: the five states a connection can be in. `expired` is the one this
 // whole feature exists for (Google's 7-day dev-token revocation): the credential
-// authenticated fine yesterday and now returns 401/403. `degraded` covers any
-// other non-2xx (upstream 5xx, a 404 on a mis-picked operation); `unknown` is
-// "never checked / no health check configured".
+// authenticated fine yesterday and now returns 401/403. `misconfigured` is the
+// 403 that is NOT a credential problem: the token authenticated, but the
+// upstream rejects on configuration (a Google API not enabled in the OAuth
+// client's GCP project): the fix is in the provider console, so telling the
+// user to reconnect would mislead. `degraded` covers any other non-2xx
+// (upstream 5xx, a 404 on a mis-picked operation); `unknown` is "never checked
+// / no health check configured".
 // ---------------------------------------------------------------------------
 
-export const HealthStatus = Schema.Literals(["healthy", "expired", "degraded", "unknown"]);
+export const HealthStatus = Schema.Literals([
+  "healthy",
+  "expired",
+  "misconfigured",
+  "degraded",
+  "unknown",
+]);
 export type HealthStatus = typeof HealthStatus.Type;
 
 // ---------------------------------------------------------------------------
@@ -84,6 +94,15 @@ export const HealthCheckResult = Schema.Struct({
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
+/** Detail prefix that marks a verdict as produced by tool-catalog sync, not a
+ *  credential probe. Shared vocabulary: sync stamps it, and the surfaces that
+ *  auto-revalidate verdicts skip these — a credential probe cannot refute a
+ *  failed tool sync, and a later successful sync clears the verdict itself. */
+export const toolSyncHealthDetailPrefix = "Tool sync failing";
+
+export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): boolean =>
+  result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
+
 // ---------------------------------------------------------------------------
 // HealthCheckCandidate: one operation the user can pick as the health check,
 // projected from the plugin's stored operations. The editor lists these ranked
@@ -139,11 +158,57 @@ export type HealthCheckCandidate = typeof HealthCheckCandidate.Type;
 // ---------------------------------------------------------------------------
 
 /** Map an HTTP status to a health state: 2xx healthy, 401/403 expired (the auth
- *  wall), everything else degraded. */
+ *  wall), everything else degraded. Status-only fallback: when the response
+ *  BODY is available, use `classifyProbeResponse` instead, which tells a
+ *  credential 403 apart from a configuration 403. */
 export const classifyHttpStatus = (status: number): HealthStatus => {
   if (status >= 200 && status < 300) return "healthy";
   if (status === 401 || status === 403) return "expired";
   return "degraded";
+};
+
+// Error `reason` / `status` markers that make a 403 a CONFIGURATION rejection
+// rather than a credential one. Deliberately narrow and provider-shaped:
+// Google's error envelope carries `errors[].reason: "accessNotConfigured"`
+// (message "<API> has not been used in project N before or it is disabled")
+// and newer surfaces use `status: "PERMISSION_DENIED"` with
+// `details[].reason: "SERVICE_DISABLED"`. Unrecognized 403s keep the expired
+// classification: a false "expired" prompts a harmless reconnect, but a false
+// "misconfigured" would hide a genuinely dead credential.
+const CONFIGURATION_403_REASONS = new Set(["accessnotconfigured", "service_disabled"]);
+
+/** Collect candidate `reason` markers from a Google-shaped error envelope:
+ *  `error.errors[].reason` (classic) and `error.details[].reason` (newer
+ *  google.rpc.ErrorInfo). Tolerant of partial shapes; returns []. */
+const errorReasonMarkers = (body: unknown): string[] => {
+  if (body == null || typeof body !== "object") return [];
+  const error = (body as Record<string, unknown>)["error"];
+  if (error == null || typeof error !== "object") return [];
+  const markers: string[] = [];
+  for (const key of ["errors", "details"] as const) {
+    const entries = (error as Record<string, unknown>)[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (entry == null || typeof entry !== "object") continue;
+      const reason = (entry as Record<string, unknown>)["reason"];
+      if (typeof reason === "string") markers.push(reason.toLowerCase());
+    }
+  }
+  return markers;
+};
+
+/** Classify a probe response from its status AND body. Everything is
+ *  `classifyHttpStatus` except one carve-out: a 403 whose error body carries a
+ *  known configuration reason (Google `accessNotConfigured` /
+ *  `SERVICE_DISABLED`) is `misconfigured`, not `expired`: the credential
+ *  authenticated; the upstream API is disabled in the OAuth client's project,
+ *  and only enabling it there (not reconnecting) fixes it. */
+export const classifyProbeResponse = (status: number, body: unknown): HealthStatus => {
+  const byStatus = classifyHttpStatus(status);
+  if (status !== 403 || byStatus !== "expired") return byStatus;
+  return errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))
+    ? "misconfigured"
+    : "expired";
 };
 
 /** Resolve a dot-path (`a.b.0.c`) against a JSON value and coerce the leaf to a
@@ -379,19 +444,111 @@ export const projectResponseFields = (
   return fields;
 };
 
+/** Placeholder shown instead of a leaf whose key names it as secret-bearing. */
+export const REDACTED_SAMPLE_VALUE = "[redacted]";
+
+/**
+ * Leaf keys whose value is a credential rather than something worth previewing.
+ *
+ * The sample exists so a user can pick their identity field, and the keys that
+ * serve that (`email`, `login`, `username`, `name`, `id`) do not collide with
+ * any of these — so this can afford to be blunt.
+ *
+ * This catches the secrets we do NOT already know. Scrubbing the connection's
+ * own credential value out of the sample only helps when the body echoes the
+ * key we authenticated with; a health check pointed at a key-listing endpoint
+ * returns different secrets entirely, and no scrub of a known value can see
+ * those.
+ */
+/* The optional trailing `s` matters because of the array case below: a key that
+ * holds a COLLECTION of secrets is named in the plural (`tokens`, `api_keys`,
+ * `credentials`), and those are exactly the key-listing responses this guards.
+ * It stays inside the same letter boundary, so `author` is still not `auth`. */
+const SECRET_KEY_PATTERN =
+  /(^|[^a-z])(secret|token|password|passwd|apikey|api_key|credential|authorization|auth|session|cookie|private|signature|bearer|refresh)s?([^a-z]|$)/i;
+
+/** camelCase hides the separator the pattern looks for: `accessToken` has no
+ *  non-letter before `Token`, so `accessToken`, `refreshToken`, `clientSecret`,
+ *  `privateKey` and `sessionId` all read as innocent. Splitting on a
+ *  lowercase→uppercase transition exposes that boundary. */
+const splitCamelCase = (key: string): string => key.replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2");
+
+/** True when a single key names a credential.
+ *
+ *  BOTH spellings are tested, not just the split one: `apiKey` matches only as
+ *  the contiguous word `apikey`, which splitting would destroy. Testing both
+ *  only widens the net where a case boundary exists, so `author` and
+ *  `authorName` — which have no boundary in the wrong place — stay visible. */
+const keyNamesASecret = (key: string): boolean =>
+  SECRET_KEY_PATTERN.test(key) || SECRET_KEY_PATTERN.test(splitCamelCase(key));
+
+const isIndexSegment = (segment: string): boolean => /^\d+$/.test(segment);
+
+/** True when a dotted path names a credential, under either of two readings.
+ *
+ *  THE NEAREST NAMED SEGMENT. The walker names array elements by index, so a
+ *  bare array of secrets — `{"tokens": ["sk-live-…"]}` — produces the path
+ *  `tokens.0`, whose literal last segment is `"0"` and matches nothing. Numeric
+ *  segments are skipped so the check lands on the key that named the
+ *  collection, which is the only place the secret is described. `keys.0.token`
+ *  is unaffected: its last segment already names the leaf.
+ *
+ *  AN ENCLOSING ARRAY CONTAINER. A key-listing endpoint returns
+ *  `{"api_keys": [{"value": "sk-live-…"}]}`, whose path is `api_keys.0.value`.
+ *  The nearest named segment is the innocent `value`, so the first reading
+ *  alone hands the secret to the database. A segment that DIRECTLY contains an
+ *  array — one immediately followed by an index — and names a credential
+ *  therefore covers everything under it.
+ *
+ *  That second reading also blanks a sibling like `api_keys.0.name`. This is
+ *  the right trade: a name inside a key list is never the connection's own
+ *  identity (`candidateIdentityTier` already refuses indexed paths), and the
+ *  alternative is a persisted secret. `names.0` is untouched, because its
+ *  container names nothing. */
+export const pathNamesASecret = (path: string): boolean => {
+  const segments = path.split(".");
+  const named = segments.filter((segment) => !isIndexSegment(segment));
+  const leaf = named[named.length - 1] ?? "";
+  if (keyNamesASecret(leaf)) return true;
+  return segments.some(
+    (segment, index) =>
+      !isIndexSegment(segment) &&
+      isIndexSegment(segments[index + 1] ?? "") &&
+      keyNamesASecret(segment),
+  );
+};
+
 /**
  * Walk an actual JSON response body and return its scalar leaves as
  * `{ path, value }` rows (value stringified + truncated). Drives the live
  * preview's "show me what this returns" list. Bounded to depth 4, 25 fields,
  * and ~120-char values.
+ *
+ * Leaves whose key names a credential are kept but their value is replaced,
+ * so the preview still shows the field exists without persisting its value —
+ * this result is written to `connection.last_health`.
+ *
+ * `scrub` removes credential values the caller already knows (the secret the
+ * connection authenticated with, which a body can echo back under an
+ * innocent-looking key). It runs INSIDE the walk, before truncation, because
+ * the two orders are not equivalent: a credential longer than the value cap
+ * would otherwise be cut to a 120-char prefix that an exact-substring scrub can
+ * no longer recognise, and that prefix is what gets persisted.
  */
-export const extractResponseFields = (data: unknown): HealthCheckResponseSample[] => {
+export const extractResponseFields = (
+  data: unknown,
+  options?: { readonly scrub?: (value: string) => string },
+): HealthCheckResponseSample[] => {
   const out: HealthCheckResponseSample[] = [];
   const MAX_DEPTH = 4;
   const MAX_FIELDS = 25;
   const MAX_VALUE = 120;
+  const scrub = options?.scrub;
 
-  const render = (v: string): string => (v.length > MAX_VALUE ? `${v.slice(0, MAX_VALUE)}...` : v);
+  const render = (raw: string): string => {
+    const v = scrub === undefined ? raw : scrub(raw);
+    return v.length > MAX_VALUE ? `${v.slice(0, MAX_VALUE)}...` : v;
+  };
 
   const visit = (node: unknown, path: string, depth: number) => {
     if (out.length >= MAX_FIELDS || node == null) return;
@@ -418,7 +575,10 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
       path !== "" &&
       (typeof node === "string" || typeof node === "number" || typeof node === "boolean")
     ) {
-      out.push({ path, value: render(String(node)) });
+      out.push({
+        path,
+        value: pathNamesASecret(path) ? REDACTED_SAMPLE_VALUE : render(String(node)),
+      });
     }
   };
 

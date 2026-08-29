@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Option, Schema } from "effect";
 import { trackEvent } from "../api/analytics";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
@@ -19,6 +20,66 @@ import {
 
 type TransportMode = "stdio" | "http";
 export type McpElicitationMode = "browser" | "model" | "native";
+
+const McpInstallPreferencesSchema = Schema.Struct({
+  mode: Schema.Literals(["stdio", "http"]),
+  httpElicitationMode: Schema.Literals(["browser", "model", "native"]),
+  artifacts: Schema.Boolean,
+  searchTools: Schema.Boolean,
+});
+
+type McpInstallPreferences = typeof McpInstallPreferencesSchema.Type;
+
+const MCP_INSTALL_PREFERENCES_STORAGE_PREFIX = "executor.mcpInstallPreferences.v1";
+/** Hosts that are not org-scoped (local, desktop) share this one suffix. */
+const UNSCOPED_ORGANIZATION_SUFFIX = "local";
+
+/**
+ * Storage key for one organization's install preferences.
+ *
+ * `localStorage` is per-origin, not per-account, so a single key would carry
+ * one org's transport and elicitation choices into every other org — and into
+ * every other user — signed in through the same browser. The rendered command
+ * differs per org, so a shared preference is wrong rather than merely
+ * surprising. Scoping by slug keeps each org's choices to itself; hosts with
+ * no org context are a single user by construction and share one bucket.
+ */
+export const mcpInstallPreferencesStorageKey = (organizationSlug: string | null): string =>
+  `${MCP_INSTALL_PREFERENCES_STORAGE_PREFIX}.${organizationSlug ?? UNSCOPED_ORGANIZATION_SUFFIX}`;
+
+const DEFAULT_MCP_INSTALL_PREFERENCES: McpInstallPreferences = {
+  mode: "http",
+  httpElicitationMode: "model",
+  artifacts: true,
+  searchTools: false,
+};
+const decodeMcpInstallPreferences = Schema.decodeUnknownOption(
+  Schema.fromJsonString(McpInstallPreferencesSchema),
+);
+
+const readMcpInstallPreferences = (storageKey: string): McpInstallPreferences => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
+  try {
+    const raw = globalThis.localStorage?.getItem(storageKey);
+    return raw
+      ? Option.getOrElse(decodeMcpInstallPreferences(raw), () => DEFAULT_MCP_INSTALL_PREFERENCES)
+      : DEFAULT_MCP_INSTALL_PREFERENCES;
+  } catch {
+    return DEFAULT_MCP_INSTALL_PREFERENCES;
+  }
+};
+
+const writeMcpInstallPreferences = (
+  storageKey: string,
+  preferences: McpInstallPreferences,
+): void => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: localStorage can throw when browser storage is disabled
+  try {
+    globalThis.localStorage?.setItem(storageKey, JSON.stringify(preferences));
+  } catch {
+    // Best-effort persistence; the options still apply to this rendered command.
+  }
+};
 
 const SUPPORTED_AGENTS = [
   { key: "cursor", label: "Cursor", Icon: CursorIcon },
@@ -143,11 +204,6 @@ export const buildMcpInstallCommand = (input: {
 };
 
 export function McpInstallCard(props: { className?: string }) {
-  const [mode, setMode] = useState<TransportMode>("http");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
-  const [artifacts, setArtifacts] = useState(true);
-  const [searchTools, setSearchTools] = useState(false);
   const organizationSlug = useOrganizationSlug();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
@@ -155,6 +211,26 @@ export function McpInstallCard(props: { className?: string }) {
   // HTTP path there; it routes through the active sidecar connection.
   const showStdio =
     isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
+  const storageKey = mcpInstallPreferencesStorageKey(organizationSlug);
+  const [preferences, setPreferences] = useState<McpInstallPreferences>(() =>
+    readMcpInstallPreferences(storageKey),
+  );
+  // Switching organizations must load that org's own preferences. Reloading in
+  // an effect would let the save effect below run first and write the previous
+  // org's choices under the new org's key, which is the bleed this scoping
+  // exists to prevent. Adjusting during render re-runs this component before
+  // anything commits, so the save effect only ever sees a matched pair.
+  const [loadedStorageKey, setLoadedStorageKey] = useState(storageKey);
+  if (loadedStorageKey !== storageKey) {
+    setLoadedStorageKey(storageKey);
+    setPreferences(readMcpInstallPreferences(storageKey));
+  }
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const { mode, httpElicitationMode, artifacts, searchTools } = preferences;
+
+  useEffect(() => {
+    writeMcpInstallPreferences(storageKey, preferences);
+  }, [storageKey, preferences]);
 
   const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
 
@@ -225,7 +301,7 @@ export function McpInstallCard(props: { className?: string }) {
           <Switch
             checked={artifacts}
             onCheckedChange={(next) => {
-              setArtifacts(next);
+              setPreferences((current) => ({ ...current, artifacts: next }));
               trackEvent("mcp_install_artifacts_toggled", { artifacts: next });
             }}
             aria-label="Artifacts"
@@ -243,7 +319,7 @@ export function McpInstallCard(props: { className?: string }) {
           <Switch
             checked={searchTools}
             onCheckedChange={(next) => {
-              setSearchTools(next);
+              setPreferences((current) => ({ ...current, searchTools: next }));
               trackEvent("mcp_install_search_tools_toggled", { search_tools: next });
             }}
             aria-label="Integration search tools"
@@ -263,7 +339,7 @@ export function McpInstallCard(props: { className?: string }) {
             value={elicitationMode}
             onChange={(event) => {
               const next = event.target.value as McpElicitationMode;
-              setHttpElicitationMode(next);
+              setPreferences((current) => ({ ...current, httpElicitationMode: next }));
               trackEvent("mcp_install_elicitation_mode_changed", { elicitation_mode: next });
             }}
             aria-label="Elicitation mode"
@@ -352,7 +428,7 @@ export function McpInstallCard(props: { className?: string }) {
           value={mode}
           onValueChange={(v) => {
             const next = v as TransportMode;
-            setMode(next);
+            setPreferences((current) => ({ ...current, mode: next }));
             trackEvent("mcp_install_transport_switched", { transport: next });
           }}
         >

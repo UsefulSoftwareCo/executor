@@ -16,6 +16,9 @@ export interface ProviderEntry {
    *  a connection can reference it without core knowing its internal shape. */
   readonly id: ProviderItemId;
   readonly name: string;
+  /** Optional provenance label for pickers when a provider spans several
+   *  containers (a 1Password vault name). Purely presentational. */
+  readonly group?: string;
 }
 
 export interface CredentialProvider {

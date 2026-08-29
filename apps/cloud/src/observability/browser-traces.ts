@@ -8,10 +8,31 @@
 // but it should not be an anonymous internet ingest — a session cookie must
 // at least be present, and bodies are capped. We deliberately do NOT verify
 // the session (that would put a WorkOS round-trip on every span batch).
+//
+// The batch is never forwarded opaquely. The page-side exporter scrubs its
+// own spans, but the page is not a trust boundary — anything with the cookie
+// can POST here — so the worker decodes the OTLP JSON payload, scrubs every
+// credential-bearing URL component server-side, and forwards the
+// re-serialized result. A batch that does not parse as JSON is refused: what
+// cannot be scrubbed is not forwarded.
+
+import { redactOtlpTraceExport } from "@executor-js/sdk";
 
 const MAX_BODY_BYTES = 2_000_000;
 
 export const BROWSER_TRACES_PATH = "/v1/traces";
+
+/** The batch re-serialized with every URL scrubbed, or `undefined` when it is
+ *  not valid JSON (or too deep to scrub) and must be refused. */
+const scrubbedBatch = (body: string): string | undefined => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: JSON.parse throws on malformed input; the refusal path (400) is the handled outcome
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: the batch is deliberately unknown-shaped (the scrub walks arbitrary JSON); there is no schema to decode into
+    return JSON.stringify(redactOtlpTraceExport(JSON.parse(body)));
+  } catch {
+    return undefined;
+  }
+};
 
 export const browserTracesResponse = (
   request: Request,
@@ -35,18 +56,34 @@ export const browserTracesResponse = (
   if (contentLength > MAX_BODY_BYTES) {
     return Promise.resolve(new Response(null, { status: 413 }));
   }
-  return fetchImpl(env.AXIOM_TRACES_URL ?? "https://api.axiom.co/v1/traces", {
-    method: "POST",
-    headers: {
-      "content-type": request.headers.get("content-type") ?? "application/json",
-      authorization: `Bearer ${env.AXIOM_TOKEN}`,
-      "x-axiom-dataset": env.AXIOM_DATASET ?? "executor-cloud",
+  return request.text().then(
+    (body) => {
+      // The content-length guard above trusts a header; re-check the bytes
+      // actually read.
+      if (body.length > MAX_BODY_BYTES) {
+        return new Response(null, { status: 413 });
+      }
+      const scrubbed = scrubbedBatch(body);
+      if (scrubbed === undefined) {
+        return new Response(null, { status: 400 });
+      }
+      return fetchImpl(env.AXIOM_TRACES_URL ?? "https://api.axiom.co/v1/traces", {
+        method: "POST",
+        headers: {
+          // Always JSON: the batch was decoded, scrubbed, and re-serialized.
+          "content-type": "application/json",
+          authorization: `Bearer ${env.AXIOM_TOKEN}`,
+          "x-axiom-dataset": env.AXIOM_DATASET ?? "executor-cloud",
+        },
+        body: scrubbed,
+      }).then(
+        // The exporter only needs success/failure; never reflect Axiom's
+        // response body (or its headers) back to an unauthenticated caller.
+        (upstream) => new Response(null, { status: upstream.ok ? 204 : 502 }),
+        () => new Response(null, { status: 502 }),
+      );
     },
-    body: request.body,
-  }).then(
-    // The exporter only needs success/failure; never reflect Axiom's
-    // response body (or its headers) back to an unauthenticated caller.
-    (upstream) => new Response(null, { status: upstream.ok ? 204 : 502 }),
-    () => new Response(null, { status: 502 }),
+    // An unreadable body cannot be scrubbed, so it is refused, not forwarded.
+    () => new Response(null, { status: 400 }),
   );
 };

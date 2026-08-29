@@ -1,6 +1,8 @@
 import { Effect, Layer, Option } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
+import { endpointForTelemetry } from "@executor-js/sdk/core";
+
 import { GraphqlInvocationError } from "./errors";
 import { type OperationBinding, InvocationResult } from "./types";
 
@@ -10,14 +12,6 @@ const endpointWithQueryParams = (endpoint: string, queryParams: Record<string, s
   for (const [name, value] of Object.entries(queryParams)) {
     url.searchParams.set(name, value);
   }
-  return url.toString();
-};
-
-export const endpointForTelemetry = (endpoint: string): string => {
-  if (!URL.canParse(endpoint)) return endpoint;
-  const url = new URL(endpoint);
-  url.search = "";
-  url.hash = "";
   return url.toString();
 };
 

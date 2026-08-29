@@ -1,5 +1,48 @@
 # @executor-js/host-selfhost
 
+## 0.0.45
+
+### Patch Changes
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`4b0fbf6`](https://github.com/UsefulSoftwareCo/executor/commit/4b0fbf68550516af9235c9267f91a962da993946), [`ba62f1a`](https://github.com/UsefulSoftwareCo/executor/commit/ba62f1a5d14b7002ba0a4686a9e1ae43bd77f54f), [`8324e1e`](https://github.com/UsefulSoftwareCo/executor/commit/8324e1eb8b03965050147309f049bdb52be6fcad), [`6305b6d`](https://github.com/UsefulSoftwareCo/executor/commit/6305b6d11505358fa73ec2b3e768ec4256c36435), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`85b1955`](https://github.com/UsefulSoftwareCo/executor/commit/85b1955b4d24c332e637e15a025d64455e28a626), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/plugin-mcp@1.6.3
+  - @executor-js/sdk@1.6.3
+  - @executor-js/plugin-openapi@1.6.3
+  - @executor-js/fumadb@1.5.8
+  - @executor-js/app@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.14
+  - @executor-js/plugin-graphql@1.6.3
+  - @executor-js/plugin-toolkits@1.5.38
+  - @executor-js/analytics@0.1.10
+  - @executor-js/api@1.4.66
+  - @executor-js/execution@1.6.3
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-encrypted-secrets@0.0.45
+  - @executor-js/plugin-provider-service-split@0.0.17
+  - @executor-js/runtime-quickjs@1.6.3
+
+## 0.0.44
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/runtime-quickjs@1.6.2
+  - @executor-js/execution@1.6.2
+  - @executor-js/plugin-graphql@1.6.2
+  - @executor-js/plugin-mcp@1.6.2
+  - @executor-js/plugin-openapi@1.6.2
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.9
+  - @executor-js/api@1.4.65
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.13
+  - @executor-js/plugin-encrypted-secrets@0.0.44
+  - @executor-js/plugin-provider-service-split@0.0.16
+  - @executor-js/plugin-toolkits@1.5.37
+  - @executor-js/react@1.4.65
+
 ## 0.0.43
 
 ### Patch Changes

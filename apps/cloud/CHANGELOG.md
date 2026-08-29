@@ -1,5 +1,67 @@
 # @executor-js/cloud
 
+## 1.4.64
+
+### Patch Changes
+
+- [#1806](https://github.com/UsefulSoftwareCo/executor/pull/1806) [`93817ed`](https://github.com/UsefulSoftwareCo/executor/commit/93817ed43919934092a4706327f50f6adfd14e47) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Team pricing is per member with unlimited executions**
+
+  The Team plan moves from $150 per organization with a 250,000-execution
+  allowance to $15 per member per month with unlimited executions. The
+  `members` feature is unarchived in `autumn.config.ts` and billed in arrears
+  on the seat count the app reports; Free keeps its 3-member, 100,000-execution
+  shape and Enterprise stays custom with seat usage tracked for visibility.
+
+  Seat counts reconcile from a full WorkOS recount (active members only —
+  pending invites hold a seat for the plan gate but are not billed) after
+  member removal, invitation acceptance, organization creation, and on every
+  login callback, which also picks up joins the app never sees a mutation for
+  (SSO JIT provisioning, join by domain, dashboard edits). Plans that predate
+  seat pricing have no members balance and are skipped, so existing
+  subscriptions keep billing exactly as before on their current plan version.
+
+  The plans page, billing page, and marketing pricing cards now show the
+  per-member price.
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`4b0fbf6`](https://github.com/UsefulSoftwareCo/executor/commit/4b0fbf68550516af9235c9267f91a962da993946), [`ba62f1a`](https://github.com/UsefulSoftwareCo/executor/commit/ba62f1a5d14b7002ba0a4686a9e1ae43bd77f54f), [`8324e1e`](https://github.com/UsefulSoftwareCo/executor/commit/8324e1eb8b03965050147309f049bdb52be6fcad), [`6305b6d`](https://github.com/UsefulSoftwareCo/executor/commit/6305b6d11505358fa73ec2b3e768ec4256c36435), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`85b1955`](https://github.com/UsefulSoftwareCo/executor/commit/85b1955b4d24c332e637e15a025d64455e28a626), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/plugin-mcp@1.6.3
+  - @executor-js/sdk@1.6.3
+  - @executor-js/plugin-openapi@1.6.3
+  - @executor-js/fumadb@1.5.8
+  - @executor-js/mcp-apps-shell@1.4.14
+  - @executor-js/plugin-graphql@1.6.3
+  - @executor-js/plugin-toolkits@1.5.38
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/api@1.4.66
+  - @executor-js/execution@1.6.3
+  - @executor-js/vite-plugin@0.0.63
+  - @executor-js/cloudflare@0.0.45
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/runtime-quickjs@1.6.3
+
+## 1.4.63
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/runtime-quickjs@1.6.2
+  - @executor-js/execution@1.6.2
+  - @executor-js/plugin-graphql@1.6.2
+  - @executor-js/plugin-mcp@1.6.2
+  - @executor-js/plugin-openapi@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/vite-plugin@0.0.62
+  - @executor-js/cloudflare@0.0.44
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.13
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-toolkits@1.5.37
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.65
+
 ## 1.4.62
 
 ### Patch Changes

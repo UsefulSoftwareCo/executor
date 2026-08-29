@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Option, Predicate, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
@@ -239,6 +239,45 @@ describe("extractManifestFromListToolsResult", () => {
       expect(result.tools[2]!.annotations).toBeUndefined();
     }),
   );
+
+  it.effect("carries the reserved `_meta` map through verbatim", () =>
+    Effect.sync(() => {
+      const meta = {
+        serverName: "time",
+        shortDescription: "Current time",
+        defer_loading: false,
+        nested: { any: ["shape"] },
+      };
+
+      const result = extractManifestFromListToolsResult({
+        tools: [
+          {
+            name: "time_get_current_time",
+            description: "Get the current time",
+            inputSchema: { type: "object" },
+            _meta: meta,
+          },
+          { name: "no_meta", description: "Has no _meta" },
+        ],
+      });
+
+      expect(result.tools[0]!._meta).toEqual(meta);
+      expect(result.tools[1]!._meta).toBeUndefined();
+    }),
+  );
+
+  // `_meta` is opaque and server-controlled, so a value that does not match the
+  // spec's map shape must not take the rest of the list down with it.
+  it.effect("ignores a malformed `_meta` without dropping the tool", () =>
+    Effect.sync(() => {
+      const result = extractManifestFromListToolsResult({
+        tools: [{ name: "odd_meta", _meta: "not-a-map" }, { name: "plain" }],
+      });
+
+      expect(result.tools.map((tool) => tool.toolName)).toEqual(["odd_meta", "plain"]);
+      expect(result.tools[0]!._meta).toBeUndefined();
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -343,6 +382,23 @@ describe("mcpPlugin", () => {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const integrations = yield* executor.integrations.list();
       expect(integrations.filter((i) => i.kind === "mcp")).toHaveLength(0);
+    }),
+  );
+
+  it.effect("projects an MCP server family into the integration catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      yield* executor.mcp.addServer({
+        name: "Cloudflare Docs",
+        family: "cloudflare",
+        endpoint: "https://example.com/mcp",
+        slug: "cloudflare_docs",
+      });
+
+      const integrations = yield* executor.integrations.list();
+      expect(integrations.find((item) => item.slug === "cloudflare_docs")?.family).toBe(
+        "cloudflare",
+      );
     }),
   );
 
@@ -553,6 +609,46 @@ describe("mcpPlugin", () => {
           "channels:history",
           "users:read",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("oauth.start uses declared MCP scopes when the client has no resource", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["mcp"] });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "GitLab MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "gitlab_mcp",
+          authenticationTemplate: [{ kind: "oauth2", scopes: ["mcp"] }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("gitlab-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("gitlab-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("gitlab_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["mcp"]);
       }),
     ),
   );
@@ -966,6 +1062,31 @@ describe("MCP destructiveHint → requiresApproval", () => {
       expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
     }),
   );
+
+  // Executor's `Tool` has no `_meta` field, so the reserved MCP map rides in
+  // the `mcp` stamp the plugin persists into the tool row's annotations. A host
+  // embedding the plugin reads it back from there.
+  it.effect("persists the tool's reserved `_meta` into the catalog stamp", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+
+      const stamped = tools.find((t) => String(t.name) === "meta_stamped");
+      expect(stamped?.annotations).toMatchObject({
+        mcp: {
+          toolName: "meta_stamped",
+          _meta: { serverName: "time", shortDescription: "Current time", defer_loading: false },
+        },
+      });
+
+      const ping = tools.find((t) => String(t.name) === "ping");
+      expect(
+        (ping?.annotations as { readonly mcp?: { readonly _meta?: unknown } })?.mcp?._meta,
+      ).toBeUndefined();
+    }),
+  );
 });
 
 describe("userFacingProbeMessage", () => {
@@ -1031,6 +1152,106 @@ describe("mcpPlugin detect URL-token fallback", () => {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
       expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
+    }),
+  );
+});
+
+describe("mcpPlugin endpoint telemetry", () => {
+  // A credential in the endpoint's query string is a first-class supported
+  // input shape here (the shipped preset list carries one, and the add-flow
+  // passes the raw paste through), so the endpoint must be sanitized before it
+  // is stamped onto a span. Synthetic placeholders only.
+  const QUERY_TOKEN = "synthetic-endpoint-token";
+  const USERINFO_PASSWORD = "synthetic-endpoint-password";
+
+  /** Records every span the program opens, so the stamped attributes can be
+   *  read back. Port 1 connection-refuses immediately, so detection resolves
+   *  without any network dependency. */
+  const recordingTracer = (spans: Array<Tracer.NativeSpan>) =>
+    Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+      context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
+    });
+
+  /** Serializes spans the way the OTel export bridge would see them —
+   *  attributes, events, and, for a failed span, the error channel
+   *  (`@effect/opentelemetry` stamps each pretty error's message/stack as an
+   *  exception EVENT and `errors[0].message` as `status.message`). A
+   *  credential hiding in any of those channels fails the assertion, not just
+   *  one hiding in an attribute. */
+  const serializeExportChannels = (spans: ReadonlyArray<Tracer.NativeSpan>): string =>
+    JSON.stringify(
+      spans.map((span) => ({
+        attributes: Object.fromEntries(span.attributes.entries()),
+        events: span.events.map(([name, , attributes]) => ({ name, attributes })),
+        errors:
+          Predicate.isTagged(span.status, "Ended") && Exit.isFailure(span.status.exit)
+            ? Cause.prettyErrors(span.status.exit.cause).map((prettyError) => ({
+                name: prettyError.name,
+                message: prettyError.message,
+                stack: prettyError.stack ?? "",
+              }))
+            : [],
+      })),
+    );
+
+  it.effect("stamps a sanitized endpoint on the detect span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.integrations
+        .detect(`http://svc-user:${USERINFO_PASSWORD}@127.0.0.1:1/api/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const detect = spans.find((span) => span.name === "mcp.plugin.detect");
+      expect(detect).toBeDefined();
+      expect(detect?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/api/mcp");
+      // The non-sensitive companions keep the trace debuggable.
+      expect(detect?.attributes.get("mcp.endpoint.origin")).toBe("http://127.0.0.1:1");
+      expect(detect?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+      expect(detect?.attributes.get("mcp.endpoint.has_userinfo")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
+      expect(serialized).not.toContain(USERINFO_PASSWORD);
+    }),
+  );
+
+  it.effect("stamps a sanitized endpoint on the probe_endpoint span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+
+      yield* executor.mcp
+        .probeEndpoint(`http://127.0.0.1:1/mcp?token=${QUERY_TOKEN}`)
+        .pipe(Effect.exit, Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const probe = spans.find((span) => span.name === "mcp.plugin.probe_endpoint");
+      expect(probe).toBeDefined();
+      expect(probe?.attributes.get("mcp.endpoint")).toBe("http://127.0.0.1:1/mcp");
+      expect(probe?.attributes.get("mcp.endpoint.has_query")).toBe(true);
+
+      // Scoped to the plugin's own spans. Effect's HttpClient separately
+      // stamps `url.full`/`url.query` on its outgoing client spans
+      // (`effect/unstable/http/HttpClient.ts:685,690`); those are scrubbed
+      // downstream by the cloud export pipeline's `UrlRedactingSpanProcessor`,
+      // which is not installed at this level.
+      const serialized = serializeExportChannels(
+        spans.filter((span) => span.name.startsWith("mcp.plugin.")),
+      );
+      expect(serialized).not.toContain(QUERY_TOKEN);
     }),
   );
 });

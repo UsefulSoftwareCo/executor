@@ -10,6 +10,7 @@ import {
   AuthTemplateSlug,
   ConnectionName,
   definePlugin,
+  endpointTelemetryAttributes,
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   mergeAuthTemplates,
@@ -60,6 +61,7 @@ import {
   McpRemoteTransport,
   type McpAuthMethod,
   type McpToolAnnotations,
+  McpToolMeta,
   expandMcpAuthMethodInputs,
   mcpAuthMethodFromShorthand,
   normalizeMcpAuthMethods,
@@ -139,14 +141,17 @@ const legacyMcpClientMatches = (
 // ---------------------------------------------------------------------------
 // Tool annotations carry an `mcp` envelope alongside the executor's policy
 // hints. The executor persists `ToolDef.annotations` verbatim into the tool
-// row's JSON column, so the real MCP tool name + upstream annotations survive
-// to `invokeTool` / `resolveAnnotations` with no plugin-side store (resolveTools
-// has no ctx to write one anyway). The envelope is opaque to core.
+// row's JSON column, so the real MCP tool name, the upstream annotations, and
+// the tool's reserved `_meta` map survive to `invokeTool` /
+// `resolveAnnotations` with no plugin-side store (resolveTools has no ctx to
+// write one anyway). The envelope is opaque to core.
 // ---------------------------------------------------------------------------
 
 interface McpToolStamp {
   readonly toolName: string;
   readonly upstream?: McpToolAnnotations;
+  /** The tool's reserved MCP `_meta` map, opaque to core and to the model. */
+  readonly _meta?: McpToolMeta;
 }
 
 type StampedAnnotations = ToolAnnotations & { readonly mcp: McpToolStamp };
@@ -162,6 +167,7 @@ const McpStampSchema = Schema.Struct({
       openWorldHint: Schema.optional(Schema.Boolean),
     }),
   ),
+  _meta: Schema.optional(McpToolMeta),
 });
 const AnnotationsWithStamp = Schema.Struct({ mcp: McpStampSchema });
 const decodeStamp = Schema.decodeUnknownOption(AnnotationsWithStamp);
@@ -181,6 +187,8 @@ const readStamp = (annotations: unknown): McpToolStamp | null =>
 const McpRemoteServerInputSchema = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
@@ -198,6 +206,8 @@ const McpRemoteServerInputSchema = Schema.Struct({
 const McpStdioServerInputSchema = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  /** Optional catalog family used to group related integrations. */
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
@@ -375,6 +385,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     const vars = stdioEnvVarNames(input);
     return {
       transport: "stdio",
+      family: input.family?.trim() || undefined,
       command: input.command,
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
@@ -387,6 +398,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
   }
   return {
     transport: "remote",
+    family: input.family?.trim() || undefined,
     endpoint: input.endpoint,
     remoteTransport: input.remoteTransport ?? "auto",
     queryParams: input.queryParams,
@@ -427,13 +439,16 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
 };
 
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
- *  real MCP tool name + upstream annotations into the persisted annotations so
- *  they survive to invokeTool with no plugin-side store. */
+ *  real MCP tool name, the upstream annotations, and the tool's `_meta` map
+ *  into the persisted annotations so they survive to invokeTool with no
+ *  plugin-side store. Executor's `ToolDef` has no `_meta` field of its own, so
+ *  the stamp is where a host reads it back. */
 const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   const destructive = entry.annotations?.destructiveHint === true;
   const stamp: McpToolStamp = {
     toolName: entry.toolName,
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
+    ...(entry._meta ? { _meta: entry._meta } : {}),
   };
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,
@@ -694,9 +709,9 @@ export const connectionPoolKey = (
 //   stdio                → []          (no remote connection to configure)
 //   apikey               → carried placements (headers / query params) verbatim
 //   oauth2               → an oauth method carrying the MCP endpoint to probe
-//                          (`discoveryUrl`). Endpoints/scopes are discovered
-//                          live at connect time, so they are NOT pre-resolved
-//                          here. We mark
+//                          (`discoveryUrl`). Endpoints are discovered live at
+//                          connect time. Scopes are discovered too unless the
+//                          method declares them explicitly. We mark
 //                          `supportsDynamicRegistration: true` because MCP
 //                          OAuth servers are expected to support RFC 7591 DCR;
 //                          the connect flow probes to confirm and falls back.
@@ -735,6 +750,7 @@ export const describeMcpAuthMethods = (
         // oauth2.
         oauth: {
           discoveryUrl: config.transport === "remote" ? config.endpoint : undefined,
+          ...(method.scopes !== undefined ? { scopes: method.scopes } : {}),
           supportsDynamicRegistration: true,
           // Present only when this server was configured with an enterprise
           // identity provider. The connect path re-checks the server's metadata
@@ -752,10 +768,14 @@ export const describeMcpAuthMethods = (
 
 export const describeMcpIntegrationDisplay = (
   record: IntegrationRecord,
-): { readonly url?: string } => {
+): { readonly url?: string; readonly family?: string } => {
   const config = parseMcpIntegrationConfig(record.config);
-  if (!config || config.transport === "stdio") return {};
-  return { url: config.endpoint };
+  if (!config) return {};
+  const family = config.family?.trim();
+  return {
+    ...(config.transport === "remote" ? { url: config.endpoint } : {}),
+    ...(family ? { family } : {}),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -944,7 +964,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }).pipe(
           Effect.withSpan("mcp.plugin.probe_endpoint", {
-            attributes: { "mcp.endpoint": typeof input === "string" ? input : input.endpoint },
+            // The probed endpoint is raw user paste and routinely carries a
+            // credential in its query string (`?token=…`) — sanitize before
+            // stamping.
+            attributes: endpointTelemetryAttributes(
+              "mcp.endpoint",
+              typeof input === "string" ? input : input.endpoint,
+            ),
           }),
         );
 
@@ -1007,6 +1033,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                   // rather than swallow a real failure.
                   Effect.catchTags({
                     IntegrationNotFoundError: (cause) =>
+                      Effect.fail(
+                        new McpConnectionError({ transport: "stdio", message: cause.message }),
+                      ),
+                    ConnectionAlreadyExistsError: (cause) =>
                       Effect.fail(
                         new McpConnectionError({ transport: "stdio", message: cause.message }),
                       ),
@@ -1560,7 +1590,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       }).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.withSpan("mcp.plugin.detect", {
-          attributes: { "mcp.endpoint": url },
+          // Same raw-paste input as probe_endpoint — sanitize before stamping.
+          attributes: endpointTelemetryAttributes("mcp.endpoint", url),
         }),
       ),
 

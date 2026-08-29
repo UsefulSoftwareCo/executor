@@ -93,6 +93,19 @@ const created = await tools.executor.coreTools.connections.create({
 return created.ok ? { ok: true, connection: created.data } : { ok: false, error: created.error };
 `;
 
+// Create is never a replace: re-creating the SAME (owner, integration, name)
+// must fail with ConnectionAlreadyExistsError instead of silently upserting
+// over the existing connection.
+const createDuplicateConnectionCode = (slug: string) => `
+const created = await tools.executor.coreTools.connections.create({
+  owner: "org",
+  name: "public",
+  integration: ${JSON.stringify(slug)},
+  template: "none",
+});
+return created.ok ? { ok: true, connection: created.data } : { ok: false, error: created.error };
+`;
+
 // The relaxed filter must still reject an origin on a no-auth create — an
 // empty `inputs: {}` is a (degenerate) origin and a credential the connection
 // can't hold, so it stays a validation failure.
@@ -189,6 +202,19 @@ scenario(
         rejected.ok,
         `a no-auth create with an empty inputs origin is rejected: ${JSON.stringify(rejected)}`,
       ).toBe(false);
+
+      // 5. Create is never a replace: re-creating the same (owner,
+      //    integration, name) fails with a conflict instead of silently
+      //    editing over the existing connection.
+      const duplicate = yield* executeJson(session, createDuplicateConnectionCode(integration));
+      expect(
+        duplicate.ok,
+        `re-creating an existing connection name is rejected: ${JSON.stringify(duplicate)}`,
+      ).toBe(false);
+      expect(
+        JSON.stringify(duplicate.error),
+        "the failure names the conflict so callers can act on it",
+      ).toContain("already exists");
     }).pipe(
       // Selfhost shares one workspace identity — leaked connections fail other
       // scenarios' zero-state assertions, so drop everything this run made.

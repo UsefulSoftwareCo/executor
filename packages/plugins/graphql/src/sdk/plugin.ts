@@ -99,6 +99,8 @@ const GRAPHQL_INVALID_SCHEMA_DETAIL =
 const GRAPHQL_AUTH_DETAIL = "Check the credential and selected authentication method.";
 const GRAPHQL_NETWORK_DETAIL =
   "The GraphQL endpoint could not be reached. Check the URL and upstream availability, then try again.";
+const GRAPHQL_INVALID_ENDPOINT_DETAIL =
+  "The GraphQL endpoint URL is invalid. Edit the integration configuration, then try again.";
 
 const truncateHealthDetail = (text: string, max = 240): string => {
   const normalized = text.replaceAll(/\s+/g, " ").trim();
@@ -144,6 +146,18 @@ const healthFromIntrospectionError = (
 ): HealthCheckResult => {
   const upstream = error.upstreamMessage;
   const httpStatus = error.status;
+
+  // Classified first, and never as a credential problem: the endpoint was
+  // rejected before any request went out, so nothing upstream judged the
+  // credential. Sending the operator to re-enter a working secret would be a
+  // dead end — the URL in the integration config is what needs the edit.
+  if (error.reason === "invalid-endpoint") {
+    return {
+      status: "unknown",
+      checkedAt,
+      detail: GRAPHQL_INVALID_ENDPOINT_DETAIL,
+    };
+  }
 
   if (httpStatus === 401 || httpStatus === 403 || isAuthMessage(upstream)) {
     const statusDetail =
@@ -723,16 +737,16 @@ const checkGraphqlHealth = (input: {
         : { ...verdict, detail: scrubCredentialValues(verdict.detail, input.credential.values) };
     }
 
+    // No `identity`: the schema's root type name ("Query" almost everywhere)
+    // identifies nothing, and the accounts UI would show it as the account
+    // label. Introspection proves reachability, not who the credential is.
     const queryType = result.introspection.__schema.queryType?.name;
     return {
       status: "healthy",
       httpStatus: 200,
       checkedAt,
       ...(queryType != null
-        ? {
-            identity: `GraphQL schema: ${queryType}`,
-            responseSample: [{ path: "__schema.queryType.name", value: queryType }],
-          }
+        ? { responseSample: [{ path: "__schema.queryType.name", value: queryType }] }
         : {}),
     } satisfies HealthCheckResult;
   });

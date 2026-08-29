@@ -16,6 +16,7 @@ import {
   ProviderKey,
   ToolAddress,
   createExecutor,
+  endpointForTelemetry,
 } from "@executor-js/sdk";
 import {
   makeTestConfig,
@@ -24,7 +25,6 @@ import {
 } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";
-import { endpointForTelemetry } from "./invoke";
 import { introspect } from "./introspect";
 import type { IntrospectionResult } from "./introspect";
 import {
@@ -729,8 +729,12 @@ describe("graphqlPlugin real protocol server", () => {
       expect(result).toMatchObject({
         status: "healthy",
         httpStatus: 200,
-        identity: "GraphQL schema: Query",
+        responseSample: [{ path: "__schema.queryType.name", value: "Query" }],
       });
+      // The schema's root type name is not an account identity; reporting it
+      // as one made the accounts UI label every GraphQL connection
+      // "GraphQL schema: Query".
+      expect(result).not.toHaveProperty("identity");
     }),
   );
 
@@ -883,6 +887,56 @@ describe("graphqlPlugin real protocol server", () => {
         detail:
           "The endpoint responded without a GraphQL introspection schema. Check that the URL points to a GraphQL endpoint and that introspection is enabled.",
       });
+    }),
+  );
+
+  it.effect("reports an unparseable endpoint as a config problem, not a credential one", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: "not a url",
+        slug: "health_bad_endpoint",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_bad_endpoint"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result).toMatchObject({
+        status: "unknown",
+        detail:
+          "The GraphQL endpoint URL is invalid. Edit the integration configuration, then try again.",
+      });
+      // No request was ever sent, so nothing upstream judged the credential.
+      // Telling the operator to check it would send them down a dead end.
+      expect(result.detail).not.toContain("credential");
+    }),
+  );
+
+  it.effect("reports an endpoint with embedded userinfo as a config problem", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      yield* executor.graphql.addIntegration({
+        endpoint: "https://svc:hunter2@graph.example.test/graphql",
+        slug: "health_userinfo_endpoint",
+      });
+
+      const result = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("health_userinfo_endpoint"),
+        template: AuthTemplateSlug.make("none"),
+        value: "unused",
+      });
+
+      expect(result).toMatchObject({
+        status: "unknown",
+        detail:
+          "The GraphQL endpoint URL is invalid. Edit the integration configuration, then try again.",
+      });
+      expect(result.detail).not.toContain("hunter2");
     }),
   );
 

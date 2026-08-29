@@ -21,10 +21,11 @@ export const originOf = (request: Request): string | null => {
 export const invalidOriginHelp = (requestOrigin: string | null, webBaseUrl: string): string =>
   requestOrigin
     ? `This Executor instance is configured for ${webBaseUrl}, but you're connecting from ${requestOrigin}. ` +
-      `Set the EXECUTOR_WEB_BASE_URL environment variable to ${requestOrigin} and restart the server, then try again. ` +
-      `(Railway, Render, Fly, Vercel, and similar hosts are detected automatically; set it explicitly for a custom domain or other host.)`
+      `Set EXECUTOR_WEB_BASE_URL to ${requestOrigin} if it should be the canonical public URL, or add it to ` +
+      `EXECUTOR_TRUSTED_ORIGINS if it is an intentional browser alias, then restart the server. ` +
+      `(Railway, Render, Fly, Vercel, and similar hosts detect the canonical public URL automatically.)`
     : `This Executor instance is configured for ${webBaseUrl}. If you're reaching it at a different address, ` +
-      `set EXECUTOR_WEB_BASE_URL to that address and restart the server.`;
+      `set EXECUTOR_WEB_BASE_URL to that canonical address or add the alias to EXECUTOR_TRUSTED_ORIGINS, then restart the server.`;
 
 /**
  * If `response` is Better Auth's 403 "Invalid origin", return a friendlier copy

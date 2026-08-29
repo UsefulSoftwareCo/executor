@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 
-import { McpToolAnnotations } from "./types";
+import { McpToolAnnotations, McpToolMeta } from "./types";
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -13,6 +13,8 @@ export interface McpToolManifestEntry {
   readonly inputSchema?: unknown;
   readonly outputSchema?: unknown;
   readonly annotations?: McpToolAnnotations;
+  /** The tool's reserved MCP `_meta` map, carried through verbatim. */
+  readonly _meta?: McpToolMeta;
 }
 
 export interface McpServerMetadata {
@@ -38,6 +40,11 @@ const ListedTool = Schema.Struct({
   parameters: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
   annotations: Schema.optional(McpToolAnnotations),
+  // `_meta` is opaque and entirely server-controlled, so it stays `Unknown`
+  // here and is narrowed to the spec's map shape per entry. Declaring the map
+  // inline would make one server's malformed `_meta` fail the whole-list
+  // decode and drop every tool it advertises.
+  _meta: Schema.optional(Schema.Unknown),
 });
 
 const ListToolsResult = Schema.Struct({
@@ -61,6 +68,13 @@ const ServerInfo = Schema.Struct({
   name: Schema.optional(Schema.String),
   version: Schema.optional(Schema.String),
 });
+
+const decodeMcpToolMeta = Schema.decodeUnknownOption(McpToolMeta);
+
+/** Narrow a listed tool's `_meta` to the spec's map shape, dropping anything
+ *  else. The contents stay unknown and uninterpreted. */
+const readToolMeta = (value: unknown): McpToolMeta | undefined =>
+  value === undefined ? undefined : Option.getOrUndefined(decodeMcpToolMeta(value));
 
 const decodeListToolsResult = Schema.decodeUnknownOption(ListToolsResult);
 const decodeListToolsPageOption = Schema.decodeUnknownOption(ListToolsPage);
@@ -130,6 +144,7 @@ export const extractManifestFromListToolsResult = (
         inputSchema: tool.inputSchema ?? tool.parameters,
         outputSchema: tool.outputSchema,
         annotations: tool.annotations,
+        _meta: readToolMeta(tool._meta),
       },
     ];
   });

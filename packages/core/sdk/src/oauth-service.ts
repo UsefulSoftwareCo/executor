@@ -14,13 +14,13 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Layer, Match, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Match, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
 import type { Connection } from "./connection";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
-import { StorageError } from "./fuma-runtime";
+import { afterCommit, StorageError } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -167,10 +167,15 @@ const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAu
  *  integration declares the scopes to request (`scopes`, possibly empty — an
  *  empty set requests no scopes), or it declares none and the request scopes
  *  are discovered from the server's metadata at connect (`discover`, used by
- *  MCP). The two are mutually exclusive by construction. */
+ *  MCP). The two are mutually exclusive by construction.
+ *
+ *  `discover` carries the integration's own discovery URL (the MCP endpoint)
+ *  so scope discovery does not depend on the CLIENT having a persisted RFC
+ *  8707 resource: a user may clear the client's resource (Entra v2 rejects
+ *  the parameter, #1789) without losing scope discovery. */
 export type OAuthScopePolicy =
   | { readonly kind: "scopes"; readonly scopes: readonly string[] }
-  | { readonly kind: "discover" };
+  | { readonly kind: "discover"; readonly discoveryUrl: string };
 
 /** Everything the OAuth service needs from the executor: fuma access for the
  *  owned `oauth_client` / `oauth_session` tables, the default credential
@@ -205,10 +210,12 @@ export interface OAuthServiceDeps {
    *    DECLARES (e.g. an OpenAPI bundle's authentication-template scope union),
    *    NOT the scopes frozen on a specific `oauth_client` row. These are
    *    requested verbatim at connect (`start`); an empty set requests none.
-   *  - `{ kind: "discover" }`: the integration declares no scopes, so `start`
-   *    discovers the request scopes from the server's RFC 9728 / RFC 8414
-   *    metadata. Used by server-targeting integrations (MCP) whose scopes live
-   *    on the server rather than in a template.
+   *  - `{ kind: "discover", discoveryUrl }`: the integration declares no
+   *    scopes, so `start` discovers the request scopes from the server's RFC
+   *    9728 / RFC 8414 metadata. Used by server-targeting integrations (MCP)
+   *    whose scopes live on the server rather than in a template.
+   *    `discoveryUrl` is the integration's protected-resource URL (the MCP
+   *    endpoint), used when the client persists no resource.
    */
   readonly resolveOAuthScopePolicy: (
     integration: IntegrationSlug,
@@ -269,6 +276,34 @@ const looseDb = (db: unknown): LooseDb => db as LooseDb;
 const accessItemId = (owner: Owner, integration: IntegrationSlug, name: ConnectionName): string =>
   `oauth:${owner}:${integration}:${name}`;
 const refreshItemIdFor = (accessId: string): string => `${accessId}:refresh`;
+
+/** The item a refresh writes to prove the credential store will ACCEPT a write,
+ *  before the grant spends the single-use refresh token. It holds no credential
+ *  and never has.
+ *
+ *  It has to be its own item. The cheaper-looking probe — rewriting the refresh
+ *  token with the value just read — is a read-then-write with no
+ *  compare-and-set, and two refreshers of one connection on different instances
+ *  lose the newer token to it: A reads R0, B consumes R0 and stores the rotated
+ *  R1, then A's probe puts R0 back over R1 and the connection is dead the next
+ *  time anything needs it. The in-memory single-flight gate spans one instance
+ *  only, and a backing store whose own write path is read-latest-then-write
+ *  cannot catch it either.
+ *
+ *  The id is the refresh item's id plus a fixed suffix, rather than one
+ *  rebuilt from the connection's parts, so it carries the same prefix and
+ *  therefore the same embedded owner — the same store partition, the same
+ *  encryption context, the same object-name head. A store that would refuse
+ *  the refresh token's write refuses this one. Per connection rather than one
+ *  per partition, so the only writers that can contend on it are the
+ *  concurrent refreshers of a single connection, and they all write the same
+ *  constant. */
+export const storeWritabilityProbeItemIdFor = (refreshItemId: string): string =>
+  `${refreshItemId}:store-probe`;
+
+/** What the writability probe stores. A constant, because the item exists to
+ *  prove a write lands and carries no information of its own. */
+export const STORE_WRITABILITY_PROBE_VALUE = "writable";
 
 /** Order-preserving de-duplication of a scope list. */
 const dedupeScopes = (scopes: readonly string[]): readonly string[] => [...new Set(scopes)];
@@ -481,6 +516,8 @@ interface LoadedOAuthClient {
   /** Resolved literal secret (read from the provider via the stored item id). */
   readonly clientSecret: string;
   readonly resource: string | null;
+  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenRequestFormat?: "form" | "json";
 }
 
 /** Where an OAuth app's client secret is stored in the default writable
@@ -583,6 +620,8 @@ export const loadedFirstPartyClient = (
   readonly clientId: string;
   readonly clientSecret: string;
   readonly resource: string | null;
+  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenRequestFormat?: "form" | "json";
 } => ({
   slug: String(firstPartyOAuthClientSlug(config.name)),
   authorizationUrl: config.authorizationUrl,
@@ -591,6 +630,12 @@ export const loadedFirstPartyClient = (
   clientId: config.clientId,
   clientSecret: config.clientSecret,
   resource: config.resource ?? null,
+  ...(config.tokenEndpointAuthMethod === undefined
+    ? {}
+    : { tokenEndpointAuthMethod: config.tokenEndpointAuthMethod }),
+  ...(config.tokenRequestFormat === undefined
+    ? {}
+    : { tokenRequestFormat: config.tokenRequestFormat }),
 });
 
 export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
@@ -905,6 +950,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      // "Is there an app at (owner, slug) right now?" — asked twice, for two
+      // different reasons. Before the delete it says whether this call removes
+      // anything at all; after the commit it says whether the secret key still
+      // belongs to the app this call removed.
+      const findClientRow = deps.fuma.use("oauth_client.findFirst", (db) =>
+        looseDb(db).findFirst("oauth_client", {
+          where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
+        }),
+      );
+
+      const removedRow = yield* findClientRow;
       yield* deps.fuma
         .use("oauth_client.delete", (db) =>
           looseDb(db).deleteMany("oauth_client", {
@@ -912,12 +968,41 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           }),
         )
         .pipe(Effect.asVoid);
+      // Nothing matched, so this call removed nothing and owns no secret. The
+      // idempotent no-op and the cross-subject miss both land here, and both
+      // used to queue a delete of a key they never had a claim on.
+      if (!removedRow) return;
+
       // Best-effort: drop the secret from the provider so it isn't orphaned.
+      //
+      // Deferred to the outermost commit. This function opens no transaction of
+      // its own, but a caller can wrap it in one — and `provider.delete` reaches
+      // a store that does not roll back with it. An abort would then restore the
+      // client row while its secret stayed destroyed, leaving a client that
+      // looks configured and can never authenticate again. Orphaning a secret is
+      // recoverable; deleting one that is still referenced is not, so the
+      // deletion waits until the row's removal is durable. With no transaction
+      // active `afterCommit` runs it immediately, which is the behaviour this
+      // path already had.
       const provider = deps.defaultWritableProvider();
-      if (provider?.delete) {
-        yield* provider
-          .delete(ProviderItemId.make(clientSecretItemId(owner, slug)))
-          .pipe(Effect.catch(() => Effect.void));
+      const dropSecret = provider?.delete;
+      if (provider && dropSecret) {
+        yield* afterCommit(
+          Effect.gen(function* () {
+            // Deferral alone is not enough: the secret is keyed by (owner, slug)
+            // ALONE, so the key outlives the row it belonged to. If the same
+            // slug is registered again before this hook runs, the key now holds
+            // the NEW app's secret, and deleting it recreates exactly the state
+            // the deferral exists to prevent — a client that looks configured
+            // and can never authenticate. Re-check that the app is still gone
+            // and stand down when it is not. A re-check that FAILS is caught
+            // below and also stands down, which is the deliberate direction:
+            // an orphaned secret is recoverable, a destroyed live one is not.
+            const recreated = yield* findClientRow;
+            if (recreated) return;
+            yield* dropSecret.call(provider, ProviderItemId.make(clientSecretItemId(owner, slug)));
+          }).pipe(Effect.catch(() => Effect.void)),
+        );
       }
     });
 
@@ -1385,7 +1470,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const requestedScopes =
         scopePolicy.kind === "discover"
           ? yield* (() => {
-              const discovered = discoverScopesForResource(client.resource).pipe(
+              // Scope discovery reads protected-resource metadata. The client's
+              // persisted resource is the historical source and stays primary,
+              // but it is a WIRE parameter the user may clear (Entra v2 rejects
+              // `resource`, #1789) — the integration's own discovery URL then
+              // keeps scope discovery working for a resource-less client.
+              const discovered = discoverScopesForResource(
+                client.resource ?? scopePolicy.discoveryUrl,
+              ).pipe(
                 Effect.mapError(
                   (cause) =>
                     new OAuthStartError({
@@ -1615,6 +1707,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           : scopePolicy.kind === "discover"
             ? requestedScopes
             : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+      const completeAuthorizationScopes = dedupeScopes([
+        ...authorizationRequestedScopes,
+        ...(firstParty?.additionalAuthorizationScopes ?? []),
+      ]);
 
       // authorization_code: persist a session + build the authorize URL.
       const verifier = createPkceCodeVerifier();
@@ -1627,6 +1723,35 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
       const now = new Date();
       const expiresAt = Date.now() + OAUTH2_SESSION_TTL_MS;
+
+      // Drop verifiers that have already expired before parking a new one.
+      // `complete` discards an expired session lazily, but an ABANDONED flow is
+      // never completed, so that check never runs for it — and nothing else
+      // sweeps this table, so its verifier would sit here in plaintext forever.
+      // Doing it on `start` costs one delete on a path that is already writing,
+      // needs no scheduler in any host, and bounds the table by how often
+      // authorization is STARTED rather than by how often it is abandoned.
+      //
+      // Owner-scoped by the table's own delete policy, so a caller only ever
+      // sweeps rows it can already see.
+      //
+      // Best-effort, but NOT silent. Failing to tidy up must not stop someone
+      // connecting an account, so the failure is caught — and logged, because
+      // this is the only caller that ever runs the sweep, so a sweep that keeps
+      // failing quietly reinstates the very leak it exists to prevent. Warning
+      // rather than error: the authorization itself is unharmed.
+      yield* deps.fuma
+        .use("oauth_session.sweepExpired", (db) =>
+          looseDb(db).deleteMany("oauth_session", {
+            where: (b: any) => b("expires_at", "<", Date.now()),
+          }),
+        )
+        .pipe(
+          Effect.catch((failure) =>
+            Effect.logWarning("executor oauth expired-session sweep failed", { cause: failure }),
+          ),
+        );
+
       yield* deps.fuma.use("oauth_session.create", (db) =>
         looseDb(db).create("oauth_session", {
           tenant: keys.tenant,
@@ -1647,7 +1772,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           payload: {
             owner: input.owner,
             clientOwner: input.clientOwner,
-            requestedScopes: authorizationRequestedScopes,
+            requestedScopes: completeAuthorizationScopes,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -1660,14 +1785,18 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             authorizationUrl: client.authorizationUrl,
             clientId: client.clientId,
             redirectUrl: flowRedirectUri,
-            scopes: authorizationRequestedScopes,
+            scopes: completeAuthorizationScopes,
             state: providerState,
             codeChallenge: challenge,
+            scopeSeparator: firstParty?.authorizationScopeSeparator,
             resource: client.resource ?? undefined,
             // Provider quirks (Google: access_type=offline + prompt=consent) —
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
-            extraParams: providerAuthorizeExtras(client.authorizationUrl),
+            extraParams: {
+              ...providerAuthorizeExtras(client.authorizationUrl),
+              ...(firstParty?.authorizationExtraParams ?? {}),
+            },
             endpointUrlPolicy: deps.endpointUrlPolicy,
           }),
         catch: (cause) =>
@@ -1786,6 +1915,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         redirectUrl: session.redirectUrl,
         codeVerifier: session.pkceVerifier,
         code: input.code,
+        clientAuth: client.tokenEndpointAuthMethod,
+        requestFormat: client.tokenRequestFormat,
         resource: client.resource ?? undefined,
         endpointUrlPolicy: deps.endpointUrlPolicy,
         fetch,
@@ -1842,6 +1973,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       yield* deleteSession(input.state);
       return connection;
     }).pipe(
+      // A completion that cannot be retried has finished with this session, so
+      // drop it rather than leaving its PKCE verifier sitting in the table. The
+      // happy path and `cancel` already delete; the failure paths did not, and
+      // nothing sweeps the table, so a flow that died here kept its verifier
+      // indefinitely. `restartRequired` is the authorization the code already
+      // computes for this: false means the caller may redeem the same state
+      // again, and deleting it then would turn a retryable hiccup into a
+      // restart. Best-effort — a failed cleanup must not replace the real
+      // error with a storage one.
+      Effect.tapError((error) =>
+        Predicate.isTagged(error, "OAuthCompleteError") && error.restartRequired === true
+          ? deleteSession(input.state).pipe(Effect.ignore)
+          : Effect.void,
+      ),
       Effect.withSpan("executor.oauth.complete", {
         attributes: {
           "executor.oauth.grant": "authorization_code",

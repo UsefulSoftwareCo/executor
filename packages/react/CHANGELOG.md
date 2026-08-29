@@ -1,5 +1,41 @@
 # @executor-js/react
 
+## 1.4.66
+
+### Patch Changes
+
+- [#1814](https://github.com/UsefulSoftwareCo/executor/pull/1814) [`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A click outside a dialog or sheet no longer discards the form inside it**
+
+  Radix dismisses an overlay surface on any un-prevented outside interaction, and `DialogContent` and `SheetContent` only prevented that for clicks landing in a portaled combobox or select popup. Every other outside click fell through to dismissal, so a stray click on the page behind a form — after switching windows to copy an ID, for example — closed the surface and destroyed what the user had typed. These surfaces unmount their state on close by design, so nothing was recoverable.
+
+  The default is now the opposite: an outside interaction keeps the surface open. Escape and the close button are unchanged and still close it. `DialogContent` and `SheetContent` take a new `dismissOnOutsideClick` prop for surfaces with nothing to lose — confirmations, pickers, and read-only panels — and the portaled-popup guard still applies there, so choosing a combobox option never dismisses.
+
+  `CommandDialog` sets `dismissOnOutsideClick` on by default, because a command palette holds only a search string and clicking away is the expected way to leave it.
+
+- [#1822](https://github.com/UsefulSoftwareCo/executor/pull/1822) [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **An OAuth app can now be registered without an RFC 8707 resource, and that absence holds on every request**
+
+  Microsoft Entra v2 rejects any authorization request that carries both a v2 `scope` (such as `https://api.fabric.microsoft.com/.default`) and the RFC 8707 `resource` parameter, failing with `AADSTS9010010` before the consent screen. Executor made that unavoidable for MCP servers behind Entra: registering an app for an MCP integration always derived the MCP endpoint as the resource, the form had no field to change it, and so every request carried the parameter Entra rejects.
+
+  The register/edit OAuth app form now shows the resource indicator. It is still prefilled for MCP servers — nothing changes for providers that accept the parameter — but it can be cleared, and a cleared value persists as "no resource". A resource-less app then omits `resource` on all four grants alike: the authorization request, the code exchange, token refresh, and client-credentials. Symmetry matters here — sending `resource` on authorize but not on the token request (or the reverse) would bind the two tokens to different audiences.
+
+  Two adjacent gaps closed with it:
+  - MCP scope discovery no longer depends on the app's resource. It now falls back to the integration's own discovery URL (the MCP endpoint), so clearing the resource does not break connecting.
+  - Token refresh for a first-party OAuth app dropped the app's configured resource, refreshing to a different audience than the original grant. It now sends the same resource the authorization request sent.
+
+  Apps that keep their resource — the default for every discovered MCP server — behave exactly as before: the parameter is sent on every grant, as the MCP authorization spec expects.
+
+- Updated dependencies [[`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+
+## 1.4.65
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/api@1.4.65
+
 ## 1.4.64
 
 ### Patch Changes
