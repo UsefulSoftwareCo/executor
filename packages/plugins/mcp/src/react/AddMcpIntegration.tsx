@@ -41,6 +41,7 @@ import { McpRemoteIntegrationFields } from "./McpRemoteIntegrationFields";
 import { McpRequestHeadersEditor } from "./McpRequestHeadersEditor";
 import { mcpHeadersFromRows, type McpHeaderRow } from "./request-headers";
 import { mcpAuthMethodInputFromEditorValue, mcpWireAuthInput } from "./auth-method-config";
+import { CodexPluginsSection } from "./CodexPluginsSection";
 import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
@@ -518,6 +519,10 @@ export default function AddMcpIntegration(props: {
         </>
       ) : (
         <>
+          {/* Locally installed Codex plugins — one-click presets, with an
+              install hint for entries whose binaries are missing. */}
+          <CodexPluginsSection onComplete={(slug) => props.onComplete(slug)} />
+
           {/* Stdio form */}
           <CardStack>
             <CardStackContent className="border-t-0">

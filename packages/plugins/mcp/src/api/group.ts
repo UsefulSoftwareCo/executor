@@ -130,6 +130,27 @@ const GetServerResponse = Schema.NullOr(
   }),
 );
 
+// Locally installed Codex plugins with stdio MCP servers, reported by the
+// server-side scanner as one-click stdio presets. `available: false` entries
+// render with `setupHint` instead of an add action.
+const CodexPluginEntrySchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  summary: Schema.String,
+  available: Schema.Boolean,
+  slug: Schema.String,
+  source: Schema.Literals(["curated", "scanned"]),
+  command: Schema.String,
+  args: Schema.Array(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  env: Schema.optional(StringMap),
+  setupHint: Schema.optional(Schema.String),
+});
+
+const ListCodexPluginsResponse = Schema.Struct({
+  plugins: Schema.Array(CodexPluginEntrySchema),
+});
+
 // ---------------------------------------------------------------------------
 // Group
 //
@@ -186,5 +207,11 @@ export const McpGroup = HttpApiGroup.make("mcp")
       payload: ConfigureAuthPayload,
       success: ConfigureAuthResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listCodexPlugins", "/mcp/codex-plugins", {
+      success: ListCodexPluginsResponse,
+      error: [InternalError],
     }),
   );

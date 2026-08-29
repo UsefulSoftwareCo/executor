@@ -161,5 +161,14 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
           return { authenticationTemplate: [...authenticationTemplate] };
         }),
       ),
+    )
+    .handle("listCodexPlugins", () =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          const plugins = yield* ext.listCodexPlugins();
+          return { plugins: [...plugins] };
+        }),
+      ),
     ),
 );

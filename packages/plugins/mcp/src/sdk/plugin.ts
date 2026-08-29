@@ -42,6 +42,7 @@ import {
   requiredPlacementVariables,
 } from "@executor-js/sdk/http-auth";
 
+import type { CodexPluginEntry } from "./codex-plugins";
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { createMcpConnectionPool } from "./connection-pool";
 import { discoverTools } from "./discover";
@@ -1269,6 +1270,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      // Discover locally installed Codex plugins with stdio MCP servers. The
+      // scanner touches node:fs, so it stays behind a dynamic import (the
+      // stdio-connector pattern) and behind the stdio gate: with stdio off the
+      // presets could not be added anyway.
+      const listCodexPlugins = () =>
+        allowStdio
+          ? Effect.promise(() => import("./codex-plugins")).pipe(
+              Effect.map((mod) => mod.scanCodexPlugins()),
+              Effect.withSpan("mcp.plugin.list_codex_plugins"),
+            )
+          : Effect.succeed([] as readonly CodexPluginEntry[]);
+
       return {
         probeEndpoint,
         addServer,
@@ -1277,6 +1290,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         getServer,
         configureServer,
         configureAuth,
+        listCodexPlugins,
       };
     },
 
@@ -1816,4 +1830,7 @@ export interface McpPluginExtension {
     slug: string,
     input: McpConfigureAuthInput,
   ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure>;
+  /** Locally installed Codex plugins with stdio MCP servers, as one-click
+   *  presets. Empty when stdio is disabled. */
+  readonly listCodexPlugins: () => Effect.Effect<readonly CodexPluginEntry[], never>;
 }
