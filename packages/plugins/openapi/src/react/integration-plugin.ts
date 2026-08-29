@@ -7,11 +7,32 @@ import type {
   IntegrationQuickAddInput,
   IntegrationQuickAddResult,
 } from "@executor-js/sdk/client";
+import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 import { slugifyNamespace } from "@executor-js/react/plugins/integration-identity";
+import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
-import { openApiPresets } from "../sdk/presets";
+import { openApiPresets, type OpenApiPreset } from "../sdk/presets";
 import { addOpenApiSpec } from "./atoms";
+import { openApiWireAuthInput, templateFromPlacements } from "./auth-method-config";
 import { decodeOpenApiSpecOverrides } from "../sdk/spec-overrides";
+
+const normalizedSpecUrl = (url: string): string => {
+  if (!URL.canParse(url)) return url.trim().replace(/\/$/, "");
+  const parsed = new URL(url);
+  parsed.hash = "";
+  parsed.searchParams.sort();
+  return parsed.toString().replace(/\/$/, "");
+};
+
+/** The preset table still knows things no spec can say — GitHub's OAuth
+ *  endpoints against a spec that declares NO security at all. A registry row
+ *  whose URL is a preset's URL gets that knowledge pulled across. */
+const presetForSpecUrl = (url: string): OpenApiPreset | undefined => {
+  const target = normalizedSpecUrl(url);
+  return openApiPresets.find(
+    (preset) => preset.url !== undefined && normalizedSpecUrl(preset.url) === target,
+  );
+};
 
 /** One-click add for a registry OpenAPI row. The spec itself is the
  *  configuration: omitting `authenticationTemplate` and `baseUrl` tells the
@@ -34,12 +55,46 @@ function useOpenApiQuickAdd(): (
       if (input.specOverrides && input.specOverrides.length > 0 && specOverrides === undefined) {
         return { ok: false, reason: "unparseable spec overrides" };
       }
+      const preset = presetForSpecUrl(input.url);
+      // Declared methods travel from BOTH knowledge sources: the preset's
+      // OAuth template (endpoints a spec cannot carry) and the registry's
+      // header pattern (GitHub's spec declares no security at all, but the
+      // registry knows a PAT goes in the Authorization header). When neither
+      // knows anything, omitting the field lets the spec's own schemes derive.
+      const presetMethods = (preset?.authTemplate ?? []).flatMap((template) =>
+        template.kind === "oauth2"
+          ? [
+              openApiWireAuthInput({
+                ...template,
+                slug: AuthTemplateSlug.make(template.slug),
+                resource: template.resource ?? undefined,
+              }),
+            ]
+          : [],
+      );
+      const registryPlacement = input.authHeader
+        ? placementFromHeaderPattern(input.authHeader)
+        : null;
+      const authenticationTemplate = [
+        ...presetMethods,
+        ...(registryPlacement
+          ? [openApiWireAuthInput(templateFromPlacements([registryPlacement]))]
+          : []),
+      ];
+      const presetOverrides =
+        specOverrides && specOverrides.length > 0 ? specOverrides : preset?.specOverrides;
       const exit = await doAdd({
         payload: {
           spec: { kind: "url" as const, url: input.url },
           slug,
           name: input.name,
-          ...(specOverrides && specOverrides.length > 0 ? { specOverrides } : {}),
+          ...(preset?.specFormat ? { specFormat: preset.specFormat } : {}),
+          ...(preset?.family ? { family: preset.family } : {}),
+          ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),
+          ...(presetOverrides && presetOverrides.length > 0
+            ? { specOverrides: presetOverrides }
+            : {}),
+          ...(authenticationTemplate.length > 0 ? { authenticationTemplate } : {}),
         },
         reactivityKeys: integrationWriteKeys,
       });

@@ -1,8 +1,10 @@
-import { useMemo } from "react";
-import { ArrowUpRightIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowUpRightIcon, ThumbsDownIcon, ThumbsUpIcon } from "lucide-react";
 import { getDomain } from "tldts";
 
+import { trackEvent } from "../api/analytics";
 import { useCredentialGuidance } from "../lib/integrations-sh-catalog";
+import { cn } from "../lib/utils";
 
 // ---------------------------------------------------------------------------
 // What this key is, and where to get one.
@@ -105,18 +107,62 @@ export function CredentialGuidancePanel(props: {
       {relevant.setup ? <SetupText text={relevant.setup} /> : null}
       {/* Provenance, stated plainly: this text is machine-written registry
           data, not the provider's own docs — the reader should weight it
-          accordingly (menus move, prefixes change). */}
-      <p className="pt-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground/60">
-        AI-generated guidance via{" "}
-        <a
-          href={`https://integrations.sh/${domain ?? ""}`}
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2 hover:text-muted-foreground"
-        >
-          integrations.sh
-        </a>
-      </p>
+          accordingly (menus move, prefixes change). The thumbs are the
+          accuracy loop: votes land in analytics keyed by domain, so wrong
+          guidance is findable instead of silently misleading. */}
+      <div className="flex items-center justify-between gap-3 pt-0.5">
+        <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/60">
+          AI-generated guidance via{" "}
+          <a
+            href={`https://integrations.sh/${domain ?? ""}`}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2 hover:text-muted-foreground"
+          >
+            integrations.sh
+          </a>
+        </p>
+        <GuidanceVote domain={domain ?? ""} label={relevant.label} />
+      </div>
     </div>
+  );
+}
+
+/** One vote per render of the panel; the pair collapses to the chosen thumb
+ *  so a second opinion means reopening, not flip-flopping the metric. */
+function GuidanceVote(props: { readonly domain: string; readonly label: string }) {
+  const [voted, setVoted] = useState<"up" | "down" | null>(null);
+  const vote = (value: "up" | "down") => {
+    if (voted) return;
+    setVoted(value);
+    trackEvent("credential_guidance_rated", {
+      domain: props.domain,
+      credential_label: props.label,
+      vote: value,
+    });
+  };
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {(["up", "down"] as const).map((value) => {
+        const Icon = value === "up" ? ThumbsUpIcon : ThumbsDownIcon;
+        if (voted && voted !== value) return null;
+        return (
+          // oxlint-disable-next-line react/forbid-elements -- an icon chip, not a Button variant
+          <button
+            key={value}
+            type="button"
+            aria-label={value === "up" ? "Guidance was accurate" : "Guidance was wrong"}
+            disabled={voted !== null}
+            onClick={() => vote(value)}
+            className={cn(
+              "rounded p-1 text-muted-foreground/50 transition-colors",
+              voted === value ? "text-foreground" : "hover:bg-muted hover:text-muted-foreground",
+            )}
+          >
+            <Icon className="size-3" aria-hidden />
+          </button>
+        );
+      })}
+    </span>
   );
 }

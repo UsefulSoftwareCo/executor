@@ -40,6 +40,13 @@ export interface AnalyticsEvents {
     detected_kind?: string;
     confidence?: string;
   };
+  /** Thumbs on the AI-generated credential guidance panel — the accuracy
+   *  signal for the registry's machine-written setup text. */
+  credential_guidance_rated: {
+    domain: string;
+    credential_label: string;
+    vote: "up" | "down";
+  };
   integration_add_started: {
     plugin_key: string;
     via: "detect" | "manual" | "preset" | "command_palette" | "catalog";
