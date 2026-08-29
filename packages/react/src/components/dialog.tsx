@@ -42,17 +42,19 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
-  dismissOnOutsideClick = false,
+  dismissOnOutsideClick,
   onInteractOutside,
   onPointerDownOutside,
   forceOverlay = false,
+  ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
-  /** Let a click outside the dialog close it. Off by default: a stray click on
-   *  the page behind a form must not discard what the user typed. Turn it on
-   *  for a dialog with nothing to lose — a confirmation, a picker, a read-only
-   *  panel. Escape and the close button close either way. */
+  /** Whether a click outside the dialog closes it. Unset, the dialog decides
+   *  from its contents: it stays open while it holds a form field — a stray
+   *  click on the page behind a form must not discard what the user typed —
+   *  and closes when it has nothing to lose. Pass a boolean to override the
+   *  detection. Escape and the close button close either way. */
   dismissOnOutsideClick?: boolean;
   /** Pair with `<Dialog modal={false}>`: Radix renders no overlay in non-modal
    *  mode, so this renders a plain dim layer instead. It still eats outside
@@ -60,6 +62,7 @@ function DialogContent({
    *  portaled popups. */
   forceOverlay?: boolean;
 }) {
+  const contentRef = React.useRef<React.ComponentRef<typeof DialogPrimitive.Content> | null>(null);
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -68,13 +71,18 @@ function DialogContent({
       ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        ref={(node) => {
+          contentRef.current = node;
+          if (typeof ref === "function") ref(node);
+          else if (ref) ref.current = node;
+        }}
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event);
-          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);
         }}
         onInteractOutside={(event) => {
           onInteractOutside?.(event);
-          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);
         }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
