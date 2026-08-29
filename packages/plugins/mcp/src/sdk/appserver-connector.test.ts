@@ -187,7 +187,7 @@ describe("codex app-server bridge", () => {
           'globalThis.sky ??= (await import("@oai/sky")).sky;',
         );
         expect(program, "calls the mapped method with the arguments verbatim").toContain(
-          `await sky.type_text(${JSON.stringify(args)})`,
+          `await sky.type_text(JSON.parse(${JSON.stringify(JSON.stringify(args))}))`,
         );
         expect(program, "returns the result as JSON through the REPL").toContain(
           "nodeRepl.write(JSON.stringify(result ?? null));",
@@ -294,6 +294,28 @@ describe("codex app-server bridge", () => {
         const turn = meta["x-codex-turn-metadata"] as Record<string, string>;
         expect(typeof turn.session_id, "the pooled thread is the session").toBe("string");
         expect(typeof turn.turn_id, "each call is its own turn").toBe("string");
+      }),
+    ),
+  );
+
+  it.effect("keeps a prototype-shaped argument as data, not as a prototype", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Embedded as an object literal, `__proto__` sets the prototype rather
+        // than an own key: the argument would disappear from `args.__proto__`
+        // and reappear as inherited properties on every lookup the generated
+        // program makes.
+        const connection = yield* withConnection(browserInput());
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({
+            name: "navigate",
+            arguments: { url: "https://example.com/", __proto__: { polluted: "yes" } },
+          }),
+        );
+        const program = (result.content as readonly { readonly text: string }[])[0]!.text;
+        expect(program, "arguments are parsed as data").toContain("JSON.parse(");
+        expect(program, "never emitted as an object literal").not.toContain("= {");
       }),
     ),
   );

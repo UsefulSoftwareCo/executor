@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
+import { APPROVAL_TERM_KEYS } from "./invoke";
 import { mcpPresets } from "./presets";
 
 // ---------------------------------------------------------------------------
@@ -36,5 +37,17 @@ describe("codex catalog presets", () => {
     expect(corpus("codex-messages")).toContain("apple");
     expect(corpus("codex-computer-use")).toContain("computer use");
     expect(corpus("codex-computer-history")).toContain("activity");
+  });
+});
+
+describe("approval terms", () => {
+  // The projection lives at the MCP boundary (`invoke.ts`), but the vocabulary
+  // it recognises is the contract these plugins speak, so pin it here.
+  it("names only the keys that describe what accepting means", () => {
+    // Codex's browser approval says the grant persists, and for which origin.
+    // Everything else a server puts in `_meta` — progress tokens, internal
+    // ids, opaque state — is not a term the user is agreeing to, and must not
+    // be rendered as one.
+    expect(APPROVAL_TERM_KEYS).toEqual(["persist", "origin", "connector_name", "connector_id"]);
   });
 });

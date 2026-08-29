@@ -189,8 +189,15 @@ const METHOD_NOT_FOUND = -32601;
 /** Codex's own notification for a server's startup transitions. */
 const SERVER_STATUS_NOTIFICATION = "mcpServer/startupStatus/updated";
 
-/** Ceiling for one browser action inside the REPL. */
-const BROWSER_TIMEOUT_MS = 120_000;
+/** Ceiling for one browser action inside the REPL.
+ *
+ *  Deliberately UNDER the MCP SDK's 60s default request timeout. The REPL's
+ *  own 30s default is too short for real navigation, but raising it past the
+ *  upstream's timeout is worse than leaving it: the client would abandon the
+ *  call first, and the downstream request would sit in `#pending` until the
+ *  child replied to nobody. Under it, a slow page fails as a page error with
+ *  the tool call intact. */
+const BROWSER_TIMEOUT_MS = 55_000;
 
 const CHANNEL_CLOSED: AppServerReply = {
   ok: false,

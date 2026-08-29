@@ -28,7 +28,7 @@
 // the snapshot that produced them.
 // ---------------------------------------------------------------------------
 
-import { jsLiteral, writeJsonResult } from "./codex-repl";
+import { jsLiteral, jsString, writeJsonResult } from "./codex-repl";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -259,7 +259,7 @@ export const findBrowserTool = (name: string): BrowserToolDefinition | undefined
 const runtimePreamble = (modulePath: string): string =>
   [
     "globalThis.__executorBrowser ??= await (async () => {",
-    `  const { setupBrowserRuntime } = await import(${jsLiteral(modulePath)});`,
+    `  const { setupBrowserRuntime } = await import(${jsString(modulePath)});`,
     "  const agent = await setupBrowserRuntime();",
     "  return { agent, browser: await agent.browsers.getDefault() };",
     "})();",

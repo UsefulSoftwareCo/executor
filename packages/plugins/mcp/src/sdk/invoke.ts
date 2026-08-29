@@ -119,11 +119,29 @@ const decodeElicitContent = Schema.decodeUnknownSync(
   ),
 );
 
+/** The `_meta` keys that describe the TERMS of an approval, and nothing else.
+ *
+ *  `_meta` is an open, implementation-defined map: servers put progress
+ *  tokens, internal ids, and their own opaque state in it. A host that renders
+ *  all of it as "approval terms" both misleads (none of that is a term the
+ *  user is agreeing to) and risks surfacing something private. So this
+ *  projects the known consent vocabulary and drops the rest — an unknown
+ *  server contributes nothing rather than noise. */
+export const APPROVAL_TERM_KEYS = ["persist", "origin", "connector_name", "connector_id"] as const;
+
+const approvalTerms = (meta: Record<string, unknown> | undefined) => {
+  if (meta === undefined) return {};
+  const terms = Object.fromEntries(
+    APPROVAL_TERM_KEYS.flatMap((key) => {
+      const value = meta[key];
+      return typeof value === "string" ? [[key, value] as const] : [];
+    }),
+  );
+  return Object.keys(terms).length > 0 ? { meta: terms } : {};
+};
+
 const toElicitationRequest = (params: McpElicitParams): ElicitationRequest => {
-  // `_meta` is carried, not read: it can hold the TERMS of the approval (a
-  // Codex browser prompt states there that accepting persists for the origin),
-  // and a host that cannot see them cannot state them.
-  const meta = params._meta === undefined ? {} : { meta: params._meta };
+  const meta = approvalTerms(params._meta);
   return params.mode === "url"
     ? UrlElicitation.make({
         message: params.message,

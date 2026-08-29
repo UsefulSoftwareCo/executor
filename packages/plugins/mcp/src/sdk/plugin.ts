@@ -733,11 +733,19 @@ export const connectionPoolKey = (
   input: PoolableConnectorInput,
   template: string,
   values: Record<string, string | null>,
+  /** The connection this lease belongs to. Part of the identity, not a
+   *  detail: an app-server session accumulates the user's approvals ("for
+   *  this conversation"), and a no-credential integration hashes to the same
+   *  key for every connection without it — so two owners would share one
+   *  session, and one owner's approval would answer the other's prompt. */
+  identity: { readonly owner: string; readonly connection: string },
 ): Effect.Effect<string> =>
   sha256Hex(
     JSON.stringify(
       input.transport === "remote"
         ? {
+            owner: identity.owner,
+            connection: identity.connection,
             endpoint: input.endpoint,
             transport: input.transport,
             remoteTransport: input.remoteTransport,
@@ -747,6 +755,8 @@ export const connectionPoolKey = (
             values: sortedRecord(values),
           }
         : {
+            owner: identity.owner,
+            connection: identity.connection,
             transport: "appserver",
             command: input.command,
             args: input.args ?? [],
@@ -754,6 +764,7 @@ export const connectionPoolKey = (
             env: sortedRecord(input.env),
             server: input.appServer.server,
             surface: input.appServer.surface ?? null,
+            modulePath: input.appServer.modulePath ?? null,
             template,
             values: sortedRecord(values),
           },
@@ -1485,7 +1496,15 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         );
         const connector: McpConnector = createMcpConnector(connectorInput);
         const poolKey = isPoolableConnectorInput(connectorInput)
-          ? yield* connectionPoolKey(connectorInput, String(credential.template), credential.values)
+          ? yield* connectionPoolKey(
+              connectorInput,
+              String(credential.template),
+              credential.values,
+              {
+                owner: String(credential.owner),
+                connection: String(credential.connection),
+              },
+            )
           : undefined;
 
         const connectionRef = {
