@@ -34,6 +34,18 @@ scenario(
       // The overlay covers the whole viewport and the dialog panel is centered,
       // so the top-left corner is always outside the panel.
       const clickOutside = async () => {
+        // "Visible" is not "listening": Radix arms outside-pointerdown
+        // dismissal via a document listener it attaches in a passive effect
+        // plus a 0ms timer after the content mounts (DismissableLayer). A
+        // busy renderer can service the injected click ahead of that pending
+        // timer, and a pre-arming pointerdown is never seen at all — the
+        // field-free confirm then stays open and the detach wait times out.
+        // Synchronize on the page's own task queue instead of sleeping: the
+        // modal scroll lock proves the effect flush ran (the arming timer is
+        // queued by then), and one 0ms timer round-trip proves that timer
+        // fired, because same-source timers run in FIFO order.
+        await page.waitForFunction(() => document.body.hasAttribute("data-scroll-locked"));
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
         await page.mouse.click(8, 8);
         // Dismissal is synchronous with the pointer event; this beat only gives
         // a wrongly-dismissed dialog time to actually unmount before the
