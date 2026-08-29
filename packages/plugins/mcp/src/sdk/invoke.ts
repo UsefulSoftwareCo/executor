@@ -95,11 +95,13 @@ const McpElicitParams = Schema.Union([
     url: Schema.String,
     elicitationId: Schema.optional(Schema.String),
     id: Schema.optional(Schema.String),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
   Schema.Struct({
     mode: Schema.optional(Schema.Literal("form")),
     message: Schema.String,
     requestedSchema: Schema.Record(Schema.String, Schema.Unknown),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
 ]);
 type McpElicitParams = typeof McpElicitParams.Type;
@@ -117,17 +119,24 @@ const decodeElicitContent = Schema.decodeUnknownSync(
   ),
 );
 
-const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
-  params.mode === "url"
+const toElicitationRequest = (params: McpElicitParams): ElicitationRequest => {
+  // `_meta` is carried, not read: it can hold the TERMS of the approval (a
+  // Codex browser prompt states there that accepting persists for the origin),
+  // and a host that cannot see them cannot state them.
+  const meta = params._meta === undefined ? {} : { meta: params._meta };
+  return params.mode === "url"
     ? UrlElicitation.make({
         message: params.message,
         url: params.url,
         elicitationId: ElicitationId.make(params.elicitationId ?? params.id ?? ""),
+        ...meta,
       })
     : FormElicitation.make({
         message: params.message,
         requestedSchema: params.requestedSchema,
+        ...meta,
       });
+};
 
 const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
   client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {

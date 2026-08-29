@@ -73,6 +73,7 @@ export {
 
 // Elicitation wire schemas.
 export {
+  ElicitationMeta,
   FormElicitation,
   UrlElicitation,
   ElicitationAction,

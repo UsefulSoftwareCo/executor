@@ -5,7 +5,8 @@ import { createExecutor, definePlugin } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
-import { createExecutionEngine } from "./engine";
+import { createExecutionEngine, formatPausedExecution } from "./engine";
+import { FormElicitation } from "@executor-js/sdk/core";
 
 // Regression for the hang reported as the executor-MCP "180s timeout" against
 // Cowork (Claude web). Cowork goes down the `executeWithPause` branch because
@@ -99,4 +100,43 @@ describe("pausedExecutionCount", () => {
       expect(yield* engine.hasPausedExecutions()).toBe(false);
     }),
   );
+});
+
+describe("formatPausedExecution approval terms", () => {
+  const paused = (request: FormElicitation) =>
+    ({
+      id: "exec_1",
+      elicitationContext: { address: "tools.x.org.default.y", args: {}, request },
+    }) as Parameters<typeof formatPausedExecution>[0];
+
+  it("states the terms an upstream attached to the approval", () => {
+    // An empty schema makes this look like a plain yes/no, but the metadata
+    // says accepting persists for the origin — so the answer differs, and the
+    // caller has to be able to see it.
+    const result = formatPausedExecution(
+      paused(
+        FormElicitation.make({
+          message: "Allow Browser use to access https://example.com?",
+          requestedSchema: {},
+          meta: { persist: "always", origin: "https://example.com" },
+        }),
+      ),
+    );
+
+    expect(result.text).toContain("Approval terms:");
+    expect(result.text).toContain('"persist": "always"');
+    expect((result.structured["interaction"] as { readonly meta?: unknown }).meta).toEqual({
+      persist: "always",
+      origin: "https://example.com",
+    });
+  });
+
+  it("says nothing about terms when the upstream attached none", () => {
+    const result = formatPausedExecution(
+      paused(FormElicitation.make({ message: "Proceed?", requestedSchema: {} })),
+    );
+
+    expect(result.text).not.toContain("Approval terms:");
+    expect((result.structured["interaction"] as Record<string, unknown>)["meta"]).toBeUndefined();
+  });
 });

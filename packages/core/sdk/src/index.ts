@@ -220,6 +220,7 @@ export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./
 
 // Elicitation.
 export {
+  ElicitationMeta,
   FormElicitation,
   UrlElicitation,
   ElicitationAction,
