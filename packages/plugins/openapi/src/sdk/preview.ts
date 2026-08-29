@@ -122,6 +122,9 @@ export const HeaderPreset = Schema.Struct({
   headers: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
   /** Which headers should be stored as secrets */
   secretHeaders: Schema.Array(Schema.String),
+  /** Query parameters the strategy sends the secret in (apiKey in=query,
+   *  e.g. Viator's legacy `?apiKey=`). Absent on older stored previews. */
+  secretQueryParams: Schema.optional(Schema.Array(Schema.String)),
 });
 export type HeaderPreset = typeof HeaderPreset.Type;
 
@@ -347,6 +350,7 @@ const buildHeaderPresets = (
 
     const headers: Record<string, string | null> = {};
     const secretHeaders: string[] = [];
+    const secretQueryParams: string[] = [];
     const labelParts: string[] = [];
 
     for (const scheme of resolved) {
@@ -363,8 +367,16 @@ const buildHeaderPresets = (
         headers[headerName] = null;
         secretHeaders.push(headerName);
         labelParts.push(scheme.name);
+      } else if (scheme.type === "apiKey" && Option.getOrElse(scheme.in, () => "") === "query") {
+        secretQueryParams.push(Option.getOrElse(scheme.headerName, () => scheme.name));
+        labelParts.push(`${scheme.name} (query)`);
       } else if (scheme.type === "apiKey") {
-        labelParts.push(`${scheme.name} (${Option.getOrElse(scheme.in, () => "unknown")})`);
+        // Cookie (and unknown) locations are not renderable as a stored
+        // method — auth placements carry header|query — and a cookie scheme
+        // is usually the vendor console's own session, not a mintable
+        // credential. Contributing a label here used to produce a method
+        // with zero placements: an empty, unfillable card in the add flow.
+        continue;
       } else if (scheme.type === "oauth2" || scheme.type === "openIdConnect") {
         return [];
       } else {
@@ -372,21 +384,16 @@ const buildHeaderPresets = (
       }
     }
 
-    if (Object.keys(headers).length === 0 && resolved.length > 0) {
-      return [
-        HeaderPreset.make({
-          label: labelParts.join(" + "),
-          headers: {},
-          secretHeaders: [],
-        }),
-      ];
-    }
+    // A strategy in which nothing is renderable (cookie-only, or an exotic
+    // scheme type) yields no preset rather than an empty one.
+    if (secretHeaders.length === 0 && secretQueryParams.length === 0) return [];
 
     return [
       HeaderPreset.make({
         label: labelParts.join(" + "),
         headers,
         secretHeaders,
+        ...(secretQueryParams.length > 0 ? { secretQueryParams } : {}),
       }),
     ];
   });
