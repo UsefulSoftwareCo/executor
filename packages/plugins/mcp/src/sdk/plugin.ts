@@ -42,7 +42,7 @@ import {
 
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { createMcpConnectionPool } from "./connection-pool";
-import { discoverTools } from "./discover";
+import { discoverToolsFromInput } from "./discover";
 import {
   McpConnectionError,
   McpOAuthReauthorizationRequired,
@@ -192,6 +192,10 @@ const McpRemoteServerInputSchema = Schema.Struct({
   /** Single-method shorthand (legacy callers). Ignored when
    *  `authenticationTemplate` is present. Defaults to none. */
   auth: Schema.optional(McpAuthShorthand),
+  /** Pin protocol negotiation. `legacy` is for servers that echo the proposed
+   *  2026-07-28 revision and then violate its response contract; the probe
+   *  reports when it had to fall back, and the add flow passes that through. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
 });
 
 const McpStdioServerInputSchema = Schema.Struct({
@@ -253,6 +257,10 @@ const McpProbeEndpointOutputSchema = Schema.Struct({
   /** The server's `instructions` from initialize — prefill for the add form's
    *  description. Only available when the probe connected unauthenticated. */
   instructions: Schema.NullOr(Schema.String),
+  /** Present when discovery succeeded: which protocol negotiation worked.
+   *  `legacy` means the server echoed the modern revision and then broke its
+   *  contract — the add should pin `versionNegotiation: "legacy"`. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
 });
 
 // ---------------------------------------------------------------------------
@@ -393,6 +401,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
     authenticationTemplate: input.authenticationTemplate
       ? normalizeMcpAuthMethods(input.authenticationTemplate)
       : [mcpAuthMethodFromShorthand(input.auth ?? { kind: "none" })],
+    versionNegotiation: input.versionNegotiation,
   };
 };
 
@@ -628,6 +637,7 @@ const buildConnectorInput = (
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     authProvider,
     httpClientLayer,
+    versionNegotiation: config.versionNegotiation,
   });
 };
 
@@ -807,17 +817,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           const probeHeaders = typeof input === "string" ? undefined : input.headers;
           const probeQueryParams = typeof input === "string" ? undefined : input.queryParams;
 
-          const connector = createMcpConnector({
+          const result = yield* discoverToolsFromInput({
             transport: "remote",
             endpoint: trimmed,
             headers: probeHeaders,
             queryParams: probeQueryParams,
             httpClientLayer,
-          });
-
-          const result = yield* discoverTools(connector).pipe(
-            Effect.map((m) => ({ ok: true as const, manifest: m })),
-            Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
+          }).pipe(
+            Effect.map((d) => ({ ok: true as const, ...d })),
+            Effect.catch(() =>
+              Effect.succeed({ ok: false as const, manifest: null, versionNegotiation: null }),
+            ),
             Effect.withSpan("mcp.plugin.discover_tools"),
           );
 
@@ -832,6 +842,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               toolCount: result.manifest.tools.length,
               serverName: result.manifest.server?.name ?? null,
               instructions: result.manifest.server?.instructions ?? null,
+              ...(result.versionNegotiation === "legacy"
+                ? { versionNegotiation: "legacy" as const }
+                : {}),
             } satisfies McpProbeResult;
           }
 
@@ -1251,14 +1264,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           template === null ? null : String(template),
           allowStdio,
           httpClientLayer,
-        ).pipe(
-          Effect.map((ci) => createMcpConnector(ci)),
-          Effect.result,
-        );
+        ).pipe(Effect.result);
 
         const manifest = Result.isSuccess(built)
-          ? yield* discoverTools(built.success).pipe(
-              Effect.map((m) => ({ ok: true as const, manifest: m })),
+          ? yield* discoverToolsFromInput(built.success).pipe(
+              Effect.map((d) => ({ ok: true as const, manifest: d.manifest })),
               Effect.catch(() => Effect.succeed({ ok: false as const, manifest: null })),
               Effect.withSpan("mcp.plugin.discover_tools", {
                 attributes: { "mcp.connection.name": String(connection.name) },
@@ -1473,13 +1483,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const name = parsed.value.hostname || "mcp";
         const slug = deriveMcpNamespace({ endpoint: trimmed });
 
-        const connector = createMcpConnector({
+        const connected = yield* discoverToolsFromInput({
           transport: "remote",
           endpoint: trimmed,
           httpClientLayer,
-        });
-
-        const connected = yield* discoverTools(connector).pipe(
+        }).pipe(
           Effect.map(() => true),
           Effect.catch(() => Effect.succeed(false)),
           Effect.withSpan("mcp.plugin.discover_tools"),
@@ -1565,9 +1573,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           credential.template === null ? null : String(credential.template),
           allowStdio,
           options?.httpClientLayer ?? ctx.httpClientLayer,
-        ).pipe(Effect.map((ci) => createMcpConnector(ci)));
+        );
 
-        return yield* discoverTools(connector).pipe(
+        return yield* discoverToolsFromInput(connector).pipe(
           Effect.map(
             () =>
               ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,

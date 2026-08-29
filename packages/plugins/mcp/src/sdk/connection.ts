@@ -342,13 +342,14 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
-  // Auto-negotiate the 2026-07-28 era unconditionally only on Streamable
-  // HTTP. SSE is a legacy-only transport; stdio negotiates per the
-  // integration's `versionNegotiation` (default legacy — see the stdio
-  // branch above).
+  // Auto-negotiate the 2026-07-28 era on Streamable HTTP unless the config
+  // pins `legacy` (for servers that echo the proposed revision and then
+  // violate its contract). SSE is a legacy-only transport; stdio negotiates
+  // per the integration's `versionNegotiation` (default legacy — see the
+  // stdio branch above).
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
-    versionNegotiation: { mode: "auto" },
+    ...(input.versionNegotiation === "legacy" ? {} : { versionNegotiation: { mode: "auto" } }),
     createTransport: (sdk) =>
       new sdk.client.StreamableHTTPClientTransport(endpoint, {
         requestInit,

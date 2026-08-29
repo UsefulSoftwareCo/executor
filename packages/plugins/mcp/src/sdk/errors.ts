@@ -27,6 +27,11 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
     message: Schema.String,
     /** HTTP status from the underlying connect failure, when known. */
     httpStatus: Schema.optional(Schema.Number),
+    /** The connection negotiated the modern (2026-07-28) era and the server
+     *  then broke that revision's response contract — the signature of a
+     *  server that echoes whatever protocol version is proposed. Retrying
+     *  with legacy negotiation is expected to succeed. */
+    modernContractViolation: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

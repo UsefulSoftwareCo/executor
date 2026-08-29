@@ -87,6 +87,8 @@ type ProbeResult = {
   toolCount: number | null;
   serverName: string | null;
   instructions: string | null;
+  /** "legacy" when only the legacy handshake worked (version-echoing server). */
+  versionNegotiation?: "auto" | "legacy";
 };
 
 type State =
@@ -340,6 +342,12 @@ export default function AddMcpIntegration(props: {
           endpoint: state.url.trim(),
           ...(slug ? { slug } : {}),
           authenticationTemplate,
+          // The probe reports when only legacy negotiation worked (a server
+          // that echoes the modern revision but breaks its contract); pin it
+          // so refreshes and tool calls use the same handshake.
+          ...(probe?.versionNegotiation === "legacy"
+            ? { versionNegotiation: "legacy" as const }
+            : {}),
         },
         reactivityKeys: integrationWriteKeys,
       });
