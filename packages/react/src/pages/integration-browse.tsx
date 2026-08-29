@@ -4,7 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { PlusIcon, SearchIcon } from "lucide-react";
 import type { Integration, IntegrationDetectionResult } from "@executor-js/sdk/shared";
 import {
   useIntegrationPlugins,
@@ -252,25 +252,15 @@ function ResultCard(props: { readonly row: Row }) {
         </span>
         {row.added ? (
           // The add happened HERE — the card is the receipt. View jumps to
-          // the integration's hub, where authenticating happens; the check
-          // stays so the state reads at a glance.
+          // the integration's hub, where authenticating happens.
           row.viewSlug ? (
-            <span className="flex items-center gap-1.5">
-              <CheckIcon className="size-3.5 text-muted-foreground" aria-hidden />
-              <Button asChild variant="outline" size="sm" aria-label={`View ${row.title}`}>
-                <Link
-                  to="/{-$orgSlug}/integrations/$namespace"
-                  params={{ namespace: row.viewSlug }}
-                >
-                  View
-                </Link>
-              </Button>
-            </span>
+            <Button asChild variant="outline" size="sm" aria-label={`View ${row.title}`}>
+              <Link to="/{-$orgSlug}/integrations/$namespace" params={{ namespace: row.viewSlug }}>
+                View
+              </Link>
+            </Button>
           ) : (
-            <span className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-muted-foreground">
-              <CheckIcon className="size-3.5" aria-hidden />
-              Added
-            </span>
+            <span className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Added</span>
           )
         ) : row.busy ? (
           <span className="px-2 py-1.5 text-xs text-muted-foreground">Adding…</span>
@@ -722,7 +712,11 @@ export function IntegrationBrowsePage() {
         // share a domain (Google Photos Library and Picker).
         const rowKey = `${entry.domain}|${surface.kind}|${known?.slug ?? pretty}`;
         const quickAddedSlug = quickAddedSlugs.get(rowKey);
-        const viewSlug = quickAddedSlug ?? installedSlugFor(surface.kind, known?.slug);
+        // Same candidate set as `added`: namespaces come from the registry
+        // slug (quick add), the domain, or the display name (classic add
+        // pages), depending on how the integration got here.
+        const viewSlug =
+          quickAddedSlug ?? installedSlugFor(surface.kind, known?.slug, entry.domain, title);
         // Slug in the key: one domain can carry many product surfaces of the
         // same kind (Microsoft Graph's workloads all live on one domain).
         return {
@@ -735,7 +729,8 @@ export function IntegrationBrowsePage() {
           iconUrl:
             (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
           onSelect: () => void pickCatalogEntry(entry, surface.kind, title, rowKey, known?.url),
-          added: quickAddedSlug !== undefined || isAdded(surface.kind, known?.slug),
+          added:
+            quickAddedSlug !== undefined || isAdded(surface.kind, known?.slug, entry.domain, title),
           ...(quickAddedSlug !== undefined ? { freshlyAdded: true } : {}),
           ...(viewSlug ? { viewSlug } : {}),
           busy: resolvingDomain === entry.domain || quickAddingKeys.has(rowKey),
@@ -790,8 +785,42 @@ export function IntegrationBrowsePage() {
     // state worth seeing (View). Stable within each half, and fresh
     // quick-adds hold their place until the next visit.
     const floats = (row: Row) => row.added && row.freshlyAdded !== true;
-    return [...merged.filter(floats), ...merged.filter((row) => !floats(row))];
-  }, [presetRows, catalogRows, catalog.loading, catalog.failed]);
+    // Installed integrations whose registry rows are NOT in the loaded page
+    // still belong at the front — "added first" is about the user's catalog,
+    // not about which sixty rows the registry ranked highest. Synthesized
+    // from the integration record itself; a loaded row that matched an
+    // installed integration claims its slug, so nothing appears twice.
+    const claimed = new Set(merged.flatMap((row) => (row.viewSlug ? [row.viewSlug] : [])));
+    const installedList: readonly Integration[] = AsyncResult.isSuccess(installed)
+      ? installed.value
+      : [];
+    const installedRows: readonly Row[] = installedList
+      .filter(
+        (row) =>
+          row.canRemove &&
+          (row.kind === "mcp" || row.kind === "openapi" || row.kind === "graphql") &&
+          !claimed.has(String(row.slug)) &&
+          (text.length === 0 ||
+            row.name.toLowerCase().includes(text) ||
+            String(row.slug).includes(text)),
+      )
+      .map(
+        (row): Row => ({
+          key: `installed-${String(row.slug)}`,
+          testId: `installed-${String(row.slug)}`,
+          title: row.name,
+          kindKey: row.kind,
+          ...(row.description && row.description !== row.name
+            ? { description: tidyDescription(row.description) }
+            : {}),
+          onSelect: () => {},
+          added: true,
+          viewSlug: String(row.slug),
+          busy: false,
+        }),
+      );
+    return [...installedRows, ...merged.filter(floats), ...merged.filter((row) => !floats(row))];
+  }, [presetRows, catalogRows, catalog.loading, catalog.failed, installed, text]);
 
   // Presets are local, so a list that already has them is not empty — show
   // skeletons only when there is genuinely nothing on screen yet.
