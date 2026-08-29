@@ -810,6 +810,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     ...("endpoint" in preset && preset.endpoint ? { endpoint: preset.endpoint } : {}),
     ...(preset.icon ? { icon: preset.icon } : {}),
     ...(preset.featured ? { featured: preset.featured } : {}),
+    ...(preset.family ? { family: preset.family } : {}),
     transport: ("transport" in preset && preset.transport === "stdio" ? "stdio" : "remote") as
       | "stdio"
       | "remote",

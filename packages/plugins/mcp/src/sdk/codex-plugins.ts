@@ -20,6 +20,8 @@ import * as path from "node:path";
 
 import { Option, Schema } from "effect";
 
+import { CODEX_SETUP_HINT, CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
+
 export interface CodexPluginEntry {
   /** Stable card id, e.g. `codex-messages`. */
   readonly id: string;
@@ -40,9 +42,6 @@ export interface CodexPluginEntry {
   readonly setupHint?: string;
 }
 
-const SETUP_HINT =
-  "Install the Codex app, sign in, and use this plugin once inside Codex so macOS grants its permissions (Full Disk Access, Contacts, Automation).";
-
 /** The Codex Computer Use client binary — the stable, unversioned entry point
  *  for every plugin the shared "Codex Computer Use" app implements. The
  *  versioned launcher scripts under `plugins/cache` resolve to exactly this
@@ -60,40 +59,9 @@ const clientBinaryPath = (codexHome: string): string =>
     "SkyComputerUseClient",
   );
 
-/** The plugins the shared client app implements, addressed by mode. Their
- *  availability is the client binary itself — the cache entries only carry
- *  launchers and manifests. */
-const CURATED = [
-  {
-    id: "codex-messages",
-    pluginName: "messages",
-    name: "Apple Messages (Codex)",
-    slug: "codex_messages",
-    args: ["messages", "mcp"],
-    summary:
-      "Read, search, and send iMessage/SMS through the Messages app on this Mac. Reads and sends are approved in Codex's native dialogs.",
-  },
-  {
-    id: "codex-computer-use",
-    pluginName: "computer-use",
-    name: "Computer Use (Codex)",
-    slug: "codex_computer_use",
-    args: ["mcp"],
-    summary:
-      "Control macOS desktop apps: read the screen and accessibility tree, click, type, and scroll.",
-  },
-  {
-    id: "codex-computer-history",
-    pluginName: "computer-history",
-    name: "Computer History (Codex)",
-    slug: "codex_computer_history",
-    args: ["computer-history", "mcp"],
-    summary:
-      "Ask about recent on-screen activity from Codex's private local record (requires Computer History enabled in Codex).",
-  },
-] as const;
-
-const CURATED_PLUGIN_NAMES: ReadonlySet<string> = new Set(CURATED.map((c) => c.pluginName));
+const CURATED_PLUGIN_NAMES: ReadonlySet<string> = new Set(
+  CURATED_CODEX_PLUGINS.map((c) => c.pluginName),
+);
 
 // ---------------------------------------------------------------------------
 // Manifest shapes — only the fields discovery needs. Everything else in the
@@ -257,7 +225,7 @@ const scanCachedPlugin = (
       // process's environment sight-unseen. A user can declare more env on
       // the integration after adding it.
       env: { CODEX_HOME: codexHome },
-      ...(available ? {} : { setupHint: SETUP_HINT }),
+      ...(available ? {} : { setupHint: CODEX_SETUP_HINT }),
     };
   });
 };
@@ -280,7 +248,7 @@ export const scanCodexPlugins = (options?: {
   const client = clientBinaryPath(codexHome);
   const clientAvailable = isExecutableFile(client);
 
-  const curated: readonly CodexPluginEntry[] = CURATED.map((entry) => ({
+  const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => ({
     id: entry.id,
     name: entry.name,
     summary: entry.summary,
@@ -291,7 +259,7 @@ export const scanCodexPlugins = (options?: {
     args: entry.args,
     cwd: path.join(codexHome, "computer-use"),
     env: { CODEX_HOME: codexHome },
-    ...(clientAvailable ? {} : { setupHint: SETUP_HINT }),
+    ...(clientAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
   }));
 
   const cacheDir = path.join(codexHome, "plugins", "cache");

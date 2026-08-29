@@ -32,7 +32,12 @@ type CodexPluginRow = {
   readonly setupHint?: string;
 };
 
-export function CodexPluginsSection(props: { readonly onComplete: (slug: string) => void }) {
+export function CodexPluginsSection(props: {
+  readonly onComplete: (slug: string) => void;
+  /** Card to emphasise — set when the user arrived via a Codex catalog
+   *  preset (e.g. searched "imessage" in the connect dialog). */
+  readonly highlightId?: string;
+}) {
   const pluginsResult = useAtomValue(codexPluginsAtom);
   const integrationsResult = useAtomValue(integrationsOptimisticAtom);
   const doAddServer = useAtomSet(addMcpServer, { mode: "promiseExit" });
@@ -91,8 +96,12 @@ export function CodexPluginsSection(props: { readonly onComplete: (slug: string)
         {plugins.map((plugin) => {
           const added = existingSlugs.has(plugin.slug);
           const error = errors[plugin.id];
+          const highlighted = plugin.id === props.highlightId;
           return (
-            <div key={plugin.id} className="flex flex-col gap-1 px-3 py-2.5">
+            <div
+              key={plugin.id}
+              className={`flex flex-col gap-1 px-3 py-2.5 ${highlighted ? "bg-muted/40" : ""}`}
+            >
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-foreground">{plugin.name}</p>

@@ -1,3 +1,5 @@
+import { CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
+
 export interface McpRemotePreset {
   readonly id: string;
   readonly name: string;
@@ -6,6 +8,7 @@ export interface McpRemotePreset {
   readonly endpoint: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
   readonly transport?: undefined;
 }
 
@@ -15,6 +18,7 @@ export interface McpStdioPreset {
   readonly summary: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
   readonly transport: "stdio";
   readonly command: string;
   readonly args?: readonly string[];
@@ -22,6 +26,20 @@ export interface McpStdioPreset {
 }
 
 export type McpPreset = McpRemotePreset | McpStdioPreset;
+
+// Codex plugin presets — searchable catalog entries ("imessage", "computer
+// use", …) for the plugins the add form's Codex-plugins section installs.
+// `command` is deliberately empty: the real spawn recipe is machine-specific
+// and comes from the server-side scanner (`codex-plugins.ts`); picking one of
+// these routes to the stdio tab with the matching card highlighted.
+const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map((plugin) => ({
+  id: plugin.id,
+  name: plugin.name,
+  summary: plugin.summary,
+  family: "codex",
+  transport: "stdio",
+  command: "",
+}));
 
 export const mcpPresets: readonly McpPreset[] = [
   {
@@ -151,4 +169,5 @@ export const mcpPresets: readonly McpPreset[] = [
     command: "npx",
     args: ["-y", "chrome-devtools-mcp@latest"],
   },
+  ...codexPluginPresets,
 ];

@@ -45,6 +45,7 @@ import { CodexPluginsSection } from "./CodexPluginsSection";
 import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
+import { isCodexPresetId } from "../sdk/codex-plugin-presets";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
 // The remote add flow REGISTERS the server's declared auth methods through the
@@ -168,10 +169,15 @@ export default function AddMcpIntegration(props: {
   // Drop stdio presets when stdio is disabled — the caller should have
   // already filtered these out, but defence-in-depth.
   const preset = rawPreset?.transport === "stdio" && !allowStdio ? undefined : rawPreset;
-  const isStdioPreset = preset?.transport === "stdio";
+  // A Codex plugin preset is a catalog pointer, not a spawn recipe: it opens
+  // the stdio tab and highlights the matching Codex-plugins card (which
+  // carries the server-resolved command and availability) instead of
+  // prefilling the manual form.
+  const isCodexPreset = isCodexPresetId(preset?.id);
+  const isStdioPreset = preset?.transport === "stdio" && !isCodexPreset;
 
   const [transport, setTransport] = useState<"remote" | "stdio">(
-    isStdioPreset && allowStdio ? "stdio" : "remote",
+    (isStdioPreset || isCodexPreset) && allowStdio ? "stdio" : "remote",
   );
 
   // --- Stdio state ---
@@ -521,7 +527,10 @@ export default function AddMcpIntegration(props: {
         <>
           {/* Locally installed Codex plugins — one-click presets, with an
               install hint for entries whose binaries are missing. */}
-          <CodexPluginsSection onComplete={(slug) => props.onComplete(slug)} />
+          <CodexPluginsSection
+            onComplete={(slug) => props.onComplete(slug)}
+            {...(isCodexPreset && preset ? { highlightId: preset.id } : {})}
+          />
 
           {/* Stdio form */}
           <CardStack>
