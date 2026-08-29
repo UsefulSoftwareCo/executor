@@ -17,6 +17,8 @@ import {
 } from "./agent-session-durable-object";
 import {
   currentResidentRuntimeCount,
+  EVICTION_REQUEST_GRACE_MS,
+  markEvictionRequested,
   pickEvictionCandidate,
   registerResidentSession,
   releaseResidentSession,
@@ -108,7 +110,28 @@ class MemoryStorage {
     return this;
   }
 
-  waitUntil(_promise: Promise<unknown>): void {}
+  private readonly waitUntilPromises: Promise<unknown>[] = [];
+
+  /**
+   * `ctx.waitUntil` extends work past the response instead of blocking it —
+   * cap eviction requests it. A real DO holds the runtime open until every
+   * queued promise settles; this fake instead just remembers them so a test
+   * can explicitly wait for the background work it cares about via
+   * `drainWaitUntil`, rather than the two racing unpredictably.
+   */
+  waitUntil(promise: Promise<unknown>): void {
+    this.waitUntilPromises.push(promise);
+  }
+
+  /** Test-only: await every `waitUntil`-queued promise queued so far,
+   *  including ones queued BY those promises while draining (an eviction
+   *  request settling can itself queue more background work). */
+  async drainWaitUntil(): Promise<void> {
+    while (this.waitUntilPromises.length > 0) {
+      const pending = this.waitUntilPromises.splice(0, this.waitUntilPromises.length);
+      await Promise.allSettled(pending);
+    }
+  }
 }
 
 type HarnessSession = {
@@ -974,6 +997,12 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     }>;
     openSessionDb: () => { readonly end: () => void };
     resolveSessionMeta: () => Effect.Effect<SessionMeta>;
+    supportsCapEviction: () => boolean;
+    requestSelfEviction: () => Promise<void>;
+    // Re-exposed for the harness only (private on the real class, same idiom
+    // as `resolveAndStoreSessionMeta` above): the candidate side of eviction,
+    // wired below to stand in for a landed self-addressed stub call.
+    evictResidentRuntimeForCap: () => Promise<void>;
   };
 
   const residencySessionMeta = (organizationId: string): SessionMeta => ({
@@ -983,13 +1012,29 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     resource: defaultMcpResource,
   });
 
-  /** A session harness built to actually run `init()`, the entry point that
-   *  builds (and, on cold restore, rebuilds) a resident runtime. */
+  /**
+   * A session harness built to actually run `init()`, the entry point that
+   * builds (and, on cold restore, rebuilds) a resident runtime.
+   *
+   * `requestSelfEviction` stands in for what, in production, is a real
+   * self-addressed Durable Object stub call — `mcpSessionStub(...).requestCapEviction()`
+   * — landing back on this same instance and invoking `requestCapEviction`,
+   * which runs `evictResidentRuntimeForCap` in the (correctly-scoped) IoContext
+   * that call created. This harness has no Durable Object stub machinery to
+   * exercise that routing with, so it wires straight to this session's OWN
+   * `evictResidentRuntimeForCap` instead: it is the candidate-side handler
+   * that matters for these tests (does the re-check + teardown behave
+   * correctly), not the RPC transport that gets a request there — that
+   * transport is covered by the e2e idle-disposal run against real workerd,
+   * not here. `supportsCapEviction` defaults to `true` so a harness session is
+   * an eviction candidate unless a test deliberately opts out.
+   */
   const makeResidencySession = (input: {
     readonly id: string;
     readonly cap?: number;
     readonly hasActiveStream?: boolean;
     readonly pausedExecutionCount?: number;
+    readonly supportsCapEviction?: boolean;
   }): { readonly session: ResidencySession; readonly storage: MemoryStorage } => {
     const storage = new MemoryStorage().withIdName(`streamable-http:${input.id}`);
     const session = Object.create(McpAgentSessionDOBase.prototype) as ResidencySession;
@@ -1015,6 +1060,8 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
           pausedExecutionCount: () => Effect.succeed(input.pausedExecutionCount ?? 0),
         },
       });
+    session.supportsCapEviction = () => input.supportsCapEviction ?? true;
+    session.requestSelfEviction = () => session.evictResidentRuntimeForCap();
     return { session, storage };
   };
 
@@ -1079,7 +1126,10 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
   it("evicts the least-recently-active evictable session once the cap is reached, and the newer session survives", async () => {
     const { session: sessionA } = makeResidencySession({ id: "session-cap-a", cap: 2 });
     const { session: sessionB } = makeResidencySession({ id: "session-cap-b", cap: 2 });
-    const { session: sessionC } = makeResidencySession({ id: "session-cap-c", cap: 2 });
+    const { session: sessionC, storage: storageC } = makeResidencySession({
+      id: "session-cap-c",
+      cap: 2,
+    });
 
     await sessionA.init();
     await sessionB.init();
@@ -1091,6 +1141,11 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     touchResidentSession("session-cap-b", Date.now());
 
     await sessionC.init();
+    // `evictForCapIfNeeded` fires the eviction REQUEST via `ctx.waitUntil` and
+    // returns without waiting for it, so `sessionC.init()` resolving proves
+    // nothing about whether session A has actually been torn down yet — only
+    // draining session C's queued background work does.
+    await storageC.drainWaitUntil();
 
     expect(sessionA.initialized, "the least-recently-active session was evicted").toBe(false);
     expect(sessionA.engine, "its engine was released").toBeNull();
@@ -1127,10 +1182,14 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
 
   it("cold-restores on the next request after being evicted for the cap", async () => {
     const { session: sessionA } = makeResidencySession({ id: "session-restore-a", cap: 1 });
-    const { session: sessionB } = makeResidencySession({ id: "session-restore-b", cap: 1 });
+    const { session: sessionB, storage: storageB } = makeResidencySession({
+      id: "session-restore-b",
+      cap: 1,
+    });
 
     await sessionA.init();
     await sessionB.init();
+    await storageB.drainWaitUntil();
     expect(sessionA.initialized, "evicted to make room under the cap").toBe(false);
 
     await sessionA.init();
@@ -1138,6 +1197,41 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     expect(sessionA.initialized, "a later request rebuilds the evicted session").toBe(true);
     expect(sessionA.engine, "a fresh engine is installed").not.toBeNull();
     expect(sessionA.server, "a fresh server is installed").toBeDefined();
+  });
+
+  // Two different sessions' `init`s can both pick the SAME LRU candidate
+  // before either eviction request lands — nothing serializes the picks. The
+  // candidate must survive that safely: its own re-check plus `closeRuntime`'s
+  // idempotency is what the base class's doc comments claim makes a repeat
+  // request a no-op rather than a double-teardown. Requests here run
+  // sequentially rather than raced, deliberately: the guarantee under test is
+  // that a SECOND request against an already-evicted (or being-evicted)
+  // candidate is a safe no-op, not a claim about ordering within a genuine
+  // race — the same style already used by the "releasing twice" test below.
+  it("treats a repeat eviction request against the same candidate as a safe no-op", async () => {
+    const { session: candidate } = makeResidencySession({ id: "session-double-evict" });
+    await candidate.init();
+    expect(candidate.initialized).toBe(true);
+
+    await candidate.requestSelfEviction();
+
+    expect(candidate.initialized, "the first request tears the candidate down").toBe(false);
+    expect(candidate.engine).toBeNull();
+    expect(currentResidentRuntimeCount()).toBe(0);
+
+    // A repeat request — the shape two overlapping evictor `init`s produce, or
+    // one that was merely slow to land after the candidate already tore
+    // itself down some other way — must also be a no-op, not a crash or a
+    // second decrement of the (already-zero) resident count.
+    await expect(
+      candidate.requestSelfEviction(),
+      "a repeat request against an already-evicted candidate does not throw",
+    ).resolves.toBeUndefined();
+    expect(candidate.initialized).toBe(false);
+    expect(
+      currentResidentRuntimeCount(),
+      "the resident count is not decremented a second time",
+    ).toBe(0);
   });
 
   describe("resident session registry release", () => {
@@ -1158,27 +1252,37 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
       expect(pickEvictionCandidate()).toBeUndefined();
     });
 
-    it("releases the registry slot even when the candidate's own disposal fails, without touching the resident count", async () => {
-      const { session: sessionFailing, storage: storageFailing } = makeResidencySession({
+    // The eviction REQUEST is fire-and-forget (`ctx.waitUntil`), so the
+    // evictor's `init` has no synchronous failure to react to any more — it
+    // cannot tell a request that failed from one still in flight. The new
+    // failure story: optimistically LEAVE the registry entry (only the
+    // candidate's own successful teardown removes it, since as far as the
+    // evictor knows the candidate might still be actually resident), and mark
+    // it recently-requested so a following pick skips it rather than
+    // re-requesting the same stuck candidate forever.
+    it("keeps the registry slot when the candidate's own eviction request fails, without touching the resident count", async () => {
+      const { session: sessionFailing } = makeResidencySession({
         id: "session-failing",
         cap: 1,
       });
-      const { session: sessionB } = makeResidencySession({ id: "session-b-after-failure", cap: 1 });
+      // Simulate the REQUEST itself failing — the self-addressed stub call
+      // never lands (the production analogue: `mcpSessionStub(...).requestCapEviction()`
+      // rejects), never even reaching the candidate's own re-check.
+      // oxlint-disable-next-line executor/no-promise-reject -- test double: simulates a rejected self-eviction stub call, not application error modeling.
+      sessionFailing.requestSelfEviction = () => Promise.reject(new Error("stub unreachable"));
+      const { session: sessionB, storage: storageB } = makeResidencySession({
+        id: "session-b-after-failure",
+        cap: 1,
+      });
 
       await sessionFailing.init();
-      // Simulate the candidate's OWN async re-check breaking (a Durable Object
-      // storage read failing, say) — deliberately AFTER `init`, so the
-      // registered `dispose` closure is what fails, not `init` itself.
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the storage fake reproduces a rejecting DurableObjectStorage read.
-      storageFailing.list = async () => {
-        throw new Error("storage unavailable");
-      };
-
       await sessionB.init();
+      await storageB.drainWaitUntil();
 
-      expect(sessionFailing.initialized, "a failed disposal does not tear down the session").toBe(
-        true,
-      );
+      expect(
+        sessionFailing.initialized,
+        "a failed eviction REQUEST never runs the candidate's own teardown",
+      ).toBe(true);
       expect(sessionB.initialized, "the triggering init is never blocked by the failure").toBe(
         true,
       );
@@ -1188,8 +1292,48 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
       ).toBe(2);
       expect(
         residentSessionIdsForTest(),
-        "the registry slot is released so a permanently-failing candidate cannot squat the LRU pick forever",
-      ).not.toContain("session-failing");
+        "the registry slot is kept — only the candidate's own successful teardown removes it",
+      ).toContain("session-failing");
+      expect(
+        pickEvictionCandidate()?.sessionId,
+        "marked recently-requested, so the next pick does not re-target the same stuck candidate",
+      ).not.toBe("session-failing");
+    });
+
+    it("skips an entry with a recent pending eviction request, and picks the next evictable one instead", () => {
+      const now = Date.now();
+      registerResidentSession({
+        sessionId: "recently-requested",
+        lastActivityMs: now - 10_000,
+        canEvict: () => true,
+        dispose: async () => undefined,
+      });
+      registerResidentSession({
+        sessionId: "next-candidate",
+        lastActivityMs: now - 5_000,
+        canEvict: () => true,
+        dispose: async () => undefined,
+      });
+      markEvictionRequested("recently-requested", now);
+
+      expect(pickEvictionCandidate(now)?.sessionId).toBe("next-candidate");
+    });
+
+    it("picks a previously-requested entry again once the grace period elapses", () => {
+      const now = Date.now();
+      registerResidentSession({
+        sessionId: "stale-request",
+        lastActivityMs: now - 10_000,
+        canEvict: () => true,
+        dispose: async () => undefined,
+      });
+      markEvictionRequested("stale-request", now - EVICTION_REQUEST_GRACE_MS - 1);
+
+      expect(pickEvictionCandidate(now)?.sessionId).toBe("stale-request");
+    });
+
+    it("marking an eviction request on an entry that no longer exists is a no-op", () => {
+      expect(() => markEvictionRequested("never-registered")).not.toThrow();
     });
   });
 });

@@ -69,18 +69,28 @@ export const RESIDENT_RUNTIME_SOFT_CAP = 32;
 /**
  * One resident session runtime, as far as the isolate-wide eviction registry
  * needs to know about it: when it was last active, whether it is safe to tear
- * down right now, and how to actually tear it down.
+ * down right now, and how to ask it to tear itself down.
  *
  * `canEvict` is consulted by `pickEvictionCandidate` to choose AMONG entries
  * and is expected to be cheap and synchronous — it does not have to be the
- * final word. `dispose` is expected to re-check liveness itself before
- * actually releasing anything, using whatever signals it has (including ones
- * `canEvict` could not afford to read), so a candidate that became active
- * between the pick and the dispose call is left alone rather than torn down.
+ * final word. `dispose` sends this session an eviction REQUEST — it does not
+ * run this session's own teardown itself. The owning Durable Object instance
+ * is the only thing allowed to tear down its own runtime (see
+ * `requestSelfEviction` on the base class for why: teardown does I/O bound to
+ * this session's own request context, and a caller running it directly would
+ * be running that I/O under ITS OWN context instead). `dispose` is expected to
+ * re-check liveness itself before actually releasing anything, using whatever
+ * signals it has (including ones `canEvict` could not afford to read), so a
+ * candidate that became active between the pick and the dispose call is left
+ * alone rather than torn down. It resolving does not guarantee the candidate
+ * was actually torn down — only that the request was sent — so callers that
+ * fire it in the background (see `evictForCapIfNeeded`) call
+ * `markEvictionRequested` rather than assuming success.
  */
 export type ResidentSessionEntry = {
   readonly sessionId: string;
   lastActivityMs: number;
+  evictionRequestedAt?: number;
   readonly canEvict: () => boolean;
   readonly dispose: (reason: "cap") => Promise<void>;
 };
@@ -123,18 +133,49 @@ export const releaseResidentSession = (sessionId: string): void => {
 };
 
 /**
+ * How long a resident session stays skipped by `pickEvictionCandidate` after
+ * an eviction request was sent to it. The request is fire-and-forget (see
+ * `evictForCapIfNeeded` on the base class) — the sender never learns whether
+ * it succeeded, failed, or is still in flight — so this grace window is the
+ * only thing standing between one stuck or repeatedly-failing candidate and
+ * it squatting the LRU pick forever, re-requested by every subsequent init.
+ * Long enough that a healthy eviction (self-request, own teardown, registry
+ * removal) always finishes well inside it; short enough that a genuinely
+ * stuck candidate stops blocking the LRU pick soon after.
+ */
+export const EVICTION_REQUEST_GRACE_MS = 15_000;
+
+/**
+ * Record that an eviction request was just sent to this entry, so
+ * `pickEvictionCandidate` skips it until the grace period elapses. A no-op
+ * when the entry is already gone (it was evicted, or removed some other way)
+ * — nothing left to mark, and nothing wrong with that.
+ */
+export const markEvictionRequested = (sessionId: string, requestedAtMs = Date.now()): void => {
+  const entry = residentSessions.get(sessionId);
+  if (entry) entry.evictionRequestedAt = requestedAtMs;
+};
+
+/**
  * The least-recently-active resident session that is currently safe to evict,
- * or `undefined` when every resident is streaming, paused, or otherwise
- * ineligible right now.
+ * or `undefined` when every resident is streaming, paused, recently asked to
+ * evict itself already, or otherwise ineligible right now.
  *
  * `undefined` is a legitimate, expected answer — it means the isolate is over
- * its soft cap but everything resident is doing real work, and the caller
- * must let the new session build anyway rather than block or fail on it.
+ * its soft cap but everything resident is doing real work (or already has an
+ * eviction request outstanding), and the caller must let the new session
+ * build anyway rather than block or fail on it.
  */
-export const pickEvictionCandidate = (): ResidentSessionEntry | undefined => {
+export const pickEvictionCandidate = (nowMs = Date.now()): ResidentSessionEntry | undefined => {
   let candidate: ResidentSessionEntry | undefined;
   for (const entry of residentSessions.values()) {
     if (!entry.canEvict()) continue;
+    if (
+      entry.evictionRequestedAt !== undefined &&
+      nowMs - entry.evictionRequestedAt < EVICTION_REQUEST_GRACE_MS
+    ) {
+      continue;
+    }
     if (!candidate || entry.lastActivityMs < candidate.lastActivityMs) {
       candidate = entry;
     }

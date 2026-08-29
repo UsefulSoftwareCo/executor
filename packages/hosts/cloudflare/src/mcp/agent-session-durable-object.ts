@@ -37,10 +37,12 @@ import {
 import {
   acquireResidentRuntime,
   currentResidentRuntimeCount,
+  markEvictionRequested,
   pickEvictionCandidate,
   registerResidentSession,
   releaseResidentRuntime,
   releaseResidentSession,
+  type ResidentSessionEntry,
   residencyAttributes,
   RESIDENT_RUNTIME_SOFT_CAP,
   touchResidentSession,
@@ -465,6 +467,49 @@ export abstract class McpAgentSessionDOBase<
     });
   }
 
+  /**
+   * Whether this host can route an eviction REQUEST to this session's own
+   * Durable Object instance rather than tearing it down directly in some
+   * OTHER session's request context. Hosts that override `requestSelfEviction`
+   * with a real self-addressed stub call return `true` here too. A host that
+   * returns `false` (the default) is never registered as an eviction
+   * candidate at all — see `init` — so it degrades to purely observational:
+   * the residency gauge and cap-overflow attribute still work, cap eviction
+   * just never picks it.
+   */
+  protected supportsCapEviction(): boolean {
+    return false;
+  }
+
+  /**
+   * Ask THIS session's own Durable Object instance — running in ITS OWN
+   * request/IoContext — to tear down its resident runtime because the
+   * isolate is over its cap.
+   *
+   * This must never be `evictResidentRuntimeForCap()` called directly on
+   * `this` from within another session's request. Even though that would be
+   * the exact same JS object in the exact same isolate (Durable Objects with
+   * the same id ARE the same instance), a plain method call does not create a
+   * new IoContext — it runs inside whatever IoContext is already current,
+   * which belongs to the CALLING session's request. workerd binds I/O objects
+   * (a postgres.js socket, a storage transaction, a span flush) to the
+   * IoContext that created them, so tearing this session down that way throws
+   * "Cannot perform I/O on behalf of a different request" or silently
+   * miscredits the I/O to the wrong request. Routing through this session's
+   * own Durable Object STUB (`mcpSessionStub(...).requestCapEviction()`) goes
+   * through the Workers RPC/fetch machinery instead, which gives the call a
+   * freshly-created IoContext bound to itself — so the teardown it triggers
+   * runs correctly scoped, no matter which session's `init` sent the request.
+   *
+   * Overridden per host, because only a concrete host knows its own
+   * self-addressed namespace binding. The base default is a no-op so a host
+   * that never overrides it (and therefore never overrides
+   * `supportsCapEviction` to `true`) is simply never asked.
+   */
+  protected requestSelfEviction(): Promise<void> {
+    return Promise.resolve();
+  }
+
   protected readonly browserApprovalStore: BrowserApprovalStore = {
     takeResponse: (executionId) => this.takeApprovalResponse(executionId),
     waitForResponse: (executionId) => this.waitForApprovalResponse(executionId),
@@ -796,12 +841,33 @@ export abstract class McpAgentSessionDOBase<
 
   /**
    * Before this session's own runtime is built, make room if the isolate is
-   * already at its resident-runtime cap. Evicts AT MOST ONE other session —
-   * never loops — and never fails or delays this init over it: if nothing is
-   * currently evictable (every resident is streaming or paused), this session
-   * still builds and the overflow is only recorded on the init span, because a
-   * memory-pressure mechanism must never itself become the reason a session
-   * fails to start.
+   * already at its resident-runtime cap. Picks AT MOST ONE other session —
+   * never loops — and never blocks or fails THIS init on the outcome: the
+   * eviction REQUEST is fired via `ctx.waitUntil` and this init proceeds
+   * immediately, because a memory-pressure mechanism must never itself become
+   * the reason a session fails or is delayed starting. If nothing is
+   * currently evictable (every resident is streaming, paused, or already has
+   * a request outstanding), this session still builds and the overflow is
+   * only recorded on the init span.
+   *
+   * `candidate.dispose` does not run the candidate's teardown here — it SENDS
+   * the candidate a request that ITS OWN Durable Object instance executes in
+   * its own context (see `requestSelfEviction`'s doc comment). Because the
+   * request is fire-and-forget, this init has no way to react to it failing:
+   * the registry entry is left in place either way (never released here on
+   * failure), since whatever the candidate holds is, as far as this init
+   * knows, still actually resident — only the candidate's own successful
+   * teardown removes its entry. `markEvictionRequested` timestamps the entry
+   * up front so a candidate whose request is stuck or failing does not squat
+   * the LRU pick forever: the next init's `pickEvictionCandidate` skips it
+   * (see the grace period there) and picks the NEXT candidate instead.
+   *
+   * Safe to fire at the same candidate twice — two different sessions' inits
+   * both picking the same LRU entry before either's request lands — because
+   * the candidate's own handler (`evictResidentRuntimeForCap`) re-checks
+   * liveness and its teardown (`closeRuntime`) is idempotent: a second
+   * request either finds the runtime already gone (a no-op) or finds it
+   * newly busy again and leaves it alone.
    */
   private evictForCapIfNeeded(): Effect.Effect<void> {
     const self = this;
@@ -812,32 +878,40 @@ export abstract class McpAgentSessionDOBase<
         yield* Effect.annotateCurrentSpan({ "mcp.isolate.cap_overflow": true });
         return;
       }
-      yield* Effect.tryPromise({
-        try: () => candidate.dispose("cap"),
-        catch: (cause: unknown) => ({ _tag: "CapEvictionDisposeFailure" as const, cause }),
-      }).pipe(
-        Effect.catch((failure) =>
-          Effect.sync(() => {
-            // The candidate's OWN teardown failed. It is no longer safe to
-            // trust this entry as a future eviction target — a repeatedly
-            // failing disposal must not squat the LRU slot forever — but its
-            // resident-runtime count is untouched: whatever it holds is, as
-            // far as this session's init knows, still actually resident. The
-            // failure itself is unknown-shaped (whatever `dispose` threw), so
-            // it is logged as a plain defect rather than normalized into a
-            // message string.
-            releaseResidentSession(candidate.sessionId);
-            console.warn(
-              JSON.stringify({
-                event: "mcp_session_cap_eviction_failed",
-                sessionId: candidate.sessionId,
-              }),
-            );
-            console.error("[mcp-session] cap eviction dispose failed:", failure.cause);
-          }),
-        ),
-      );
+      yield* Effect.sync(() => self.queueCapEvictionRequest(candidate));
     });
+  }
+
+  /**
+   * Fires the eviction REQUEST at `candidate`'s own stub and returns
+   * immediately — same fire-and-forget shape as
+   * `queuePendingApprovalLeaseStart`/`queuePendingApprovalLeaseExpiration`
+   * below. `markEvictionRequested` is stamped up front, before the request
+   * even lands, so a stuck or slow candidate cannot be re-picked by the next
+   * init in the meantime (see `pickEvictionCandidate`'s grace period).
+   */
+  private queueCapEvictionRequest(candidate: ResidentSessionEntry): void {
+    markEvictionRequested(candidate.sessionId);
+    this.ctx.waitUntil(
+      Effect.runPromise(
+        Effect.tryPromise({
+          try: () => candidate.dispose("cap"),
+          catch: (cause: unknown) => cause,
+        }).pipe(
+          Effect.catch((cause: unknown) =>
+            Effect.sync(() => {
+              console.warn(
+                JSON.stringify({
+                  event: "mcp_session_cap_eviction_request_failed",
+                  sessionId: candidate.sessionId,
+                }),
+              );
+              console.error("[mcp-session] cap eviction request failed:", cause);
+            }),
+          ),
+        ),
+      ),
+    );
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -1141,18 +1215,26 @@ export abstract class McpAgentSessionDOBase<
       if (!self.countedAsResident) {
         self.countedAsResident = true;
         acquireResidentRuntime();
-        // Paired with `releaseResidentSession` in `closeRuntime`. Registered
-        // as soon as this session counts as resident, so a cap check running
-        // in another session's `init` moments later already sees it as a
-        // candidate. `markActivity` below immediately corrects the initial
-        // timestamp via `touchResidentSession`, so `Date.now()` here only
-        // needs to be a safe placeholder, not the true last-activity time.
-        registerResidentSession({
-          sessionId: self.sessionIdForTelemetry(),
-          lastActivityMs: Date.now(),
-          canEvict: () => self.canEvictResidentRuntime(),
-          dispose: () => self.evictResidentRuntimeForCap(),
-        });
+        // Only a host that can route an eviction request back to THIS
+        // session's own Durable Object instance (see `requestSelfEviction`)
+        // registers as a candidate at all. A host that cannot is still
+        // counted in the gauge above — cap-overflow tracking stays accurate —
+        // it is just never picked, degrading to observational rather than
+        // running teardown in the wrong context.
+        if (self.supportsCapEviction()) {
+          // Paired with `releaseResidentSession` in `closeRuntime`. Registered
+          // as soon as this session counts as resident, so a cap check running
+          // in another session's `init` moments later already sees it as a
+          // candidate. `markActivity` below immediately corrects the initial
+          // timestamp via `touchResidentSession`, so `Date.now()` here only
+          // needs to be a safe placeholder, not the true last-activity time.
+          registerResidentSession({
+            sessionId: self.sessionIdForTelemetry(),
+            lastActivityMs: Date.now(),
+            canEvict: () => self.canEvictResidentRuntime(),
+            dispose: () => self.requestSelfEviction(),
+          });
+        }
       }
       // The gauge on the way up. Paired with the same attributes on
       // `mcp.session.idle_runtime_dispose`, this is what shows whether idle
@@ -1208,6 +1290,34 @@ export abstract class McpAgentSessionDOBase<
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: Durable Object init method can only reject its Promise
         Effect.orDie,
         (effect) => self.withSpanFlush(effect),
+      ),
+    );
+  }
+
+  /**
+   * The candidate side of cap eviction. Called only through THIS session's own
+   * Durable Object stub — see `requestSelfEviction` — never invoked directly
+   * on an in-process reference by another session, which is the whole point:
+   * routing the call through the stub gives it a correctly-scoped IoContext
+   * for `evictResidentRuntimeForCap`'s teardown to run in.
+   *
+   * Safe to call more than once, including two overlapping calls (two
+   * different sessions' `init`s both having picked this one as their LRU
+   * candidate before either request lands): `evictResidentRuntimeForCap`
+   * re-checks liveness every time, and `closeRuntime` is idempotent, so a
+   * repeat call either finds the runtime already gone (a no-op) or finds it
+   * newly busy again and leaves it alone.
+   */
+  async requestCapEviction(): Promise<void> {
+    const self = this;
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        yield* self.prepareErrorCaptureScope();
+        yield* Effect.promise(() => self.evictResidentRuntimeForCap());
+      }).pipe(
+        Effect.withSpan("McpSessionDO.requestCapEviction"),
+        // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results
+        Effect.orDie,
       ),
     );
   }

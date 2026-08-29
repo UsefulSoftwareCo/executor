@@ -102,6 +102,10 @@ const positiveMilliseconds = (raw: string | undefined): number | undefined => {
   return Math.floor(parsed);
 };
 
+/** Same shape as `positiveMilliseconds`, for a plain count rather than a
+ *  duration — used only by the resident-runtime soft-cap override below. */
+const positiveInteger = positiveMilliseconds;
+
 type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
   readonly end: () => Promise<void>;
@@ -179,6 +183,25 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override executionOwnerDirectory(): McpExecutionOwnerDirectory | null {
     return mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER);
+  }
+
+  // Test-only override so e2e can exercise a REAL cross-DO eviction request in
+  // workerd without registering 32 sessions. Unset in production, where this
+  // falls through to the base class's `RESIDENT_RUNTIME_SOFT_CAP`.
+  protected override residentRuntimeSoftCap(): number {
+    return positiveInteger(env.MCP_RESIDENT_RUNTIME_SOFT_CAP) ?? super.residentRuntimeSoftCap();
+  }
+
+  protected override supportsCapEviction(): boolean {
+    return true;
+  }
+
+  protected override requestSelfEviction(): Promise<void> {
+    // Routed through this session's OWN stub (never a direct in-process call)
+    // so `requestCapEviction`'s teardown runs under an IoContext scoped to
+    // this request, not whatever request happened to trigger the eviction
+    // check — see the base class's `requestSelfEviction` doc comment.
+    return mcpSessionStub(env.MCP_SESSION, this.sessionId).requestCapEviction();
   }
 
   protected override forwardModelResumeToOwner(
