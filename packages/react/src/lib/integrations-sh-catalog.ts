@@ -138,6 +138,23 @@ const SearchResponse = Schema.Struct({
 });
 const decodeSearchResponse = Schema.decodeUnknownOption(SearchResponse);
 
+export interface CatalogSearchPage {
+  readonly entries: readonly CatalogSearchEntry[];
+  /** Rows the registry returned BEFORE the connectable-kind filter. Paging
+   *  exhaustion must key on this: a page can be full at the registry and
+   *  shrink here (CLI-only rows are dropped), and judging "no more pages" by
+   *  the filtered length ended the infinite scroll mid-catalog. */
+  readonly rawCount: number;
+}
+
+export const parseCatalogSearchPage = (payload: unknown): CatalogSearchPage => ({
+  entries: parseCatalogSearch(payload),
+  rawCount: Option.match(decodeSearchResponse(payload), {
+    onNone: () => 0,
+    onSome: ({ results }) => results.length,
+  }),
+});
+
 export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntry[] =>
   Option.match(decodeSearchResponse(payload), {
     onNone: () => [],
@@ -185,13 +202,13 @@ export interface CatalogQuery {
 
 export const searchCatalog = (
   input: CatalogQuery,
-): Effect.Effect<readonly CatalogSearchEntry[], CatalogRequestError> => {
+): Effect.Effect<CatalogSearchPage, CatalogRequestError> => {
   const url = new URL("/api/search", INTEGRATIONS_SH_ORIGIN);
   url.searchParams.set("q", input.query);
   url.searchParams.set("limit", String(input.limit ?? 10));
   if (input.kind) url.searchParams.set("kind", input.kind);
   if (input.offset) url.searchParams.set("offset", String(input.offset));
-  return Effect.map(fetchCatalogJson(url), parseCatalogSearch);
+  return Effect.map(fetchCatalogJson(url), parseCatalogSearchPage);
 };
 
 // ---------------------------------------------------------------------------
@@ -384,9 +401,12 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
   const [more, setMore] = useState<{
     readonly key: string;
     readonly entries: readonly CatalogSearchEntry[];
+    /** RAW rows consumed by extra pages — the server pages by raw index, and
+     *  the connectable-kind filter makes filtered counts useless as offsets. */
+    readonly rawConsumed: number;
     readonly loadingMore: boolean;
     readonly exhausted: boolean;
-  }>({ key: requestKey, entries: [], loadingMore: false, exhausted: false });
+  }>({ key: requestKey, entries: [], rawConsumed: 0, loadingMore: false, exhausted: false });
 
   useEffect(() => {
     const requestId = ++generation.current;
@@ -407,11 +427,11 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
       () => {
         void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
           if (Exit.isSuccess(exit)) {
-            searchCache.set(cacheKey(request), { at: Date.now(), entries: exit.value });
+            searchCache.set(cacheKey(request), { at: Date.now(), entries: exit.value.entries });
           }
           if (generation.current !== requestId) return;
           setState({
-            entries: Exit.isSuccess(exit) ? exit.value : [],
+            entries: Exit.isSuccess(exit) ? exit.value.entries : [],
             loading: false,
             failed: Exit.isFailure(exit),
           });
@@ -425,7 +445,6 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
 
   const extras = more.key === requestKey ? more : null;
   const baseCount = state.entries.length;
-  const extraCount = extras?.entries.length ?? 0;
   const hasMore =
     !state.loading &&
     !state.failed &&
@@ -433,34 +452,47 @@ export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
     !(extras?.exhausted ?? false) &&
     !(query.length > 0 && query.length < MIN_QUERY_LENGTH);
 
+  // SYNCHRONOUS in-flight guard. A fast scroll fires the sentinel several
+  // times before React commits `loadingMore`, and every call then saw the
+  // stale false, fetched the SAME offset in parallel, appended the duplicate
+  // page, and pushed the next offset past rows that were never shown. A ref
+  // is settled the instant the first call claims it.
+  const pageInFlight = useRef(false);
+
   const loadMore = useCallback(() => {
-    if (!hasMore || (extras?.loadingMore ?? false)) return;
+    if (!hasMore || pageInFlight.current) return;
+    pageInFlight.current = true;
     setMore((previous) =>
       previous.key === requestKey
         ? { ...previous, loadingMore: true }
-        : { key: requestKey, entries: [], loadingMore: true, exhausted: false },
+        : { key: requestKey, entries: [], rawConsumed: 0, loadingMore: true, exhausted: false },
     );
+    // The first page consumed `limit` raw rows (were it short, hasMore would
+    // already be false); extra pages report their raw size.
     const request: CatalogQuery = {
       query,
       limit,
-      offset: baseCount + extraCount,
+      offset: limit + (extras?.rawConsumed ?? 0),
       ...(kind ? { kind } : {}),
     };
     void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
+      pageInFlight.current = false;
       setMore((previous) => {
         if (previous.key !== requestKey) return previous;
-        const page = Exit.isSuccess(exit) ? exit.value : [];
+        const page = Exit.isSuccess(exit) ? exit.value : { entries: [], rawCount: 0 };
         return {
           key: requestKey,
-          entries: [...previous.entries, ...page],
+          entries: [...previous.entries, ...page.entries],
+          rawConsumed: previous.rawConsumed + page.rawCount,
           loadingMore: false,
-          // A failed fetch is not the end of the catalog; the sentinel will
-          // simply try again the next time it scrolls into view.
-          exhausted: Exit.isSuccess(exit) && page.length < limit,
+          // Exhaustion keys on the RAW page size: the connectable-kind filter
+          // shrinks pages, and a failed fetch is not the end of the catalog —
+          // the sentinel simply tries again next time it scrolls into view.
+          exhausted: Exit.isSuccess(exit) && page.rawCount < limit,
         };
       });
     });
-  }, [hasMore, extras?.loadingMore, requestKey, query, kind, limit, baseCount, extraCount]);
+  }, [hasMore, requestKey, query, kind, limit, extras?.rawConsumed]);
 
   const entries = useMemo(() => {
     if (!extras || extras.entries.length === 0) return state.entries;

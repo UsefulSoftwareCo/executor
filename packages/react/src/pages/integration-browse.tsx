@@ -688,7 +688,7 @@ export function IntegrationBrowsePage() {
         ) : null}
       </div>
 
-      <div className="mb-8 flex flex-wrap items-center gap-1.5">
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <KindChip label="All" active={kind === null} onSelect={() => setKind(null)} />
         {availableKinds.map((candidate) => (
           <KindChip
@@ -701,6 +701,39 @@ export function IntegrationBrowsePage() {
         <span className="ml-auto shrink-0 text-xs text-muted-foreground">
           Can&apos;t find it? Paste its URL above.
         </span>
+      </div>
+
+      {/* Above the results, not below: an endless list has no reachable
+          bottom, and this is the escape hatch for exactly the person the
+          list is failing. One quiet line — the label carries the action, so
+          the chips can stay as bare format names without colliding with the
+          facet pills above (those FILTER, these CREATE, and the plus mark +
+          leading verb keep that legible). */}
+      <div className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="shrink-0 text-xs text-muted-foreground">Start from scratch:</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {integrationPlugins.map(
+            (plugin: IntegrationPlugin): ReactNode => (
+              // oxlint-disable-next-line react/forbid-elements -- a chip, not a Button variant
+              <button
+                key={plugin.key}
+                type="button"
+                aria-label={`New ${plugin.label} integration from scratch`}
+                onClick={() => {
+                  trackEvent("integration_add_started", { plugin_key: plugin.key, via: "manual" });
+                  void navigate({
+                    to: "/{-$orgSlug}/integrations/add/$pluginKey",
+                    params: { pluginKey: plugin.key },
+                  });
+                }}
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <PlusIcon className="size-3" aria-hidden />
+                {plugin.label}
+              </button>
+            ),
+          )}
+        </div>
       </div>
 
       {error ? (
@@ -738,40 +771,6 @@ export function IntegrationBrowsePage() {
           ) : null}
         </div>
       )}
-
-      <section className="mt-8 border-t border-border/50 pt-6">
-        <h2 className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          Start from scratch
-        </h2>
-        <p className="mb-3 text-xs text-muted-foreground">
-          For a spec you will paste in by hand rather than fetch from a URL.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {integrationPlugins.map(
-            (plugin: IntegrationPlugin): ReactNode => (
-              // oxlint-disable-next-line react/forbid-elements -- a chip, not a Button variant
-              <button
-                key={plugin.key}
-                type="button"
-                onClick={() => {
-                  trackEvent("integration_add_started", { plugin_key: plugin.key, via: "manual" });
-                  void navigate({
-                    to: "/{-$orgSlug}/integrations/add/$pluginKey",
-                    params: { pluginKey: plugin.key },
-                  });
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
-              >
-                <PlusIcon className="size-3.5" aria-hidden />
-                {/* Names the ACTION, not just the format: the kind facets above
-                  carry the same bare format words, and two controls reading
-                  "OpenAPI" on one page is a coin flip. */}
-                New {plugin.label} integration
-              </button>
-            ),
-          )}
-        </div>
-      </section>
     </PageContainer>
   );
 }
