@@ -3,24 +3,28 @@ import { Schema } from "effect";
 import { InternalError } from "@executor-js/sdk/shared";
 
 import { OnePasswordError } from "../sdk/errors";
-import {
-  OnePasswordConfig,
-  RedactedOnePasswordConfig,
-  Vault,
-  ConnectionStatus,
-} from "../sdk/types";
+import { OnePasswordAccountUpsert } from "../sdk/plugin";
+import { RedactedOnePasswordConfig, Vault, ConnectionStatus } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Payloads
 //
 // v2: config is a single per-owner binding the extension derives from the
 // executor's owner binding — there are no scope segments in the path. The
-// configure payload carries the full config (including the service-account
-// token); reads return the redacted projection so the token never leaves the
-// plugin.
+// configure payload carries one account upsert (including the
+// service-account token); reads return the redacted projection so the token
+// never leaves the plugin.
 // ---------------------------------------------------------------------------
 
-const ConfigurePayload = OnePasswordConfig;
+const ConfigurePayload = OnePasswordAccountUpsert;
+
+const ConfigureResponse = Schema.Struct({
+  accountId: Schema.String,
+});
+
+const RemoveConfigParams = Schema.Struct({
+  accountId: Schema.optional(Schema.String),
+});
 
 const ListVaultsParams = Schema.Struct({
   authKind: Schema.Literals(["desktop-app", "service-account"]),
@@ -60,12 +64,13 @@ export const OnePasswordGroup = HttpApiGroup.make("onepassword")
   .add(
     HttpApiEndpoint.put("configure", "/onepassword/config", {
       payload: ConfigurePayload,
-      success: Schema.Void,
+      success: ConfigureResponse,
       error: [InternalError, OnePasswordError],
     }),
   )
   .add(
     HttpApiEndpoint.delete("removeConfig", "/onepassword/config", {
+      query: RemoveConfigParams,
       success: Schema.Void,
       error: [InternalError, OnePasswordError],
     }),

@@ -42,6 +42,7 @@ import type {
   ValidateConnectionInput,
 } from "./connection";
 import {
+  HealthCheckReason,
   HealthCheckResult,
   HealthCheckSpec,
   isToolSyncHealth,
@@ -939,6 +940,12 @@ const decodeOAuthReauthRequiredProviderState = Schema.decodeUnknownOption(
   Schema.Struct({
     oauthReauthRequiredAt: Schema.Number,
     oauthReauthRequiredDetail: Schema.optional(Schema.String),
+    // The mechanism that killed the grant (a `HealthCheckReason` literal).
+    // Typed as a plain string ON PURPOSE: this struct guards the
+    // skip-dead-refresh gate, and a future reason literal this build does not
+    // know must degrade to "reason unknown", never fail the whole decode and
+    // resurrect the dead grant's refresh traffic. Narrow at the use site.
+    oauthReauthRequiredReason: Schema.optional(Schema.String),
   }),
 );
 
@@ -948,6 +955,15 @@ const oauthReauthRequiredFromProviderState = (value: unknown) =>
 type OAuthReauthRequiredState = NonNullable<
   ReturnType<typeof oauthReauthRequiredFromProviderState>
 >;
+
+const decodeHealthCheckReasonOption = Schema.decodeUnknownOption(HealthCheckReason);
+
+/** The recorded dead-grant mechanism, narrowed to a literal this build knows;
+ *  an absent or unrecognized value reads as undefined. */
+const recordedDeadGrantReason = (
+  reauthState: OAuthReauthRequiredState,
+): HealthCheckReason | undefined =>
+  Option.getOrUndefined(decodeHealthCheckReasonOption(reauthState.oauthReauthRequiredReason));
 
 // In-flight health probes, shared per connection across every executor holding
 // the same root db handle. Read-time revalidation makes `connections.list` a
@@ -986,6 +1002,18 @@ const healthProbeGateFor = (rootDb: object): HealthProbeGate => {
 const healthProbeGateKey = (tenant: string, row: ConnectionRow): string =>
   JSON.stringify([tenant, row.owner, row.subject, row.integration, row.name]);
 
+/** The enumerable mechanism behind a credential-resolution failure, read
+ *  off the error's structural fields — never the message. Admin policy and
+ *  missing-material failures are NOT refresh rejections: no authorization
+ *  server refused anything, and aggregating them under
+ *  `credential_refresh_rejected` would misattribute the incident. */
+const credentialFailureReason = (failure: CredentialResolutionError): HealthCheckReason =>
+  failure.blockedByAdmin === true
+    ? "blocked_by_admin"
+    : failure.credentialMissing === true
+      ? "credential_missing"
+      : "credential_refresh_rejected";
+
 /** The verdict a recorded dead grant answers every health read with. The
  *  persisted `expired` verdict (written together with the dead-grant
  *  state) is served as-is; a row whose verdict a racing writer buried (or
@@ -995,14 +1023,24 @@ const deadGrantVerdict = (
   reauthState: OAuthReauthRequiredState,
   row: ConnectionRow,
 ): HealthCheckResult => {
+  // The mechanism recorded WITH the dead grant; older records carry none and
+  // read as a refresh rejection, which is what recording a dead grant meant
+  // before the mechanism was stored.
+  const recorded = recordedDeadGrantReason(reauthState) ?? "credential_refresh_rejected";
   const cached = Option.getOrNull(decodeLastHealth(row.last_health));
-  if (cached !== null && cached.status === "expired") return cached;
+  // Backfill the mechanism onto verdicts persisted before `reason` existed
+  // (or by writers that omit it) — otherwise every pre-existing dead grant
+  // would present reasonless spans indefinitely.
+  if (cached !== null && cached.status === "expired") {
+    return cached.reason !== undefined ? cached : { ...cached, reason: recorded };
+  }
   return {
     status: "expired",
     checkedAt: reauthState.oauthReauthRequiredAt,
     detail:
       reauthState.oauthReauthRequiredDetail ??
       "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
+    reason: recorded,
   };
 };
 
@@ -2122,6 +2160,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const markRefreshGrantDead = (
       row: ConnectionRow,
       detail: string,
+      // The mechanism that killed the grant. An admin-policy denial is a dead
+      // grant too, but stamping it `credential_refresh_rejected` would bury
+      // the one classification that says "reconnecting cannot help".
+      reason: HealthCheckReason,
     ): Effect.Effect<void, never> => {
       const existingState = decodeJsonColumn(row.provider_state);
       const mergedState =
@@ -2132,6 +2174,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         status: "expired",
         checkedAt: Date.now(),
         detail,
+        reason,
       };
       return core
         .updateMany("connection", {
@@ -2146,6 +2189,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ...mergedState,
               oauthReauthRequiredAt: Date.now(),
               oauthReauthRequiredDetail: detail,
+              // Recorded beside the dead grant, not only in `last_health`: the
+              // verdict is best-effort and buryable, while this record is the
+              // authority every later read reconstructs from — without it, an
+              // admin-policy denial degrades to a generic refresh rejection on
+              // the second and every later read.
+              oauthReauthRequiredReason: reason,
             },
             last_health: health,
             updated_at: new Date(),
@@ -2246,32 +2295,45 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly client: RefreshClient;
       readonly tokenUrl: string;
       readonly scopes: readonly string[];
-      readonly reauth: (message: string) => CredentialResolutionError;
+      readonly reauth: (
+        message: string,
+        options?: { readonly credentialMissing?: boolean },
+      ) => CredentialResolutionError;
     }): Effect.Effect<OAuth2TokenResponse, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const { row, provider, client } = input;
         const owner = row.owner as Owner;
         const state = enterpriseManagedStateFrom(decodeJsonColumn(row.provider_state));
+        // All four are missing-MATERIAL failures: nothing was sent upstream
+        // and no server refused anything, so they classify `credential_missing`.
         if (state === null) {
           return yield* input.reauth(
             "This connection is missing its enterprise-managed authorization settings. Reconnect to continue.",
+            { credentialMissing: true },
           );
         }
         const idpRow = yield* loadOAuthClientRow(state.idpClientOwner, state.idpClient);
         if (!idpRow) {
           return yield* input.reauth(
             `The enterprise identity provider OAuth app "${state.idpClient}" is no longer registered.`,
+            { credentialMissing: true },
           );
         }
         if (!row.refresh_item_id) {
           return yield* input.reauth(
             "No enterprise identity assertion is stored for this connection.",
+            {
+              credentialMissing: true,
+            },
           );
         }
         const subjectToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
         if (!subjectToken) {
           return yield* input.reauth(
             "The stored enterprise identity assertion could not be resolved.",
+            {
+              credentialMissing: true,
+            },
           );
         }
         const idpClientSecret = idpRow.client_secret_item_id
@@ -2342,7 +2404,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.tapError((error) =>
             Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
               ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-                markRefreshGrantDead(row, error.message)
+                markRefreshGrantDead(row, error.message, credentialFailureReason(error))
               : Effect.void,
           ),
         );
@@ -2366,13 +2428,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const owner = row.owner as Owner;
-        const reauth = (message: string): CredentialResolutionError =>
+        const reauth = (
+          message: string,
+          options?: { readonly credentialMissing?: boolean; readonly blockedByAdmin?: boolean },
+        ): CredentialResolutionError =>
           new CredentialResolutionError({
             owner,
             integration: IntegrationSlug.make(row.integration),
             name: ConnectionName.make(row.name),
             message,
             reauthRequired: true,
+            ...(options?.credentialMissing === true ? { credentialMissing: true } : {}),
+            ...(options?.blockedByAdmin === true ? { blockedByAdmin: true } : {}),
           });
 
         // A recorded invalid_grant is the AS's standing verdict on this grant:
@@ -2395,7 +2462,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               : recordedDetail.endsWith("Reconnect to continue.")
                 ? recordedDetail
                 : `${recordedDetail} Reconnect to continue.`;
-          return yield* reauth(detail);
+          // An admin-policy denial recorded on the dead grant must survive
+          // reconstruction: without the flag, callers past the first denial
+          // would show ordinary reconnect guidance — the interactive OAuth
+          // route the policy contract forbids offering.
+          return yield* reauth(detail, {
+            blockedByAdmin: recordedDeadGrantReason(reauthState) === "blocked_by_admin",
+          });
         }
 
         // Load the backing app. A `first-party:` slug resolves from host config
@@ -2441,7 +2514,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           } satisfies RefreshClient;
         });
         if (!clientRow) {
-          return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`);
+          return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`, {
+            credentialMissing: true,
+          });
         }
         const clientSecret = clientRow.clientSecret;
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
@@ -2510,11 +2585,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               )
             : yield* Effect.gen(function* () {
                 if (!row.refresh_item_id) {
-                  return yield* reauth("No refresh token is stored for this connection.");
+                  return yield* reauth("No refresh token is stored for this connection.", {
+                    credentialMissing: true,
+                  });
                 }
                 const refreshToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
                 if (!refreshToken) {
-                  return yield* reauth("Stored refresh token could not be resolved.");
+                  return yield* reauth("Stored refresh token could not be resolved.", {
+                    credentialMissing: true,
+                  });
                 }
                 // Prove the credential store is WRITABLE before consuming the
                 // single-use refresh token. Ordering the persist correctly
@@ -2621,7 +2700,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     Predicate.isTagged(error, "CredentialResolutionError") &&
                     error.reauthRequired === true
                       ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
-                        markRefreshGrantDead(row, error.message)
+                        markRefreshGrantDead(row, error.message, credentialFailureReason(error))
                       : Effect.void,
                   ),
                 );
@@ -3152,10 +3231,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
-    const toolSyncHealth = (reason: string): HealthCheckResult => ({
+    const toolSyncHealth = (cause: string): HealthCheckResult => ({
       status: "degraded",
       checkedAt: Date.now(),
-      detail: `${toolSyncHealthDetailPrefix}: ${reason}`,
+      detail: `${toolSyncHealthDetailPrefix}: ${cause}`,
+      reason: "tool_sync_failed",
     });
 
     const syncHealthReason = (result: ResolveToolsResult): string =>
@@ -4375,12 +4455,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
+            reason: credentialFailureReason(failure),
           }
         : {
             status: "degraded",
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
+            reason: credentialFailureReason(failure),
           };
 
     /** THE one place a credential-resolution failure becomes a health verdict.
@@ -4445,16 +4527,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  fraction of connections are dead right now" question was previously
      *  only answerable by querying the database. `status` and `httpStatus`
      *  are enumerable; `detail`/`identity` (upstream free text / an email)
-     *  never go on a span. */
+     *  never go on a span.
+     *
+     *  `previous` is the row's presented health when this check READ it:
+     *  `previous_status` + `changed` make verdict flips a first-class
+     *  dimension, so flapping — a connection oscillating healthy↔degraded
+     *  because probes race a rotating credential or a slow upstream — is
+     *  queryable directly instead of by diffing consecutive spans per
+     *  connection. `changed` is an OBSERVATION (this check answered something
+     *  other than what the row said), not proof of replacement: verdict
+     *  persistence is best-effort and CAS-guarded, so a concurrent dead-grant
+     *  or tool-sync write can win the row while the span still records the
+     *  comparison — acceptable for a flap metric, which counts disagreement
+     *  between consecutive observations either way. A first-ever verdict has
+     *  no `previous` and stamps neither key: it is not a flip. `reason` is
+     *  the enumerable failure mechanism (`HealthCheckReason`); free-text
+     *  `detail` still never goes on a span. */
     const annotateHealthVerdict = (
       source: "cache" | "dead_grant" | "no_capability" | "credential_only" | "probe",
       result: HealthCheckResult,
+      previous: HealthCheckResult | null,
     ): Effect.Effect<void> =>
       Effect.annotateCurrentSpan({
         "executor.health.status": result.status,
         "executor.health.source": source,
         ...(result.httpStatus !== undefined
           ? { "executor.health.http_status": result.httpStatus }
+          : {}),
+        ...(result.reason !== undefined ? { "executor.health.reason": result.reason } : {}),
+        ...(previous !== null
+          ? {
+              "executor.health.previous_status": previous.status,
+              "executor.health.changed": result.status !== previous.status,
+            }
           : {}),
       });
 
@@ -4517,16 +4622,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // dead grant, pass the verdict CAS inside one SQLite `updated_at`
         // second, and stamp the OLD grant's expired verdict onto the freshly
         // reconnected row.
+        // The verdict this check replaces, for the flip attributes on the
+        // span (`previous_status` / `changed`). Read once, before any path
+        // can write, so every exit annotates against the same baseline.
+        const previous = presentedLastHealth(connectionRow);
         const reauthState = oauthReauthRequiredFromProviderState(connectionRow.provider_state);
         if (reauthState !== null) {
           const result = deadGrantVerdict(reauthState, connectionRow);
-          yield* annotateHealthVerdict("dead_grant", result);
+          yield* annotateHealthVerdict("dead_grant", result, previous);
           return result;
         }
         if (options?.ifStaleMs !== undefined) {
           const cached = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
           if (cached && Date.now() - cached.checkedAt < options.ifStaleMs) {
-            yield* annotateHealthVerdict("cache", cached);
+            yield* annotateHealthVerdict("cache", cached, previous);
             return cached;
           }
         }
@@ -4538,7 +4647,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const check = runtime?.plugin.checkHealth;
         if (!runtime || !check) {
           const result = unknownHealth();
-          yield* annotateHealthVerdict("no_capability", result);
+          // No probing capability answers `unknown` forever and persists
+          // nothing, so comparing it against an old persisted verdict would
+          // stamp a spurious `changed=true` on every single check. Not a
+          // flip: stamp neither key.
+          yield* annotateHealthVerdict("no_capability", result, null);
           return result;
         }
         const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
@@ -4615,7 +4728,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           );
           return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(deferred)));
         });
-        yield* annotateHealthVerdict(outcome.source, outcome.result);
+        yield* annotateHealthVerdict(outcome.source, outcome.result, previous);
         return outcome.result;
       }).pipe(
         Effect.withSpan("executor.connection.health.check", {

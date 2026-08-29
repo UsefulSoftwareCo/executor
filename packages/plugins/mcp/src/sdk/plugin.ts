@@ -47,6 +47,7 @@ import { createMcpConnectionPool } from "./connection-pool";
 import { discoverTools } from "./discover";
 import {
   McpConnectionError,
+  type McpConnectionFailureKind,
   McpOAuthReauthorizationRequired,
   McpToolDiscoveryError,
 } from "./errors";
@@ -96,6 +97,21 @@ const mcpLivenessFailureStatus = (failure: {
     lower.includes("unauthorized") ||
     lower.includes("forbidden");
   return authWalled ? "expired" : "degraded";
+};
+
+/** Enumerable failure MECHANISM for a failed liveness probe, beside the status
+ *  classifier above: a hit deadline is `probe_timeout` (a slow-but-alive
+ *  server, not a dead one), an HTTP verdict is `upstream_status`, and anything
+ *  else (transport, protocol, config) is `probe_failed`. Structural fields
+ *  only — never the message. */
+const mcpLivenessFailureReason = (failure: {
+  readonly httpStatus?: number;
+  readonly timedOut?: boolean;
+  readonly failureKind?: McpConnectionFailureKind;
+}): "probe_timeout" | "upstream_status" | "probe_failed" => {
+  if (failure.timedOut === true || failure.failureKind === "timeout") return "probe_timeout";
+  if (failure.httpStatus !== undefined) return "upstream_status";
+  return "probe_failed";
 };
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
@@ -1664,6 +1680,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 status: "expired" as const,
                 checkedAt: Date.now(),
                 detail: `Connection has no resolvable credential value for input(s): ${missing.join(", ")}.`,
+                reason: "credential_missing" as const,
               } satisfies HealthCheckResult;
             }
           }
@@ -1687,6 +1704,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               checkedAt: Date.now(),
               ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
               detail: error.message,
+              reason: mcpLivenessFailureReason(error),
             } satisfies HealthCheckResult),
           ),
         );
@@ -1698,6 +1716,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             checkedAt: Date.now(),
             ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
             detail: error.message,
+            reason: mcpLivenessFailureReason(error),
           } satisfies HealthCheckResult),
         ),
         // Every failure above folds onto the SUCCESS channel, so without this
@@ -1708,6 +1727,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             "mcp.health.status": result.status,
             ...("httpStatus" in result && result.httpStatus !== undefined
               ? { "mcp.health.http_status": result.httpStatus }
+              : {}),
+            ...("reason" in result && result.reason !== undefined
+              ? { "mcp.health.reason": result.reason }
               : {}),
           }),
         ),

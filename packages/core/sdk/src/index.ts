@@ -116,6 +116,7 @@ export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 // Health-check vocabulary (pure Schema + helpers).
 export {
   HealthStatus,
+  HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,
   HealthCheckResponseSample,

@@ -435,7 +435,15 @@ const autoTransportFailure = (
 ): McpConnectionError =>
   new McpConnectionError({
     transport: "auto",
-    failureKind: "protocol",
+    // The SSE fallback is the TERMINAL attempt, so its structural
+    // classification is this failure's: a timed-out fallback is a timeout
+    // and a fallback that hit an HTTP wall carries that status — collapsing
+    // everything to "protocol" made the health check read a slow-but-alive
+    // server as a generic probe failure. "protocol" remains only the default
+    // for an unclassified fallback error.
+    failureKind: sse.failureKind ?? "protocol",
+    ...(sse.httpStatus !== undefined ? { httpStatus: sse.httpStatus } : {}),
+    ...(sse.insufficientScope !== undefined ? { insufficientScope: sse.insufficientScope } : {}),
     message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
   });
 
