@@ -18,9 +18,7 @@ import * as Schema from "effect/Schema";
 import { getDomain } from "tldts";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 
-export const INTEGRATIONS_SH_ORIGIN =
-  (import.meta.env.VITE_PUBLIC_INTEGRATIONS_SH_ORIGIN as string | undefined) ??
-  "https://integrations.sh";
+export const INTEGRATIONS_SH_ORIGIN = "https://integrations.sh";
 
 /** Registry kinds executor can connect (the registry also lists CLIs). Kind
  *  strings deliberately match the plugin keys. */
@@ -74,18 +72,6 @@ export interface CatalogSearchEntry {
 
 export const catalogLogoUrl = (domain: string, size: number): string =>
   `${INTEGRATIONS_SH_ORIGIN}/logo/${domain}?sz=${size * 2}`;
-
-const CANONICAL_CATALOG_ORIGIN = "https://integrations.sh";
-
-/** Registry-hosted assets (the /specs/ mirrors) follow the configured origin:
- *  when the catalog is served from somewhere else — a local registry in dev —
- *  a canonical-origin spec URL points at a deployment that may not have the
- *  file yet. */
-const resolveCatalogAssetUrl = (url: string): string =>
-  INTEGRATIONS_SH_ORIGIN !== CANONICAL_CATALOG_ORIGIN &&
-  url.startsWith(`${CANONICAL_CATALOG_ORIGIN}/specs/`)
-    ? `${INTEGRATIONS_SH_ORIGIN}${url.slice(CANONICAL_CATALOG_ORIGIN.length)}`
-    : url;
 
 class CatalogRequestError extends Data.TaggedError("CatalogRequestError")<{
   readonly message: string;
@@ -160,7 +146,7 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
                   {
                     kind: surface.kind,
                     slug: surface.slug,
-                    ...(surface.url ? { url: resolveCatalogAssetUrl(surface.url) } : {}),
+                    ...(surface.url ? { url: surface.url } : {}),
                     ...(surface.auth ? { auth: surface.auth } : {}),
                     ...(surface.specOverrides && surface.specOverrides.length > 0
                       ? { specOverrides: surface.specOverrides }
