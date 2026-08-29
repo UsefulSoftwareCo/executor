@@ -42,6 +42,10 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
     message: Schema.String,
     /** HTTP status from the underlying connect failure, when known. */
     httpStatus: Schema.optional(Schema.Number),
+    /** Discovery hit its deadline (`discoverTools` timeout). Structural, so
+     *  the health check can report `probe_timeout` — a slow-but-alive server —
+     *  without string-matching the message. */
+    timedOut: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

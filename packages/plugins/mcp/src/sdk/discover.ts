@@ -137,6 +137,7 @@ export const discoverTools = (
           new McpToolDiscoveryError({
             stage: "connect",
             message: `MCP discovery timed out after ${timeoutMs}ms`,
+            timedOut: true,
           }),
         ),
     }),

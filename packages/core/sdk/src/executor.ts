@@ -1003,6 +1003,7 @@ const deadGrantVerdict = (
     detail:
       reauthState.oauthReauthRequiredDetail ??
       "The authorization server rejected this connection's refresh token (invalid_grant). Reconnect to continue.",
+    reason: "credential_refresh_rejected",
   };
 };
 
@@ -3152,10 +3153,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Per-connection tool production
     // ------------------------------------------------------------------
 
-    const toolSyncHealth = (reason: string): HealthCheckResult => ({
+    const toolSyncHealth = (cause: string): HealthCheckResult => ({
       status: "degraded",
       checkedAt: Date.now(),
-      detail: `${toolSyncHealthDetailPrefix}: ${reason}`,
+      detail: `${toolSyncHealthDetailPrefix}: ${cause}`,
+      reason: "tool_sync_failed",
     });
 
     const syncHealthReason = (result: ResolveToolsResult): string =>
@@ -4353,12 +4355,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
+            reason: "credential_refresh_rejected",
           }
         : {
             status: "degraded",
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
+            reason: "credential_refresh_rejected",
           };
 
     /** THE one place a credential-resolution failure becomes a health verdict.
@@ -4423,16 +4427,34 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  fraction of connections are dead right now" question was previously
      *  only answerable by querying the database. `status` and `httpStatus`
      *  are enumerable; `detail`/`identity` (upstream free text / an email)
-     *  never go on a span. */
+     *  never go on a span.
+     *
+     *  `previous` is the verdict this check REPLACES (the row's presented
+     *  health at read time): `previous_status` + `changed` make verdict flips
+     *  a first-class dimension, so flapping — a connection oscillating
+     *  healthy↔degraded because probes race a rotating credential or a slow
+     *  upstream — is queryable directly instead of by diffing consecutive
+     *  spans per connection. A first-ever verdict has no `previous` and stamps
+     *  neither key: it is not a flip. `reason` is the enumerable failure
+     *  mechanism (`HealthCheckReason`); free-text `detail` still never goes
+     *  on a span. */
     const annotateHealthVerdict = (
       source: "cache" | "dead_grant" | "no_capability" | "credential_only" | "probe",
       result: HealthCheckResult,
+      previous: HealthCheckResult | null,
     ): Effect.Effect<void> =>
       Effect.annotateCurrentSpan({
         "executor.health.status": result.status,
         "executor.health.source": source,
         ...(result.httpStatus !== undefined
           ? { "executor.health.http_status": result.httpStatus }
+          : {}),
+        ...(result.reason !== undefined ? { "executor.health.reason": result.reason } : {}),
+        ...(previous !== null
+          ? {
+              "executor.health.previous_status": previous.status,
+              "executor.health.changed": result.status !== previous.status,
+            }
           : {}),
       });
 
@@ -4495,16 +4517,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // dead grant, pass the verdict CAS inside one SQLite `updated_at`
         // second, and stamp the OLD grant's expired verdict onto the freshly
         // reconnected row.
+        // The verdict this check replaces, for the flip attributes on the
+        // span (`previous_status` / `changed`). Read once, before any path
+        // can write, so every exit annotates against the same baseline.
+        const previous = presentedLastHealth(connectionRow);
         const reauthState = oauthReauthRequiredFromProviderState(connectionRow.provider_state);
         if (reauthState !== null) {
           const result = deadGrantVerdict(reauthState, connectionRow);
-          yield* annotateHealthVerdict("dead_grant", result);
+          yield* annotateHealthVerdict("dead_grant", result, previous);
           return result;
         }
         if (options?.ifStaleMs !== undefined) {
           const cached = Option.getOrNull(decodeLastHealth(connectionRow.last_health));
           if (cached && Date.now() - cached.checkedAt < options.ifStaleMs) {
-            yield* annotateHealthVerdict("cache", cached);
+            yield* annotateHealthVerdict("cache", cached, previous);
             return cached;
           }
         }
@@ -4516,7 +4542,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const check = runtime?.plugin.checkHealth;
         if (!runtime || !check) {
           const result = unknownHealth();
-          yield* annotateHealthVerdict("no_capability", result);
+          yield* annotateHealthVerdict("no_capability", result, previous);
           return result;
         }
         const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
@@ -4593,7 +4619,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           );
           return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(deferred)));
         });
-        yield* annotateHealthVerdict(outcome.source, outcome.result);
+        yield* annotateHealthVerdict(outcome.source, outcome.result, previous);
         return outcome.result;
       }).pipe(
         Effect.withSpan("executor.connection.health.check", {

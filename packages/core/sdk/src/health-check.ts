@@ -72,6 +72,37 @@ export const HealthCheckResponseSample = Schema.Struct({
 export type HealthCheckResponseSample = typeof HealthCheckResponseSample.Type;
 
 // ---------------------------------------------------------------------------
+// HealthCheckReason: the enumerable MECHANISM behind a non-healthy verdict.
+// `status` says what state the connection is in; `reason` says which failure
+// path produced it. `detail` already carries the full story but is free text
+// (upstream error prose, URLs) that must never reach a span or a metric —
+// without this field, telemetry could count degraded verdicts but not
+// separate "the OAuth refresh was refused" from "the probe timed out" from
+// "a tool sync stamped this", which are different incidents with different
+// owners. Healthy and unknown verdicts carry no reason.
+// ---------------------------------------------------------------------------
+
+export const HealthCheckReason = Schema.Literals([
+  /** No resolvable credential value existed, so nothing was probed. */
+  "credential_missing",
+  /** The authorization server refused to re-mint the credential (OAuth
+   *  refresh / client-credentials exchange rejected). */
+  "credential_refresh_rejected",
+  /** The probe hit its deadline before the upstream answered. */
+  "probe_timeout",
+  /** The probe could not complete or its response was unusable (transport
+   *  failure, malformed body) — no definitive upstream HTTP verdict. */
+  "probe_failed",
+  /** The upstream answered with a non-2xx HTTP status (carried alongside in
+   *  `httpStatus` when known). */
+  "upstream_status",
+  /** Stamped by tool-catalog sync, not a credential probe (see
+   *  `toolSyncHealthDetailPrefix`). */
+  "tool_sync_failed",
+]);
+export type HealthCheckReason = typeof HealthCheckReason.Type;
+
+// ---------------------------------------------------------------------------
 // HealthCheckResult: the outcome of running a probe. `httpStatus` and `detail`
 // are diagnostic; `identity` is the extracted display value when the check
 // succeeded and an `identityField` was configured (and resolved); `responseSample`
@@ -88,6 +119,9 @@ export const HealthCheckResult = Schema.Struct({
   checkedAt: Schema.Number,
   /** Human-readable diagnostic (error message, "no health check configured"). */
   detail: Schema.optional(Schema.String),
+  /** Enumerable failure mechanism for non-healthy verdicts; safe for spans
+   *  where the free-text `detail` is not. */
+  reason: Schema.optional(HealthCheckReason),
   /** Bounded sample of scalar fields from the response body, for the live
    *  preview ("show me what this operation returns"). */
   responseSample: Schema.optional(Schema.Array(HealthCheckResponseSample)),

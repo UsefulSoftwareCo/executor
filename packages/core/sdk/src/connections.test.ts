@@ -11,6 +11,7 @@ import {
   Predicate,
   Result,
   Schema,
+  Tracer,
 } from "effect";
 
 import {
@@ -3121,6 +3122,123 @@ describe("health probe gate key integrity", () => {
       expect(resultA.status).toBe("healthy");
       expect(resultB.status).toBe("healthy");
       expect(counters.probes).toBe(2);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Flip telemetry on the health span. `previous_status` + `changed` record
+// which verdict a check REPLACED, so flapping (healthy↔degraded oscillation)
+// is a queryable dimension instead of a per-connection diff over consecutive
+// spans; `reason` carries the enumerable failure mechanism where the free-text
+// `detail` can never go. Asserted through the span because the span IS the
+// deliverable: nothing else user-visible changes.
+// ---------------------------------------------------------------------------
+
+/** Records every span the program opens, so stamped attributes can be read
+ *  back (same pattern as the MCP plugin's telemetry tests). */
+const recordingTracer = (spans: Array<Tracer.NativeSpan>) =>
+  Tracer.make({
+    span: (options) => {
+      const span = new Tracer.NativeSpan(options);
+      spans.push(span);
+      return span;
+    },
+    context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
+  });
+
+describe("connections.checkHealth flip telemetry", () => {
+  const REF = {
+    owner: "org",
+    integration: INTEG,
+    name: ConnectionName.make("main"),
+  } as const;
+
+  const lastHealthSpan = (spans: ReadonlyArray<Tracer.NativeSpan>): Tracer.NativeSpan => {
+    const matches = spans.filter((span) => span.name === "executor.connection.health.check");
+    const last = matches[matches.length - 1];
+    expect(last).toBeDefined();
+    // SAFETY: the expect above fails the test before this narrows undefined.
+    return last as Tracer.NativeSpan;
+  };
+
+  it.effect("stamps previous_status + changed=true when a probe replaces a verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "degraded", checkedAt: Date.now() - STALE_MS, detail: "HTTP 502" },
+      });
+
+      const result = yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+      expect(result.status).toBe("healthy");
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.status")).toBe("healthy");
+      expect(span.attributes.get("executor.health.previous_status")).toBe("degraded");
+      expect(span.attributes.get("executor.health.changed")).toBe(true);
+    }),
+  );
+
+  it.effect("stamps changed=false when a probe reconfirms the persisted verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "healthy", checkedAt: Date.now() - STALE_MS, detail: "probe ok" },
+      });
+
+      yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.previous_status")).toBe("healthy");
+      expect(span.attributes.get("executor.health.changed")).toBe(false);
+    }),
+  );
+
+  it.effect("stamps neither flip key on a first-ever verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor } = yield* makeHealthHarness();
+
+      yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      // Never-checked is not a flip: a fleet-wide first probe must not read
+      // as a wave of changes.
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.has("executor.health.previous_status")).toBe(false);
+      expect(span.attributes.has("executor.health.changed")).toBe(false);
+    }),
+  );
+
+  it.effect("stamps the probe's reason on the span and persists it on the row", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, persisted } = yield* makeHealthHarness({
+        probe: Effect.sync(() => ({
+          status: "degraded" as const,
+          checkedAt: Date.now(),
+          detail: "upstream deadline exceeded",
+          reason: "probe_timeout" as const,
+        })),
+      });
+
+      const result = yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+      expect(result.reason).toBe("probe_timeout");
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.reason")).toBe("probe_timeout");
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.reason).toBe("probe_timeout");
     }),
   );
 });
