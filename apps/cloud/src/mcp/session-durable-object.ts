@@ -44,7 +44,7 @@ import {
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
-import { acquireBuildSlot, releaseBuildSlot } from "./session-build-semaphore";
+import { acquireBuildSlot, type BuildSlotHandle } from "./session-build-semaphore";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
 // engine with `CloudMeteredExecutionStackLayer`, so every MCP execution is
@@ -250,15 +250,35 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     dbHandle: CloudSessionDbHandle,
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
-    let buildSlotAcquired = false;
+    // Set synchronously, inside the `Effect.promise` executor below, before
+    // any `await` — so there is no window where interruption can land after
+    // the handle exists but before this is assigned. `cancel` is idempotent
+    // (see `session-build-semaphore.ts`), so it is safe to invoke from both
+    // the abort listener below AND the `Effect.ensuring` finalizer without
+    // risking a double release.
+    let buildSlot: BuildSlotHandle | undefined;
     const build = Effect.gen(function* () {
       // A burst of cold sessions landing on one isolate at once used to pay
       // full concurrent build cost; this bounds it to `MAX_CONCURRENT_BUILDS`
-      // at a time and queues the rest FIFO. See `session-build-semaphore.ts`.
-      const buildQueueMs = yield* Effect.promise(() => acquireBuildSlot());
-      buildSlotAcquired = true;
-      if (buildQueueMs > 0) {
-        yield* Effect.annotateCurrentSpan({ "mcp.init.build_queue_ms": buildQueueMs });
+      // at a time and queues the rest FIFO, degrading to old concurrent
+      // behavior (see `timedOut` below) rather than stalling if the queue
+      // itself gets stuck. See `session-build-semaphore.ts`.
+      //
+      // `Effect.promise` hands its executor an `AbortSignal` tied to this
+      // fiber's own interruption — firing it (rather than merely walking
+      // away) is what lets a waiter still sitting in the semaphore's queue
+      // be dequeued immediately on a client disconnect, instead of getting
+      // granted a slot later with no one left to release it.
+      const slot = yield* Effect.promise((signal) => {
+        const handle = acquireBuildSlot();
+        buildSlot = handle;
+        signal.addEventListener("abort", () => handle.cancel(), { once: true });
+        return handle.promise;
+      });
+      if (slot.timedOut) {
+        yield* Effect.annotateCurrentSpan({ "mcp.init.build_queue_timeout": true });
+      } else if (slot.waitMs > 0) {
+        yield* Effect.annotateCurrentSpan({ "mcp.init.build_queue_ms": slot.waitMs });
       }
 
       // Imported here rather than at module scope. Cloudflare requires a
@@ -355,13 +375,15 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     return build.pipe(
       Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),
       // Always paired with the `acquireBuildSlot` above: releases on success,
-      // failure, and interruption alike, so a build that throws never wedges
-      // the FIFO queue behind it. Guarded by `buildSlotAcquired` because a
-      // slot is only ever taken once the acquire effect itself has resolved
-      // (never on an interruption that lands before then).
+      // failure, and interruption alike, so a build that throws — or a fiber
+      // that is interrupted mid-build — never wedges the FIFO queue behind
+      // it. `handle.cancel()` is idempotent and self-describing about
+      // whether a slot was actually granted, so no separate "did we acquire"
+      // flag is needed here; this and the abort listener above may both fire
+      // for the same handle without double-releasing.
       Effect.ensuring(
         Effect.sync(() => {
-          if (buildSlotAcquired) releaseBuildSlot();
+          buildSlot?.cancel();
         }),
       ),
       Effect.provide(makeSessionServices(dbHandle)),
