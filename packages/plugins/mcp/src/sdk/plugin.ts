@@ -643,6 +643,7 @@ const buildConnectorInput = (
     queryParams: Object.keys(queryParams).length > 0 ? queryParams : undefined,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
     authProvider,
+    ...(authProvider === undefined ? {} : { staticOAuthBearer: true }),
     httpClientLayer,
   });
 };
@@ -1327,10 +1328,20 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
         if (Result.isFailure(discovered)) {
+          const reauthorizationRequired = discovered.failure.reauthorizationRequired === true;
           return {
             tools: [] as readonly ToolDef[],
             incomplete: true,
             incompleteReason: discovered.failure.message,
+            ...(reauthorizationRequired
+              ? {
+                  health: {
+                    status: "expired" as const,
+                    checkedAt: Date.now(),
+                    detail: "MCP OAuth reauthorization required",
+                  },
+                }
+              : {}),
           };
         }
         return { tools: discovered.success.tools.map(toToolDef) };
@@ -1339,7 +1350,12 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           attributes: { "mcp.connection.name": String(connection.name) },
         }),
       ) as Effect.Effect<
-        { readonly tools: readonly ToolDef[]; readonly incomplete?: boolean },
+        {
+          readonly tools: readonly ToolDef[];
+          readonly incomplete?: boolean;
+          readonly incompleteReason?: string;
+          readonly health?: HealthCheckResult;
+        },
         StorageFailure
       >,
 

@@ -49,6 +49,10 @@ export type RemoteConnectorInput = Omit<
   readonly headers?: Record<string, string>;
   readonly queryParams?: Record<string, string>;
   readonly authProvider?: OAuthClientProvider;
+  /** This provider only replays a resolved bearer. A 401 cannot be recovered
+   *  inside the MCP SDK and must return to core as reconnect-required before
+   *  the SDK attempts discovery or Dynamic Client Registration. */
+  readonly staticOAuthBearer?: boolean;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 };
 
@@ -153,6 +157,18 @@ const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTrans
   return Option.none();
 };
 
+const hasNestedOAuthReauthorization = (cause: unknown): boolean => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (Predicate.isTagged(current, "McpOAuthReauthorizationRequired")) return true;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return false;
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return false;
+  }
+  return false;
+};
+
 const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
   const codes = new Set<string>();
   let current: unknown = cause;
@@ -230,6 +246,7 @@ const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
 
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+  staticOAuthBearer: boolean,
 ): FetchLike => {
   const execute: FetchLike = async (url, init) => {
     const headers = headersFrom(init?.headers);
@@ -262,6 +279,10 @@ const fetchFromHttpClientLayer = (
         headers: responseHeaders,
       });
     }).pipe(Effect.mapError(normalizeHttpClientFailure), Effect.provide(httpClientLayer));
+    // Executor resolves and refreshes OAuth credentials before constructing
+    // this transport. If that stored bearer is rejected, the MCP SDK cannot
+    // complete its interactive fallback in a catalog refresh and would perform
+    // avoidable DCR first. Stop at the authenticated HTTP boundary instead.
     // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
     // HERE, below the SDK: with an authProvider the SDK would consume the
     // challenge and re-run auth ("upscoping"), which our static-token
@@ -271,6 +292,12 @@ const fetchFromHttpClientLayer = (
     // consumes promise rejections) so it reaches the invoke/connect catch
     // sites verbatim.
     const promise = Effect.runPromise(effect).then((response) => {
+      if (staticOAuthBearer && response.status === 401) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
+        throw new McpOAuthReauthorizationRequired({
+          message: "MCP OAuth re-authorization required",
+        });
+      }
       if (response.status === 403) {
         const challenge = response.headers.get("www-authenticate");
         if (
@@ -335,7 +362,7 @@ const connectionFailure = (
   message: string,
   cause: unknown,
 ): McpConnectionError | McpOAuthReauthorizationRequired => {
-  if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
+  if (hasNestedOAuthReauthorization(cause)) {
     return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
   }
   if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
@@ -487,7 +514,9 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   const headers = input.headers ?? {};
   const remoteTransport = input.remoteTransport ?? "auto";
   const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-  const fetch = input.httpClientLayer ? fetchFromHttpClientLayer(input.httpClientLayer) : undefined;
+  const fetch = input.httpClientLayer
+    ? fetchFromHttpClientLayer(input.httpClientLayer, input.staticOAuthBearer === true)
+    : undefined;
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 

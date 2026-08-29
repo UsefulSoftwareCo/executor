@@ -42,6 +42,10 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
     message: Schema.String,
     /** HTTP status from the underlying connect failure, when known. */
     httpStatus: Schema.optional(Schema.Number),
+    /** The MCP OAuth provider reached the interactive authorization boundary.
+     *  Catalog callers use this structural signal to request reconnect without
+     *  parsing or exposing an upstream error message. */
+    reauthorizationRequired: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

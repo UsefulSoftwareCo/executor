@@ -3229,8 +3229,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // clears it, and reconnect re-syncs tools anyway). Read fresh, since
         // the recorder wrote AFTER this sync's row was loaded. Keep stamping
         // the sync time so the stale-catalog check does not re-attempt this
-        // connection on every read.
-        const stampSyncedWithHealth = (reason: string) =>
+        // connection on every read. A plugin-supplied actionable `health`
+        // (e.g. the MCP plugin's reauthorization-required verdict) replaces
+        // the generic tool-sync verdict, never a recorded dead grant's.
+        const stampSyncedWithHealth = (reason: string, health?: HealthCheckResult) =>
           findConnectionRow(ref).pipe(
             Effect.flatMap((fresh) =>
               core.updateMany("connection", {
@@ -3241,7 +3243,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     ? { tools_synced_at: Date.now() }
                     : {
                         tools_synced_at: Date.now(),
-                        last_health: toolSyncHealth(reason),
+                        last_health: health ?? toolSyncHealth(reason),
                         updated_at: new Date(),
                       },
               }),
@@ -3310,7 +3312,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // server isn't re-dialed on every read; the freshness TTL re-attempts
           // later.
           const reason = syncHealthReason(result);
-          yield* stampSyncedWithHealth(reason);
+          yield* stampSyncedWithHealth(reason, result.health);
           yield* Effect.logWarning("executor tool sync preserved catalog", {
             reason,
             integration: String(ref.integration),

@@ -114,10 +114,15 @@ export const discoverTools = (
             const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
               ? failure.httpStatus
               : undefined;
+            const reauthorizationRequired = Predicate.isTagged(
+              failure,
+              "McpOAuthReauthorizationRequired",
+            );
             return new McpToolDiscoveryError({
               stage: "connect",
               message: `Failed connecting to MCP server: ${failure.message}`,
               ...(httpStatus !== undefined ? { httpStatus } : {}),
+              ...(reauthorizationRequired ? { reauthorizationRequired: true } : {}),
             });
           }),
         ),

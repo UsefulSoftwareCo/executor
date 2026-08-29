@@ -367,6 +367,10 @@ export interface ResolveToolsResult {
   /** Human-readable reason for an incomplete listing. Persisted by core when it
    *  preserves the prior catalog so operators can see why data is stale. */
   readonly incompleteReason?: string;
+  /** An actionable connection-health outcome discovered while enumerating the
+   *  catalog. Core persists it while preserving the prior non-authoritative
+   *  catalog. Omit for ordinary transient discovery failures. */
+  readonly health?: HealthCheckResult;
 }
 
 export interface ProjectToolSchemaInput<TStore = unknown> {
