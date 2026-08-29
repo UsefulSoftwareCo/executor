@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
-import { APPROVAL_TERM_KEYS } from "./invoke";
+import { approvalTerms } from "./invoke";
 import { mcpPresets } from "./presets";
 
 // ---------------------------------------------------------------------------
@@ -41,13 +41,43 @@ describe("codex catalog presets", () => {
 });
 
 describe("approval terms", () => {
-  // The projection lives at the MCP boundary (`invoke.ts`), but the vocabulary
-  // it recognises is the contract these plugins speak, so pin it here.
-  it("names only the keys that describe what accepting means", () => {
-    // Codex's browser approval says the grant persists, and for which origin.
-    // Everything else a server puts in `_meta` — progress tokens, internal
-    // ids, opaque state — is not a term the user is agreeing to, and must not
-    // be rendered as one.
-    expect(APPROVAL_TERM_KEYS).toEqual(["persist", "origin", "connector_name", "connector_id"]);
+  // `_meta` is an open map: servers put progress tokens, internal ids, and
+  // opaque state in it. Rendering all of it as "approval terms" would both
+  // mislead and risk surfacing something private, so the projection is a
+  // closed vocabulary.
+  it("keeps the keys that say what accepting means", () => {
+    expect(
+      approvalTerms({
+        persist: "always",
+        origin: "https://example.com",
+        connector_name: "Browser use",
+        connector_id: "browser-use",
+      }),
+    ).toEqual({
+      meta: {
+        persist: "always",
+        origin: "https://example.com",
+        connector_name: "Browser use",
+        connector_id: "browser-use",
+      },
+    });
+  });
+
+  it("drops everything else a server attached", () => {
+    expect(
+      approvalTerms({
+        persist: "always",
+        progressToken: "tok_123",
+        codex_approval_kind: "mcp_tool_call",
+        internalSessionId: "sess_abc",
+        nested: { secret: "do not render" },
+      }),
+    ).toEqual({ meta: { persist: "always" } });
+  });
+
+  it("ignores non-string values and contributes nothing when no term applies", () => {
+    expect(approvalTerms({ persist: { always: true }, origin: 42 })).toEqual({});
+    expect(approvalTerms({ progressToken: "tok" })).toEqual({});
+    expect(approvalTerms(undefined)).toEqual({});
   });
 });

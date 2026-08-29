@@ -129,7 +129,7 @@ const decodeElicitContent = Schema.decodeUnknownSync(
  *  server contributes nothing rather than noise. */
 export const APPROVAL_TERM_KEYS = ["persist", "origin", "connector_name", "connector_id"] as const;
 
-const approvalTerms = (meta: Record<string, unknown> | undefined) => {
+export const approvalTerms = (meta: Record<string, unknown> | undefined) => {
   if (meta === undefined) return {};
   const terms = Object.fromEntries(
     APPROVAL_TERM_KEYS.flatMap((key) => {

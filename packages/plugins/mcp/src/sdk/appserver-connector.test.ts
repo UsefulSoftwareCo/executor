@@ -298,24 +298,23 @@ describe("codex app-server bridge", () => {
     ),
   );
 
-  it.effect("keeps a prototype-shaped argument as data, not as a prototype", () =>
+  it.effect("carries a prototype-named argument through to the program as data", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // Embedded as an object literal, `__proto__` sets the prototype rather
-        // than an own key: the argument would disappear from `args.__proto__`
-        // and reappear as inherited properties on every lookup the generated
-        // program makes.
+        // Parsed, not written as a literal: `{ __proto__: … }` in source sets
+        // the prototype, so a literal fixture would assert nothing. This is
+        // the shape that arrives over the wire.
+        // oxlint-disable-next-line executor/no-json-parse -- an object literal would assign the PROTOTYPE; parsing produces the own key that actually arrives over the wire
+        const args = JSON.parse('{"url":"https://example.com/","__proto__":{"polluted":"yes"}}');
         const connection = yield* withConnection(browserInput());
 
         const result = yield* Effect.promise(() =>
-          connection.client.callTool({
-            name: "navigate",
-            arguments: { url: "https://example.com/", __proto__: { polluted: "yes" } },
-          }),
+          connection.client.callTool({ name: "navigate", arguments: args }),
         );
         const program = (result.content as readonly { readonly text: string }[])[0]!.text;
-        expect(program, "arguments are parsed as data").toContain("JSON.parse(");
-        expect(program, "never emitted as an object literal").not.toContain("= {");
+
+        expect(program, "embedded as parsed data").toContain("JSON.parse(");
+        expect(program, "with the key preserved rather than dropped").toContain("__proto__");
       }),
     ),
   );

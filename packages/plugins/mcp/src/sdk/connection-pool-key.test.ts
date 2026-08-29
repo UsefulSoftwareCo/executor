@@ -208,6 +208,48 @@ describe("MCP connection-pool key", () => {
         },
       );
 
+      // Two connections under the SAME owner are still distinct sessions: a
+      // grant made through one must not answer a prompt raised by the other.
+      const sameOwnerOtherConnection = yield* connectionPoolKey(
+        recipe,
+        "none",
+        {},
+        {
+          owner: "org",
+          connection: "second",
+        },
+      );
+
+      expect(theirs).not.toBe(mine);
+      expect(sameOwnerOtherConnection).not.toBe(mine);
+    }),
+  );
+
+  it.effect("separates remote connections that differ only by identity", () =>
+    Effect.gen(function* () {
+      // Hashed on the remote arm too: an open server with no credential would
+      // otherwise pool one session across every connection.
+      const input = remoteInput({ headers: {} });
+
+      const mine = yield* connectionPoolKey(
+        input,
+        "none",
+        {},
+        {
+          owner: "org",
+          connection: "default",
+        },
+      );
+      const theirs = yield* connectionPoolKey(
+        input,
+        "none",
+        {},
+        {
+          owner: "user:someone-else",
+          connection: "default",
+        },
+      );
+
       expect(theirs).not.toBe(mine);
     }),
   );
