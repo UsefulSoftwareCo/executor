@@ -26,7 +26,7 @@ import {
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
-import { clickToReveal, visit } from "../src/surfaces/browser";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -181,35 +181,10 @@ scenario(
       const client = yield* makeApiClient(api, identity);
 
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Open the Google integration catalog", async () => {
-          await visit(page, "/integrations");
-          const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-          await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
+        await step("Open the integrations registry browser", async () => {
+          await visit(page, "/integrations/browse");
+          await page.getByPlaceholder(/Search integrations, or paste a URL/).waitFor();
         });
-
-        const services = [
-          "Google Calendar",
-          "Google Meet",
-          "Gmail",
-          "Google Sheets",
-          "Google Drive",
-          "Google Docs",
-          "Google Slides",
-          "Google Forms",
-          "Google Tasks",
-          "Google People",
-          "Google Photos Library",
-          "Google Photos Picker",
-          "Google Search Console",
-        ] as const;
-        const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-        const search = dialog.getByPlaceholder(/Search or paste a URL/);
-        for (const service of services) {
-          await step(`${service} is available to connect`, async () => {
-            await search.fill(service);
-            await dialog.getByRole("link", { name: new RegExp(`^${service}\\b`) }).waitFor();
-          });
-        }
       });
 
       const clients = yield* client.oauth.listClients();

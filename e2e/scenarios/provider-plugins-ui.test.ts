@@ -3,10 +3,16 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
-import { clickToReveal, visit } from "../src/surfaces/browser";
+import { visit } from "../src/surfaces/browser";
 
+const gmailSpecUrl = "https://integrations.sh/specs/google/google-gmail.json";
+const outlookSpecUrl = "https://integrations.sh/specs/microsoft-graph/mail.json";
+
+// Provider products are ordinary integrations.sh results now. Stub both the
+// search response and the per-domain surface documents so this scenario proves
+// the full registry-card-to-add-flow journey without depending on the service.
 scenario(
-  "Provider catalog · Google and Microsoft services are OpenAPI presets",
+  "Google and Microsoft products are registry cards that resolve into prefilled add flows",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -14,56 +20,81 @@ scenario(
     const identity = yield* target.newIdentity();
 
     yield* browser.session(identity, async ({ page, step }) => {
-      await step("Open the integrations picker", async () => {
-        await visit(page, "/integrations");
-        await clickToReveal(
-          page.getByRole("button", { name: "Connect" }),
-          page.getByRole("dialog", { name: "Connect an integration" }),
+      await step("Stub the Google and Microsoft registry products", async () => {
+        await page.route("https://integrations.sh/api/search*", (route) =>
+          route.fulfill({
+            contentType: "application/json",
+            headers: { "access-control-allow-origin": "*" },
+            json: {
+              results: [
+                {
+                  domain: "gmail.com",
+                  name: "Gmail",
+                  description: "Email from Google.",
+                  kinds: ["openapi"],
+                  url: "https://integrations.sh/gmail.com/",
+                },
+                {
+                  domain: "graph.microsoft.com",
+                  name: "Outlook Mail",
+                  description: "Email from Microsoft.",
+                  kinds: ["openapi"],
+                  url: "https://integrations.sh/graph.microsoft.com/",
+                },
+              ],
+            },
+          }),
+        );
+        await page.route("https://integrations.sh/api/gmail.com/surface", (route) =>
+          route.fulfill({
+            contentType: "application/json",
+            headers: { "access-control-allow-origin": "*" },
+            json: {
+              version: 3,
+              domain: "gmail.com",
+              surfaces: [{ type: "http", slug: "google-gmail", spec: gmailSpecUrl }],
+            },
+          }),
+        );
+        await page.route("https://integrations.sh/api/graph.microsoft.com/surface", (route) =>
+          route.fulfill({
+            contentType: "application/json",
+            headers: { "access-control-allow-origin": "*" },
+            json: {
+              version: 3,
+              domain: "graph.microsoft.com",
+              surfaces: [{ type: "http", slug: "outlook-mail", spec: outlookSpecUrl }],
+            },
+          }),
         );
       });
 
-      await step("The picker exposes OpenAPI plus provider service presets", async () => {
-        const dialog = page.getByRole("dialog", {
-          name: "Connect an integration",
-        });
-        const search = dialog.getByPlaceholder(/Search or paste a URL/);
-        await dialog.getByRole("link", { name: "OpenAPI", exact: true }).waitFor();
-
+      await step("Search for Gmail and see its registry card and domain", async () => {
+        await visit(page, "/integrations/browse");
+        const search = page.getByPlaceholder(/Search integrations, or paste a URL/);
         await search.fill("gmail");
-        await dialog.getByRole("link", { name: /^Gmail\b/ }).waitFor();
-
-        await search.fill("onedrive");
-        await dialog.getByRole("link", { name: /^OneDrive Files\b/ }).waitFor();
+        const card = page.getByTestId("catalog-gmail.com-openapi");
+        await card.waitFor();
+        await card.getByText("gmail.com").waitFor();
       });
 
-      await step("OpenAPI add remains generic", async () => {
-        await page.goto("/integrations/add/openapi", {
-          waitUntil: "domcontentloaded",
-        });
-        await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
-        await page.getByText("OpenAPI Spec").waitFor();
-        expect(await page.getByText("Customize your Google connection").count()).toBe(0);
-        expect(await page.getByText("Customize Microsoft Graph").count()).toBe(0);
+      await step("Add Gmail with its registry URL and namespace prefilled", async () => {
+        await page
+          .getByTestId("catalog-gmail.com-openapi")
+          .getByRole("button", { name: "Add Gmail API" })
+          .click();
+        await page.waitForURL(/\/integrations\/add\/openapi/);
+        const url = new URL(page.url());
+        expect(url.searchParams.get("url")).toBe(gmailSpecUrl);
+        expect(url.searchParams.get("namespace")).toBe("google-gmail");
       });
 
-      await step("A Google service preset opens the OpenAPI add flow", async () => {
-        await page.goto(
-          "/integrations/add/openapi?preset=google-gmail&url=https%3A%2F%2Fwww.googleapis.com%2Fdiscovery%2Fv1%2Fapis%2Fgmail%2Fv1%2Frest",
-          { waitUntil: "domcontentloaded" },
-        );
-        await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
-        await expect.poll(() => page.locator("textarea").inputValue()).toContain("gmail");
-      });
-
-      await step("A Microsoft service preset opens the OpenAPI add flow", async () => {
-        await page.goto(
-          "/integrations/add/openapi?preset=microsoft-files&url=https%3A%2F%2Fgithub.com%2FUsefulSoftwareCo%2Fexecutor%2Freleases%2Fdownload%2Fgraph-slices%2Ffiles.yaml",
-          { waitUntil: "domcontentloaded" },
-        );
-        await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
-        await expect
-          .poll(() => page.locator("textarea").inputValue())
-          .toContain("graph-slices/files.yaml");
+      await step("Search for Outlook and see its separate registry card and domain", async () => {
+        await visit(page, "/integrations/browse");
+        await page.getByPlaceholder(/Search integrations, or paste a URL/).fill("outlook");
+        const card = page.getByTestId("catalog-graph.microsoft.com-openapi");
+        await card.waitFor();
+        await card.getByText("graph.microsoft.com").waitFor();
       });
     });
   }),
