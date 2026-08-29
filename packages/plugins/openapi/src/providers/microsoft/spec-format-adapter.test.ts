@@ -221,3 +221,22 @@ it.effect("stream-previews a Graph selection without a whole-document parse", ()
     ]);
   }),
 );
+
+it("detects Graph sources so a hand-pasted URL does not fall to the plain path", () => {
+  const detects = (url: string) => microsoftGraphAdapter.detectsUrl?.(url) === true;
+  // The monolith is the case that matters: on the plain path it is 43 MB and
+  // trips the whole-document parse limit.
+  expect(detects(`${MICROSOFT_GRAPH_OPENAPI_URL}#preset=mail`)).toBe(true);
+  expect(detects(MICROSOFT_GRAPH_OPENAPI_URL)).toBe(true);
+  expect(
+    detects(
+      "https://github.com/UsefulSoftwareCo/executor/releases/download/graph-slices/mail.yaml",
+    ),
+  ).toBe(true);
+  // Already-sliced hosted specs are self-contained and parse on the plain
+  // path; claiming them would route them through the slice builder for nothing.
+  expect(detects("https://integrations.sh/specs/microsoft-graph/mail.json")).toBe(false);
+  expect(
+    detects("https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json"),
+  ).toBe(false);
+});
