@@ -80,6 +80,18 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     return mcpExecutionOwnerDirectoryFromNamespace(this.cfEnv.MCP_EXECUTION_OWNER);
   }
 
+  protected override supportsCapEviction(): boolean {
+    return true;
+  }
+
+  protected override requestSelfEviction(): Promise<void> {
+    // Routed through this session's OWN stub (never a direct in-process call)
+    // so `requestCapEviction`'s teardown runs under an IoContext scoped to
+    // this request, not whatever request happened to trigger the eviction
+    // check — see the base class's `requestSelfEviction` doc comment.
+    return mcpSessionStub(this.cfEnv.MCP_SESSION, this.sessionId).requestCapEviction();
+  }
+
   protected override forwardModelResumeToOwner(
     owner: McpExecutionOwnerRoute,
     identity: McpApprovalOwner,

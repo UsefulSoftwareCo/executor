@@ -40,10 +40,12 @@ const remoteInput = (overrides: Partial<RemoteInput> = {}): RemoteInput => ({
   ...overrides,
 });
 
+const IDENTITY = { owner: "org", connection: "default" } as const;
+
 describe("MCP connection-pool key", () => {
   it.effect("is a bare SHA-256 digest — no plaintext rides along", () =>
     Effect.gen(function* () {
-      const key = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET });
+      const key = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET }, IDENTITY);
 
       // Asserted positively as well as negatively: "does not contain the
       // secret" alone would still pass for a key that appended the digest to
@@ -57,8 +59,8 @@ describe("MCP connection-pool key", () => {
 
   it.effect("the same identity keeps producing the same key, so reuse is unchanged", () =>
     Effect.gen(function* () {
-      const first = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET });
-      const second = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET });
+      const first = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET }, IDENTITY);
+      const second = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET }, IDENTITY);
 
       expect(first).toBe(second);
     }),
@@ -68,12 +70,22 @@ describe("MCP connection-pool key", () => {
     Effect.gen(function* () {
       // The case this field exists for: a refreshed access token must dial a
       // fresh session rather than reuse one authenticated with the old token.
-      const before = yield* connectionPoolKey(remoteInput({ headers: {} }), "bearer", {
-        token: SECRET,
-      });
-      const after = yield* connectionPoolKey(remoteInput({ headers: {} }), "bearer", {
-        token: OTHER_SECRET,
-      });
+      const before = yield* connectionPoolKey(
+        remoteInput({ headers: {} }),
+        "bearer",
+        {
+          token: SECRET,
+        },
+        IDENTITY,
+      );
+      const after = yield* connectionPoolKey(
+        remoteInput({ headers: {} }),
+        "bearer",
+        {
+          token: OTHER_SECRET,
+        },
+        IDENTITY,
+      );
 
       expect(after).not.toBe(before);
     }),
@@ -88,11 +100,13 @@ describe("MCP connection-pool key", () => {
         remoteInput({ headers: { authorization: `Bearer ${SECRET}` } }),
         "bearer",
         {},
+        IDENTITY,
       );
       const theirs = yield* connectionPoolKey(
         remoteInput({ headers: { authorization: `Bearer ${OTHER_SECRET}` } }),
         "bearer",
         {},
+        IDENTITY,
       );
 
       expect(theirs).not.toBe(mine);
@@ -106,11 +120,13 @@ describe("MCP connection-pool key", () => {
         remoteInput({ headers: {}, queryParams: { token: SECRET } }),
         "query",
         {},
+        IDENTITY,
       );
       const theirs = yield* connectionPoolKey(
         remoteInput({ headers: {}, queryParams: { token: OTHER_SECRET } }),
         "query",
         {},
+        IDENTITY,
       );
 
       expect(theirs).not.toBe(mine);
@@ -126,11 +142,13 @@ describe("MCP connection-pool key", () => {
         remoteInput({ headers: { authorization: `Bearer ${SECRET}`, "x-team": "acme" } }),
         "bearer",
         { token: SECRET, region: "eu" },
+        IDENTITY,
       );
       const otherWay = yield* connectionPoolKey(
         remoteInput({ headers: { "x-team": "acme", authorization: `Bearer ${SECRET}` } }),
         "bearer",
         { region: "eu", token: SECRET },
+        IDENTITY,
       );
 
       expect(otherWay).toBe(oneWay);
@@ -139,16 +157,139 @@ describe("MCP connection-pool key", () => {
 
   it.effect("a different endpoint or template separates identities", () =>
     Effect.gen(function* () {
-      const base = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET });
+      const base = yield* connectionPoolKey(remoteInput(), "bearer", { token: SECRET }, IDENTITY);
       const otherEndpoint = yield* connectionPoolKey(
         remoteInput({ endpoint: "https://mcp.other.example.com/sse" }),
         "bearer",
         { token: SECRET },
+        IDENTITY,
       );
-      const otherTemplate = yield* connectionPoolKey(remoteInput(), "apikey", { token: SECRET });
+      const otherTemplate = yield* connectionPoolKey(
+        remoteInput(),
+        "apikey",
+        { token: SECRET },
+        IDENTITY,
+      );
 
       expect(otherEndpoint).not.toBe(base);
       expect(otherTemplate).not.toBe(base);
+    }),
+  );
+  it.effect("separates two connections that share an identical no-auth recipe", () =>
+    Effect.gen(function* () {
+      // An app-server session accumulates the user's approvals. A Codex
+      // integration carries no credential, so without the connection in the
+      // key every owner hashes alike — and one owner's "for this
+      // conversation" grant would answer another owner's prompt.
+      const recipe = {
+        transport: "stdio" as const,
+        command: "/usr/local/bin/codex",
+        args: ["app-server"],
+        env: { CODEX_HOME: "/home/a/.codex" },
+        appServer: { server: "messages" },
+      };
+
+      const mine = yield* connectionPoolKey(
+        recipe,
+        "none",
+        {},
+        {
+          owner: "org",
+          connection: "default",
+        },
+      );
+      const theirs = yield* connectionPoolKey(
+        recipe,
+        "none",
+        {},
+        {
+          owner: "user:someone-else",
+          connection: "default",
+        },
+      );
+
+      // Two connections under the SAME owner are still distinct sessions: a
+      // grant made through one must not answer a prompt raised by the other.
+      const sameOwnerOtherConnection = yield* connectionPoolKey(
+        recipe,
+        "none",
+        {},
+        {
+          owner: "org",
+          connection: "second",
+        },
+      );
+
+      expect(theirs).not.toBe(mine);
+      expect(sameOwnerOtherConnection).not.toBe(mine);
+    }),
+  );
+
+  it.effect("separates remote connections that differ only by identity", () =>
+    Effect.gen(function* () {
+      // Hashed on the remote arm too: an open server with no credential would
+      // otherwise pool one session across every connection.
+      const input = remoteInput({ headers: {} });
+
+      const mine = yield* connectionPoolKey(
+        input,
+        "none",
+        {},
+        {
+          owner: "org",
+          connection: "default",
+        },
+      );
+      const theirs = yield* connectionPoolKey(
+        input,
+        "none",
+        {},
+        {
+          owner: "user:someone-else",
+          connection: "default",
+        },
+      );
+
+      expect(theirs).not.toBe(mine);
+    }),
+  );
+
+  it.effect("separates two projected surfaces that import different modules", () =>
+    Effect.gen(function* () {
+      const base = {
+        transport: "stdio" as const,
+        command: "/usr/local/bin/codex",
+        args: ["app-server"],
+        env: { CODEX_HOME: "/home/a/.codex" },
+      };
+      const first = yield* connectionPoolKey(
+        {
+          ...base,
+          appServer: {
+            server: "node_repl",
+            surface: "browser" as const,
+            modulePath: "/a/client.mjs",
+          },
+        },
+        "none",
+        {},
+        IDENTITY,
+      );
+      const second = yield* connectionPoolKey(
+        {
+          ...base,
+          appServer: {
+            server: "node_repl",
+            surface: "browser" as const,
+            modulePath: "/b/client.mjs",
+          },
+        },
+        "none",
+        {},
+        IDENTITY,
+      );
+
+      expect(second).not.toBe(first);
     }),
   );
 });

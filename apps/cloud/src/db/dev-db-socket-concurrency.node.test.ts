@@ -22,15 +22,41 @@
 // one PGLiteSocketServer and asserts zero protocol corruption.
 
 import { setTimeout as sleep } from "node:timers/promises";
-import { connect, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { describe, expect, it } from "@effect/vitest";
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import postgres from "postgres";
 
-const PORT = 45998;
 const CLIENTS = 6;
 const QUERIES_PER_CLIENT = 40;
+
+/**
+ * Start a server bound to an OS-assigned port and return that port.
+ *
+ * Every server in this file binds port 0. The fixed ports this file used to
+ * bind (45993-45998) sit inside the default Linux ephemeral port range
+ * (32768-60999): on a busy CI runner any other socket — an outbound connection
+ * from a sibling suite in the same turbo shard, or a leaked e2e server, which
+ * squat exactly this block — can hold one of them at bind time. The stock
+ * server then swallowed the EADDRINUSE (start() rejected only when `active`
+ * was false, and start() sets `active` true before listen), so
+ * `await server.start()` never settled and the test died as a bare vitest
+ * timeout with zero diagnostics — the CI signature of every wedge in this
+ * family. macOS assigns ephemeral ports from 49152, which is why hundreds of
+ * local replays never reproduced it.
+ */
+const startOnOsPort = async (server: PGLiteSocketServer): Promise<number> => {
+  const listening = new Promise<number>((resolve) => {
+    server.addEventListener(
+      "listening",
+      (event) => resolve((event as CustomEvent<{ readonly port: number }>).detail.port),
+      { once: true },
+    );
+  });
+  await server.start();
+  return await listening;
+};
 
 const makeClient = (port: number, connectTimeout = 5) =>
   postgres(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, {
@@ -67,6 +93,57 @@ const openWireClient = async (port: number): Promise<Socket> => {
   return socket;
 };
 
+/**
+ * Run a bystander's query with a bounded deadline and, on the deadline, fail
+ * with the server's internals instead of vitest's bare 30s timeout.
+ *
+ * The reap/ghost scenarios each wedged in CI (runs 32933818134 and
+ * 33019527020) while ~800 replays of the isolated scenarios on macOS and
+ * Linux, idle and CPU-starved, never reproduced it. Those bare timeouts are
+ * now attributed: a bind conflict on this file's old fixed ephemeral-range
+ * ports left `server.start()` pending forever (see startOnOsPort), which a
+ * bare vitest timeout cannot distinguish from a queue wedge. The wrapper
+ * stays so that any FUTURE wedge that really is in the queue carries its own
+ * diagnosis: the queue/handler stats at wedge time, plus whether a FRESH
+ * connection still completes startup (a latched queue serves nobody;
+ * per-handler affinity pinning still answers new startups).
+ */
+const diagnoseWedge = async <T>(
+  run: () => Promise<T>,
+  context: { readonly server: PGLiteSocketServer; readonly port: number },
+  deadlineMs = 20_000,
+): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void (async () => {
+        const stats = JSON.stringify(context.server.getStats());
+        // oxlint-disable-next-line executor/no-promise-catch -- test boundary: the probe outcome is diagnostic text, never a failure path
+        const freshStartup = await Promise.race([
+          openWireClient(context.port).then((socket) => {
+            socket.destroy();
+            return "completes";
+          }),
+          sleep(3_000).then(() => "hangs"),
+        ]).catch(() => "errors");
+        // oxlint-disable-next-line executor/no-promise-reject -- test boundary: adapt the deadline to the assertion path with the diagnosis attached
+        reject(
+          // oxlint-disable-next-line executor/no-error-constructor -- test boundary: the diagnosis rides the assertion failure
+          new Error(
+            `bystander wedged for ${deadlineMs}ms; server stats=${stats}; fresh startup ${freshStartup}`,
+          ),
+        );
+      })();
+    }, deadlineMs);
+  });
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: the deadline timer must be cleared on every path
+  try {
+    return await Promise.race([run(), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 // A Parse frame for an unnamed statement: opens an extended-protocol pipeline
 // that only a later Sync (or the server's recovery) closes.
 const parseFrame = (query: string): Buffer => {
@@ -84,17 +161,17 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       const db = await PGlite.create();
       const server = new PGLiteSocketServer({
         db,
-        port: PORT,
+        port: 0,
         host: "127.0.0.1",
         maxConnections: 100,
       });
-      await server.start();
+      const port = await startOnOsPort(server);
 
       let ok = 0;
       const errors: string[] = [];
 
       const worker = async (id: number) => {
-        const sql = makeClient(PORT, 10);
+        const sql = makeClient(port, 10);
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: postgres.js is promise-native and the socket must be closed on every path
         try {
           for (let q = 0; q < QUERIES_PER_CLIENT; q++) {
@@ -143,10 +220,14 @@ describe("dev-db PGlite socket under concurrent connections", () => {
     "a rejected query fails one client, not the whole socket server",
     { timeout: 30_000 },
     async () => {
-      const port = 45997;
       const db = await PGlite.create();
-      const server = new PGLiteSocketServer({ db, port, host: "127.0.0.1", maxConnections: 100 });
-      await server.start();
+      const server = new PGLiteSocketServer({
+        db,
+        port: 0,
+        host: "127.0.0.1",
+        maxConnections: 100,
+      });
+      const port = await startOnOsPort(server);
 
       const first = makeClient(port);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
@@ -194,16 +275,15 @@ describe("dev-db PGlite socket under concurrent connections", () => {
   // only fires on a connection that is actually blocking the shared session —
   // an open pipeline or an open transaction.
   it("an idle-at-rest connection outlives the idle backstop", { timeout: 30_000 }, async () => {
-    const port = 45996;
     const db = await PGlite.create();
     const server = new PGLiteSocketServer({
       db,
-      port,
+      port: 0,
       host: "127.0.0.1",
       maxConnections: 100,
       idleTimeout: 250,
     });
-    await server.start();
+    const port = await startOnOsPort(server);
 
     const sql = makeClient(port);
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
@@ -227,16 +307,15 @@ describe("dev-db PGlite socket under concurrent connections", () => {
     "a client stalled mid-pipeline is reaped and the queue recovers",
     { timeout: 30_000 },
     async () => {
-      const port = 45995;
       const db = await PGlite.create();
       const server = new PGLiteSocketServer({
         db,
-        port,
+        port: 0,
         host: "127.0.0.1",
         maxConnections: 100,
         idleTimeout: 250,
       });
-      await server.start();
+      const port = await startOnOsPort(server);
 
       // Hand-rolled wire client: complete the trust-auth startup, then send a
       // lone Parse. Its last frame type ('P') marks the pipeline open, so the
@@ -248,7 +327,9 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
       try {
         // Connects and queries only once the staller is reaped (~250ms).
-        expect((await bystander.unsafe(`select 4 as four`))[0]).toEqual({ four: 4 });
+        expect(
+          (await diagnoseWedge(() => bystander.unsafe(`select 4 as four`), { server, port }))[0],
+        ).toEqual({ four: 4 });
       } finally {
         // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
         await bystander.end({ timeout: 5 }).catch(() => {});
@@ -269,16 +350,15 @@ describe("dev-db PGlite socket under concurrent connections", () => {
   // as the same CONNECT_TIMEOUT cascade as the queue wedges. The server now
   // drops the handler when it dispatches its terminal error.
   it("reaped handlers release their connection slots", { timeout: 30_000 }, async () => {
-    const port = 45993;
     const db = await PGlite.create();
     const server = new PGLiteSocketServer({
       db,
-      port,
+      port: 0,
       host: "127.0.0.1",
       maxConnections: 2,
       idleTimeout: 250,
     });
-    await server.start();
+    const port = await startOnOsPort(server);
 
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
     try {
@@ -321,7 +401,6 @@ describe("dev-db PGlite socket under concurrent connections", () => {
     "a client that dies mid-execution does not leave the queue pinned to its ghost",
     { timeout: 30_000 },
     async () => {
-      const port = 45994;
       const db = await PGlite.create();
 
       // Hold the marker query in flight long enough that the disconnect below
@@ -333,8 +412,13 @@ describe("dev-db PGlite socket under concurrent connections", () => {
         return real(...args);
       };
 
-      const server = new PGLiteSocketServer({ db, port, host: "127.0.0.1", maxConnections: 100 });
-      await server.start();
+      const server = new PGLiteSocketServer({
+        db,
+        port: 0,
+        host: "127.0.0.1",
+        maxConnections: 100,
+      });
+      const port = await startOnOsPort(server);
 
       const ghost = await openWireClient(port);
       ghost.write(parseFrame("select 'ghost_marker'"));
@@ -346,12 +430,48 @@ describe("dev-db PGlite socket under concurrent connections", () => {
       const bystander = makeClient(port);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: sockets must be closed on every path
       try {
-        expect((await bystander.unsafe(`select 5 as five`))[0]).toEqual({ five: 5 });
+        expect(
+          (await diagnoseWedge(() => bystander.unsafe(`select 5 as five`), { server, port }))[0],
+        ).toEqual({ five: 5 });
       } finally {
         // oxlint-disable-next-line executor/no-promise-catch -- test boundary: a failed teardown must not mask the assertion
         await bystander.end({ timeout: 5 }).catch(() => {});
         await server.stop();
         await db.close();
+      }
+    },
+  );
+
+  // Regression for the CI wedge behind every bare-timeout flake in this file:
+  // stock pglite-socket start() only rejected its promise while `active` was
+  // false, but start() sets `active` true BEFORE listen(), so a bind failure
+  // (EADDRINUSE — this file used to bind fixed ports inside the Linux
+  // ephemeral range, where any concurrent suite's outbound socket or a leaked
+  // e2e server can sit) dispatched an 'error' event nobody listened to and
+  // left `await server.start()` pending forever. The test then died as a raw
+  // vitest timeout with zero diagnostics. The patch rejects start() on server
+  // errors; a settled promise ignores later rejects, so post-listen errors
+  // still only surface through the 'error' event.
+  it(
+    "a bind conflict rejects start() instead of hanging forever",
+    { timeout: 30_000 },
+    async () => {
+      const squatter = createServer();
+      await new Promise<void>((resolve) => squatter.listen(0, "127.0.0.1", () => resolve()));
+      const address = squatter.address();
+      if (address === null || typeof address !== "object") {
+        expect.unreachable("squatter listener has no bound address");
+      }
+
+      const db = await PGlite.create();
+      const server = new PGLiteSocketServer({ db, port: address.port, host: "127.0.0.1" });
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: the squatter and PGlite must be released on every path
+      try {
+        await expect(server.start()).rejects.toThrow(/EADDRINUSE/);
+      } finally {
+        await server.stop();
+        await db.close();
+        await new Promise<void>((resolve) => squatter.close(() => resolve()));
       }
     },
   );

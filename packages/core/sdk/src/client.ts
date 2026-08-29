@@ -111,6 +111,10 @@ export interface IntegrationPreset {
   readonly endpoint?: string;
   /** Optional icon URL (favicon, logo). */
   readonly icon?: string;
+  /** Image to show when `icon` cannot be resolved on this machine — a preset
+   *  whose icon is read from a local install has none until that install
+   *  exists, which is exactly when the card most needs to identify itself. */
+  readonly fallbackIcon?: string;
   /** Shown in the top-level grid on the integrations page when true. */
   readonly featured?: boolean;
   readonly family?: string;

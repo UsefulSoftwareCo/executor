@@ -95,11 +95,13 @@ const McpElicitParams = Schema.Union([
     url: Schema.String,
     elicitationId: Schema.optional(Schema.String),
     id: Schema.optional(Schema.String),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
   Schema.Struct({
     mode: Schema.optional(Schema.Literal("form")),
     message: Schema.String,
     requestedSchema: Schema.Record(Schema.String, Schema.Unknown),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
 ]);
 type McpElicitParams = typeof McpElicitParams.Type;
@@ -117,17 +119,42 @@ const decodeElicitContent = Schema.decodeUnknownSync(
   ),
 );
 
-const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
-  params.mode === "url"
+/** The `_meta` keys that describe the TERMS of an approval, and nothing else.
+ *
+ *  `_meta` is an open, implementation-defined map: servers put progress
+ *  tokens, internal ids, and their own opaque state in it. A host that renders
+ *  all of it as "approval terms" both misleads (none of that is a term the
+ *  user is agreeing to) and risks surfacing something private. So this
+ *  projects the known consent vocabulary and drops the rest — an unknown
+ *  server contributes nothing rather than noise. */
+export const APPROVAL_TERM_KEYS = ["persist", "origin", "connector_name", "connector_id"] as const;
+
+export const approvalTerms = (meta: Record<string, unknown> | undefined) => {
+  if (meta === undefined) return {};
+  const terms = Object.fromEntries(
+    APPROVAL_TERM_KEYS.flatMap((key) => {
+      const value = meta[key];
+      return typeof value === "string" ? [[key, value] as const] : [];
+    }),
+  );
+  return Object.keys(terms).length > 0 ? { meta: terms } : {};
+};
+
+const toElicitationRequest = (params: McpElicitParams): ElicitationRequest => {
+  const meta = approvalTerms(params._meta);
+  return params.mode === "url"
     ? UrlElicitation.make({
         message: params.message,
         url: params.url,
         elicitationId: ElicitationId.make(params.elicitationId ?? params.id ?? ""),
+        ...meta,
       })
     : FormElicitation.make({
         message: params.message,
         requestedSchema: params.requestedSchema,
+        ...meta,
       });
+};
 
 const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
   client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {

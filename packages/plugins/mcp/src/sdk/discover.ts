@@ -209,6 +209,17 @@ export const discoverTools = (
         ),
       );
 
+      // The connection advertises the elicitation capability (connection.ts),
+      // so a server may elicit mid-listTools — the Codex desktop plugins do
+      // this for first-use approvals. Discovery has no user to route the
+      // request to (unlike the invoke path's bridge in invoke.ts), and a
+      // handler-less request would surface as a method-not-found error on the
+      // server's side of an otherwise healthy sync. Decline explicitly: the
+      // server completes the list with whatever it allows unapproved.
+      connection.client.setRequestHandler("elicitation/create", () =>
+        Promise.resolve({ action: "decline" }),
+      );
+
       const manifest = yield* restore(listAllTools(connection)).pipe(
         Effect.onExit(() => closeConnection(connection)),
       );

@@ -46,9 +46,11 @@ import {
   mcpDetectedAuthSeeds,
   mcpWireAuthInput,
 } from "./auth-method-config";
+import CodexPluginAdd from "./CodexPluginAdd";
 import { parseStdioArgs } from "./stdio-fields";
 import { isProbableMcpEndpoint } from "./probe-url";
 import { cloudflareNeedsCodemodeOptOut } from "../sdk/cloudflare-codemode";
+import { isCodexPresetId } from "../sdk/codex-plugin-presets";
 import { mcpPresets, type McpPreset } from "../sdk/presets";
 
 // The remote add flow REGISTERS the server's declared auth methods through the
@@ -177,7 +179,11 @@ export default function AddMcpIntegration(props: {
   // Drop stdio presets when stdio is disabled — the caller should have
   // already filtered these out, but defence-in-depth.
   const preset = rawPreset?.transport === "stdio" && !allowStdio ? undefined : rawPreset;
-  const isStdioPreset = preset?.transport === "stdio";
+  // A Codex plugin preset is a catalog pointer, not a spawn recipe: it gets
+  // its own focused add screen (rendered below, before the generic form),
+  // fed by the server-side scanner.
+  const isCodexPreset = isCodexPresetId(preset?.id);
+  const isStdioPreset = preset?.transport === "stdio" && !isCodexPreset;
 
   const [transport, setTransport] = useState<"remote" | "stdio">(
     isStdioPreset && allowStdio ? "stdio" : "remote",
@@ -393,6 +399,18 @@ export default function AddMcpIntegration(props: {
   }, [stdioCommand, stdioArgs, stdioEnvVars, stdioIdentity, doAddServer, props]);
 
   // ---- Render ----
+
+  // Placed after every hook so the hook order is identical on all renders;
+  // `isCodexPreset` is fixed for the component's lifetime (route search param).
+  if (isCodexPreset && preset) {
+    return (
+      <CodexPluginAdd
+        presetId={preset.id}
+        onComplete={props.onComplete}
+        onCancel={props.onCancel}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-1 flex-col gap-6">

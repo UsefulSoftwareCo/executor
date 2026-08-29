@@ -45,13 +45,16 @@ if (process.env.EXECUTOR_E2E_SECRET) {
 }
 
 // Each entry advertises `saw_<name>` when its variable reached this process.
-// The three cover the three ways a variable can be handed to a stdio server:
-// declared on the source, allowlisted infrastructure inherited from the host,
-// and — the leak — an unrelated host variable that must never travel.
+// The first three cover the three ways a variable can be handed to a stdio
+// server: declared on the source, allowlisted infrastructure inherited from
+// the host, and — the leak — an unrelated host variable that must never
+// travel. CODEX_HOME is the variable the Codex-plugin presets declare, so the
+// codex-plugins scenario can prove it reached the spawn.
 const ENV_PROBES = [
   { tool: "saw_declared_env", key: "EXECUTOR_E2E_SECRET" },
   { tool: "saw_proxy_env", key: "NO_PROXY" },
   { tool: "saw_host_secret", key: "EXECUTOR_E2E_HOST_ONLY_SECRET" },
+  { tool: "saw_codex_home", key: "CODEX_HOME" },
 ];
 
 for (const probe of ENV_PROBES) {

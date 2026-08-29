@@ -16,6 +16,7 @@ import {
   E2E_EXECUTION_RATE_LIMIT,
   E2E_EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS,
 } from "./execution-limits";
+import { E2E_MCP_RESIDENT_RUNTIME_SOFT_CAP } from "./resident-runtime-cap";
 
 export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
@@ -107,6 +108,10 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_RESOURCE_ORIGIN: options.publicUrl,
     MCP_SESSION_TIMEOUT_MS: process.env.MCP_SESSION_TIMEOUT_MS,
     MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS: process.env.MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS,
+    // See resident-runtime-cap.ts for why this value, and why it is safe to
+    // set unconditionally for the whole boot (same treatment as the execution
+    // rate limit below).
+    MCP_RESIDENT_RUNTIME_SOFT_CAP: String(E2E_MCP_RESIDENT_RUNTIME_SOFT_CAP),
     ALLOW_LOCAL_NETWORK: "true",
     // A first-party GitHub app for the first-party-oauth scenario: proves the
     // env → HostConfig → executor plumbing end to end. The scenario asserts the

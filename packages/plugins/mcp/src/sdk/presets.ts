@@ -1,4 +1,8 @@
+import { CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
+
 export interface McpRemotePreset {
+  /** Image to show when `icon` cannot be resolved on this machine. */
+  readonly fallbackIcon?: string;
   readonly id: string;
   readonly name: string;
   readonly summary: string;
@@ -6,15 +10,21 @@ export interface McpRemotePreset {
   readonly endpoint: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
   readonly transport?: undefined;
 }
 
 export interface McpStdioPreset {
+  /** Image to show when `icon` cannot be resolved on this machine. */
+  readonly fallbackIcon?: string;
   readonly id: string;
   readonly name: string;
   readonly summary: string;
   readonly icon?: string;
   readonly featured?: boolean;
+  readonly family?: string;
+  /** Integration slug this preset registers as, for favicon resolution. */
+  readonly defaultSlug?: string;
   readonly transport: "stdio";
   readonly command: string;
   readonly args?: readonly string[];
@@ -22,6 +32,29 @@ export interface McpStdioPreset {
 }
 
 export type McpPreset = McpRemotePreset | McpStdioPreset;
+
+// Codex plugin presets — searchable catalog entries ("imessage", "computer
+// use", …). `command` is deliberately empty: the real spawn recipe is
+// machine-specific and comes from the server-side scanner
+// (`codex-plugins.ts`); picking one of these opens the focused Codex add
+// screen. The icon uses the `executor:` scheme (see preset-icon.tsx): the
+// plugin's own icon is a machine-local file, so it is served by the local API
+// and resolved with the auth header — a static URL cannot reach it.
+const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map((plugin) => ({
+  id: plugin.id,
+  name: plugin.name,
+  summary: plugin.summary,
+  icon: `executor:/mcp/codex-plugins/${plugin.id}/icon`,
+  // The plugin's own icon lives in the user's Codex install, so a machine
+  // without Codex has none to read. Fall back to the provider's mark from the
+  // same logo service every other preset uses, rather than vendoring OpenAI's
+  // artwork into this repo.
+  fallbackIcon: plugin.publicIcon ?? "https://integrations.sh/logo/openai.com",
+  family: "codex",
+  defaultSlug: plugin.slug,
+  transport: "stdio",
+  command: "",
+}));
 
 export const mcpPresets: readonly McpPreset[] = [
   {
@@ -143,4 +176,5 @@ export const mcpPresets: readonly McpPreset[] = [
     command: "npx",
     args: ["-y", "chrome-devtools-mcp@latest"],
   },
+  ...codexPluginPresets,
 ];

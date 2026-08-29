@@ -1,7 +1,9 @@
 import { BoxIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
 import { getDomain } from "tldts";
+
+import { EXECUTOR_ICON_SCHEME, resolveExecutorIcon } from "./preset-icon";
 
 // ---------------------------------------------------------------------------
 // IntegrationFavicon — renders a small favicon derived from an integration URL.
@@ -160,7 +162,33 @@ export function IntegrationFavicon({
   size?: number;
 }) {
   const [failedSrcs, setFailedSrcs] = useState<readonly string[]>([]);
-  const src = integrationFaviconSrc({ icon, integrationId, url, size, failedSrcs });
+  // `executor:`-scheme icons (served by the local API behind the bearer gate,
+  // e.g. a Codex plugin's own icon) resolve asynchronously to a data URI; a
+  // null resolution marks the candidate failed so the cascade continues.
+  const [executorIcons, setExecutorIcons] = useState<Readonly<Record<string, string>>>({});
+  const cascadeSrc = integrationFaviconSrc({ icon, integrationId, url, size, failedSrcs });
+  const isExecutorSrc = cascadeSrc?.startsWith(EXECUTOR_ICON_SCHEME) ?? false;
+
+  useEffect(() => {
+    if (!isExecutorSrc || cascadeSrc === null) return;
+    let live = true;
+    void resolveExecutorIcon(cascadeSrc.slice(EXECUTOR_ICON_SCHEME.length)).then((resolvedIcon) => {
+      if (!live) return;
+      if (resolvedIcon === null) {
+        setFailedSrcs((current) =>
+          current.includes(cascadeSrc) ? current : [...current, cascadeSrc],
+        );
+      } else {
+        setExecutorIcons((current) => ({ ...current, [cascadeSrc]: resolvedIcon }));
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [isExecutorSrc, cascadeSrc]);
+
+  const src =
+    cascadeSrc === null ? null : isExecutorSrc ? (executorIcons[cascadeSrc] ?? null) : cascadeSrc;
 
   if (!src) {
     return (
@@ -172,6 +200,9 @@ export function IntegrationFavicon({
     );
   }
 
+  // On error, fail the CASCADE candidate (the `executor:` string for resolved
+  // icons), not the rendered data URI, so the cascade actually advances.
+  const failedCandidate = cascadeSrc ?? src;
   return (
     <img
       src={src}
@@ -179,7 +210,9 @@ export function IntegrationFavicon({
       width={size}
       height={size}
       onError={() =>
-        setFailedSrcs((current) => (current.includes(src) ? current : [...current, src]))
+        setFailedSrcs((current) =>
+          current.includes(failedCandidate) ? current : [...current, failedCandidate],
+        )
       }
       className="shrink-0 rounded-sm"
       style={{ width: size, height: size }}

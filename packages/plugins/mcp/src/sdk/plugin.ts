@@ -42,6 +42,7 @@ import {
   requiredPlacementVariables,
 } from "@executor-js/sdk/http-auth";
 
+import type { CodexPluginEntry } from "./codex-plugins";
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { createMcpConnectionPool } from "./connection-pool";
 import { discoverToolsFromInput } from "./discover";
@@ -245,6 +246,16 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  handshake — the right call for spawn-per-call servers, where the auto
    *  probe costs an extra child process per connect. */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Reach the server through the Codex app-server bridge: the command spawns
+   *  `codex app-server` and `server` names the MCP server inside Codex whose
+   *  tools this integration exposes. Set by the Codex plugin add flow. */
+  appServer: Schema.optional(
+    Schema.Struct({
+      server: Schema.String,
+      surface: Schema.optional(Schema.Literals(["sky", "browser"])),
+      modulePath: Schema.optional(Schema.String),
+    }),
+  ),
   slug: Schema.optional(Schema.String),
 });
 
@@ -414,6 +425,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
       versionNegotiation: input.versionNegotiation,
+      appServer: input.appServer,
       authenticationTemplate:
         vars.length > 0
           ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars }]
@@ -642,6 +654,7 @@ const buildConnectorInput = (
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
       versionNegotiation: config.versionNegotiation,
+      appServer: config.appServer,
     } satisfies McpStdioIntegrationConfig);
   }
 
@@ -709,21 +722,63 @@ const sortedRecord = (
  *  Exported for tests (not re-exported from `sdk/index.ts`, so this widens no
  *  public API): the retention property is a property of the KEY, and asserting
  *  it through pool behaviour alone would not see it. */
+/** The connector inputs the pool accepts.
+ *
+ *  Remote servers, and app-server bridge connections — NOT stdio generally.
+ *  Pooling the bridge is what makes a Codex plugin's "for this conversation"
+ *  approval mean anything: that grant lives on the Codex THREAD, and the
+ *  bridge starts one thread per connection, so a connection per call re-asked
+ *  on every call. Plain stdio stays unpooled on purpose: a spawn-per-call CLI
+ *  server is entitled to assume a fresh process each time. */
+export type PoolableConnectorInput =
+  | Extract<ConnectorInput, { readonly transport: "remote" }>
+  | (McpStdioIntegrationConfig & { readonly appServer: { readonly server: string } });
+
+/** Whether this connection may be retained between calls (see
+ *  `PoolableConnectorInput`). */
+export const isPoolableConnectorInput = (input: ConnectorInput): input is PoolableConnectorInput =>
+  input.transport === "remote" || input.appServer !== undefined;
+
 export const connectionPoolKey = (
-  input: Extract<ConnectorInput, { readonly transport: "remote" }>,
+  input: PoolableConnectorInput,
   template: string,
   values: Record<string, string | null>,
+  /** The connection this lease belongs to. Part of the identity, not a
+   *  detail: an app-server session accumulates the user's approvals ("for
+   *  this conversation"), and a no-credential integration hashes to the same
+   *  key for every connection without it — so two owners would share one
+   *  session, and one owner's approval would answer the other's prompt. */
+  identity: { readonly owner: string; readonly connection: string },
 ): Effect.Effect<string> =>
   sha256Hex(
-    JSON.stringify({
-      endpoint: input.endpoint,
-      transport: input.transport,
-      remoteTransport: input.remoteTransport,
-      headers: sortedRecord(input.headers),
-      queryParams: sortedRecord(input.queryParams),
-      template,
-      values: sortedRecord(values),
-    }),
+    JSON.stringify(
+      input.transport === "remote"
+        ? {
+            owner: identity.owner,
+            connection: identity.connection,
+            endpoint: input.endpoint,
+            transport: input.transport,
+            remoteTransport: input.remoteTransport,
+            headers: sortedRecord(input.headers),
+            queryParams: sortedRecord(input.queryParams),
+            template,
+            values: sortedRecord(values),
+          }
+        : {
+            owner: identity.owner,
+            connection: identity.connection,
+            transport: "appserver",
+            command: input.command,
+            args: input.args ?? [],
+            cwd: input.cwd ?? null,
+            env: sortedRecord(input.env),
+            server: input.appServer.server,
+            surface: input.appServer.surface ?? null,
+            modulePath: input.appServer.modulePath ?? null,
+            template,
+            values: sortedRecord(values),
+          },
+    ),
   );
 
 // ---------------------------------------------------------------------------
@@ -835,7 +890,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     ...("url" in preset && preset.url ? { url: preset.url } : {}),
     ...("endpoint" in preset && preset.endpoint ? { endpoint: preset.endpoint } : {}),
     ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(preset.fallbackIcon ? { fallbackIcon: preset.fallbackIcon } : {}),
     ...(preset.featured ? { featured: preset.featured } : {}),
+    ...(preset.family ? { family: preset.family } : {}),
+    ...("defaultSlug" in preset && preset.defaultSlug ? { defaultSlug: preset.defaultSlug } : {}),
     transport: ("transport" in preset && preset.transport === "stdio" ? "stdio" : "remote") as
       | "stdio"
       | "remote",
@@ -1299,6 +1357,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
 
+      // Discover locally installed Codex plugins with stdio MCP servers. The
+      // scanner touches node:fs, so it stays behind a dynamic import (the
+      // stdio-connector pattern) and behind the stdio gate: with stdio off the
+      // presets could not be added anyway.
+      const listCodexPlugins = () =>
+        allowStdio
+          ? Effect.promise(() => import("./codex-plugins")).pipe(
+              Effect.map((mod) => mod.scanCodexPlugins()),
+              Effect.withSpan("mcp.plugin.list_codex_plugins"),
+            )
+          : Effect.succeed([] as readonly CodexPluginEntry[]);
+
       return {
         probeEndpoint,
         addServer,
@@ -1307,6 +1377,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         getServer,
         configureServer,
         configureAuth,
+        listCodexPlugins,
       };
     },
 
@@ -1434,14 +1505,17 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           invokeHttpClientLayer,
         );
         const connector: McpConnector = createMcpConnector(connectorInput);
-        const poolKey =
-          connectorInput.transport === "remote"
-            ? yield* connectionPoolKey(
-                connectorInput,
-                String(credential.template),
-                credential.values,
-              )
-            : undefined;
+        const poolKey = isPoolableConnectorInput(connectorInput)
+          ? yield* connectionPoolKey(
+              connectorInput,
+              String(credential.template),
+              credential.values,
+              {
+                owner: String(credential.owner),
+                connection: String(credential.connection),
+              },
+            )
+          : undefined;
 
         const connectionRef = {
           owner: credential.owner,
@@ -1862,4 +1936,7 @@ export interface McpPluginExtension {
     slug: string,
     input: McpConfigureAuthInput,
   ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure>;
+  /** Locally installed Codex plugins with stdio MCP servers, as one-click
+   *  presets. Empty when stdio is disabled. */
+  readonly listCodexPlugins: () => Effect.Effect<readonly CodexPluginEntry[], never>;
 }

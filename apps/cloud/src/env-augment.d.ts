@@ -118,6 +118,9 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
+      /** Test-only override for the isolate-wide resident-runtime soft cap
+       *  (see `RESIDENT_RUNTIME_SOFT_CAP`). Unset in production. */
+      MCP_RESIDENT_RUNTIME_SOFT_CAP?: string;
       NODE_ENV?: string;
 
       // Shared with frontend

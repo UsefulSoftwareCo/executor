@@ -41,6 +41,7 @@ const toServerInput = (
       env?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
+      appServer?: { server: string; surface?: "sky" | "browser"; modulePath?: string };
       slug?: string;
     };
     return {
@@ -54,6 +55,7 @@ const toServerInput = (
       env: p.env,
       cwd: p.cwd,
       versionNegotiation: p.versionNegotiation,
+      appServer: p.appServer,
       slug: p.slug,
     };
   }
@@ -161,6 +163,24 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
             mode: payload.mode ?? "merge",
           });
           return { authenticationTemplate: [...authenticationTemplate] };
+        }),
+      ),
+    )
+    .handle("listCodexPlugins", () =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          const plugins = yield* ext.listCodexPlugins();
+          return { plugins: [...plugins] };
+        }),
+      ),
+    )
+    .handle("getCodexPluginIcon", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          const plugins = yield* ext.listCodexPlugins();
+          return { icon: plugins.find((plugin) => plugin.id === params.id)?.icon ?? null };
         }),
       ),
     ),

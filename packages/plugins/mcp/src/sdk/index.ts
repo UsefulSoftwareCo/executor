@@ -1,3 +1,5 @@
+export type { CodexPluginEntry } from "./codex-plugins";
+
 export {
   mcpPlugin,
   userFacingProbeMessage,

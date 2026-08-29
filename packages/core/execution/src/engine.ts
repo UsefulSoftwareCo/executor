@@ -210,6 +210,14 @@ export const formatPausedExecution = (
     );
   }
 
+  // Terms the upstream attached to the approval. Stated plainly, because a
+  // prompt whose schema is empty ("Allow X to access Y?") can still be
+  // asking for a PERSISTENT grant, and the answer differs.
+  const meta = req.meta;
+  if (meta !== undefined && Object.keys(meta).length > 0) {
+    lines.push(`\nApproval terms:\n${JSON.stringify(meta, null, 2)}`);
+  }
+
   lines.push(`\nexecutionId: ${paused.id}`);
   if (deadline) {
     lines.push(
@@ -232,6 +240,7 @@ export const formatPausedExecution = (
         args: paused.elicitationContext.args,
         ...(isUrlElicitation ? { url: req.url } : {}),
         ...(isFormElicitation ? { requestedSchema: req.requestedSchema } : {}),
+        ...(meta === undefined ? {} : { meta }),
       },
     },
   };
