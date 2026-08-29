@@ -452,6 +452,38 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
       );
     }
 
+    // The Codex app-server bridge: same spawn mechanics, but the child is
+    // `codex app-server` and an in-process adapter translates MCP to the
+    // app-server protocol (see appserver-connector.ts for why direct spawns
+    // of the curated Codex plugins cannot serve tool calls any more). The
+    // bridge answers the MCP handshake itself, so `versionNegotiation` does
+    // not apply on this path.
+    if (input.appServer !== undefined) {
+      const server = input.appServer.server;
+      return Effect.gen(function* () {
+        const { createAppServerTransport } = yield* Effect.tryPromise({
+          try: () => import("./appserver-connector"),
+          catch: () =>
+            new McpConnectionError({
+              transport: "appserver",
+              message: "Failed to load the Codex app-server bridge module",
+            }),
+        });
+
+        return yield* connectClient({
+          transport: "appserver",
+          createTransport: () =>
+            createAppServerTransport({
+              command,
+              args: input.args,
+              env: input.env,
+              cwd: input.cwd?.trim().length ? input.cwd.trim() : undefined,
+              server,
+            }),
+        });
+      });
+    }
+
     return Effect.gen(function* () {
       // Dynamic import so the underlying module (which evaluates
       // `node:child_process`) is only loaded when stdio is actually used.

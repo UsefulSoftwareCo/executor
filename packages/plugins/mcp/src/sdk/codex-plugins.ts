@@ -38,6 +38,10 @@ export interface CodexPluginEntry {
   readonly cwd?: string;
   /** Non-interactive env the spawn needs (currently only CODEX_HOME). */
   readonly env?: Readonly<Record<string, string>>;
+  /** Present on curated entries: the spawn is `codex app-server` and the
+   *  connector bridges MCP to it in process, calling tools on this named
+   *  server inside Codex. See `appserver-connector.ts`. */
+  readonly appServer?: { readonly server: string };
   /** Shown when `available` is false. */
   readonly setupHint?: string;
   /** The plugin's own icon from its local install, as a data URI. Read at
@@ -50,10 +54,11 @@ export interface CodexPluginEntry {
   readonly description?: string;
 }
 
-/** The Codex Computer Use client binary — the stable, unversioned entry point
- *  for every plugin the shared "Codex Computer Use" app implements. The
- *  versioned launcher scripts under `plugins/cache` resolve to exactly this
- *  path, so pointing at it directly survives plugin cache updates. */
+/** The Codex Computer Use client binary — the shared "Codex Computer Use"
+ *  app that implements every curated plugin. Not spawned any more (its
+ *  service refuses tool calls from non-Codex hosts; the app-server bridge is
+ *  the working path) but still the install marker: when it is absent the
+ *  plugins are not installed and the bridge would find no such server. */
 const clientBinaryPath = (codexHome: string): string =>
   path.join(
     codexHome,
@@ -70,6 +75,26 @@ const clientBinaryPath = (codexHome: string): string =>
 const CURATED_PLUGIN_NAMES: ReadonlySet<string> = new Set(
   CURATED_CODEX_PLUGINS.map((c) => c.pluginName),
 );
+
+/** The `codex` CLI the app-server bridge spawns. PATH first (the local
+ *  executor server usually inherits the user's shell PATH), then the common
+ *  install locations for launch contexts that do not. */
+const resolveCodexCli = (codexCli?: string): string | undefined => {
+  if (codexCli !== undefined) return isExecutableFile(codexCli) ? codexCli : undefined;
+  const dirs = [
+    ...(process.env["PATH"] ?? "").split(path.delimiter),
+    path.join(os.homedir(), ".bun", "bin"),
+    path.join(os.homedir(), ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  for (const dir of dirs) {
+    if (dir.length === 0) continue;
+    const candidate = path.join(dir, "codex");
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return undefined;
+};
 
 // ---------------------------------------------------------------------------
 // Manifest shapes — only the fields discovery needs. Everything else in the
@@ -321,18 +346,23 @@ const scanCachedPlugin = (
  *
  * The three plugins implemented by the shared "Codex Computer Use" app are
  * curated: they are always listed (so the integration is discoverable on a
- * machine without Codex) and they spawn the stable client binary directly
- * rather than the version-pinned cache launchers. Everything else found in
- * the plugin cache with a local-command MCP server is reported as scanned.
+ * machine without Codex) and they are reached through the `codex app-server`
+ * bridge — their service only honours tool calls from a Codex host session,
+ * so a direct client spawn can list tools but never call them. Everything
+ * else found in the plugin cache with a local-command MCP server is reported
+ * as scanned and spawned directly.
  */
 export const scanCodexPlugins = (options?: {
   readonly codexHome?: string;
+  /** Explicit `codex` CLI path (tests); default resolves PATH + fallbacks. */
+  readonly codexCli?: string;
 }): readonly CodexPluginEntry[] => {
   const codexHome =
     options?.codexHome ?? process.env["CODEX_HOME"] ?? path.join(os.homedir(), ".codex");
 
-  const client = clientBinaryPath(codexHome);
-  const clientAvailable = isExecutableFile(client);
+  const codexCli = resolveCodexCli(options?.codexCli);
+  const clientAvailable = isExecutableFile(clientBinaryPath(codexHome));
+  const curatedAvailable = codexCli !== undefined && clientAvailable;
 
   const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => {
     const display = curatedDisplayMetadata(codexHome, entry.pluginName);
@@ -340,14 +370,14 @@ export const scanCodexPlugins = (options?: {
       id: entry.id,
       name: entry.name,
       summary: entry.summary,
-      available: clientAvailable,
+      available: curatedAvailable,
       slug: entry.slug,
       source: "curated" as const,
-      command: client,
-      args: entry.args,
-      cwd: path.join(codexHome, "computer-use"),
+      command: codexCli ?? "codex",
+      args: ["app-server"],
       env: { CODEX_HOME: codexHome },
-      ...(clientAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
+      appServer: { server: entry.server },
+      ...(curatedAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
       ...display,
     };
   });

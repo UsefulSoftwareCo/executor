@@ -41,6 +41,7 @@ const toServerInput = (
       env?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
+      appServer?: { server: string };
       slug?: string;
     };
     return {
@@ -54,6 +55,7 @@ const toServerInput = (
       env: p.env,
       cwd: p.cwd,
       versionNegotiation: p.versionNegotiation,
+      appServer: p.appServer,
       slug: p.slug,
     };
   }

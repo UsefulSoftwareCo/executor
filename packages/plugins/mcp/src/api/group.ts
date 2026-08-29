@@ -63,6 +63,9 @@ const AddStdioServerPayload = Schema.Struct({
    *  2026-07-28) for modern-only servers; default is the legacy `initialize`
    *  handshake. */
   versionNegotiation: Schema.optional(Schema.Literals(["legacy", "auto"])),
+  /** Reach the server through the Codex app-server bridge: the command spawns
+   *  `codex app-server` and `server` names the MCP server inside Codex. */
+  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
   slug: Schema.optional(Schema.String),
 });
 
@@ -144,6 +147,9 @@ const CodexPluginEntrySchema = Schema.Struct({
   args: Schema.Array(Schema.String),
   cwd: Schema.optional(Schema.String),
   env: Schema.optional(StringMap),
+  /** Present on curated entries: add through the Codex app-server bridge,
+   *  calling tools on this named server inside Codex. */
+  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
   setupHint: Schema.optional(Schema.String),
   /** The plugin's own icon from its local install, as a data URI. */
   icon: Schema.optional(Schema.String),

@@ -226,6 +226,10 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  handshake — the right call for spawn-per-call servers, where the auto
    *  probe costs an extra child process per connect. */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Reach the server through the Codex app-server bridge: the command spawns
+   *  `codex app-server` and `server` names the MCP server inside Codex whose
+   *  tools this integration exposes. Set by the Codex plugin add flow. */
+  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
   slug: Schema.optional(Schema.String),
 });
 
@@ -391,6 +395,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
       versionNegotiation: input.versionNegotiation,
+      appServer: input.appServer,
       authenticationTemplate:
         vars.length > 0
           ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars }]
@@ -618,6 +623,7 @@ const buildConnectorInput = (
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
       versionNegotiation: config.versionNegotiation,
+      appServer: config.appServer,
     } satisfies McpStdioIntegrationConfig);
   }
 

@@ -254,6 +254,16 @@ export const McpStdioIntegrationConfig = Schema.Struct({
   /** Protocol negotiation at connect. Absent means `legacy` (see
    *  `McpStdioVersionNegotiation` for why that stays the default). */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Present when the spawned command is `codex app-server` rather than an
+   *  MCP server itself: the connector then bridges MCP to the Codex
+   *  app-server protocol in process, and `server` names the MCP server
+   *  inside Codex whose tools this integration exposes (e.g. `messages`).
+   *  This is how the curated Codex plugins are reached — since 2026-08-28
+   *  their service only honours tool calls from a Codex host session, so
+   *  spawning their client binary directly can list tools but not call them.
+   *  `versionNegotiation` is ignored when this is set (the bridge answers
+   *  the handshake itself). */
+  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
   /** Declared auth methods — a single `stdio_env` method naming the secret env
    *  vars, or `none`. A connection's `template` picks one by slug, exactly as
    *  for remote servers. Optional so pre-revamp stdio configs (which had no

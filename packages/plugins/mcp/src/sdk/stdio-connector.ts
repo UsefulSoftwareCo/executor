@@ -112,6 +112,22 @@ export const mergeStdioEnv = ({
   return Object.fromEntries(merged.values());
 };
 
+/** The exact child environment `createStdioTransport` produces: the SDK's
+ *  sudo-style safe-list underneath the inherited infrastructure allowlist and
+ *  the declared env. Exported for the app-server bridge, which manages its own
+ *  child process (the SDK transport validates every incoming line against MCP
+ *  schemas, and app-server traffic is not MCP-shaped) but must spawn with the
+ *  same environment rules. */
+export const stdioSpawnEnv = (declared?: Record<string, string>): Record<string, string> => ({
+  ...getDefaultEnvironment(),
+  ...mergeStdioEnv({
+    platform: process.platform,
+    inherited: inheritedEnv(),
+    declared,
+    sdkKeys: Object.keys(getDefaultEnvironment()),
+  }),
+});
+
 export const createStdioTransport = (config: StdioTransportConfig) =>
   new StdioClientTransport({
     command: config.command,

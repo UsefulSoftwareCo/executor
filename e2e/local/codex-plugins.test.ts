@@ -34,14 +34,19 @@ import { withLocalServer } from "./local-server";
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/stdio-mcp-server.mjs", import.meta.url));
+const APP_SERVER_FIXTURE = fileURLToPath(
+  new URL("./fixtures/codex-app-server.mjs", import.meta.url),
+);
 
-/** A fixture CODEX_HOME: the curated client binary and one cached plugin,
- *  both wrappers around the self-contained stdio MCP fixture (which ignores
- *  its argv, so the mode arguments the presets pass are harmless). */
+/** A fixture CODEX_HOME: the curated install markers (the Computer Use app
+ *  and a `codex` CLI whose `app-server` is the fake app-server fixture) and
+ *  one cached plugin wrapping the self-contained stdio MCP fixture. */
 const makeCodexHome = (): string => {
   const home = mkdtempSync(join(tmpdir(), "codex-home-e2e-"));
   const wrapper = `#!/bin/sh\nexec node "${FIXTURE}" "$@"\n`;
 
+  // The Computer Use app is the plugin-installed marker; the bridge never
+  // spawns it, so an empty executable is enough.
   const clientDir = join(
     home,
     "computer-use",
@@ -54,6 +59,13 @@ const makeCodexHome = (): string => {
   );
   mkdirSync(clientDir, { recursive: true });
   writeFileSync(join(clientDir, "SkyComputerUseClient"), wrapper, { mode: 0o755 });
+
+  // The `codex` CLI the curated recipes spawn — resolved through PATH, so
+  // the scenario prepends this bin dir to the server's PATH.
+  mkdirSync(join(home, "bin"), { recursive: true });
+  writeFileSync(join(home, "bin", "codex"), `#!/bin/sh\nexec node "${APP_SERVER_FIXTURE}" "$@"\n`, {
+    mode: 0o755,
+  });
 
   const versionDir = join(home, "plugins", "cache", "personal", "echo-suite", "1.0.2");
   mkdirSync(join(versionDir, ".codex-plugin"), { recursive: true });
@@ -114,10 +126,16 @@ scenario(
               CODEX_HOME: codexHome,
             });
           }
-          expect(
-            byId.get("codex-messages")?.command.endsWith("SkyComputerUseClient"),
-            "curated entries spawn the stable client binary, not a versioned cache path",
-          ).toBe(true);
+          // Curated entries carry the app-server bridge recipe: `codex
+          // app-server` plus the server name the bridge calls tools on.
+          const messages = byId.get("codex-messages");
+          expect(messages?.command.endsWith("codex"), "curated entries spawn the codex CLI").toBe(
+            true,
+          );
+          expect(messages?.args, "curated entries run the app-server").toEqual(["app-server"]);
+          expect(messages?.appServer, "curated entries name their Codex server").toEqual({
+            server: "messages",
+          });
 
           // Add two entries exactly as the add-form's Codex-plugins card does:
           // the reported recipe, verbatim.
@@ -133,6 +151,9 @@ scenario(
                 args: [...plugin.args],
                 ...(plugin.cwd === undefined ? {} : { cwd: plugin.cwd }),
                 ...(plugin.env === undefined ? {} : { env: { ...plugin.env } }),
+                ...(plugin.appServer === undefined
+                  ? {}
+                  : { appServer: { server: plugin.appServer.server } }),
               },
             });
           }
@@ -161,7 +182,13 @@ scenario(
             ).toContain("saw_codex_home");
           }
         }),
-      { env: { CODEX_HOME: codexHome } },
+      {
+        env: {
+          CODEX_HOME: codexHome,
+          // The scanner resolves the `codex` CLI through the server's PATH.
+          PATH: `${join(codexHome, "bin")}:${process.env["PATH"] ?? ""}`,
+        },
+      },
     );
   }),
 );

@@ -81,12 +81,21 @@ const writeCachedPlugin = (
   return versionDir;
 };
 
+/** A fake `codex` CLI inside the temp home, passed explicitly so the scan
+ *  never resolves the machine's real install through PATH. */
+const writeCodexCli = (home: string): string => {
+  const cli = join(home, "bin", "codex");
+  writeExecutable(cli);
+  return cli;
+};
+
 describe("scanCodexPlugins", () => {
-  it("reports the curated plugins as available when the client binary exists", () => {
+  it("reports the curated plugins as app-server recipes when Codex is fully installed", () => {
     const home = makeHome();
     writeExecutable(join(home, CLIENT_RELATIVE));
+    const cli = writeCodexCli(home);
 
-    const entries = scanCodexPlugins({ codexHome: home });
+    const entries = scanCodexPlugins({ codexHome: home, codexCli: cli });
     const curated = entries.filter((entry) => entry.source === "curated");
 
     expect(curated.map((entry) => entry.id)).toEqual([
@@ -96,22 +105,24 @@ describe("scanCodexPlugins", () => {
     ]);
     for (const entry of curated) {
       expect(entry.available).toBe(true);
-      expect(entry.command).toBe(join(home, CLIENT_RELATIVE));
-      expect(entry.cwd).toBe(join(home, "computer-use"));
+      // Curated plugins go through the app-server bridge — its service only
+      // honours Codex host sessions, so the client binary is never spawned.
+      expect(entry.command).toBe(cli);
+      expect(entry.args).toEqual(["app-server"]);
       expect(entry.env).toEqual({ CODEX_HOME: home });
       expect(entry.setupHint).toBeUndefined();
     }
-    expect(curated.map((entry) => entry.args)).toEqual([
-      ["messages", "mcp"],
-      ["mcp"],
-      ["computer-history", "mcp"],
+    expect(curated.map((entry) => entry.appServer?.server)).toEqual([
+      "messages",
+      "computer-use",
+      "computer-history",
     ]);
   });
 
   it("reports the curated plugins with a setup hint when Codex is not installed", () => {
     const home = makeHome();
 
-    const entries = scanCodexPlugins({ codexHome: home });
+    const entries = scanCodexPlugins({ codexHome: home, codexCli: join(home, "bin", "codex") });
     const curated = entries.filter((entry) => entry.source === "curated");
 
     expect(curated).toHaveLength(3);
@@ -119,6 +130,19 @@ describe("scanCodexPlugins", () => {
       expect(entry.available).toBe(false);
       expect(entry.setupHint).toContain("Install the Codex app");
     }
+  });
+
+  it("stays unavailable when the CLI exists but the Computer Use app is missing", () => {
+    const home = makeHome();
+    const cli = writeCodexCli(home);
+
+    const curated = scanCodexPlugins({ codexHome: home, codexCli: cli }).filter(
+      (entry) => entry.source === "curated",
+    );
+
+    // `codex app-server` would start, but no `messages`/`computer-use` server
+    // exists without the plugin app — so the card must not claim readiness.
+    for (const entry of curated) expect(entry.available).toBe(false);
   });
 
   it("scans cached plugins, resolving command and cwd against the newest version", () => {

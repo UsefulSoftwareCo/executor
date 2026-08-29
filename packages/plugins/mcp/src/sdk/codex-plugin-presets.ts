@@ -15,8 +15,9 @@ export interface CuratedCodexPlugin {
   readonly name: string;
   /** Suggested integration slug, e.g. `codex_messages`. */
   readonly slug: string;
-  /** Arguments to the shared SkyComputerUseClient binary. */
-  readonly args: readonly string[];
+  /** The MCP server name this plugin registers inside Codex — the `server`
+   *  the app-server bridge calls tools against. */
+  readonly server: string;
   readonly summary: string;
 }
 
@@ -33,7 +34,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "messages",
     name: "Messages",
     slug: "codex_messages",
-    args: ["messages", "mcp"],
+    server: "messages",
     summary:
       "Read, search, and send iMessage/SMS texts through Apple's Messages app on this Mac, via the Codex plugin. Reads and sends are approved in its native dialogs.",
   },
@@ -42,7 +43,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-use",
     name: "Computer Use",
     slug: "codex_computer_use",
-    args: ["mcp"],
+    server: "computer-use",
     summary:
       "Control macOS desktop apps via the Codex plugin: read the screen and accessibility tree, click, type, and scroll.",
   },
@@ -51,7 +52,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-history",
     name: "Computer History",
     slug: "codex_computer_history",
-    args: ["computer-history", "mcp"],
+    server: "computer-history",
     summary:
       "Ask about recent on-screen activity from Codex's private local record (requires Computer History enabled in Codex).",
   },

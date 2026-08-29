@@ -54,6 +54,7 @@ export default function CodexPluginAdd(props: {
         args: [...plugin.args],
         ...(plugin.cwd !== undefined ? { cwd: plugin.cwd } : {}),
         ...(plugin.env !== undefined ? { env: { ...plugin.env } } : {}),
+        ...(plugin.appServer !== undefined ? { appServer: { ...plugin.appServer } } : {}),
       },
       reactivityKeys: integrationWriteKeys,
     });
