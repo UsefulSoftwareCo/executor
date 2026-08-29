@@ -248,6 +248,50 @@ const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
     signal.addEventListener("abort", () => resume(Effect.void), { once: true });
   });
 
+/** JSON-RPC methods the 401 replay below may re-send. An HTTP 401 does not
+ *  guarantee the server did no work before rejecting, so replay is limited to
+ *  methods that are read-only or handshake-only: `initialize` and
+ *  `notifications/initialized` (handshake), `ping` (side-effect-free by
+ *  spec), and `tools/list` (discovery). That is every method this codebase
+ *  sends except `tools/call`, which may have executed its side effect before
+ *  the 401 and must NEVER run twice. The set is deliberately closed: an
+ *  unlisted or unparseable method does not replay either. */
+const REPLAYABLE_JSONRPC_METHODS: ReadonlySet<string> = new Set([
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+]);
+
+const JsonRpcMethodOnly = Schema.Struct({ method: Schema.String });
+const decodeJsonRpcMethods = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([JsonRpcMethodOnly, Schema.Array(JsonRpcMethodOnly)])),
+);
+
+/** Whether a 401-rejected request is safe to replay once. Only requests whose
+ *  buffered JSON-RPC body consists entirely of allowlisted read-only methods
+ *  qualify (a batch replays only when EVERY element is allowlisted). The one
+ *  bodyless exception is `GET`, the streamable-http server->client stream
+ *  open, which carries no JSON-RPC request and is read-only by HTTP
+ *  semantics. Everything else — `tools/call` above all — fails closed. */
+const isReplaySafeRequest = (init: RequestInit | undefined): boolean => {
+  const body = init?.body;
+  if (body == null) return httpMethodFrom(init?.method) === "GET";
+  // Both remote SDK transports send JSON-RPC bodies as `JSON.stringify`
+  // strings. Any other body shape cannot be verified read-only here.
+  if (typeof body !== "string") return false;
+  return Option.match(decodeJsonRpcMethods(body), {
+    onNone: () => false,
+    onSome: (parsed) => {
+      const messages = Array.isArray(parsed) ? parsed : [parsed];
+      return (
+        messages.length > 0 &&
+        messages.every((message) => REPLAYABLE_JSONRPC_METHODS.has(message.method))
+      );
+    },
+  });
+};
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
   staticOAuthBearer: boolean,
@@ -298,19 +342,27 @@ const fetchFromHttpClientLayer = (
     const promise = Effect.runPromise(effect).then(async (response) => {
       let settled = response;
       if (staticOAuthBearer && settled.status === 401) {
-        // One immediate replay before classifying: a lone 401 can be a
-        // transient upstream blip (a proxy hiccup, a racing key rotation on
-        // the server), and stamping reauthorization-required from a single
-        // sample forces a needless reconnect. Replaying is safe — a 401
-        // refused the request before processing it, and every body this
+        // One immediate replay before classifying — but only for requests the
+        // allowlist proves read-only (`isReplaySafeRequest`). A lone 401 on
+        // discovery/handshake traffic can be a transient upstream blip (a
+        // proxy hiccup, a racing key rotation on the server), and stamping
+        // reauthorization-required from a single sample forces a needless
+        // reconnect; the replay itself is possible because every body this
         // adapter builds is buffered (`applyBody`), never a one-shot stream.
-        // Retrying is preferred over demanding a `WWW-Authenticate` challenge
-        // because a headerless 401 (noncompliant server; the MCP auth spec
-        // requires the challenge) must STILL stop at this boundary — falling
-        // through would hand the 401 to the SDK, whose interactive fallback
-        // performs exactly the avoidable discovery/DCR this interception
-        // exists to prevent.
-        settled = await Effect.runPromise(effect);
+        // A side-effectful method (`tools/call`) never replays: a 401 does
+        // not guarantee the server did no work first, so re-sending could
+        // execute the action twice. Its single 401 classifies directly —
+        // the invocation has already failed either way, and the
+        // transient-blip concern only justified the retry on read-only
+        // paths. Retrying/classifying here is preferred over demanding a
+        // `WWW-Authenticate` challenge because a headerless 401
+        // (noncompliant server; the MCP auth spec requires the challenge)
+        // must STILL stop at this boundary — falling through would hand the
+        // 401 to the SDK, whose interactive fallback performs exactly the
+        // avoidable discovery/DCR this interception exists to prevent.
+        if (isReplaySafeRequest(init)) {
+          settled = await Effect.runPromise(effect);
+        }
         if (settled.status === 401) {
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
           throw new McpOAuthReauthorizationRequired({

@@ -540,6 +540,11 @@ describe("mcpPlugin", () => {
           },
         });
         expect(ledger.requests.filter((entry) => entry === "/register")).toEqual([]);
+        // Exactly 2: the original tools/list plus the adapter's single
+        // read-only replay. A third request would mean the replay loops; a
+        // single one would mean a lone 401 classified without the
+        // transient-blip re-sample.
+        expect(ledger.requests.filter((entry) => entry === "/mcp#tools/list")).toHaveLength(2);
       }),
   );
 
@@ -989,6 +994,39 @@ describe("mcpPlugin", () => {
       ),
     );
   }
+
+  // The lone-401 replay above is restricted to read-only methods. A
+  // `tools/call` may have executed its side effect before the server answered
+  // 401 (HTTP gives no such guarantee), so the adapter must never re-send it
+  // — the single 401 classifies reauthorization directly instead.
+  it.effect("never replays a tools/call 401: the action must not run twice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let callToolRequests = 0;
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_replay_401",
+          // oauth: the transport gets an authProvider, which is the
+          // staticOAuthBearer path where the adapter's 401 replay lives.
+          oauth: true,
+          callTool: () => {
+            callToolRequests += 1;
+            return HttpServerResponse.text("do-not-leak: revoked mid-session", { status: 401 });
+          },
+        });
+
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_reauth_required",
+            details: { category: "authentication" },
+          },
+        });
+        expect(callToolRequests, "a 401 tools/call must reach the server exactly once").toBe(1);
+      }),
+    ),
+  );
 
   it.effect(
     "classifies a scope-insufficient 403 as oauth_scope_insufficient, not connection_rejected",
