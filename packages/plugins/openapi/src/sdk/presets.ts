@@ -170,13 +170,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     icon: "https://integrations.sh/logo/digitalocean.com",
   },
   {
-    id: "petstore",
-    name: "Petstore",
-    summary: "Classic OpenAPI demo, no auth required.",
-    url: "https://petstore3.swagger.io/api/v3/openapi.json",
-    icon: "https://integrations.sh/logo/petstore3.swagger.io",
-  },
-  {
     id: "val-town",
     name: "Val Town",
     summary: "Vals, runs, blobs, and email/web endpoints.",
