@@ -19,6 +19,8 @@ export interface McpStdioPreset {
   readonly icon?: string;
   readonly featured?: boolean;
   readonly family?: string;
+  /** Integration slug this preset registers as, for favicon resolution. */
+  readonly defaultSlug?: string;
   readonly transport: "stdio";
   readonly command: string;
   readonly args?: readonly string[];
@@ -31,15 +33,16 @@ export type McpPreset = McpRemotePreset | McpStdioPreset;
 // use", …). `command` is deliberately empty: the real spawn recipe is
 // machine-specific and comes from the server-side scanner
 // (`codex-plugins.ts`); picking one of these opens the focused Codex add
-// screen, which shows the plugin's own locally installed icon. The list icon
-// is the OpenAI logo — the shared provenance of all three — because a static
-// preset cannot reach the machine-local icon files.
+// screen. The icon uses the `executor:` scheme (see preset-icon.tsx): the
+// plugin's own icon is a machine-local file, so it is served by the local API
+// and resolved with the auth header — a static URL cannot reach it.
 const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map((plugin) => ({
   id: plugin.id,
   name: plugin.name,
   summary: plugin.summary,
-  icon: "https://integrations.sh/logo/openai.com",
+  icon: `executor:/mcp/codex-plugins/${plugin.id}/icon`,
   family: "codex",
+  defaultSlug: plugin.slug,
   transport: "stdio",
   command: "",
 }));

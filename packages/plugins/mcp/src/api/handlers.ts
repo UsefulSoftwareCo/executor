@@ -170,5 +170,14 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
           return { plugins: [...plugins] };
         }),
       ),
+    )
+    .handle("getCodexPluginIcon", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          const plugins = yield* ext.listCodexPlugins();
+          return { icon: plugins.find((plugin) => plugin.id === params.id)?.icon ?? null };
+        }),
+      ),
     ),
 );

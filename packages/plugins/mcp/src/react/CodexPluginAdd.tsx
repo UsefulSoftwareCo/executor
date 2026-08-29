@@ -90,18 +90,30 @@ export default function CodexPluginAdd(props: {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <div className="flex items-start gap-4">
+      {/* Mirrors the plugin's own page in Codex: its icon, display name,
+          tagline, and long description, all read from the local install. */}
+      <div className="flex flex-col gap-4">
         {plugin.icon !== undefined && (
-          <img
-            src={plugin.icon}
-            alt=""
-            className="mt-0.5 size-12 shrink-0 rounded-xl border border-border"
-          />
+          <img src={plugin.icon} alt="" className="size-16 rounded-2xl" />
         )}
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-foreground">{plugin.name}</h1>
-          <p className="mt-1 text-[13px] text-muted-foreground">{plugin.summary}</p>
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-xl font-semibold text-foreground">
+              {plugin.displayName ?? plugin.name}
+            </h1>
+            <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+              Codex plugin
+            </span>
+          </div>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            {plugin.tagline ?? plugin.summary}
+          </p>
         </div>
+        {plugin.description !== undefined && (
+          <p className="max-w-prose text-[13px] leading-relaxed text-muted-foreground">
+            {plugin.description}
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col gap-1 rounded-lg border border-border px-3 py-2.5">

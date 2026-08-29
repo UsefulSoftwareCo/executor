@@ -43,6 +43,11 @@ export interface CodexPluginEntry {
   /** The plugin's own icon from its local install, as a data URI. Read at
    *  runtime from the user's disk — never shipped with executor. */
   readonly icon?: string;
+  /** The plugin's own display metadata from its local manifest, so the add
+   *  screen can mirror how the plugin presents itself in Codex. */
+  readonly displayName?: string;
+  readonly tagline?: string;
+  readonly description?: string;
 }
 
 /** The Codex Computer Use client binary — the stable, unversioned entry point
@@ -78,6 +83,7 @@ const PluginManifest = Schema.Struct({
     Schema.Struct({
       displayName: Schema.optional(Schema.String),
       shortDescription: Schema.optional(Schema.String),
+      longDescription: Schema.optional(Schema.String),
       logo: Schema.optional(Schema.String),
     }),
   ),
@@ -184,10 +190,19 @@ const readIconDataUri = (file: string): string | undefined =>
     return `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
   }, undefined);
 
-/** Icon for a curated plugin: its cache entry (any source, newest version)
- *  declares a `logo` path in the manifest. The curated SPAWN target is the
- *  stable client binary, but the icon only exists in the cache. */
-const curatedIconDataUri = (codexHome: string, pluginName: string): string | undefined => {
+interface CodexPluginDisplay {
+  readonly icon?: string;
+  readonly displayName?: string;
+  readonly tagline?: string;
+  readonly description?: string;
+}
+
+/** Display metadata (icon, names, descriptions) for a curated plugin from its
+ *  cache entry (any source, newest version) — how the plugin presents itself
+ *  in Codex. The curated SPAWN target is the stable client binary, but this
+ *  metadata only exists in the cache; absent cache, the curated card falls
+ *  back to executor's own wording. */
+const curatedDisplayMetadata = (codexHome: string, pluginName: string): CodexPluginDisplay => {
   const cacheDir = path.join(codexHome, "plugins", "cache");
   for (const sourceName of listDirs(cacheDir)) {
     const pluginDir = path.join(cacheDir, sourceName, pluginName);
@@ -197,12 +212,23 @@ const curatedIconDataUri = (codexHome: string, pluginName: string): string | und
     const manifest = Option.getOrUndefined(
       decodeManifestJson(readText(path.join(versionDir, ".codex-plugin", "plugin.json"))),
     );
-    const logo = manifest?.interface?.logo;
-    if (logo === undefined) continue;
-    const icon = readIconDataUri(path.resolve(versionDir, logo));
-    if (icon !== undefined) return icon;
+    if (manifest === undefined) continue;
+    const logo = manifest.interface?.logo;
+    const icon = logo === undefined ? undefined : readIconDataUri(path.resolve(versionDir, logo));
+    return {
+      ...(icon === undefined ? {} : { icon }),
+      ...(manifest.interface?.displayName === undefined
+        ? {}
+        : { displayName: manifest.interface.displayName }),
+      ...(manifest.interface?.shortDescription === undefined
+        ? {}
+        : { tagline: manifest.interface.shortDescription }),
+      ...(manifest.interface?.longDescription === undefined
+        ? {}
+        : { description: manifest.interface.longDescription }),
+    };
   }
-  return undefined;
+  return {};
 };
 
 // ---------------------------------------------------------------------------
@@ -242,6 +268,18 @@ const scanCachedPlugin = (
     manifest.interface?.logo === undefined
       ? undefined
       : readIconDataUri(path.resolve(versionDir, manifest.interface.logo));
+  const display: CodexPluginDisplay = {
+    ...(icon === undefined ? {} : { icon }),
+    ...(manifest.interface?.displayName === undefined
+      ? {}
+      : { displayName: manifest.interface.displayName }),
+    ...(manifest.interface?.shortDescription === undefined
+      ? {}
+      : { tagline: manifest.interface.shortDescription }),
+    ...(manifest.interface?.longDescription === undefined
+      ? {}
+      : { description: manifest.interface.longDescription }),
+  };
 
   const localServers = Object.entries(servers.mcpServers).flatMap(([serverKey, spec]) =>
     spec.command !== undefined && spec.type !== "http" && spec.url === undefined
@@ -276,7 +314,7 @@ const scanCachedPlugin = (
       // the integration after adding it.
       env: { CODEX_HOME: codexHome },
       ...(available ? {} : { setupHint: CODEX_SETUP_HINT }),
-      ...(icon === undefined ? {} : { icon }),
+      ...display,
     };
   });
 };
@@ -300,7 +338,7 @@ export const scanCodexPlugins = (options?: {
   const clientAvailable = isExecutableFile(client);
 
   const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => {
-    const icon = curatedIconDataUri(codexHome, entry.pluginName);
+    const display = curatedDisplayMetadata(codexHome, entry.pluginName);
     return {
       id: entry.id,
       name: entry.name,
@@ -313,7 +351,7 @@ export const scanCodexPlugins = (options?: {
       cwd: path.join(codexHome, "computer-use"),
       env: { CODEX_HOME: codexHome },
       ...(clientAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
-      ...(icon === undefined ? {} : { icon }),
+      ...display,
     };
   });
 

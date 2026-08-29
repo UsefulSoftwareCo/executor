@@ -41,6 +41,7 @@ import {
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
+import { PresetIcon } from "../components/preset-icon";
 import { groupIntegrations, type IntegrationFamilyGroup } from "../lib/integration-grouping";
 import {
   availableCatalogKinds,
@@ -464,18 +465,15 @@ function PresetGrid(props: {
                     }}
                   >
                     <CardStackEntryMedia>
-                      {preset.icon ? (
-                        <img
-                          src={preset.icon}
-                          alt=""
-                          className="size-5 object-contain"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <svg viewBox="0 0 16 16" className="size-3.5" fill="none">
-                          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
-                        </svg>
-                      )}
+                      <PresetIcon
+                        {...(preset.icon ? { icon: preset.icon } : {})}
+                        className="size-5 object-contain"
+                        fallback={
+                          <svg viewBox="0 0 16 16" className="size-3.5" fill="none">
+                            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2" />
+                          </svg>
+                        }
+                      />
                     </CardStackEntryMedia>
                     <CardStackEntryContent>
                       <CardStackEntryTitle>{preset.name}</CardStackEntryTitle>

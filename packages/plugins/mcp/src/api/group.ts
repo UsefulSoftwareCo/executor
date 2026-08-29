@@ -147,10 +147,22 @@ const CodexPluginEntrySchema = Schema.Struct({
   setupHint: Schema.optional(Schema.String),
   /** The plugin's own icon from its local install, as a data URI. */
   icon: Schema.optional(Schema.String),
+  /** The plugin's own display metadata from its local manifest. */
+  displayName: Schema.optional(Schema.String),
+  tagline: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
 });
 
 const ListCodexPluginsResponse = Schema.Struct({
   plugins: Schema.Array(CodexPluginEntrySchema),
+});
+
+// One plugin's icon by preset id, for `executor:`-scheme icon resolution
+// (static catalog presets cannot embed a machine-local file; an <img> cannot
+// carry the bearer header, so the client fetches this and renders the data
+// URI).
+const CodexPluginIconResponse = Schema.Struct({
+  icon: Schema.NullOr(Schema.String),
 });
 
 // ---------------------------------------------------------------------------
@@ -214,6 +226,13 @@ export const McpGroup = HttpApiGroup.make("mcp")
   .add(
     HttpApiEndpoint.get("listCodexPlugins", "/mcp/codex-plugins", {
       success: ListCodexPluginsResponse,
+      error: [InternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getCodexPluginIcon", "/mcp/codex-plugins/:id/icon", {
+      params: { id: Schema.String },
+      success: CodexPluginIconResponse,
       error: [InternalError],
     }),
   );
