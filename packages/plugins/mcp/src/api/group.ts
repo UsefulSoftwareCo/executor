@@ -36,6 +36,11 @@ const AddRemoteServerPayload = Schema.Struct({
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
+  /** Pin legacy protocol negotiation for a server that echoes the modern
+   *  revision but breaks its contract (the probe reports when only legacy
+   *  worked). Omitting this here silently stripped the pin from the stored
+   *  integration, leaving it unusable against exactly that server. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
   slug: Schema.optional(Schema.String),
   queryParams: Schema.optional(StringMap),
   headers: Schema.optional(StringMap),

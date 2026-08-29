@@ -120,6 +120,12 @@ export interface IntegrationPreset {
   readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
+  /** The public registry lists this product, so the picker shows the
+   *  registry's card instead of a preset card (the preset's knowledge still
+   *  rides quick add). Built-in presets set this; a deployment's custom
+   *  preset does not, and keeps its own card — hiding it would make a
+   *  private API undiscoverable. */
+  readonly registryListed?: boolean;
 }
 
 export type IntegrationPresetAuthentication =

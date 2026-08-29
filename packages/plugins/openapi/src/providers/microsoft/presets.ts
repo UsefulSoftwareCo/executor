@@ -569,6 +569,7 @@ export const microsoftCatalog: readonly IntegrationPreset[] = microsoftGraphScop
     ...(preset.featured ? { featured: preset.featured } : {}),
     family: "microsoft",
     specFormat: "microsoft-graph",
+    registryListed: true,
     defaultSlug: microsoftServiceSlug(preset.id),
     authTemplate: microsoftGraphCatalogAuthTemplate(preset),
     ...(preset.id === "profile" ? { healthCheck: { operation: "me.GetUser" } } : {}),

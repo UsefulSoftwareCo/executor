@@ -250,18 +250,35 @@ const connectUrlOf = (surface: SurfaceRecord, kind: CatalogKind): string | undef
         ? surface.url
         : undefined;
 
+const normalizedProductToken = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
 export const pickConnectTarget = (
   payload: unknown,
   kind: CatalogKind,
+  preferredName?: string,
 ): CatalogConnectTarget | undefined =>
   Option.match(decodeSurfaceDocument(payload), {
     onNone: () => undefined,
     onSome: ({ surfaces }) => {
-      for (const surface of surfaces) {
+      // One domain can carry several same-kind products (Google Photos
+      // Library and Picker share photos.google.com). When the caller names
+      // the product, a slug whose normalized form matches wins; first-of-kind
+      // is only the answer when nothing identifies the product.
+      const usable = surfaces.flatMap((surface) => {
         const url = connectUrlOf(surface, kind);
-        if (url) return { kind, url, ...(surface.slug ? { slug: surface.slug } : {}) };
+        return url
+          ? [{ kind, url, ...(surface.slug ? { slug: surface.slug } : {}) } as CatalogConnectTarget]
+          : [];
+      });
+      if (preferredName) {
+        const token = normalizedProductToken(preferredName);
+        const named = usable.find(
+          (target) => target.slug && normalizedProductToken(target.slug) === token,
+        );
+        if (named) return named;
       }
-      return undefined;
+      return usable[0];
     },
   });
 
@@ -270,11 +287,12 @@ export const pickConnectTarget = (
 export const resolveConnectTarget = (
   domain: string,
   kinds: readonly CatalogKind[],
+  preferredName?: string,
 ): Effect.Effect<CatalogConnectTarget | undefined, CatalogRequestError> => {
   const url = new URL(`/api/${encodeURIComponent(domain)}/surface`, INTEGRATIONS_SH_ORIGIN);
   return Effect.map(fetchCatalogJson(url), (payload) => {
     for (const kind of kinds) {
-      const target = pickConnectTarget(payload, kind);
+      const target = pickConnectTarget(payload, kind, preferredName);
       if (target) return target;
     }
     return undefined;

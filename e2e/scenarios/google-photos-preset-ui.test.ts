@@ -93,6 +93,27 @@ scenario(
           .getByRole("button", { name: "Add Google Photos Picker API" })
           .waitFor();
       });
+
+      await step("Adding the SECOND same-kind card keeps its own identity", async () => {
+        // The regression this guards: selection re-derived the surface by
+        // KIND, so the second product of a kind inherited the first's slug,
+        // auth, and overrides.
+        await page
+          .getByTestId("catalog-photos.google.com-openapi")
+          .filter({ hasText: "Google Photos Picker API" })
+          .getByRole("button", { name: "Add Google Photos Picker API" })
+          .click();
+        const pickerCard = page
+          .getByTestId("catalog-photos.google.com-openapi")
+          .filter({ hasText: "Google Photos Picker API" });
+        await pickerCard
+          .getByRole("link", { name: "View Google Photos Picker API" })
+          .waitFor({ timeout: 120_000 });
+        const href = await pickerCard
+          .getByRole("link", { name: "View Google Photos Picker API" })
+          .getAttribute("href");
+        expect(href).toContain("/integrations/google_photos_picker");
+      });
     });
   }),
 );

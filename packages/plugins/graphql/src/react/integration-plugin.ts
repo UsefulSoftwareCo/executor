@@ -55,7 +55,7 @@ export const graphqlIntegrationPlugin: IntegrationPlugin = {
   label: "GraphQL",
   add: lazy(importAdd),
   accounts: lazy(importAccounts),
-  presets: graphqlPresets,
+  presets: graphqlPresets.map((preset) => ({ ...preset, registryListed: true })),
   preload: () => {
     void importAdd();
     void importAccounts();

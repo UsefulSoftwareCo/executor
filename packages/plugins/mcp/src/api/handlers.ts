@@ -65,6 +65,7 @@ const toServerInput = (
     description?: string;
     endpoint: string;
     remoteTransport?: "streamable-http" | "sse" | "auto";
+    versionNegotiation?: "auto" | "legacy";
     queryParams?: Record<string, string>;
     headers?: Record<string, string>;
     slug?: string;
@@ -81,6 +82,7 @@ const toServerInput = (
     description: p.description,
     endpoint: p.endpoint,
     remoteTransport: p.remoteTransport,
+    versionNegotiation: p.versionNegotiation,
     queryParams: p.queryParams,
     headers: p.headers,
     slug: p.slug,

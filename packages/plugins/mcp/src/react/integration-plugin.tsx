@@ -92,11 +92,13 @@ export const createMcpIntegrationPlugin = (
     <LazyAddMcpIntegration {...props} allowStdio={allowStdio} />
   );
 
-  const presets = allowStdio
+  const base = allowStdio
     ? mcpPresets
     : mcpPresets.filter(
         (p) => !("transport" in p && (p as { transport?: string }).transport === "stdio"),
       );
+  // Built-ins are registry-listed; a deployment's custom presets would not be.
+  const presets = base.map((p) => ({ ...p, registryListed: true }));
 
   return {
     key: "mcp",

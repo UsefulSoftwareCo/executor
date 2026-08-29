@@ -331,16 +331,31 @@ type QuickAddFn = (input: IntegrationQuickAddInput) => Promise<IntegrationQuickA
  *  and mounting one bridge per plugin is how a fixed set of per-plugin hooks
  *  stays rules-of-hooks clean. */
 function QuickAddBridge(props: {
-  readonly plugin: IntegrationPlugin;
+  readonly pluginKey: string;
+  /** The plugin's hook, called UNCONDITIONALLY — the host renders a bridge
+   *  only for plugins that have one, so this component's hook sequence never
+   *  depends on a plugin object's shape. */
+  readonly useQuickAdd: () => QuickAddFn;
   readonly register: (key: string, fn: QuickAddFn | null) => void;
 }) {
-  const { plugin, register } = props;
-  const fn = plugin.useQuickAdd?.() ?? null;
+  const { pluginKey, useQuickAdd, register } = props;
+  const fn = useQuickAdd();
   useEffect(() => {
-    register(plugin.key, fn);
-    return () => register(plugin.key, null);
-  }, [plugin.key, fn, register]);
+    register(pluginKey, fn);
+    return () => register(pluginKey, null);
+  }, [pluginKey, fn, register]);
   return null;
+}
+
+/** One bridge per plugin KEY: a duplicate key would share the React key and
+ *  the callback slot, letting either copy's cleanup delete the other. */
+function quickAddCapablePlugins(plugins: readonly IntegrationPlugin[]) {
+  const seen = new Set<string>();
+  return plugins.filter((plugin) => {
+    if (!plugin.useQuickAdd || seen.has(plugin.key)) return false;
+    seen.add(plugin.key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -599,11 +614,13 @@ export function IntegrationBrowsePage() {
       kind: CatalogKind,
       title: string,
       rowKey: string,
-      knownUrl?: string,
+      // The EXACT surface this card was built from. Never re-derived from
+      // `kind`: one domain can carry two same-kind products (Google Photos
+      // Library and Picker), and a kind lookup silently merged the clicked
+      // card's URL with the FIRST surface's slug, auth, and overrides.
+      surface?: CatalogSurface,
     ) => {
-      // The registry already told us where this surface lives — go, rather than
-      // spending a round trip re-asking for something we were handed.
-      const surface = entry.surfaces?.find((candidate) => candidate.kind === kind);
+      const knownUrl = surface?.url;
       if (knownUrl) {
         const added = await tryQuickAdd({
           kind,
@@ -629,7 +646,11 @@ export function IntegrationBrowsePage() {
       if (resolvingDomain !== null) return;
       setResolvingDomain(entry.domain);
       setRowError(null);
-      const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, [kind]));
+      // The row's product name disambiguates same-kind surfaces in the doc
+      // (the registry row itself was kinds-only, so the name is all we have).
+      const exit = await Effect.runPromiseExit(
+        resolveConnectTarget(entry.domain, [kind], entry.name ?? undefined),
+      );
       setResolvingDomain(null);
       if (Exit.isFailure(exit) || !exit.value) {
         setRowError({
@@ -682,7 +703,14 @@ export function IntegrationBrowsePage() {
   const presetRows = useMemo<readonly Row[]>(() => {
     const rows: Row[] = [];
     for (const entry of allPresets) {
-      if (entry.preset.url !== undefined || entry.preset.endpoint !== undefined) continue;
+      // A URL preset the registry lists is the registry row's job. A custom
+      // deployment preset has no registry row — hiding it would make a
+      // private API undiscoverable, so it keeps its card.
+      if (
+        (entry.preset.url !== undefined || entry.preset.endpoint !== undefined) &&
+        entry.preset.registryListed === true
+      )
+        continue;
       if (text.length > 0) {
         const corpus =
           `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
@@ -748,7 +776,8 @@ export function IntegrationBrowsePage() {
           ...(description ? { description } : {}),
           iconUrl:
             (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
-          onSelect: () => void pickCatalogEntry(entry, surface.kind, title, rowKey, known?.url),
+          onSelect: () =>
+            void pickCatalogEntry(entry, surface.kind, title, rowKey, known ?? undefined),
           added:
             quickAddedSlug !== undefined || isAdded(surface.kind, known?.slug, entry.domain, title),
           ...(quickAddedSlug !== undefined ? { freshlyAdded: true } : {}),
@@ -880,8 +909,13 @@ export function IntegrationBrowsePage() {
     // search, and ONLY the results grid scrolls — an endless list makes the
     // page scrollbar meaningless and drags the search box off screen.
     <div className="flex min-h-0 flex-1 flex-col" data-slot="page-container">
-      {integrationPlugins.map((plugin) => (
-        <QuickAddBridge key={plugin.key} plugin={plugin} register={registerQuickAdd} />
+      {quickAddCapablePlugins(integrationPlugins).map((plugin) => (
+        <QuickAddBridge
+          key={plugin.key}
+          pluginKey={plugin.key}
+          useQuickAdd={plugin.useQuickAdd!}
+          register={registerQuickAdd}
+        />
       ))}
       <div className="mx-auto w-full max-w-4xl shrink-0 px-6 pt-10 lg:px-8 lg:pt-14">
         <PageHeader
