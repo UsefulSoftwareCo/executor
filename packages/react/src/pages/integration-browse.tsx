@@ -170,6 +170,11 @@ interface Row {
    *  destination. Known for quick-added rows and for rows whose installed
    *  match came from the catalog list. */
   readonly viewSlug?: string;
+  /** Added DURING this picker session (quick add). Excluded from the
+   *  added-first float: the card the user just clicked must keep its place —
+   *  teleporting it to the top mid-interaction is exactly the jumping this
+   *  page keeps having to unlearn. It floats on the next visit. */
+  readonly freshlyAdded?: boolean;
   readonly busy: boolean;
   /** A click-time failure, rendered on this card rather than page-top. */
   readonly error?: string;
@@ -731,6 +736,7 @@ export function IntegrationBrowsePage() {
             (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
           onSelect: () => void pickCatalogEntry(entry, surface.kind, title, rowKey, known?.url),
           added: quickAddedSlug !== undefined || isAdded(surface.kind, known?.slug),
+          ...(quickAddedSlug !== undefined ? { freshlyAdded: true } : {}),
           ...(viewSlug ? { viewSlug } : {}),
           busy: resolvingDomain === entry.domain || quickAddingKeys.has(rowKey),
           ...(rowError?.key === rowKey ? { error: rowError.message } : {}),
@@ -780,7 +786,11 @@ export function IntegrationBrowsePage() {
       );
       merged.splice(at === -1 ? merged.length : at, 0, preset);
     }
-    return merged;
+    // What you already have leads the list — those cards are the ones with a
+    // state worth seeing (View). Stable within each half, and fresh
+    // quick-adds hold their place until the next visit.
+    const floats = (row: Row) => row.added && row.freshlyAdded !== true;
+    return [...merged.filter(floats), ...merged.filter((row) => !floats(row))];
   }, [presetRows, catalogRows, catalog.loading, catalog.failed]);
 
   // Presets are local, so a list that already has them is not empty — show
