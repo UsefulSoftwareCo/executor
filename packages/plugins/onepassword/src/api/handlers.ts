@@ -54,15 +54,15 @@ export const OnePasswordHandlers = HttpApiBuilder.group(
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.configure(payload);
+            return yield* ext.configure(payload);
           }),
         ),
       )
-      .handle("removeConfig", () =>
+      .handle("removeConfig", ({ query }) =>
         capture(
           Effect.gen(function* () {
             const ext = yield* OnePasswordExtensionService;
-            yield* ext.removeConfig();
+            yield* ext.removeConfig(query.accountId);
           }),
         ),
       )

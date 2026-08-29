@@ -36,7 +36,7 @@ import {
   removeOnePasswordConfig,
   onepasswordWriteKeys,
 } from "./atoms";
-import type { RedactedOnePasswordConfig, Vault } from "../sdk/types";
+import type { RedactedOnePasswordAccount, RedactedOnePasswordConfig, Vault } from "../sdk/types";
 
 // ---------------------------------------------------------------------------
 // Vault picker — multi-select
@@ -170,13 +170,14 @@ function VaultPicker(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Config dialog
+// Account dialog — add a new account, or edit one by id
 // ---------------------------------------------------------------------------
 
-function ConfigDialog(props: {
+function AccountDialog(props: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   initial?: {
+    id: string;
     authKind: string;
     accountName: string;
     vaults: ReadonlyArray<Vault>;
@@ -221,6 +222,7 @@ function ConfigDialog(props: {
 
     const exit = await doConfigure({
       payload: {
+        ...(props.initial ? { id: props.initial.id } : {}),
         auth,
         vaults: [firstVault, ...restVaults],
         name: displayName.trim() || "1Password",
@@ -248,11 +250,11 @@ function ConfigDialog(props: {
       <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle className="font-display text-xl">
-            {isEdit ? "Edit 1Password" : "Connect 1Password"}
+            {isEdit ? "Edit 1Password account" : "Add 1Password account"}
           </DialogTitle>
           <DialogDescription className="text-[13px] leading-relaxed">
             Link one or more vaults to resolve secrets via the 1Password desktop app or a service
-            account.
+            account. Add more accounts to keep work and personal credentials separate.
           </DialogDescription>
         </DialogHeader>
 
@@ -310,10 +312,10 @@ function ConfigDialog(props: {
           {/* Display name */}
           <div className="grid gap-1.5">
             <Label className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-              Display name
+              Name
             </Label>
             <Input
-              placeholder="1Password"
+              placeholder="Work"
               value={displayName}
               onChange={(e) => setDisplayName((e.target as HTMLInputElement).value)}
               className="text-[13px] h-9"
@@ -347,17 +349,64 @@ function ConfigDialog(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Settings card
+// Settings entries — one card per account, plus the add action
 // ---------------------------------------------------------------------------
 
-export default function OnePasswordSettings() {
-  const [configOpen, setConfigOpen] = useState(false);
-  const configResult = useAtomValue(onepasswordConfigAtom);
+function AccountEntry(props: { account: RedactedOnePasswordAccount; onEdit: () => void }) {
   const doRemove = useAtomSet(removeOnePasswordConfig, { mode: "promiseExit" });
+  const [removing, setRemoving] = useState(false);
 
   const handleRemove = async () => {
-    await doRemove({ reactivityKeys: onepasswordWriteKeys });
+    setRemoving(true);
+    await doRemove({
+      query: { accountId: props.account.id },
+      reactivityKeys: onepasswordWriteKeys,
+    });
+    setRemoving(false);
   };
+
+  return (
+    <CardStackEntry>
+      <CardStackEntryContent>
+        <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-[12px]">
+          <span className="text-muted-foreground/60">Name</span>
+          <span className="text-foreground/80 truncate">{props.account.name}</span>
+          <span className="text-muted-foreground/60">Auth</span>
+          <span className="font-mono text-foreground/80 truncate">
+            {props.account.auth.kind === "desktop-app"
+              ? props.account.auth.accountName
+              : "service-account"}
+          </span>
+          <span className="text-muted-foreground/60">
+            {props.account.vaults.length === 1 ? "Vault" : "Vaults"}
+          </span>
+          <span className="text-foreground/80 truncate">
+            {props.account.vaults.map((vault) => vault.name).join(", ")}
+          </span>
+        </div>
+      </CardStackEntryContent>
+      <CardStackEntryActions>
+        <Button variant="ghost" size="sm" className="h-7 px-2.5 text-[12px]" onClick={props.onEdit}>
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2.5 text-[12px] text-destructive/70 hover:text-destructive"
+          disabled={removing}
+          onClick={handleRemove}
+        >
+          Disconnect
+        </Button>
+      </CardStackEntryActions>
+    </CardStackEntry>
+  );
+}
+
+export default function OnePasswordSettings() {
+  // null = closed; "new" = add flow; otherwise the account being edited.
+  const [dialogTarget, setDialogTarget] = useState<RedactedOnePasswordAccount | "new" | null>(null);
+  const configResult = useAtomValue(onepasswordConfigAtom);
 
   const config: RedactedOnePasswordConfig | null = AsyncResult.match(
     configResult as AsyncResult.AsyncResult<RedactedOnePasswordConfig | null, unknown>,
@@ -384,88 +433,81 @@ export default function OnePasswordSettings() {
     },
   );
 
+  const accounts = config?.accounts ?? [];
+
   return (
     <>
-      <CardStackEntry>
-        <CardStackEntryContent>
-          {isLoading ? (
-            <CardStackEntryDescription>Loading…</CardStackEntryDescription>
-          ) : isError ? (
-            <CardStackEntryDescription className="text-destructive">
-              Failed to load configuration
-            </CardStackEntryDescription>
-          ) : config ? (
-            <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-[12px]">
-              <span className="text-muted-foreground/60">Auth</span>
-              <span className="font-mono text-foreground/80 truncate">
-                {config.auth.kind === "desktop-app" ? config.auth.accountName : "service-account"}
-              </span>
-              <span className="text-muted-foreground/60">
-                {config.vaults.length === 1 ? "Vault" : "Vaults"}
-              </span>
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-foreground/80 truncate">
-                  {config.vaults.map((vault) => vault.name).join(", ")}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <CardStackEntryDescription>
-              Resolve secrets from your 1Password vaults.
-            </CardStackEntryDescription>
-          )}
-        </CardStackEntryContent>
-        <CardStackEntryActions>
-          {config ? (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2.5 text-[12px]"
-                onClick={() => setConfigOpen(true)}
-              >
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2.5 text-[12px] text-destructive/70 hover:text-destructive"
-                onClick={handleRemove}
-              >
-                Disconnect
-              </Button>
-            </>
-          ) : (
-            !isLoading &&
-            !isError && (
+      {isLoading || isError || accounts.length === 0 ? (
+        <CardStackEntry>
+          <CardStackEntryContent>
+            {isLoading ? (
+              <CardStackEntryDescription>Loading…</CardStackEntryDescription>
+            ) : isError ? (
+              <CardStackEntryDescription className="text-destructive">
+                Failed to load configuration
+              </CardStackEntryDescription>
+            ) : (
+              <CardStackEntryDescription>
+                Resolve secrets from your 1Password vaults.
+              </CardStackEntryDescription>
+            )}
+          </CardStackEntryContent>
+          <CardStackEntryActions>
+            {!isLoading && !isError && (
               <Button
                 variant="link"
                 size="sm"
                 className="h-7 px-0 text-[12px] shrink-0"
-                onClick={() => setConfigOpen(true)}
+                onClick={() => setDialogTarget("new")}
               >
                 Add 1Password
               </Button>
-            )
-          )}
-        </CardStackEntryActions>
-      </CardStackEntry>
+            )}
+          </CardStackEntryActions>
+        </CardStackEntry>
+      ) : (
+        <>
+          {accounts.map((account) => (
+            <AccountEntry
+              key={account.id}
+              account={account}
+              onEdit={() => setDialogTarget(account)}
+            />
+          ))}
+          <CardStackEntry>
+            <CardStackEntryContent>
+              <Button
+                variant="link"
+                size="sm"
+                className="h-7 px-0 text-[12px] shrink-0"
+                onClick={() => setDialogTarget("new")}
+              >
+                + Add 1Password account
+              </Button>
+            </CardStackEntryContent>
+          </CardStackEntry>
+        </>
+      )}
 
-      {configOpen && (
-        <ConfigDialog
-          open={configOpen}
-          onOpenChange={setConfigOpen}
+      {dialogTarget !== null && (
+        <AccountDialog
+          open={dialogTarget !== null}
+          onOpenChange={(v) => {
+            if (!v) setDialogTarget(null);
+          }}
           initial={
-            config
-              ? {
-                  authKind: config.auth.kind,
+            dialogTarget === "new"
+              ? undefined
+              : {
+                  id: dialogTarget.id,
+                  authKind: dialogTarget.auth.kind,
                   // Service-account tokens are never surfaced (redacted); the
                   // user re-enters the token when editing that auth method.
-                  accountName: config.auth.kind === "desktop-app" ? config.auth.accountName : "",
-                  vaults: config.vaults,
-                  name: config.name,
+                  accountName:
+                    dialogTarget.auth.kind === "desktop-app" ? dialogTarget.auth.accountName : "",
+                  vaults: dialogTarget.vaults,
+                  name: dialogTarget.name,
                 }
-              : undefined
           }
         />
       )}
