@@ -145,7 +145,9 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     id: "axiom",
     name: "Axiom",
     summary: "Log ingestion, querying, datasets, and monitors.",
-    url: "https://axiom.co/docs/restapi/versions/v2.json",
+    // axiom.co/docs/restapi/versions/v2.json now 404s; the docs repo is where
+    // Axiom actually publishes the spec.
+    url: "https://raw.githubusercontent.com/axiomhq/docs/main/content/docs/%28api-reference%29/restapi/versions/v2.json",
     icon: "https://integrations.sh/logo/axiom.co",
   },
   {
