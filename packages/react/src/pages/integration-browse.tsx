@@ -575,6 +575,7 @@ export function IntegrationBrowsePage() {
       const result = await fn({
         url: input.url,
         name: input.title,
+        domain: input.domain,
         ...(input.slug ? { slug: input.slug } : {}),
         ...(input.auth?.header ? { authHeader: input.auth.header } : {}),
         ...(input.auth?.kind ? { authKind: input.auth.kind } : {}),

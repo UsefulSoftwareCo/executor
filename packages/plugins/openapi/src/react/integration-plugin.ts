@@ -88,6 +88,7 @@ function useOpenApiQuickAdd(): (
           spec: { kind: "url" as const, url: input.url },
           slug,
           name: input.name,
+          ...(input.domain ? { displayDomain: input.domain } : {}),
           ...(preset?.specFormat ? { specFormat: preset.specFormat } : {}),
           ...(preset?.family ? { family: preset.family } : {}),
           ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),

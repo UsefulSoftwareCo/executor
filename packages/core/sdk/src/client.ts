@@ -204,6 +204,10 @@ export interface IntegrationQuickAddInput {
   readonly name: string;
   /** Registry surface slug, used as the namespace seed when present. */
   readonly slug?: string;
+  /** The registry PRODUCT's domain (notion.com) — the identity credential
+   *  guidance and favicons key on. Often differs from the connect URL's
+   *  host: specs live on code hosts. */
+  readonly domain?: string;
   /** Registry-declared credential placement, e.g. "Authorization: {api_key}". */
   readonly authHeader?: string;
   /** Registry-declared credential kind ("none", "oauth", "api_key", …). */
