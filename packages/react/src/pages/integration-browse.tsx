@@ -171,6 +171,8 @@ interface Row {
   readonly onSelect: () => void;
   readonly added: boolean;
   readonly busy: boolean;
+  /** A click-time failure, rendered on this card rather than page-top. */
+  readonly error?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +277,11 @@ function ResultCard(props: { readonly row: Row }) {
           {row.description}
         </p>
       ) : null}
+      {row.error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {row.error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -334,6 +341,12 @@ export function IntegrationBrowsePage() {
   const [kind, setKind] = useState<CatalogKind | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Resolve-on-click failures belong on the card that was clicked — a page-top
+  // alert for a card three screens down reads as a silent failure.
+  const [rowError, setRowError] = useState<{
+    readonly key: string;
+    readonly message: string;
+  } | null>(null);
   const [resolvingDomain, setResolvingDomain] = useState<string | null>(null);
 
   const isUrl = looksLikeUrl(query);
@@ -487,11 +500,14 @@ export function IntegrationBrowsePage() {
       }
       if (resolvingDomain !== null) return;
       setResolvingDomain(entry.domain);
-      setError(null);
+      setRowError(null);
       const exit = await Effect.runPromiseExit(resolveConnectTarget(entry.domain, [kind]));
       setResolvingDomain(null);
       if (Exit.isFailure(exit) || !exit.value) {
-        setError(`Couldn't load connect details for ${entry.domain}. Paste its URL above instead.`);
+        setRowError({
+          key: `${entry.domain}|${kind}`,
+          message: "Couldn't load connect details. Paste its URL above instead.",
+        });
         return;
       }
       const target = exit.value;
@@ -606,13 +622,15 @@ export function IntegrationBrowsePage() {
     let rows = catalogEntries.flatMap((entry): readonly Row[] => {
       const pretty = entry.name ?? domainDisplayName(entry.domain);
       const description = entry.description ? tidyDescription(entry.description) : undefined;
-      // Prefer the registry's own per-surface records. Without them all we know
-      // is which kinds exist, so the connect target has to be resolved on click
-      // and there is no identifier to recognise an existing integration by —
-      // in which case the row offers Add rather than claiming anything.
+      // Prefer the registry's own per-surface records, and within them only
+      // the surfaces that carry a connect target: the registry can know a
+      // surface EXISTS without knowing where it lives (conjur.org's OpenAPI
+      // has no recorded spec URL), and a card whose Add can only fail is
+      // worse than no card. Kinds-only entries (older registries, stubs) keep
+      // the resolve-on-click fallback.
       const surfaces: readonly (CatalogSurface | { readonly kind: CatalogKind })[] =
         entry.surfaces && entry.surfaces.length > 0
-          ? entry.surfaces
+          ? entry.surfaces.filter((surface) => surface.url)
           : entry.kinds.map((kind) => ({ kind }));
       return surfaces.map((surface): Row => {
         const known = "slug" in surface ? surface : null;
@@ -630,6 +648,9 @@ export function IntegrationBrowsePage() {
           onSelect: () => void pickCatalogEntry(entry, surface.kind, known?.url),
           added: isAdded(surface.kind, known?.slug),
           busy: resolvingDomain === entry.domain,
+          ...(rowError?.key === `${entry.domain}|${surface.kind}`
+            ? { error: rowError.message }
+            : {}),
         };
       });
     });
@@ -647,7 +668,7 @@ export function IntegrationBrowsePage() {
     // Gmail. Stable within each group, so the registry's own order survives.
     const isNamed = (row: Row) => `${row.title} ${row.domain ?? ""}`.toLowerCase().includes(text);
     return [...rows.filter(isNamed), ...rows.filter((row) => !isNamed(row))];
-  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text, presetRows]);
+  }, [catalogEntries, isAdded, resolvingDomain, pickCatalogEntry, text, presetRows, rowError]);
 
   const results = useMemo(() => [...presetRows, ...catalogRows], [presetRows, catalogRows]);
 
