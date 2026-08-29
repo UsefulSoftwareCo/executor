@@ -1,7 +1,7 @@
 ---
-"executor": minor
-"@executor-js/plugin-mcp": minor
-"@executor-js/sdk": minor
+"executor": patch
+"@executor-js/plugin-mcp": patch
+"@executor-js/sdk": patch
 ---
 
 Add locally installed OpenAI Codex plugins as one-click integrations: Messages
