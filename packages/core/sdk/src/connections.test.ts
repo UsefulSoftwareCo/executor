@@ -28,7 +28,7 @@ import { ConnectionAlreadyExistsError } from "./errors";
 import { createExecutor } from "./executor";
 import { StorageError, type FumaDb } from "./fuma-runtime";
 import { HealthCheckResult } from "./health-check";
-import { definePlugin } from "./plugin";
+import { definePlugin, type ResolveToolsResult } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
 import { ToolResult } from "./tool-result";
@@ -2326,6 +2326,10 @@ const makeHealthHarness = (options?: {
     // Cleared before it runs, so the conflicting write it performs (through
     // the unwrapped `config.db`) is not intercepted again.
     beforeHealthPersist: null as Effect.Effect<void> | null,
+    // Replaces the plugin's `resolveTools` outcome, so a test can drive the
+    // incomplete-catalog path that persists a plugin-supplied health verdict
+    // (`stampSyncedWithHealth`).
+    resolveTools: null as Effect.Effect<ResolveToolsResult> | null,
   };
   // Wraps the executor's FumaDb handle so `beforeHealthPersist` can commit a
   // conflicting write in the exact window the write guards must close.
@@ -2378,7 +2382,11 @@ const makeHealthHarness = (options?: {
     credentialProviders: [countingProvider],
     storage: () => ({}),
     resolveTools: () =>
-      Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+      Effect.suspend(
+        () =>
+          hooks.resolveTools ??
+          Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+      ),
     invokeTool: ({ toolRow, credential, args }) =>
       Effect.as(
         hooks.onInvoke,
@@ -2968,6 +2976,41 @@ describe("verdict write guards close the check-to-write window", () => {
 
       const row = yield* persisted();
       expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
+    }),
+  );
+
+  it.effect("tool-sync verdict persist: a reconnect landing inside the window wins", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      // Age the stamp so the reconnect's bump lands in a different granule.
+      yield* stamp({ updated_at: new Date(Date.now() - STALE_MS) });
+      // The refresh's discovery meets a reauthorization condition on the OLD
+      // credential and reports an actionable expired verdict...
+      hooks.resolveTools = Effect.succeed({
+        tools: [],
+        incomplete: true,
+        incompleteReason: "MCP OAuth re-authorization required",
+        health: {
+          status: "expired" as const,
+          checkedAt: Date.now(),
+          detail: "MCP OAuth reauthorization required",
+        },
+      });
+      // ...while a reconnect commits inside the check-to-write window: the
+      // replacement grant clears the verdict and any dead-grant state and
+      // bumps the stamp. The read-side dead-grant guard cannot refuse the
+      // stale verdict — the reconnected row has nothing for it to observe —
+      // so only the compare-and-swap can.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: null,
+        last_health: null,
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.connections.refresh(REF);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth ?? null).toBeNull();
     }),
   );
 });

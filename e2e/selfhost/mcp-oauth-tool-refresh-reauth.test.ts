@@ -3,7 +3,7 @@
 // preserve the previously synced catalog, and must never dynamically register
 // a fresh OAuth client — the saved connection already references one.
 //
-// Two variants:
+// Three variants:
 // 1. The upstream MCP endpoint rejects a bearer executor still considers
 //    unexpired (the live report): the refresh dials with the stored token,
 //    gets 401, and must come back as reconnect-required without the MCP SDK's
@@ -12,6 +12,10 @@
 //    with `invalid_grant` during the sync's credential resolution: the
 //    recorded dead grant must present as expired on the connection read, not
 //    be buried under a generic tool-sync verdict.
+// 3. The bearer is honoured at the handshake and revoked by the time
+//    `tools/list` runs: the reauthorization condition surfaces from the
+//    LISTING failure, which the connect-path classification never sees, and
+//    must reach the same expired verdict.
 import { randomBytes } from "node:crypto";
 
 import { Effect } from "effect";
@@ -285,6 +289,73 @@ scenario(
         reread.lastHealth?.detail,
         "the provider rejection detail survives to the user",
       ).toContain("Grant not found");
+    }),
+  ),
+);
+
+scenario(
+  "MCP OAuth · a bearer rejected during tools/list after a successful handshake surfaces reconnect without re-registering",
+  {
+    timeout: 180_000,
+  },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+
+      const oauth = yield* serveOAuthTestServer({
+        scopes: ["channels:history", "users:read"],
+      });
+      const mcp = yield* serveTokenGatedMcpServer(oauth);
+      const { slug } = yield* seedDcrMcpOAuthConnection(
+        client,
+        "mcp-refresh-list-401",
+        oauth,
+        mcp.endpoint,
+      );
+
+      // Baseline: with the bearer honoured, the refresh syncs the real catalog.
+      const synced = yield* client.connections.refresh({
+        params: { owner: "org", integration: slug, name },
+      });
+      expect(
+        synced.map((tool) => String(tool.name)),
+        "the healthy connection syncs the server's catalog",
+      ).toEqual(["simple_echo"]);
+
+      // Revocation landing between the handshake and the listing: the server
+      // keeps honouring the bearer for `initialize` but answers every
+      // `tools/list` with the auth wall. The connect-path 401 classification
+      // never fires — the reauthorization signal must survive the listing
+      // failure instead.
+      yield* mcp.rejectSessionMethod("tools/list", 401);
+      yield* oauth.clearRequests;
+
+      const refreshed = yield* client.connections.refresh({
+        params: { owner: "org", integration: slug, name },
+      });
+
+      const registers = yield* registrationRequests(oauth);
+      expect(
+        registers,
+        "a noninteractive tool refresh must not dynamically register a fresh OAuth client",
+      ).toEqual([]);
+
+      expect(
+        refreshed.map((tool) => String(tool.name)),
+        "the previously synced catalog is preserved through the failed refresh",
+      ).toEqual(["simple_echo"]);
+
+      const reread = yield* client.connections.get({
+        params: { owner: "org", integration: slug, name },
+      });
+      console.info(`[BUG repro] post-refresh health: ${JSON.stringify(reread.lastHealth ?? null)}`);
+      expect(
+        reread.lastHealth?.status,
+        "a post-handshake 401 during listing is a reauthorization condition, not an anonymous degraded sync",
+      ).toBe("expired");
     }),
   ),
 );
