@@ -19,6 +19,8 @@
 // The surface below mirrors the `Sky` type in the plugin's own SKILL.md.
 // ---------------------------------------------------------------------------
 
+import { jsLiteral, writeJsonResult } from "./codex-repl";
+
 /** Bundled package the REPL imports; `sky` is its single exported entry. */
 const SKY_PACKAGE = "@oai/sky";
 
@@ -233,15 +235,6 @@ export const skyToolList = (): readonly Record<string, unknown>[] =>
 export const findSkyTool = (name: string): SkyToolDefinition | undefined =>
   SKY_TOOLS.find((tool) => tool.name === name);
 
-/** JSON is almost a JS subset — but U+2028/U+2029 are literal line
- *  terminators in a JS source text while being legal raw inside a JSON
- *  string, so a value containing one would end the statement. Escaping them
- *  makes the embedding exact for every input. */
-const jsLiteral = (value: unknown): string =>
-  JSON.stringify(value ?? {})
-    .replaceAll("\u2028", "\\u2028")
-    .replaceAll("\u2029", "\\u2029");
-
 /**
  * The `node_repl` program that performs one sky call.
  *
@@ -259,7 +252,6 @@ export const skyCallProgram = (tool: SkyToolDefinition, args: unknown): string =
   const call = tool.takesArgs ? `sky.${tool.method}(${jsLiteral(args)})` : `sky.${tool.method}()`;
   return [
     `globalThis.sky ??= (await import(${JSON.stringify(SKY_PACKAGE)})).sky;`,
-    `const __result = await ${call};`,
-    `nodeRepl.write(JSON.stringify(__result ?? null));`,
+    writeJsonResult([], `await ${call}`),
   ].join("\n");
 };

@@ -230,7 +230,11 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  `codex app-server` and `server` names the MCP server inside Codex whose
    *  tools this integration exposes. Set by the Codex plugin add flow. */
   appServer: Schema.optional(
-    Schema.Struct({ server: Schema.String, surface: Schema.optional(Schema.Literal("sky")) }),
+    Schema.Struct({
+      server: Schema.String,
+      surface: Schema.optional(Schema.Literals(["sky", "browser"])),
+      modulePath: Schema.optional(Schema.String),
+    }),
   ),
   slug: Schema.optional(Schema.String),
 });

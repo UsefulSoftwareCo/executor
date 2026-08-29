@@ -34,6 +34,15 @@ import { withLocalServer } from "./local-server";
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/stdio-mcp-server.mjs", import.meta.url));
+const CHROME_CLIENT_RELATIVE = join(
+  "plugins",
+  "cache",
+  "openai-bundled",
+  "chrome",
+  "latest",
+  "scripts",
+  "browser-client.mjs",
+);
 const APP_SERVER_FIXTURE = fileURLToPath(
   new URL("./fixtures/codex-app-server.mjs", import.meta.url),
 );
@@ -66,6 +75,11 @@ const makeCodexHome = (): string => {
   writeFileSync(join(home, "bin", "codex"), `#!/bin/sh\nexec node "${APP_SERVER_FIXTURE}" "$@"\n`, {
     mode: 0o755,
   });
+
+  // Chrome's bundled browser client, behind the `latest` symlink Codex keeps.
+  const chromeClient = join(home, CHROME_CLIENT_RELATIVE);
+  mkdirSync(join(chromeClient, ".."), { recursive: true });
+  writeFileSync(chromeClient, "export const setupBrowserRuntime = async () => ({});\n");
 
   const versionDir = join(home, "plugins", "cache", "personal", "echo-suite", "1.0.2");
   mkdirSync(join(versionDir, ".codex-plugin"), { recursive: true });
@@ -115,10 +129,12 @@ scenario(
           const { plugins } = yield* client.mcp.listCodexPlugins();
           const byId = new Map(plugins.map((plugin) => [plugin.id, plugin]));
           expect([...byId.keys()].sort(), "curated + scanned entries are reported").toEqual([
+            "codex-chrome",
             "codex-computer-history",
             "codex-computer-use",
             "codex-echo-suite",
             "codex-messages",
+            "codex-openai-docs",
           ]);
           for (const plugin of plugins) {
             expect(plugin.available, `${plugin.id} is available`).toBe(true);
@@ -135,6 +151,18 @@ scenario(
           expect(messages?.args, "curated entries run the app-server").toEqual(["app-server"]);
           expect(messages?.appServer, "curated entries name their Codex server").toEqual({
             server: "messages",
+          });
+          // Computer Use and Chrome have no server of their own: both are
+          // projected onto `node_repl`, and Chrome carries the client module
+          // its surface imports, resolved through the `latest` symlink.
+          expect(byId.get("codex-computer-use")?.appServer).toEqual({
+            server: "node_repl",
+            surface: "sky",
+          });
+          expect(byId.get("codex-chrome")?.appServer).toEqual({
+            server: "node_repl",
+            surface: "browser",
+            modulePath: join(codexHome, CHROME_CLIENT_RELATIVE),
           });
 
           // Add two entries exactly as the add-form's Codex-plugins card does:

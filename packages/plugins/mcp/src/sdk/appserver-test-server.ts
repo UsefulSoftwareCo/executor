@@ -46,6 +46,7 @@ const decodeToolCallParams = Schema.decodeUnknownOption(
     server: Schema.String,
     tool: Schema.String,
     arguments: Schema.optional(Schema.Unknown),
+    _meta: Schema.optional(Schema.Unknown),
   }),
 );
 
@@ -151,7 +152,12 @@ const handleToolCall = (id: number | string, params: unknown): void => {
   // the sky surface compiled without needing a real REPL.
   if (call.server === "node_repl") {
     const args = call.arguments as { code?: string } | undefined;
-    reply(id, { content: [{ type: "text", text: args?.code ?? "" }] });
+    reply(id, {
+      content: [{ type: "text", text: args?.code ?? "" }],
+      // Echoed so a test can assert the turn metadata the Chrome client
+      // requires, without needing a real browser.
+      structuredContent: { meta: call._meta ?? null },
+    });
     return;
   }
   if (call.threadId !== THREAD_ID || call.server !== "messages") {

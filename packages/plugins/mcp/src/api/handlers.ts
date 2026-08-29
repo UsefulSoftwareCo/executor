@@ -41,7 +41,7 @@ const toServerInput = (
       env?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
-      appServer?: { server: string; surface?: "sky" };
+      appServer?: { server: string; surface?: "sky" | "browser"; modulePath?: string };
       slug?: string;
     };
     return {

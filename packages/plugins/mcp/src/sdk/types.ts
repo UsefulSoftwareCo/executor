@@ -266,10 +266,16 @@ export const McpStdioIntegrationConfig = Schema.Struct({
   appServer: Schema.optional(
     Schema.Struct({
       server: Schema.String,
-      /** `sky` projects the Codex Computer Use API (driven through the
-       *  `node_repl` server) as typed tools — see `codex-sky-tools.ts`.
-       *  Absent means the server's own tools are exposed verbatim. */
-      surface: Schema.optional(Schema.Literal("sky")),
+      /** A projected tool surface for a plugin that has no MCP server of its
+       *  own and is driven through Codex's `node_repl`: `sky` is Computer Use
+       *  (`codex-sky-tools.ts`), `browser` is Chrome
+       *  (`codex-browser-tools.ts`). Absent exposes the server's own tools
+       *  verbatim. */
+      surface: Schema.optional(Schema.Literals(["sky", "browser"])),
+      /** Absolute path to the module a projected surface imports (currently
+       *  Chrome's `browser-client.mjs`). Machine-specific, so it is resolved
+       *  by the scanner rather than hardcoded. */
+      modulePath: Schema.optional(Schema.String),
     }),
   ),
   /** Declared auth methods — a single `stdio_env` method naming the secret env

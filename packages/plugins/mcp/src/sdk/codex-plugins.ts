@@ -20,7 +20,12 @@ import * as path from "node:path";
 
 import { Option, Schema } from "effect";
 
-import { CODEX_SETUP_HINT, CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
+import {
+  CHROME_SETUP_HINT,
+  CODEX_SETUP_HINT,
+  CURATED_CODEX_PLUGINS,
+  type CuratedCodexPlugin,
+} from "./codex-plugin-presets";
 
 export interface CodexPluginEntry {
   /** Stable card id, e.g. `codex-messages`. */
@@ -41,7 +46,11 @@ export interface CodexPluginEntry {
   /** Present on curated entries: the spawn is `codex app-server` and the
    *  connector bridges MCP to it in process, calling tools on this named
    *  server inside Codex. See `appserver-connector.ts`. */
-  readonly appServer?: { readonly server: string; readonly surface?: "sky" };
+  readonly appServer?: {
+    readonly server: string;
+    readonly surface?: "sky" | "browser";
+    readonly modulePath?: string;
+  };
   /** Shown when `available` is false. */
   readonly setupHint?: string;
   /** The plugin's own icon from its local install, as a data URI. Read at
@@ -70,6 +79,24 @@ const clientBinaryPath = (codexHome: string): string =>
     "Contents",
     "MacOS",
     "SkyComputerUseClient",
+  );
+
+/** The Chrome plugin's bundled browser client — the module the projected
+ *  browser surface imports inside `node_repl`.
+ *
+ *  Reached through the `latest` symlink Codex maintains beside the versioned
+ *  directories, so a plugin update does not strand the stored path. Same
+ *  reasoning as pointing Computer Use at the unversioned client binary. */
+const browserClientPath = (codexHome: string): string =>
+  path.join(
+    codexHome,
+    "plugins",
+    "cache",
+    "openai-bundled",
+    "chrome",
+    "latest",
+    "scripts",
+    "browser-client.mjs",
   );
 
 const CURATED_PLUGIN_NAMES: ReadonlySet<string> = new Set(
@@ -157,6 +184,12 @@ const listDirs = (dir: string): readonly string[] =>
 
 const readText = (file: string): string | undefined =>
   tryOrElse(() => fs.readFileSync(file, "utf-8"), undefined);
+
+const isReadableFile = (file: string): boolean =>
+  tryOrElse(() => fs.statSync(file).isFile(), false);
+
+const setupHintFor = (requires: CuratedCodexPlugin["requires"]): string =>
+  requires === "chrome-plugin" ? CHROME_SETUP_HINT : CODEX_SETUP_HINT;
 
 const isExecutableFile = (file: string): boolean =>
   tryOrElse(() => {
@@ -361,16 +394,26 @@ export const scanCodexPlugins = (options?: {
     options?.codexHome ?? process.env["CODEX_HOME"] ?? path.join(os.homedir(), ".codex");
 
   const codexCli = resolveCodexCli(options?.codexCli);
-  const clientAvailable = isExecutableFile(clientBinaryPath(codexHome));
-  const curatedAvailable = codexCli !== undefined && clientAvailable;
+  const computerUseApp = isExecutableFile(clientBinaryPath(codexHome));
+  const browserClient = browserClientPath(codexHome);
+  const chromePlugin = isReadableFile(browserClient);
+
+  /** Each curated card states what it needs; the `codex` CLI is required by
+   *  all of them because every one is reached through `codex app-server`. */
+  const requirementMet: Record<CuratedCodexPlugin["requires"], boolean> = {
+    "computer-use-app": computerUseApp,
+    "chrome-plugin": chromePlugin,
+    codex: true,
+  };
 
   const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => {
     const display = curatedDisplayMetadata(codexHome, entry.pluginName);
+    const available = codexCli !== undefined && requirementMet[entry.requires];
     return {
       id: entry.id,
       name: entry.name,
       summary: entry.summary,
-      available: curatedAvailable,
+      available,
       slug: entry.slug,
       source: "curated" as const,
       command: codexCli ?? "codex",
@@ -379,8 +422,9 @@ export const scanCodexPlugins = (options?: {
       appServer: {
         server: entry.server,
         ...(entry.surface === undefined ? {} : { surface: entry.surface }),
+        ...(entry.surface === "browser" ? { modulePath: browserClient } : {}),
       },
-      ...(curatedAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
+      ...(available ? {} : { setupHint: setupHintFor(entry.requires) }),
       ...display,
     };
   });

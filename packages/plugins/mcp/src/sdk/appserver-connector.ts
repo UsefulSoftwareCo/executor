@@ -39,6 +39,7 @@
 import type { JSONRPCMessage, JSONRPCRequest, Transport } from "@modelcontextprotocol/client";
 import { Option, Schema } from "effect";
 
+import { browserCallProgram, browserToolList, findBrowserTool } from "./codex-browser-tools";
 import { findSkyTool, skyCallProgram, skyToolList } from "./codex-sky-tools";
 import { stdioSpawnEnv, type StdioTransportConfig } from "./stdio-connector";
 
@@ -78,10 +79,14 @@ export type AppServerTransportConfig = StdioTransportConfig & {
   /** The MCP server name inside Codex whose tools this transport exposes
    *  (e.g. `messages`) — the `server` of every `mcpServer/tool/call`. */
   readonly server: string;
-  /** `sky` projects the Codex Computer Use API over the `node_repl` server as
-   *  typed tools instead of exposing the REPL itself (see
-   *  `codex-sky-tools.ts`). Absent exposes the server's tools verbatim. */
-  readonly surface?: "sky";
+  /** A projected tool surface for a plugin driven through `node_repl` rather
+   *  than serving MCP itself: `sky` is Computer Use (`codex-sky-tools.ts`),
+   *  `browser` is Chrome (`codex-browser-tools.ts`). Absent exposes the
+   *  server's own tools verbatim. */
+  readonly surface?: "sky" | "browser";
+  /** Absolute path to the module a projected surface imports (Chrome's
+   *  `browser-client.mjs`); resolved per machine by the scanner. */
+  readonly modulePath?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -172,6 +177,9 @@ type AppServerReply =
 
 const INTERNAL_ERROR = -32603;
 const METHOD_NOT_FOUND = -32601;
+
+/** Ceiling for one browser action inside the REPL. */
+const BROWSER_TIMEOUT_MS = 120_000;
 
 const CHANNEL_CLOSED: AppServerReply = {
   ok: false,
@@ -370,6 +378,10 @@ class AppServerClientTransport implements Transport {
       this.#emit({ jsonrpc: "2.0", id: message.id, result: { tools: skyToolList() } });
       return;
     }
+    if (this.#config.surface === "browser") {
+      this.#emit({ jsonrpc: "2.0", id: message.id, result: { tools: browserToolList() } });
+      return;
+    }
     const tools = await this.#collectServerTools(message.id);
     if (tools === undefined) return;
     this.#emit({ jsonrpc: "2.0", id: message.id, result: { tools } });
@@ -426,7 +438,7 @@ class AppServerClientTransport implements Transport {
     if (call === undefined) {
       this.#fail(message.id, {
         code: METHOD_NOT_FOUND,
-        message: `Unknown Computer Use tool "${params.value.name}"`,
+        message: `Unknown tool "${params.value.name}" for this Codex plugin`,
       });
       return;
     }
@@ -461,7 +473,9 @@ class AppServerClientTransport implements Transport {
    *  performs it; otherwise the tool is passed through by name. Undefined
    *  means the surface does not define that tool. */
   #toolCallParams(name: string, args: unknown): Record<string, unknown> | undefined {
-    if (this.#config.surface !== "sky") {
+    const program = this.#surfaceProgram(name, args);
+    if (program === "unknown-tool") return undefined;
+    if (program === undefined) {
       return {
         threadId: this.#threadId,
         server: this.#config.server,
@@ -469,17 +483,58 @@ class AppServerClientTransport implements Transport {
         arguments: args ?? {},
       };
     }
-    const tool = findSkyTool(name);
-    if (tool === undefined) return undefined;
     return {
       threadId: this.#threadId,
       server: this.#config.server,
       tool: "js",
       arguments: {
-        code: skyCallProgram(tool, args),
-        title: `Computer Use: ${tool.name}`,
+        code: program.code,
+        title: program.title,
+        ...(program.timeoutMs === undefined ? {} : { timeout_ms: program.timeoutMs }),
+      },
+      // Codex normally stamps a REPL call with the turn that issued it, and
+      // the Chrome client REFUSES to run without it ("Missing required Codex
+      // turn metadata"). This bridge starts no turns, so it supplies the same
+      // shape: the pooled thread is the session, and each tool call is its own
+      // turn. Computer Use does not check for it, but it is node_repl-backed
+      // too and Codex would stamp it, so both surfaces send it.
+      _meta: {
+        "x-codex-turn-metadata": {
+          session_id: this.#threadId,
+          turn_id: crypto.randomUUID(),
+        },
       },
     };
+  }
+
+  /** The REPL program for a projected surface: `undefined` when this
+   *  connection exposes the server's own tools, `"unknown-tool"` when the
+   *  surface does not define `name`. */
+  #surfaceProgram(
+    name: string,
+    args: unknown,
+  ):
+    | { readonly code: string; readonly title: string; readonly timeoutMs?: number }
+    | undefined
+    | "unknown-tool" {
+    if (this.#config.surface === "sky") {
+      const tool = findSkyTool(name);
+      if (tool === undefined) return "unknown-tool";
+      return { code: skyCallProgram(tool, args), title: `Computer Use: ${tool.name}` };
+    }
+    if (this.#config.surface === "browser") {
+      const tool = findBrowserTool(name);
+      if (tool === undefined) return "unknown-tool";
+      return {
+        code: browserCallProgram(tool, args, this.#config.modulePath ?? ""),
+        title: `Chrome: ${tool.name}`,
+        // The REPL's own 30s default is too short for real navigation: a
+        // page load plus its accessibility pass routinely outruns it, and the
+        // failure surfaces as an opaque REPL timeout rather than a page error.
+        timeoutMs: BROWSER_TIMEOUT_MS,
+      };
+    }
+    return undefined;
   }
 
   // -------------------------------------------------------------------------

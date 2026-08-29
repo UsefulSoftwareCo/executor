@@ -15,12 +15,15 @@ import { createMcpConnector, type StdioConnectorInput } from "./connection";
 
 const fixture = fileURLToPath(new URL("./appserver-test-server.ts", import.meta.url));
 
-const appServerInput = (server: string, surface?: "sky"): StdioConnectorInput => ({
+const appServerInput = (
+  server: string,
+  appServer?: { readonly surface?: "sky" | "browser"; readonly modulePath?: string },
+): StdioConnectorInput => ({
   transport: "stdio",
   command: "bun",
   args: ["run", fixture],
   env: { CODEX_HOME: "/tmp/fixture-codex-home" },
-  appServer: { server, ...(surface === undefined ? {} : { surface }) },
+  appServer: { server, ...appServer },
 });
 
 const withConnection = (input: StdioConnectorInput) =>
@@ -126,7 +129,7 @@ describe("codex app-server bridge", () => {
   it.effect("the sky surface lists typed Computer Use tools, not the raw REPL", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
 
         const tools = yield* Effect.promise(() => connection.client.listTools());
         const names = tools.tools.map(({ name }) => name);
@@ -144,7 +147,7 @@ describe("codex app-server bridge", () => {
   it.effect("a sky tool call compiles to one node_repl program carrying its arguments", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
 
         // Quotes in the arguments matter: they are embedded into a JS source
         // text, so the encoding has to survive them exactly.
@@ -161,7 +164,10 @@ describe("codex app-server bridge", () => {
           `await sky.type_text(${JSON.stringify(args)})`,
         );
         expect(program, "returns the result as JSON through the REPL").toContain(
-          "nodeRepl.write(JSON.stringify(__result ?? null));",
+          "nodeRepl.write(JSON.stringify(result ?? null));",
+        );
+        expect(program, "runs in its own scope so a reused REPL session stays clean").toContain(
+          "await (async () => {",
         );
       }),
     ),
@@ -170,7 +176,7 @@ describe("codex app-server bridge", () => {
   it.effect("an argument-less sky tool calls its method with no argument object", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
 
         const result = yield* Effect.promise(() =>
           connection.client.callTool({ name: "list_apps", arguments: {} }),
@@ -184,7 +190,7 @@ describe("codex app-server bridge", () => {
   it.effect("a tool outside the sky surface is refused rather than sent to the REPL", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
 
         const outcome = yield* Effect.promise(() =>
           connection.client.callTool({ name: "js", arguments: { code: "process.exit(0)" } }).then(
@@ -193,6 +199,90 @@ describe("codex app-server bridge", () => {
           ),
         );
         expect(outcome).toContain("js");
+      }),
+    ),
+  );
+
+  // -------------------------------------------------------------------------
+  // Chrome: also projected onto `node_repl`, but handle-based.
+  // -------------------------------------------------------------------------
+
+  const BROWSER_MODULE = "/codex/chrome/latest/scripts/browser-client.mjs";
+  const browserInput = () =>
+    appServerInput("node_repl", { surface: "browser", modulePath: BROWSER_MODULE });
+
+  it.effect("the browser surface lists typed Chrome tools, not the raw REPL", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(browserInput());
+
+        const names = yield* Effect.promise(() =>
+          connection.client.listTools().then((result) => result.tools.map(({ name }) => name)),
+        );
+        expect(names, "the raw REPL is not exposed").not.toContain("js");
+        expect(names).toEqual(
+          expect.arrayContaining(["list_tabs", "new_tab", "navigate", "read_page", "click"]),
+        );
+      }),
+    ),
+  );
+
+  it.effect("a browser call imports the machine's own client and resolves a tab", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(browserInput());
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({
+            name: "navigate",
+            arguments: { url: "https://example.com/" },
+          }),
+        );
+        const program = (result.content as readonly { readonly text: string }[])[0]!.text;
+        expect(program, "imports the scanner-resolved client path").toContain(
+          `await import(${JSON.stringify(BROWSER_MODULE)})`,
+        );
+        expect(program, "caches the runtime across calls in the pooled session").toContain(
+          "globalThis.__executorBrowser ??=",
+        );
+        expect(program, "falls back to the selected tab, opening one if needed").toContain(
+          "(await __browser.tabs.selected()) ?? (await __browser.tabs.new())",
+        );
+        expect(program).toContain("await __tab.goto(__args.url)");
+      }),
+    ),
+  );
+
+  it.effect("stamps REPL calls with the turn metadata the Chrome client requires", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Without this the real client refuses every call with "Missing
+        // required Codex turn metadata": Codex normally stamps a REPL call
+        // with its issuing turn, and this bridge runs no turns.
+        const connection = yield* withConnection(browserInput());
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "list_tabs", arguments: {} }),
+        );
+        const meta = (result.structuredContent as { readonly meta: Record<string, unknown> }).meta;
+        const turn = meta["x-codex-turn-metadata"] as Record<string, string>;
+        expect(typeof turn.session_id, "the pooled thread is the session").toBe("string");
+        expect(typeof turn.turn_id, "each call is its own turn").toBe("string");
+      }),
+    ),
+  );
+
+  it.effect("a tab-less browser tool skips tab resolution entirely", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(browserInput());
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "list_tabs", arguments: {} }),
+        );
+        const program = (result.content as readonly { readonly text: string }[])[0]!.text;
+        expect(program).toContain("await __browser.tabs.list()");
+        expect(program, "no tab is resolved for a browser-level call").not.toContain("const __tab");
       }),
     ),
   );

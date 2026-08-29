@@ -81,6 +81,24 @@ const writeCachedPlugin = (
   return versionDir;
 };
 
+/** Chrome's bundled browser client, reached through the `latest` symlink
+ *  Codex maintains beside the versioned directories. */
+const CHROME_CLIENT_RELATIVE = join(
+  "plugins",
+  "cache",
+  "openai-bundled",
+  "chrome",
+  "latest",
+  "scripts",
+  "browser-client.mjs",
+);
+
+const writeChromePlugin = (home: string): void => {
+  const file = join(home, CHROME_CLIENT_RELATIVE);
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, "export const setupBrowserRuntime = async () => ({});\n");
+};
+
 /** A fake `codex` CLI inside the temp home, passed explicitly so the scan
  *  never resolves the machine's real install through PATH. */
 const writeCodexCli = (home: string): string => {
@@ -93,6 +111,7 @@ describe("scanCodexPlugins", () => {
   it("reports the curated plugins as app-server recipes when Codex is fully installed", () => {
     const home = makeHome();
     writeExecutable(join(home, CLIENT_RELATIVE));
+    writeChromePlugin(home);
     const cli = writeCodexCli(home);
 
     const entries = scanCodexPlugins({ codexHome: home, codexCli: cli });
@@ -101,50 +120,76 @@ describe("scanCodexPlugins", () => {
     expect(curated.map((entry) => entry.id)).toEqual([
       "codex-messages",
       "codex-computer-use",
+      "codex-chrome",
+      "codex-openai-docs",
       "codex-computer-history",
     ]);
     for (const entry of curated) {
-      expect(entry.available).toBe(true);
-      // Curated plugins go through the app-server bridge — its service only
-      // honours Codex host sessions, so the client binary is never spawned.
+      expect(entry.available, entry.id).toBe(true);
+      // Curated plugins go through the app-server bridge — the plugins' own
+      // service only honours Codex host sessions, so their binaries are never
+      // spawned directly.
       expect(entry.command).toBe(cli);
       expect(entry.args).toEqual(["app-server"]);
       expect(entry.env).toEqual({ CODEX_HOME: home });
       expect(entry.setupHint).toBeUndefined();
     }
-    // Computer Use has no MCP server of its own in current Codex — it ships as
-    // a node-repl variant, so it targets `node_repl` with the sky surface.
+    // Computer Use and Chrome have no MCP server of their own in current
+    // Codex: both ship as node-repl content, so they target `node_repl` with a
+    // projected surface. Chrome additionally carries the module its surface
+    // imports, resolved through the version-proof `latest` symlink.
     expect(curated.map((entry) => entry.appServer)).toEqual([
       { server: "messages" },
       { server: "node_repl", surface: "sky" },
+      { server: "node_repl", surface: "browser", modulePath: join(home, CHROME_CLIENT_RELATIVE) },
+      { server: "openaiDeveloperDocs" },
       { server: "computer-history" },
     ]);
   });
 
-  it("reports the curated plugins with a setup hint when Codex is not installed", () => {
+  it("reports every curated plugin with a setup hint when Codex is not installed", () => {
     const home = makeHome();
 
     const entries = scanCodexPlugins({ codexHome: home, codexCli: join(home, "bin", "codex") });
     const curated = entries.filter((entry) => entry.source === "curated");
 
-    expect(curated).toHaveLength(3);
+    expect(curated).toHaveLength(5);
     for (const entry of curated) {
-      expect(entry.available).toBe(false);
-      expect(entry.setupHint).toContain("Install the Codex app");
+      expect(entry.available, entry.id).toBe(false);
+      expect(entry.setupHint, entry.id).toContain("Codex");
     }
   });
 
-  it("stays unavailable when the CLI exists but the Computer Use app is missing", () => {
+  it("gates each curated plugin on what it actually needs, not on Codex alone", () => {
     const home = makeHome();
     const cli = writeCodexCli(home);
 
-    const curated = scanCodexPlugins({ codexHome: home, codexCli: cli }).filter(
-      (entry) => entry.source === "curated",
+    const byId = new Map(
+      scanCodexPlugins({ codexHome: home, codexCli: cli }).map((entry) => [entry.id, entry]),
     );
 
-    // `codex app-server` would start, but no `messages`/`computer-use` server
-    // exists without the plugin app — so the card must not claim readiness.
-    for (const entry of curated) expect(entry.available).toBe(false);
+    // `codex app-server` starts, but the plugins' own content is absent: no
+    // `messages` server without the Computer Use app, no browser client
+    // without the Chrome plugin. Those cards must not claim readiness.
+    expect(byId.get("codex-messages")?.available).toBe(false);
+    expect(byId.get("codex-computer-use")?.available).toBe(false);
+    expect(byId.get("codex-chrome")?.available).toBe(false);
+    expect(byId.get("codex-chrome")?.setupHint).toContain("Chrome plugin");
+    // The docs server ships with Codex itself, so the CLI alone is enough.
+    expect(byId.get("codex-openai-docs")?.available).toBe(true);
+  });
+
+  it("keeps Chrome unavailable when only the Computer Use app is installed", () => {
+    const home = makeHome();
+    writeExecutable(join(home, CLIENT_RELATIVE));
+    const cli = writeCodexCli(home);
+
+    const byId = new Map(
+      scanCodexPlugins({ codexHome: home, codexCli: cli }).map((entry) => [entry.id, entry]),
+    );
+
+    expect(byId.get("codex-messages")?.available).toBe(true);
+    expect(byId.get("codex-chrome")?.available).toBe(false);
   });
 
   it("scans cached plugins, resolving command and cwd against the newest version", () => {

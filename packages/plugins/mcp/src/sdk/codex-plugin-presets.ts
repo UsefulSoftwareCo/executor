@@ -19,12 +19,21 @@ export interface CuratedCodexPlugin {
    *  the app-server bridge calls tools against. */
   readonly server: string;
   /** Present when the plugin has no MCP server of its own and its API is
-   *  projected onto another one. Computer Use ships as a `node-repl` variant:
-   *  Codex never starts a `computer-use` server, and the API is driven through
-   *  `node_repl` — see `codex-sky-tools.ts`. */
-  readonly surface?: "sky";
+   *  projected onto another one. Computer Use and Chrome both ship as
+   *  skills/`node-repl` content: Codex never starts a server for either, and
+   *  their APIs are driven through `node_repl` — see `codex-sky-tools.ts` and
+   *  `codex-browser-tools.ts`. */
+  readonly surface?: "sky" | "browser";
+  /** What must exist on disk for this card to be usable, beyond the `codex`
+   *  CLI itself. `computer-use-app` is the shared Codex Computer Use app;
+   *  `chrome-plugin` is the Chrome plugin's bundled browser client; `codex`
+   *  means the CLI alone is enough (a server Codex always carries). */
+  readonly requires: "computer-use-app" | "chrome-plugin" | "codex";
   readonly summary: string;
 }
+
+export const CHROME_SETUP_HINT =
+  "Install the Codex app and add the Chrome plugin (Settings \u2192 Computer use installs the ChatGPT browser extension), then use it once inside Codex so it can reach your browser.";
 
 export const CODEX_SETUP_HINT =
   "Install the Codex app, sign in, and use this plugin once inside Codex so macOS grants its permissions (Full Disk Access, Contacts, Automation).";
@@ -39,6 +48,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "messages",
     name: "Messages",
     slug: "codex_messages",
+    requires: "computer-use-app",
     server: "messages",
     summary:
       "Read, search, and send iMessage/SMS texts through Apple's Messages app on this Mac, via the Codex plugin. Reads and sends are approved in its native dialogs.",
@@ -48,16 +58,43 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-use",
     name: "Computer Use",
     slug: "codex_computer_use",
+    requires: "computer-use-app",
     server: "node_repl",
     surface: "sky",
     summary:
       "Control macOS desktop apps via the Codex plugin: read the screen and accessibility tree, click, type, and scroll.",
   },
   {
+    // Chrome is skills-only: its API is the bundled `browser-client.mjs`,
+    // driven through `node_repl` exactly as Computer Use drives `@oai/sky`.
+    id: "codex-chrome",
+    pluginName: "chrome",
+    name: "Chrome",
+    slug: "codex_chrome",
+    server: "node_repl",
+    surface: "browser",
+    requires: "chrome-plugin",
+    summary:
+      "Control the Chrome browser on this Mac through the Codex plugin: open tabs, navigate to a URL, read the page, click, and type. Uses your real Chrome, with its logged-in sessions.",
+  },
+  {
+    // A server Codex carries itself — no plugin app, no local binary beyond
+    // the CLI.
+    id: "codex-openai-docs",
+    pluginName: "openai-developers",
+    name: "OpenAI Developer Docs",
+    slug: "codex_openai_docs",
+    server: "openaiDeveloperDocs",
+    requires: "codex",
+    summary:
+      "Search and read OpenAI's developer documentation and API reference, including OpenAPI specs and endpoint listings, via the Codex plugin.",
+  },
+  {
     id: "codex-computer-history",
     pluginName: "computer-history",
     name: "Computer History",
     slug: "codex_computer_history",
+    requires: "computer-use-app",
     server: "computer-history",
     summary:
       "Ask about recent on-screen activity from Codex's private local record (requires Computer History enabled in Codex).",
