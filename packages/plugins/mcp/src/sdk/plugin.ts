@@ -229,7 +229,9 @@ const McpStdioServerInputSchema = Schema.Struct({
   /** Reach the server through the Codex app-server bridge: the command spawns
    *  `codex app-server` and `server` names the MCP server inside Codex whose
    *  tools this integration exposes. Set by the Codex plugin add flow. */
-  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
+  appServer: Schema.optional(
+    Schema.Struct({ server: Schema.String, surface: Schema.optional(Schema.Literal("sky")) }),
+  ),
   slug: Schema.optional(Schema.String),
 });
 
@@ -689,21 +691,52 @@ const sortedRecord = (
  *  Exported for tests (not re-exported from `sdk/index.ts`, so this widens no
  *  public API): the retention property is a property of the KEY, and asserting
  *  it through pool behaviour alone would not see it. */
+/** The connector inputs the pool accepts.
+ *
+ *  Remote servers, and app-server bridge connections — NOT stdio generally.
+ *  Pooling the bridge is what makes a Codex plugin's "for this conversation"
+ *  approval mean anything: that grant lives on the Codex THREAD, and the
+ *  bridge starts one thread per connection, so a connection per call re-asked
+ *  on every call. Plain stdio stays unpooled on purpose: a spawn-per-call CLI
+ *  server is entitled to assume a fresh process each time. */
+export type PoolableConnectorInput =
+  | Extract<ConnectorInput, { readonly transport: "remote" }>
+  | (McpStdioIntegrationConfig & { readonly appServer: { readonly server: string } });
+
+/** Whether this connection may be retained between calls (see
+ *  `PoolableConnectorInput`). */
+export const isPoolableConnectorInput = (input: ConnectorInput): input is PoolableConnectorInput =>
+  input.transport === "remote" || input.appServer !== undefined;
+
 export const connectionPoolKey = (
-  input: Extract<ConnectorInput, { readonly transport: "remote" }>,
+  input: PoolableConnectorInput,
   template: string,
   values: Record<string, string | null>,
 ): Effect.Effect<string> =>
   sha256Hex(
-    JSON.stringify({
-      endpoint: input.endpoint,
-      transport: input.transport,
-      remoteTransport: input.remoteTransport,
-      headers: sortedRecord(input.headers),
-      queryParams: sortedRecord(input.queryParams),
-      template,
-      values: sortedRecord(values),
-    }),
+    JSON.stringify(
+      input.transport === "remote"
+        ? {
+            endpoint: input.endpoint,
+            transport: input.transport,
+            remoteTransport: input.remoteTransport,
+            headers: sortedRecord(input.headers),
+            queryParams: sortedRecord(input.queryParams),
+            template,
+            values: sortedRecord(values),
+          }
+        : {
+            transport: "appserver",
+            command: input.command,
+            args: input.args ?? [],
+            cwd: input.cwd ?? null,
+            env: sortedRecord(input.env),
+            server: input.appServer.server,
+            surface: input.appServer.surface ?? null,
+            template,
+            values: sortedRecord(values),
+          },
+    ),
   );
 
 // ---------------------------------------------------------------------------
@@ -1414,14 +1447,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           invokeHttpClientLayer,
         );
         const connector: McpConnector = createMcpConnector(connectorInput);
-        const poolKey =
-          connectorInput.transport === "remote"
-            ? yield* connectionPoolKey(
-                connectorInput,
-                String(credential.template),
-                credential.values,
-              )
-            : undefined;
+        const poolKey = isPoolableConnectorInput(connectorInput)
+          ? yield* connectionPoolKey(connectorInput, String(credential.template), credential.values)
+          : undefined;
 
         const connectionRef = {
           owner: credential.owner,

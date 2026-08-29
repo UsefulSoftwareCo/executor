@@ -41,7 +41,7 @@ const toServerInput = (
       env?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
-      appServer?: { server: string };
+      appServer?: { server: string; surface?: "sky" };
       slug?: string;
     };
     return {

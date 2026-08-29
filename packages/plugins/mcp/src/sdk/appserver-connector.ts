@@ -36,17 +36,52 @@
 // import in the appserver branch of `createMcpConnector`.
 // ---------------------------------------------------------------------------
 
-import { spawn, type ChildProcess } from "node:child_process";
-
 import type { JSONRPCMessage, JSONRPCRequest, Transport } from "@modelcontextprotocol/client";
 import { Option, Schema } from "effect";
 
+import { findSkyTool, skyCallProgram, skyToolList } from "./codex-sky-tools";
 import { stdioSpawnEnv, type StdioTransportConfig } from "./stdio-connector";
+
+/** The slice of a Node child process this transport uses.
+ *
+ *  Structural rather than `node:child_process`'s own `ChildProcess`, and the
+ *  module is imported dynamically below, because `@executor-js/cloud` compiles
+ *  this package against workerd's lib: an eager `node:child_process` import
+ *  resolves to `never` there and fails the cloud typecheck, even though cloud
+ *  sets `dangerouslyAllowStdioMCP: false` and never reaches this code. Same
+ *  reasoning as `stdio-connector.ts`'s isolation, one level lower. */
+interface SpawnedProcess {
+  readonly stdin: {
+    write: (chunk: string, callback?: () => void) => unknown;
+    end: () => unknown;
+    on: (event: string, listener: (error: unknown) => void) => unknown;
+  } | null;
+  readonly stdout: {
+    setEncoding: (encoding: string) => unknown;
+    on: (event: string, listener: (chunk: never) => void) => unknown;
+  } | null;
+  on: (event: string, listener: (payload: Error) => void) => unknown;
+  kill: (signal: string) => unknown;
+}
+
+type SpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: {
+    readonly cwd?: string;
+    readonly env: Record<string, string>;
+    readonly stdio: readonly string[];
+  },
+) => SpawnedProcess;
 
 export type AppServerTransportConfig = StdioTransportConfig & {
   /** The MCP server name inside Codex whose tools this transport exposes
    *  (e.g. `messages`) — the `server` of every `mcpServer/tool/call`. */
   readonly server: string;
+  /** `sky` projects the Codex Computer Use API over the `node_repl` server as
+   *  typed tools instead of exposing the REPL itself (see
+   *  `codex-sky-tools.ts`). Absent exposes the server's tools verbatim. */
+  readonly surface?: "sky";
 };
 
 // ---------------------------------------------------------------------------
@@ -149,7 +184,7 @@ class AppServerClientTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
 
   readonly #config: AppServerTransportConfig;
-  #child: ChildProcess | undefined;
+  #child: SpawnedProcess | undefined;
   #stdoutBuffer = "";
   #threadId: string | undefined;
   #nextDownstreamId = 1;
@@ -163,6 +198,8 @@ class AppServerClientTransport implements Transport {
   }
 
   async start(): Promise<void> {
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: node:child_process has no types under the cloud package's workerd lib, so the dynamic import is retyped to the structural slice above
+    const { spawn } = (await import("node:child_process")) as unknown as { spawn: SpawnFn };
     const child = spawn(this.#config.command, [...(this.#config.args ?? [])], {
       cwd: this.#config.cwd,
       env: stdioSpawnEnv(this.#config.env),
@@ -176,7 +213,9 @@ class AppServerClientTransport implements Transport {
     child.stdout?.on("error", () => undefined);
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.#onStdout(chunk));
-    child.on("error", (error) => {
+    // `spawn` emits an `Error` here by contract (ENOENT, EACCES); it is
+    // reported to the SDK verbatim and never inspected.
+    child.on("error", (error: Error) => {
       this.onerror?.(error);
       this.#teardown();
     });
@@ -324,6 +363,13 @@ class AppServerClientTransport implements Transport {
   }
 
   async #handleToolsList(message: JSONRPCRequest): Promise<void> {
+    // The sky surface is authored, not discovered: `node_repl` advertises only
+    // its raw `js` REPL, and the Computer Use API it can drive is described in
+    // the plugin's skill rather than any tool list.
+    if (this.#config.surface === "sky") {
+      this.#emit({ jsonrpc: "2.0", id: message.id, result: { tools: skyToolList() } });
+      return;
+    }
     const tools = await this.#collectServerTools(message.id);
     if (tools === undefined) return;
     this.#emit({ jsonrpc: "2.0", id: message.id, result: { tools } });
@@ -376,12 +422,15 @@ class AppServerClientTransport implements Transport {
       this.#fail(message.id, { code: INTERNAL_ERROR, message: "Malformed tools/call params" });
       return;
     }
-    const reply = await this.#request("mcpServer/tool/call", {
-      threadId: this.#threadId,
-      server: this.#config.server,
-      tool: params.value.name,
-      arguments: params.value.arguments ?? {},
-    });
+    const call = this.#toolCallParams(params.value.name, params.value.arguments);
+    if (call === undefined) {
+      this.#fail(message.id, {
+        code: METHOD_NOT_FOUND,
+        message: `Unknown Computer Use tool "${params.value.name}"`,
+      });
+      return;
+    }
+    const reply = await this.#request("mcpServer/tool/call", call);
     if (!reply.ok) {
       this.#fail(message.id, reply.error);
       return;
@@ -405,6 +454,32 @@ class AppServerClientTransport implements Transport {
         ...(result.value.isError === true ? { isError: true } : {}),
       },
     });
+  }
+
+  /** The downstream call for one upstream tool. On the sky surface this
+   *  compiles the typed call into the single `node_repl` execution that
+   *  performs it; otherwise the tool is passed through by name. Undefined
+   *  means the surface does not define that tool. */
+  #toolCallParams(name: string, args: unknown): Record<string, unknown> | undefined {
+    if (this.#config.surface !== "sky") {
+      return {
+        threadId: this.#threadId,
+        server: this.#config.server,
+        tool: name,
+        arguments: args ?? {},
+      };
+    }
+    const tool = findSkyTool(name);
+    if (tool === undefined) return undefined;
+    return {
+      threadId: this.#threadId,
+      server: this.#config.server,
+      tool: "js",
+      arguments: {
+        code: skyCallProgram(tool, args),
+        title: `Computer Use: ${tool.name}`,
+      },
+    };
   }
 
   // -------------------------------------------------------------------------

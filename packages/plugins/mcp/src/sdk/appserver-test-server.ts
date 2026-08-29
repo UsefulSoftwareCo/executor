@@ -86,6 +86,17 @@ let nextServerRequestId = 1000;
 /** Elicitation request id → the pending tool call's request id. */
 const pendingApprovals = new Map<number | string, number | string>();
 
+/** The `node_repl` server, as Codex exposes it: one raw `js` REPL tool. The
+ *  sky surface is projected onto this by the bridge, so the fixture only has
+ *  to echo back the program it was asked to run. */
+const NODE_REPL_TOOLS = {
+  js: {
+    name: "js",
+    description: "JavaScript code to execute with top-level await.",
+    inputSchema: { type: "object", properties: { code: { type: "string" } } },
+  },
+};
+
 const serverStatusPage = (cursor: string | undefined): object =>
   cursor === undefined
     ? {
@@ -115,6 +126,16 @@ const serverStatusPage = (cursor: string | undefined): object =>
             resourceTemplates: [],
             authStatus: "unsupported",
           },
+          {
+            name: "node_repl",
+            runtimeStatus: "connected",
+            pluginId: null,
+            serverInfo: null,
+            tools: NODE_REPL_TOOLS,
+            resources: [],
+            resourceTemplates: [],
+            authStatus: "unsupported",
+          },
         ],
         nextCursor: null,
       };
@@ -126,6 +147,13 @@ const handleToolCall = (id: number | string, params: unknown): void => {
     return;
   }
   const call = decoded.value;
+  // `node_repl` echoes the program it was handed, so a test can assert what
+  // the sky surface compiled without needing a real REPL.
+  if (call.server === "node_repl") {
+    const args = call.arguments as { code?: string } | undefined;
+    reply(id, { content: [{ type: "text", text: args?.code ?? "" }] });
+    return;
+  }
   if (call.threadId !== THREAD_ID || call.server !== "messages") {
     replyError(id, -32602, `unknown thread or server: ${call.threadId}/${call.server}`);
     return;

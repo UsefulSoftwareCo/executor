@@ -41,7 +41,7 @@ export interface CodexPluginEntry {
   /** Present on curated entries: the spawn is `codex app-server` and the
    *  connector bridges MCP to it in process, calling tools on this named
    *  server inside Codex. See `appserver-connector.ts`. */
-  readonly appServer?: { readonly server: string };
+  readonly appServer?: { readonly server: string; readonly surface?: "sky" };
   /** Shown when `available` is false. */
   readonly setupHint?: string;
   /** The plugin's own icon from its local install, as a data URI. Read at
@@ -376,7 +376,10 @@ export const scanCodexPlugins = (options?: {
       command: codexCli ?? "codex",
       args: ["app-server"],
       env: { CODEX_HOME: codexHome },
-      appServer: { server: entry.server },
+      appServer: {
+        server: entry.server,
+        ...(entry.surface === undefined ? {} : { surface: entry.surface }),
+      },
       ...(curatedAvailable ? {} : { setupHint: CODEX_SETUP_HINT }),
       ...display,
     };

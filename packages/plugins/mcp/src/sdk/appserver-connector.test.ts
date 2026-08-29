@@ -15,12 +15,12 @@ import { createMcpConnector, type StdioConnectorInput } from "./connection";
 
 const fixture = fileURLToPath(new URL("./appserver-test-server.ts", import.meta.url));
 
-const appServerInput = (server: string): StdioConnectorInput => ({
+const appServerInput = (server: string, surface?: "sky"): StdioConnectorInput => ({
   transport: "stdio",
   command: "bun",
   args: ["run", fixture],
   env: { CODEX_HOME: "/tmp/fixture-codex-home" },
-  appServer: { server },
+  appServer: { server, ...(surface === undefined ? {} : { surface }) },
 });
 
 const withConnection = (input: StdioConnectorInput) =>
@@ -115,6 +115,84 @@ describe("codex app-server bridge", () => {
         );
         expect(result.isError).toBe(true);
         expect(result.content).toEqual([{ type: "text", text: "denied: decline" }]);
+      }),
+    ),
+  );
+
+  // -------------------------------------------------------------------------
+  // Computer Use: projected onto `node_repl`, not a server of its own.
+  // -------------------------------------------------------------------------
+
+  it.effect("the sky surface lists typed Computer Use tools, not the raw REPL", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+
+        const tools = yield* Effect.promise(() => connection.client.listTools());
+        const names = tools.tools.map(({ name }) => name);
+        expect(names, "the raw REPL is not exposed").not.toContain("js");
+        expect(names).toEqual(expect.arrayContaining(["list_apps", "click", "type_text"]));
+        const click = tools.tools.find(({ name }) => name === "click");
+        expect(click?.inputSchema, "tools carry real schemas").toMatchObject({
+          type: "object",
+          required: ["app"],
+        });
+      }),
+    ),
+  );
+
+  it.effect("a sky tool call compiles to one node_repl program carrying its arguments", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+
+        // Quotes in the arguments matter: they are embedded into a JS source
+        // text, so the encoding has to survive them exactly.
+        const args = { app: "com.apple.Safari", text: 'hi "there"' };
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "type_text", arguments: args }),
+        );
+        // The fixture echoes the program the bridge compiled.
+        const program = (result.content as readonly { readonly text: string }[])[0]!.text;
+        expect(program, "imports the bundled sky package idempotently").toContain(
+          'globalThis.sky ??= (await import("@oai/sky")).sky;',
+        );
+        expect(program, "calls the mapped method with the arguments verbatim").toContain(
+          `await sky.type_text(${JSON.stringify(args)})`,
+        );
+        expect(program, "returns the result as JSON through the REPL").toContain(
+          "nodeRepl.write(JSON.stringify(__result ?? null));",
+        );
+      }),
+    ),
+  );
+
+  it.effect("an argument-less sky tool calls its method with no argument object", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "list_apps", arguments: {} }),
+        );
+        const program = (result.content as readonly { readonly text: string }[])[0]!.text;
+        expect(program).toContain("await sky.list_apps();");
+      }),
+    ),
+  );
+
+  it.effect("a tool outside the sky surface is refused rather than sent to the REPL", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* withConnection(appServerInput("node_repl", "sky"));
+
+        const outcome = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "js", arguments: { code: "process.exit(0)" } }).then(
+            () => "unexpected success",
+            (failure: Error) => failure.message,
+          ),
+        );
+        expect(outcome).toContain("js");
       }),
     ),
   );

@@ -65,7 +65,9 @@ const AddStdioServerPayload = Schema.Struct({
   versionNegotiation: Schema.optional(Schema.Literals(["legacy", "auto"])),
   /** Reach the server through the Codex app-server bridge: the command spawns
    *  `codex app-server` and `server` names the MCP server inside Codex. */
-  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
+  appServer: Schema.optional(
+    Schema.Struct({ server: Schema.String, surface: Schema.optional(Schema.Literal("sky")) }),
+  ),
   slug: Schema.optional(Schema.String),
 });
 
@@ -149,7 +151,9 @@ const CodexPluginEntrySchema = Schema.Struct({
   env: Schema.optional(StringMap),
   /** Present on curated entries: add through the Codex app-server bridge,
    *  calling tools on this named server inside Codex. */
-  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
+  appServer: Schema.optional(
+    Schema.Struct({ server: Schema.String, surface: Schema.optional(Schema.Literal("sky")) }),
+  ),
   setupHint: Schema.optional(Schema.String),
   /** The plugin's own icon from its local install, as a data URI. */
   icon: Schema.optional(Schema.String),

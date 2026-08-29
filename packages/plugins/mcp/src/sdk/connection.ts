@@ -459,7 +459,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
     // bridge answers the MCP handshake itself, so `versionNegotiation` does
     // not apply on this path.
     if (input.appServer !== undefined) {
-      const server = input.appServer.server;
+      const { server, surface } = input.appServer;
       return Effect.gen(function* () {
         const { createAppServerTransport } = yield* Effect.tryPromise({
           try: () => import("./appserver-connector"),
@@ -479,6 +479,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
               env: input.env,
               cwd: input.cwd?.trim().length ? input.cwd.trim() : undefined,
               server,
+              ...(surface === undefined ? {} : { surface }),
             }),
         });
       });

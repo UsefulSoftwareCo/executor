@@ -18,6 +18,11 @@ export interface CuratedCodexPlugin {
   /** The MCP server name this plugin registers inside Codex — the `server`
    *  the app-server bridge calls tools against. */
   readonly server: string;
+  /** Present when the plugin has no MCP server of its own and its API is
+   *  projected onto another one. Computer Use ships as a `node-repl` variant:
+   *  Codex never starts a `computer-use` server, and the API is driven through
+   *  `node_repl` — see `codex-sky-tools.ts`. */
+  readonly surface?: "sky";
   readonly summary: string;
 }
 
@@ -43,7 +48,8 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-use",
     name: "Computer Use",
     slug: "codex_computer_use",
-    server: "computer-use",
+    server: "node_repl",
+    surface: "sky",
     summary:
       "Control macOS desktop apps via the Codex plugin: read the screen and accessibility tree, click, type, and scroll.",
   },

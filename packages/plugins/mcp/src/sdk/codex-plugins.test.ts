@@ -112,10 +112,12 @@ describe("scanCodexPlugins", () => {
       expect(entry.env).toEqual({ CODEX_HOME: home });
       expect(entry.setupHint).toBeUndefined();
     }
-    expect(curated.map((entry) => entry.appServer?.server)).toEqual([
-      "messages",
-      "computer-use",
-      "computer-history",
+    // Computer Use has no MCP server of its own in current Codex — it ships as
+    // a node-repl variant, so it targets `node_repl` with the sky surface.
+    expect(curated.map((entry) => entry.appServer)).toEqual([
+      { server: "messages" },
+      { server: "node_repl", surface: "sky" },
+      { server: "computer-history" },
     ]);
   });
 

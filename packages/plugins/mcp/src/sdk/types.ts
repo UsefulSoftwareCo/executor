@@ -263,7 +263,15 @@ export const McpStdioIntegrationConfig = Schema.Struct({
    *  spawning their client binary directly can list tools but not call them.
    *  `versionNegotiation` is ignored when this is set (the bridge answers
    *  the handshake itself). */
-  appServer: Schema.optional(Schema.Struct({ server: Schema.String })),
+  appServer: Schema.optional(
+    Schema.Struct({
+      server: Schema.String,
+      /** `sky` projects the Codex Computer Use API (driven through the
+       *  `node_repl` server) as typed tools — see `codex-sky-tools.ts`.
+       *  Absent means the server's own tools are exposed verbatim. */
+      surface: Schema.optional(Schema.Literal("sky")),
+    }),
+  ),
   /** Declared auth methods — a single `stdio_env` method naming the secret env
    *  vars, or `none`. A connection's `template` picks one by slug, exactly as
    *  for remote servers. Optional so pre-revamp stdio configs (which had no
