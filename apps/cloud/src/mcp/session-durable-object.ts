@@ -43,7 +43,11 @@ import {
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
-import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
+import {
+  buildExecuteDescription,
+  parseIntegrationInventory,
+  type ResumeResponse,
+} from "@executor-js/execution";
 import { acquireBuildSlot, type BuildSlotHandle } from "./session-build-semaphore";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
@@ -182,6 +186,16 @@ const smokeRenderArtifactAfterQuickJsPreload: typeof smokeRenderArtifact = async
 // ---------------------------------------------------------------------------
 
 export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionDbHandle> {
+  // Set once per `buildMcpServer` call, read back by `sessionFootprintAttributes`
+  // so the counts land on the base's `McpSessionDO.init` span alongside
+  // `mcp.isolate.*` residency — see the comment at the `parseIntegrationInventory`
+  // call site below for why this is free to compute.
+  private lastSessionFootprint: Record<string, number> = {};
+
+  protected override sessionFootprintAttributes(): Record<string, number> {
+    return this.lastSessionFootprint;
+  }
+
   protected override sessionTimeoutMs(): number {
     return positiveMilliseconds(env.MCP_SESSION_TIMEOUT_MS) ?? super.sessionTimeoutMs();
   }
@@ -327,6 +341,17 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       const description = yield* buildExecuteDescription(executor).pipe(
         Effect.withSpan("mcp.execute.description.build"),
       );
+      // Cheap size proxy for the session's footprint: `parseIntegrationInventory`
+      // is a regex walk over the description string already built above, the
+      // same trick `createExecutorMcpServer` uses to derive its per-integration
+      // search tools without a second `connections.list()` — no new query, no
+      // catalog serialization. This is a *count* of distinct connected
+      // integrations, not raw connections (several connections can share one
+      // integration) and is capped at the description's 50-item inventory
+      // limit, same as what the model itself sees.
+      self.lastSessionFootprint = {
+        "mcp.session.integration_count": parseIntegrationInventory(description).length,
+      };
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
       const mcpServer = yield* createExecutorMcpServer({
         engine,
