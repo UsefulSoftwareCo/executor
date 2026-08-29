@@ -1,6 +1,8 @@
 import { CURATED_CODEX_PLUGINS } from "./codex-plugin-presets";
 
 export interface McpRemotePreset {
+  /** Image to show when `icon` cannot be resolved on this machine. */
+  readonly fallbackIcon?: string;
   readonly id: string;
   readonly name: string;
   readonly summary: string;
@@ -13,6 +15,8 @@ export interface McpRemotePreset {
 }
 
 export interface McpStdioPreset {
+  /** Image to show when `icon` cannot be resolved on this machine. */
+  readonly fallbackIcon?: string;
   readonly id: string;
   readonly name: string;
   readonly summary: string;
@@ -41,6 +45,11 @@ const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map(
   name: plugin.name,
   summary: plugin.summary,
   icon: `executor:/mcp/codex-plugins/${plugin.id}/icon`,
+  // The plugin's own icon lives in the user's Codex install, so a machine
+  // without Codex has none to read. Fall back to the provider's mark from the
+  // same logo service every other preset uses, rather than vendoring OpenAI's
+  // artwork into this repo.
+  fallbackIcon: "https://integrations.sh/logo/openai.com",
   family: "codex",
   defaultSlug: plugin.slug,
   transport: "stdio",

@@ -174,7 +174,13 @@ describe("scanCodexPlugins", () => {
     expect(byId.get("codex-messages")?.available).toBe(false);
     expect(byId.get("codex-computer-use")?.available).toBe(false);
     expect(byId.get("codex-chrome")?.available).toBe(false);
-    expect(byId.get("codex-chrome")?.setupHint).toContain("Chrome plugin");
+    // Each card's steps are about ITS requirement: Chrome needs the browser
+    // extension, which no other card mentions.
+    expect(byId.get("codex-chrome")?.setupHint).toContain("browser extension");
+    expect(byId.get("codex-messages")?.setupHint).not.toContain("browser extension");
+    // And the steps are numbered and name the plugin the person clicked.
+    expect(byId.get("codex-messages")?.setupHint).toContain("1. Install the Codex app");
+    expect(byId.get("codex-messages")?.setupHint).toContain("Open Messages once inside Codex");
     // The docs server ships with Codex itself, so the CLI alone is enough.
     expect(byId.get("codex-openai-docs")?.available).toBe(true);
   });

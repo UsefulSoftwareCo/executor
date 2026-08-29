@@ -72,6 +72,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
       presetSummary?: string;
       presetUrl?: string;
       presetIcon?: string;
+      presetFallbackIcon?: string;
     }> = [];
     for (const plugin of integrationPlugins) {
       for (const preset of plugin.presets ?? []) {
@@ -83,6 +84,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
           presetSummary: preset.summary,
           presetUrl: preset.url,
           presetIcon: preset.icon,
+          presetFallbackIcon: preset.fallbackIcon,
         });
       }
     }
@@ -196,6 +198,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
               >
                 <PresetIcon
                   {...(e.presetIcon ? { icon: e.presetIcon } : {})}
+                  {...(e.presetFallbackIcon ? { fallbackSrc: e.presetFallbackIcon } : {})}
                   className="size-4 shrink-0 object-contain"
                   fallback={
                     <span

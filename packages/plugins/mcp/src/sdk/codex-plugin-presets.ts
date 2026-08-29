@@ -32,11 +32,41 @@ export interface CuratedCodexPlugin {
   readonly summary: string;
 }
 
-export const CHROME_SETUP_HINT =
-  "Install the Codex app and add the Chrome plugin (Settings \u2192 Computer use installs the ChatGPT browser extension), then use it once inside Codex so it can reach your browser.";
+/** What to do when a card is not usable yet.
+ *
+ *  Written as numbered steps rather than one sentence: a person reading this
+ *  has just been told they cannot proceed, and the useful answer is the
+ *  shortest ordered path to being able to. Each step names where to go, and
+ *  the last one says to come back — otherwise the card is a dead end. The
+ *  plugin's own name is substituted in, so the instruction is about the thing
+ *  the person clicked rather than about plugins in general. */
+export const setupSteps = (
+  requires: CuratedCodexPlugin["requires"],
+  name: string,
+): readonly string[] => {
+  const install = "Install the Codex app from openai.com/codex, then sign in.";
+  const finish = "Come back here and add it.";
+  if (requires === "codex") return [install, finish];
+  if (requires === "chrome-plugin") {
+    return [
+      install,
+      "In Codex, open Settings \u2192 Computer use and install the ChatGPT browser extension.",
+      "Use Chrome once inside Codex, so it can reach your browser.",
+      finish,
+    ];
+  }
+  return [
+    install,
+    `Open ${name} once inside Codex. macOS asks for its permissions the first time \u2014 Full Disk Access, Contacts, and Automation.`,
+    finish,
+  ];
+};
 
-export const CODEX_SETUP_HINT =
-  "Install the Codex app, sign in, and use this plugin once inside Codex so macOS grants its permissions (Full Disk Access, Contacts, Automation).";
+/** The steps as one string, for the wire and for plain-text surfaces. */
+export const setupHint = (requires: CuratedCodexPlugin["requires"], name: string): string =>
+  setupSteps(requires, name)
+    .map((step, index) => `${index + 1}. ${step}`)
+    .join("\n");
 
 export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
   // Names are exactly the plugins' own displayNames — nothing invented, no

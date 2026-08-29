@@ -467,6 +467,7 @@ function PresetGrid(props: {
                     <CardStackEntryMedia>
                       <PresetIcon
                         {...(preset.icon ? { icon: preset.icon } : {})}
+                        {...(preset.fallbackIcon ? { fallbackSrc: preset.fallbackIcon } : {})}
                         className="size-5 object-contain"
                         fallback={
                           <svg viewBox="0 0 16 16" className="size-3.5" fill="none">

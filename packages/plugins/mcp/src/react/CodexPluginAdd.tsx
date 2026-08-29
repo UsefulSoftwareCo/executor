@@ -94,9 +94,14 @@ export default function CodexPluginAdd(props: {
       {/* Mirrors the plugin's own page in Codex: its icon, display name,
           tagline, and long description, all read from the local install. */}
       <div className="flex flex-col gap-4">
-        {plugin.icon !== undefined && (
-          <img src={plugin.icon} alt="" className="size-16 rounded-2xl" />
-        )}
+        {/* The plugin's own icon comes from the local Codex install; without
+            one the card still identifies its provider rather than showing a
+            gap, which matters most on the machines that have no install. */}
+        <img
+          src={plugin.icon ?? "https://integrations.sh/logo/openai.com"}
+          alt=""
+          className="size-16 rounded-2xl"
+        />
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
             <h1 className="text-xl font-semibold text-foreground">
@@ -127,7 +132,15 @@ export default function CodexPluginAdd(props: {
           </span>
         </div>
         {!plugin.available && plugin.setupHint !== undefined && (
-          <p className="text-[12px] text-muted-foreground">{plugin.setupHint}</p>
+          // The hint arrives as numbered lines; render them as the list they
+          // are, so the reader sees an ordered path rather than a paragraph.
+          <ol className="mt-1 flex list-none flex-col gap-1.5">
+            {plugin.setupHint.split("\n").map((step) => (
+              <li key={step} className="text-[12px] leading-relaxed text-muted-foreground">
+                {step}
+              </li>
+            ))}
+          </ol>
         )}
         {plugin.available && !added && (
           <p className="text-[12px] text-muted-foreground">

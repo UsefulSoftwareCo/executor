@@ -20,12 +20,7 @@ import * as path from "node:path";
 
 import { Option, Schema } from "effect";
 
-import {
-  CHROME_SETUP_HINT,
-  CODEX_SETUP_HINT,
-  CURATED_CODEX_PLUGINS,
-  type CuratedCodexPlugin,
-} from "./codex-plugin-presets";
+import { CURATED_CODEX_PLUGINS, setupHint, type CuratedCodexPlugin } from "./codex-plugin-presets";
 
 export interface CodexPluginEntry {
   /** Stable card id, e.g. `codex-messages`. */
@@ -187,9 +182,6 @@ const readText = (file: string): string | undefined =>
 
 const isReadableFile = (file: string): boolean =>
   tryOrElse(() => fs.statSync(file).isFile(), false);
-
-const setupHintFor = (requires: CuratedCodexPlugin["requires"]): string =>
-  requires === "chrome-plugin" ? CHROME_SETUP_HINT : CODEX_SETUP_HINT;
 
 const isExecutableFile = (file: string): boolean =>
   tryOrElse(() => {
@@ -368,7 +360,7 @@ const scanCachedPlugin = (
       // process's environment sight-unseen. A user can declare more env on
       // the integration after adding it.
       env: { CODEX_HOME: codexHome },
-      ...(available ? {} : { setupHint: CODEX_SETUP_HINT }),
+      ...(available ? {} : { setupHint: setupHint("codex", displayName) }),
       ...display,
     };
   });
@@ -424,7 +416,7 @@ export const scanCodexPlugins = (options?: {
         ...(entry.surface === undefined ? {} : { surface: entry.surface }),
         ...(entry.surface === "browser" ? { modulePath: browserClient } : {}),
       },
-      ...(available ? {} : { setupHint: setupHintFor(entry.requires) }),
+      ...(available ? {} : { setupHint: setupHint(entry.requires, entry.name) }),
       ...display,
     };
   });

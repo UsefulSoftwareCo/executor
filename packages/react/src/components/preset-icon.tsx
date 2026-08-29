@@ -51,10 +51,16 @@ export const resolveExecutorIcon = (path: string): Promise<string | null> => {
 };
 
 /** Renders a preset icon, resolving `executor:` scheme icons through the
- *  authenticated API. `fallback` shows while loading and when there is no
- *  icon. */
+ *  authenticated API.
+ *
+ *  `fallbackSrc` is a plain image URL to use when the machine-local icon is
+ *  unavailable — a Codex plugin card still shows its provider's mark on a
+ *  machine where Codex is not installed, which is exactly when the card is
+ *  most in need of explaining itself. `fallback` is the last resort, for when
+ *  there is no image of any kind. */
 export function PresetIcon(props: {
   readonly icon?: string;
+  readonly fallbackSrc?: string;
   readonly className?: string;
   readonly fallback?: React.ReactNode;
 }) {
@@ -72,7 +78,7 @@ export function PresetIcon(props: {
     };
   }, [isExecutorIcon, props.icon]);
 
-  const src = isExecutorIcon ? fetched : (props.icon ?? null);
+  const src = (isExecutorIcon ? fetched : (props.icon ?? null)) ?? props.fallbackSrc ?? null;
   if (src === null) return <>{props.fallback ?? null}</>;
   return <img src={src} alt="" className={props.className} loading="lazy" />;
 }

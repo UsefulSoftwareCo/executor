@@ -852,6 +852,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     ...("url" in preset && preset.url ? { url: preset.url } : {}),
     ...("endpoint" in preset && preset.endpoint ? { endpoint: preset.endpoint } : {}),
     ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(preset.fallbackIcon ? { fallbackIcon: preset.fallbackIcon } : {}),
     ...(preset.featured ? { featured: preset.featured } : {}),
     ...(preset.family ? { family: preset.family } : {}),
     ...("defaultSlug" in preset && preset.defaultSlug ? { defaultSlug: preset.defaultSlug } : {}),
