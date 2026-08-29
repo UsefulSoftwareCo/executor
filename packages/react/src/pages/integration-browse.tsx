@@ -19,7 +19,6 @@ import { Button } from "../components/button";
 import { Input } from "../components/input";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
-import { cn } from "../lib/utils";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import {
   availableCatalogKinds,
@@ -720,15 +719,7 @@ export function IntegrationBrowsePage() {
             : "Nothing matches that. Paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."}
         </p>
       ) : (
-        <div
-          className={cn(
-            "grid grid-cols-1 gap-2 transition-opacity duration-150 sm:grid-cols-2 lg:grid-cols-3",
-            // Stale results stay up while the next query loads (no empty
-            // flash), but dimmed — a wholesale swap with no signal read as
-            // the page jumping.
-            catalog.loading && "opacity-40",
-          )}
-        >
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {results.map((row) => (
             <ResultCard key={row.key} row={row} />
           ))}
