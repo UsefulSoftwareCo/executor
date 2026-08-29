@@ -770,6 +770,9 @@ describe("graphqlPlugin real protocol server", () => {
       expect(result.httpStatus).toBe(401);
       expect(result.detail).toContain("The endpoint rejected the credential with HTTP 401.");
       expect(result.detail).toContain("Check the credential and selected authentication method.");
+      // A real non-2xx HTTP verdict is the one auth shape that claims
+      // `upstream_status`.
+      expect(result.reason).toBe("upstream_status");
     }),
   );
 
@@ -799,6 +802,9 @@ describe("graphqlPlugin real protocol server", () => {
       expect(result.httpStatus).toBe(200);
       expect(result.detail).toContain("The endpoint rejected the credential.");
       expect(result.detail).toContain("Upstream said: Unauthorized: invalid API key");
+      // An auth rejection inside an HTTP 200 body has no non-2xx HTTP
+      // verdict, so it must NOT be labeled `upstream_status`.
+      expect(result.reason).toBeUndefined();
     }),
   );
 

@@ -109,15 +109,21 @@ export const discoverTools = (
       const connection = yield* restore(
         connector.pipe(
           Effect.mapError((failure) => {
-            // Preserve the handshake HTTP status (401/403 = auth wall) so the
-            // liveness health check can classify structurally.
+            // Preserve the handshake HTTP status (401/403 = auth wall) and a
+            // connect-level timeout so the liveness health check can classify
+            // structurally — dropping `failureKind: "timeout"` here is what
+            // made a timed-out handshake read as a generic probe failure.
             const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
               ? failure.httpStatus
               : undefined;
+            const timedOut =
+              Predicate.isTagged(failure, "McpConnectionError") &&
+              failure.failureKind === "timeout";
             return new McpToolDiscoveryError({
               stage: "connect",
               message: `Failed connecting to MCP server: ${failure.message}`,
               ...(httpStatus !== undefined ? { httpStatus } : {}),
+              ...(timedOut ? { timedOut } : {}),
             });
           }),
         ),

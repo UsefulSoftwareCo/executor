@@ -88,6 +88,9 @@ export const HealthCheckReason = Schema.Literals([
   /** The authorization server refused to re-mint the credential (OAuth
    *  refresh / client-credentials exchange rejected). */
   "credential_refresh_rejected",
+  /** An enterprise identity provider declined the connection under
+   *  administrator policy; neither reconnecting nor retrying can help. */
+  "blocked_by_admin",
   /** The probe hit its deadline before the upstream answered. */
   "probe_timeout",
   /** The probe could not complete or its response was unusable (transport

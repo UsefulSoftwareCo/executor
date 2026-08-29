@@ -169,9 +169,11 @@ const healthFromIntrospectionError = (
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       checkedAt,
       detail: appendUpstreamMessage(`${statusDetail} ${GRAPHQL_AUTH_DETAIL}`, upstream),
-      // Auth rejections spelled only in the body carry no HTTP verdict, so
-      // only a real status claims `upstream_status`.
-      ...(httpStatus !== undefined ? { reason: "upstream_status" as const } : {}),
+      // `upstream_status` means "a non-2xx HTTP verdict": only the literal
+      // 401/403 branch claims it. An auth message inside an HTTP 200 body
+      // (the common GraphQL shape) has no HTTP verdict — omit the reason
+      // rather than mislabel it.
+      ...(httpStatus === 401 || httpStatus === 403 ? { reason: "upstream_status" as const } : {}),
     };
   }
 
@@ -218,7 +220,7 @@ const healthFromIntrospectionError = (
     status: "degraded",
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     checkedAt,
-    ...(httpStatus !== undefined
+    ...(httpStatus !== undefined && (httpStatus < 200 || httpStatus >= 300)
       ? { reason: "upstream_status" as const }
       : { reason: "probe_failed" as const }),
     detail: appendUpstreamMessage(

@@ -47,7 +47,7 @@ import {
   isToolSyncHealth,
   toolSyncHealthDetailPrefix,
 } from "./health-check";
-import type { HealthCheckCandidate } from "./health-check";
+import type { HealthCheckCandidate, HealthCheckReason } from "./health-check";
 import {
   ARTIFACT_SUMMARY_COLUMNS,
   coreSchema,
@@ -996,7 +996,15 @@ const deadGrantVerdict = (
   row: ConnectionRow,
 ): HealthCheckResult => {
   const cached = Option.getOrNull(decodeLastHealth(row.last_health));
-  if (cached !== null && cached.status === "expired") return cached;
+  // A recorded dead grant IS a refresh rejection whatever the cached verdict
+  // says, so backfill the mechanism onto verdicts persisted before `reason`
+  // existed (or by writers that omit it) — otherwise every pre-existing dead
+  // grant would present reasonless spans indefinitely.
+  if (cached !== null && cached.status === "expired") {
+    return cached.reason !== undefined
+      ? cached
+      : { ...cached, reason: "credential_refresh_rejected" };
+  }
   return {
     status: "expired",
     checkedAt: reauthState.oauthReauthRequiredAt,
@@ -2133,6 +2141,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         status: "expired",
         checkedAt: Date.now(),
         detail,
+        reason: "credential_refresh_rejected",
       };
       return core
         .updateMany("connection", {
@@ -2367,13 +2376,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<string | null, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const owner = row.owner as Owner;
-        const reauth = (message: string): CredentialResolutionError =>
+        const reauth = (
+          message: string,
+          options?: { readonly credentialMissing?: boolean },
+        ): CredentialResolutionError =>
           new CredentialResolutionError({
             owner,
             integration: IntegrationSlug.make(row.integration),
             name: ConnectionName.make(row.name),
             message,
             reauthRequired: true,
+            ...(options?.credentialMissing === true ? { credentialMissing: true } : {}),
           });
 
         // A recorded invalid_grant is the AS's standing verdict on this grant:
@@ -2442,7 +2455,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           } satisfies RefreshClient;
         });
         if (!clientRow) {
-          return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`);
+          return yield* reauth(`OAuth client "${row.oauth_client}" is no longer registered.`, {
+            credentialMissing: true,
+          });
         }
         const clientSecret = clientRow.clientSecret;
         // Re-request the scopes this connection was GRANTED (RFC 6749 §6: a
@@ -2511,11 +2526,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               )
             : yield* Effect.gen(function* () {
                 if (!row.refresh_item_id) {
-                  return yield* reauth("No refresh token is stored for this connection.");
+                  return yield* reauth("No refresh token is stored for this connection.", {
+                    credentialMissing: true,
+                  });
                 }
                 const refreshToken = yield* provider.get(ProviderItemId.make(row.refresh_item_id));
                 if (!refreshToken) {
-                  return yield* reauth("Stored refresh token could not be resolved.");
+                  return yield* reauth("Stored refresh token could not be resolved.", {
+                    credentialMissing: true,
+                  });
                 }
                 // Prove the credential store is WRITABLE before consuming the
                 // single-use refresh token. Ordering the persist correctly
@@ -4346,6 +4365,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
       });
 
+    /** The enumerable mechanism behind a credential-resolution failure, read
+     *  off the error's structural fields — never the message. Admin policy and
+     *  missing-material failures are NOT refresh rejections: no authorization
+     *  server refused anything, and aggregating them under
+     *  `credential_refresh_rejected` would misattribute the incident. */
+    const credentialFailureReason = (failure: CredentialResolutionError): HealthCheckReason =>
+      failure.blockedByAdmin === true
+        ? "blocked_by_admin"
+        : failure.credentialMissing === true
+          ? "credential_missing"
+          : "credential_refresh_rejected";
+
     const healthFromCredentialResolutionFailure = (
       failure: CredentialResolutionError,
     ): HealthCheckResult =>
@@ -4355,14 +4386,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
-            reason: "credential_refresh_rejected",
+            reason: credentialFailureReason(failure),
           }
         : {
             status: "degraded",
             checkedAt: Date.now(),
             // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
             detail: failure.message,
-            reason: "credential_refresh_rejected",
+            reason: credentialFailureReason(failure),
           };
 
     /** THE one place a credential-resolution failure becomes a health verdict.
@@ -4429,15 +4460,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  are enumerable; `detail`/`identity` (upstream free text / an email)
      *  never go on a span.
      *
-     *  `previous` is the verdict this check REPLACES (the row's presented
-     *  health at read time): `previous_status` + `changed` make verdict flips
-     *  a first-class dimension, so flapping — a connection oscillating
-     *  healthy↔degraded because probes race a rotating credential or a slow
-     *  upstream — is queryable directly instead of by diffing consecutive
-     *  spans per connection. A first-ever verdict has no `previous` and stamps
-     *  neither key: it is not a flip. `reason` is the enumerable failure
-     *  mechanism (`HealthCheckReason`); free-text `detail` still never goes
-     *  on a span. */
+     *  `previous` is the row's presented health when this check READ it:
+     *  `previous_status` + `changed` make verdict flips a first-class
+     *  dimension, so flapping — a connection oscillating healthy↔degraded
+     *  because probes race a rotating credential or a slow upstream — is
+     *  queryable directly instead of by diffing consecutive spans per
+     *  connection. `changed` is an OBSERVATION (this check answered something
+     *  other than what the row said), not proof of replacement: verdict
+     *  persistence is best-effort and CAS-guarded, so a concurrent dead-grant
+     *  or tool-sync write can win the row while the span still records the
+     *  comparison — acceptable for a flap metric, which counts disagreement
+     *  between consecutive observations either way. A first-ever verdict has
+     *  no `previous` and stamps neither key: it is not a flip. `reason` is
+     *  the enumerable failure mechanism (`HealthCheckReason`); free-text
+     *  `detail` still never goes on a span. */
     const annotateHealthVerdict = (
       source: "cache" | "dead_grant" | "no_capability" | "credential_only" | "probe",
       result: HealthCheckResult,
@@ -4542,7 +4578,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const check = runtime?.plugin.checkHealth;
         if (!runtime || !check) {
           const result = unknownHealth();
-          yield* annotateHealthVerdict("no_capability", result, previous);
+          // No probing capability answers `unknown` forever and persists
+          // nothing, so comparing it against an old persisted verdict would
+          // stamp a spurious `changed=true` on every single check. Not a
+          // flip: stamp neither key.
+          yield* annotateHealthVerdict("no_capability", result, null);
           return result;
         }
         const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
