@@ -120,76 +120,117 @@ scenario(
     const identity = yield* target.newIdentity();
     const bearer = yield* mcp.mintBearer(emailOf(identity));
 
-    // Open more sessions than the cap allows, at limited concurrency. None of
-    // them run any work, so every one is immediately eviction-eligible —
-    // crossing the cap must pick at least one and tear it down through its
-    // own stub.
-    const sessionIds = yield* Effect.forEach(
-      Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
-      (index) => Effect.promise(() => openSession(target.mcpUrl, bearer, `session-${index}`)),
-      { concurrency: 8 },
-    );
+    // Opened sessions are recorded here as each one succeeds, so the cleanup
+    // below can close exactly what was actually opened even if the scenario
+    // fails partway through. Cap eviction already tears most of these down as
+    // a side effect of the scenario itself, but termination is idempotent
+    // (see mcp-destroyed-session-envelope.test.ts) — closing an already-torn-
+    // -down session is a harmless no-op, not a double-free.
+    const openedSessionIds: string[] = [];
 
-    expect(sessionIds.length, "every session opened").toBe(SESSIONS_TO_OPEN);
-    expect(new Set(sessionIds).size, "every session got a distinct id").toBe(SESSIONS_TO_OPEN);
-
-    // ---- a real cap eviction fired, against a session opened here ---------
-    // Same span the idle path emits (`mcp.session.idle_runtime_dispose`);
-    // `mcp.session.dispose_reason` is what disambiguates the trigger.
-    const capDisposals = yield* telemetry
-      .searchSpans({ operation: "mcp.session.idle_runtime_dispose" })
-      .pipe(
-        Effect.map((spans) =>
-          spans.filter(
-            (span) =>
-              span.span.tags["mcp.session.dispose_reason"] === "cap" &&
-              sessionIds.some((id) => (span.span.tags["mcp.session.id"] ?? "").includes(id)),
+    const scenarioBody = Effect.gen(function* () {
+      // Open more sessions than the cap allows, at limited concurrency. None
+      // of them run any work, so every one is immediately eviction-eligible —
+      // crossing the cap must pick at least one and tear it down through its
+      // own stub.
+      const sessionIds = yield* Effect.forEach(
+        Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
+        (index) =>
+          Effect.promise(() => openSession(target.mcpUrl, bearer, `session-${index}`)).pipe(
+            Effect.tap((sessionId) => Effect.sync(() => openedSessionIds.push(sessionId))),
           ),
-        ),
-        Effect.filterOrFail(
-          (spans) => spans.length > 0,
-          () => "no cap-triggered idle_runtime_dispose span exported for any session opened here",
-        ),
-        // The eviction request is fire-and-forget (`ctx.waitUntil`) from the
-        // evictor's `init`, and its own span flush is off that same
-        // background path — same polling grace the idle-disposal scenario
-        // uses for its alarm-driven flush.
-        Effect.retry(Schedule.both(Schedule.spaced("500 millis"), Schedule.recurs(40))),
+        { concurrency: 8 },
       );
 
-    expect(
-      capDisposals.length,
-      "crossing the resident-runtime cap evicted at least one session opened here",
-    ).toBeGreaterThan(0);
+      expect(sessionIds.length, "every session opened").toBe(SESSIONS_TO_OPEN);
+      expect(new Set(sessionIds).size, "every session got a distinct id").toBe(SESSIONS_TO_OPEN);
 
-    const disposal = capDisposals[0]!;
-    expect(
-      disposal.span.tags["mcp.isolate.resident_runtimes"],
-      "the cap disposal records the isolate's resident-runtime gauge, same as the idle path",
-    ).toBeDefined();
+      // ---- a real cap eviction fired, against a session opened here -------
+      // Same span the idle path emits (`mcp.session.idle_runtime_dispose`);
+      // `mcp.session.dispose_reason` is what disambiguates the trigger.
+      const capDisposals = yield* telemetry
+        .searchSpans({ operation: "mcp.session.idle_runtime_dispose" })
+        .pipe(
+          Effect.map((spans) =>
+            spans.filter(
+              (span) =>
+                span.span.tags["mcp.session.dispose_reason"] === "cap" &&
+                sessionIds.some((id) => (span.span.tags["mcp.session.id"] ?? "").includes(id)),
+            ),
+          ),
+          Effect.filterOrFail(
+            (spans) => spans.length > 0,
+            () => "no cap-triggered idle_runtime_dispose span exported for any session opened here",
+          ),
+          // The eviction request is fire-and-forget (`ctx.waitUntil`) from the
+          // evictor's `init`, and its own span flush is off that same
+          // background path — same polling grace the idle-disposal scenario
+          // uses for its alarm-driven flush.
+          Effect.retry(Schedule.both(Schedule.spaced("500 millis"), Schedule.recurs(40))),
+        );
 
-    // ---- the evicted session still works — restore is transparent ---------
-    const evictedSessionId = sessionIds.find((id) =>
-      (disposal.span.tags["mcp.session.id"] ?? "").includes(id),
-    );
-    expect(
-      evictedSessionId,
-      "the disposed span's session id matches a session opened here",
-    ).toBeDefined();
+      expect(
+        capDisposals.length,
+        "crossing the resident-runtime cap evicted at least one session opened here",
+      ).toBeGreaterThan(0);
 
-    const marker = `after-cap-evict-${evictedSessionId}`;
-    const restored = yield* Effect.promise(() =>
-      execute(
-        target.mcpUrl,
-        bearer,
-        evictedSessionId!,
-        "execute-after-cap-eviction",
-        `return ${JSON.stringify(marker)};`,
+      const disposal = capDisposals[0]!;
+      expect(
+        disposal.span.tags["mcp.isolate.resident_runtimes"],
+        "the cap disposal records the isolate's resident-runtime gauge, same as the idle path",
+      ).toBeDefined();
+
+      // ---- the evicted session still works — restore is transparent -------
+      const evictedSessionId = sessionIds.find((id) =>
+        (disposal.span.tags["mcp.session.id"] ?? "").includes(id),
+      );
+      expect(
+        evictedSessionId,
+        "the disposed span's session id matches a session opened here",
+      ).toBeDefined();
+
+      const marker = `after-cap-evict-${evictedSessionId}`;
+      const restored = yield* Effect.promise(() =>
+        execute(
+          target.mcpUrl,
+          bearer,
+          evictedSessionId!,
+          "execute-after-cap-eviction",
+          `return ${JSON.stringify(marker)};`,
+        ),
+      );
+      expect(
+        restored,
+        "the evicted session serves the next call correctly after restoring underneath the client",
+      ).toContain(marker);
+    });
+
+    yield* scenarioBody.pipe(
+      // `Effect.ensuring`, not a trailing statement: a failure partway through
+      // (an assertion above, a timed-out span search) must not leak the
+      // sessions already opened. Read `openedSessionIds` at cleanup time, not
+      // capture time — `Effect.suspend` so the array is read when the
+      // finalizer actually runs, after the scenario body has finished pushing
+      // to it, rather than snapshotted empty at construction.
+      Effect.ensuring(
+        Effect.suspend(() =>
+          Effect.forEach(
+            openedSessionIds,
+            (sessionId) =>
+              Effect.tryPromise(async () => {
+                const closed = await fetch(target.mcpUrl, {
+                  method: "DELETE",
+                  headers: {
+                    authorization: `Bearer ${bearer}`,
+                    "mcp-session-id": sessionId,
+                  },
+                });
+                await closed.text();
+              }).pipe(Effect.ignore),
+            { concurrency: 8, discard: true },
+          ),
+        ),
       ),
     );
-    expect(
-      restored,
-      "the evicted session serves the next call correctly after restoring underneath the client",
-    ).toContain(marker);
   }),
 );

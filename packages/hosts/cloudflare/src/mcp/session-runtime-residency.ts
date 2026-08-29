@@ -49,6 +49,45 @@ export const resetResidentRuntimeCountForTest = (): void => {
 };
 
 /**
+ * How many cold builds are currently in flight in this isolate — reserved at
+ * admission, the same moment `evictForCapIfNeeded` runs, and released exactly
+ * once the reserving session either becomes counted-as-resident
+ * (`acquireResidentRuntime`) or its build fails or is interrupted.
+ *
+ * `residentRuntimeCount` only moves once a build actually finishes, so N
+ * overlapping cold inits at the cap each read it, see themselves still under
+ * the cap, and none of them evicts anything — residency then blows past the
+ * cap by N once every build lands. This counter closes that gap: the cap
+ * check becomes `currentResidentRuntimeCount() + currentInFlightColdBuildCount()`,
+ * so a second (or third, ...) concurrent admission sees the first's
+ * reservation and triggers eviction instead of also passing the check for
+ * free.
+ */
+let inFlightColdBuildCount = 0;
+
+/** Reserve a cold-build slot at admission. Paired with exactly one of
+ *  {@link releaseColdBuildSlot} per reservation — see the doc comment above. */
+export const reserveColdBuildSlot = (): number => {
+  inFlightColdBuildCount += 1;
+  return inFlightColdBuildCount;
+};
+
+/** Release a previously-reserved cold-build slot. Floors at zero so a stray
+ *  extra release (there should never be one; callers gate this on their own
+ *  per-init flag) cannot drive the counter negative. */
+export const releaseColdBuildSlot = (): number => {
+  inFlightColdBuildCount = Math.max(0, inFlightColdBuildCount - 1);
+  return inFlightColdBuildCount;
+};
+
+export const currentInFlightColdBuildCount = (): number => inFlightColdBuildCount;
+
+/** Test-only: isolate-scoped module state outlives a single test case. */
+export const resetInFlightColdBuildCountForTest = (): void => {
+  inFlightColdBuildCount = 0;
+};
+
+/**
  * The isolate-wide ceiling on resident session runtimes, past which `init`
  * evicts the least-recently-active evictable session to make room instead of
  * letting residency climb unbounded.

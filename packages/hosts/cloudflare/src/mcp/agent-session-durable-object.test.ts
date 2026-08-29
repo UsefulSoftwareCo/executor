@@ -16,12 +16,14 @@ import {
   type SessionMeta,
 } from "./agent-session-durable-object";
 import {
+  currentInFlightColdBuildCount,
   currentResidentRuntimeCount,
   EVICTION_REQUEST_GRACE_MS,
   markEvictionRequested,
   pickEvictionCandidate,
   registerResidentSession,
   releaseResidentSession,
+  resetInFlightColdBuildCountForTest,
   resetResidentRuntimeCountForTest,
   resetResidentSessionRegistryForTest,
   residentSessionIdsForTest,
@@ -1116,11 +1118,13 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     // behind rather than zero.
     resetResidentRuntimeCountForTest();
     resetResidentSessionRegistryForTest();
+    resetInFlightColdBuildCountForTest();
   });
 
   afterEach(() => {
     resetResidentRuntimeCountForTest();
     resetResidentSessionRegistryForTest();
+    resetInFlightColdBuildCountForTest();
   });
 
   it("evicts the least-recently-active evictable session once the cap is reached, and the newer session survives", async () => {
@@ -1232,6 +1236,179 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
       currentResidentRuntimeCount(),
       "the resident count is not decremented a second time",
     ).toBe(0);
+  });
+
+  // `residentRuntimeCount` only moves once a build actually FINISHES, so N
+  // overlapping cold inits admitted at the same moment each read it, see
+  // themselves still under the cap, and none of them evicts — residency then
+  // blows past the cap by N once every build lands. `evictForCapIfNeeded`
+  // closes that gap with an in-flight reservation counter: this pins that a
+  // second concurrent admission sees the first's still-building reservation
+  // and evicts, instead of also passing the count-only check for free.
+  it("reserves an in-flight cold-build slot at admission, so a second concurrent admission at the cap evicts instead of passing the check for free", async () => {
+    const { session: sessionA } = makeResidencySession({ id: "session-inflight-a", cap: 2 });
+    await sessionA.init();
+    expect(currentResidentRuntimeCount(), "one session resident, one below the cap").toBe(1);
+
+    const buildEntered = makeDeferred();
+    const buildGate = makeDeferred();
+    const { session: sessionB } = makeResidencySession({ id: "session-inflight-b", cap: 2 });
+    sessionB.buildMcpServer = () =>
+      Effect.gen(function* () {
+        buildEntered.resolve();
+        yield* Effect.promise(() => buildGate.promise);
+        return { mcpServer: makeServer(), engine: makeEngine().engine };
+      });
+
+    const initB = sessionB.init();
+    // Deterministic: wait for sessionB's admission to actually be inside its
+    // (gated) build — holding its in-flight reservation — instead of guessing
+    // a number of microtask ticks.
+    await buildEntered.promise;
+    expect(currentInFlightColdBuildCount(), "sessionB's admission reserved a cold-build slot").toBe(
+      1,
+    );
+
+    const { session: sessionC, storage: storageC } = makeResidencySession({
+      id: "session-inflight-c",
+      cap: 2,
+    });
+    await sessionC.init();
+    await storageC.drainWaitUntil();
+
+    // sessionB is not yet counted-as-resident — its build is still gated — so
+    // sessionA is the only session actually registered as resident right now
+    // and the only thing `pickEvictionCandidate` can choose. Its eviction is
+    // what proves sessionC's admission saw sessionB's in-flight reservation
+    // and treated the isolate as already at the cap.
+    expect(
+      sessionA.initialized,
+      "evicted because the in-flight reservation counted against the cap",
+    ).toBe(false);
+    expect(sessionC.initialized, "the admission that triggered eviction still built").toBe(true);
+
+    buildGate.resolve();
+    await initB;
+    expect(sessionB.initialized, "sessionB's gated build eventually completes").toBe(true);
+    expect(
+      currentInFlightColdBuildCount(),
+      "the reservation was released once the build landed",
+    ).toBe(0);
+  });
+
+  it("releases the in-flight cold-build reservation when the build fails, instead of leaking residual cap pressure", async () => {
+    const { session: sessionA } = makeResidencySession({ id: "session-inflight-fail-a", cap: 2 });
+    await sessionA.init();
+    expect(currentResidentRuntimeCount()).toBe(1);
+
+    const { session: sessionFailing } = makeResidencySession({
+      id: "session-inflight-fail-b",
+      cap: 2,
+    });
+    sessionFailing.buildMcpServer = () => Effect.die(new Error("cold build boundary failure"));
+
+    await expect(sessionFailing.init()).rejects.toThrow(/cold build boundary failure/);
+    expect(
+      currentInFlightColdBuildCount(),
+      "the reservation was released on the build's failure path, not leaked",
+    ).toBe(0);
+    expect(sessionFailing.initialized, "the failed build never became resident").toBe(false);
+
+    const { session: sessionC, storage: storageC } = makeResidencySession({
+      id: "session-inflight-fail-c",
+      cap: 2,
+    });
+    await sessionC.init();
+    await storageC.drainWaitUntil();
+
+    expect(
+      sessionA.initialized,
+      "no residual in-flight pressure from the failed build, so sessionC's admission stays under the cap",
+    ).toBe(true);
+    expect(
+      currentResidentRuntimeCount(),
+      "sessionA and sessionC both resident, under the cap",
+    ).toBe(2);
+  });
+
+  // `initialized` used to stay `true` across the async closes inside
+  // `closeRuntime` (`server.close()`, `dbHandle.end()`), so a request landing
+  // mid-teardown took `init`'s early-return path and ran against a
+  // deleted server / null engine. `disposingRuntime` closes that: `init`
+  // awaits any in-progress disposal before deciding whether to rebuild.
+  it("a request landing mid-disposal awaits the in-progress teardown, then rebuilds and serves — never racing the closes", async () => {
+    const { session } = makeResidencySession({ id: "session-mid-disposal" });
+    await session.init();
+    expect(session.initialized).toBe(true);
+    const originalEngine = session.engine;
+
+    const closeEntered = makeDeferred();
+    const closeGate = makeDeferred();
+    let closeCalls = 0;
+    const server = makeServer();
+    server.close = () => {
+      closeCalls += 1;
+      closeEntered.resolve();
+      return closeGate.promise;
+    };
+    session.server = server;
+
+    const disposal = session.evictResidentRuntimeForCap();
+    // Deterministic: wait for disposal to actually be mid-teardown (inside
+    // `server.close()`), instead of guessing a number of microtask ticks.
+    await closeEntered.promise;
+
+    const rebuild = session.init();
+    let rebuildSettled = false;
+    void rebuild.then(() => {
+      rebuildSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      rebuildSettled,
+      "init awaits the in-progress disposal instead of racing its still-pending close",
+    ).toBe(false);
+
+    closeGate.resolve();
+    await disposal;
+    await rebuild;
+
+    expect(closeCalls, "the runtime was closed exactly once").toBe(1);
+    expect(session.initialized, "the request that landed mid-disposal rebuilt and is serving").toBe(
+      true,
+    );
+    expect(
+      session.engine,
+      "a fresh engine was installed, not the one that was mid-teardown",
+    ).not.toBe(originalEngine);
+  });
+
+  it("does not double-close when two disposal triggers land concurrently (idle alarm and a cap eviction landing together)", async () => {
+    const { session } = makeResidencySession({ id: "session-concurrent-dispose" });
+    await session.init();
+
+    const closeGate = makeDeferred();
+    let closeCalls = 0;
+    const server = makeServer();
+    server.close = () => {
+      closeCalls += 1;
+      return closeGate.promise;
+    };
+    session.server = server;
+
+    const first = session.evictResidentRuntimeForCap();
+    const second = session.evictResidentRuntimeForCap();
+
+    closeGate.resolve();
+    await Promise.all([first, second]);
+
+    expect(
+      closeCalls,
+      "the runtime was closed exactly once even though two disposals overlapped",
+    ).toBe(1);
+    expect(session.initialized).toBe(false);
+    expect(currentResidentRuntimeCount(), "released exactly once").toBe(0);
   });
 
   describe("resident session registry release", () => {

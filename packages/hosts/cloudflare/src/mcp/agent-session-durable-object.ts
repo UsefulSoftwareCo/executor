@@ -36,12 +36,15 @@ import {
 } from "./session-alarm-policy";
 import {
   acquireResidentRuntime,
+  currentInFlightColdBuildCount,
   currentResidentRuntimeCount,
   markEvictionRequested,
   pickEvictionCandidate,
   registerResidentSession,
+  releaseColdBuildSlot,
   releaseResidentRuntime,
   releaseResidentSession,
+  reserveColdBuildSlot,
   type ResidentSessionEntry,
   residencyAttributes,
   RESIDENT_RUNTIME_SOFT_CAP,
@@ -269,6 +272,27 @@ export abstract class McpAgentSessionDOBase<
    *  gauge. Tracked separately from `engine` because `closeRuntime` runs on
    *  paths where nothing was ever built, and it must not decrement then. */
   private countedAsResident = false;
+  /** Whether THIS init's cold-build admission is currently holding a reserved
+   *  slot in the isolate-wide in-flight counter. Mirrors `countedAsResident`'s
+   *  guard discipline: gates {@link releaseColdBuildSlotIfReserved} so it
+   *  releases exactly once per reservation, from whichever of its two callers
+   *  (success or failure/interrupt) gets there first. */
+  private reservedColdBuildSlot = false;
+  /**
+   * The in-progress runtime disposal, if one is running right now — from
+   * whichever of `closeRuntime`'s callers (the idle alarm, a cap eviction
+   * request, `cleanup`) got there first. Set at the very start of
+   * `closeRuntime`'s body, before its first async close, and cleared in a
+   * finally once that disposal settles.
+   *
+   * Exists to close two races at once: `init` awaits this before deciding
+   * whether to rebuild, so a request that lands mid-teardown never races the
+   * closes it is waiting on; and a second `closeRuntime` call that lands
+   * while this is set (the idle alarm and a cap eviction request landing
+   * together) waits on the SAME promise instead of running the teardown a
+   * second time.
+   */
+  private disposingRuntime: Promise<void> | null = null;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private resolvedSessionName: string | undefined = undefined;
@@ -868,17 +892,55 @@ export abstract class McpAgentSessionDOBase<
    * liveness and its teardown (`closeRuntime`) is idempotent: a second
    * request either finds the runtime already gone (a no-op) or finds it
    * newly busy again and leaves it alone.
+   *
+   * The check reads `currentResidentRuntimeCount() + currentInFlightColdBuildCount()`,
+   * not `currentResidentRuntimeCount()` alone. Residency only moves once a
+   * cold build actually finishes, so without the in-flight term, N
+   * overlapping cold inits arriving at the cap would each read the same
+   * still-under-cap count before any of them finishes, none would evict, and
+   * residency would land N over the cap once every build completed. Admitting
+   * (reserving a slot) unconditionally below — whether or not eviction fires
+   * for THIS init — is what lets the NEXT concurrent init see this one
+   * reflected in the sum.
    */
   private evictForCapIfNeeded(): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      if (currentResidentRuntimeCount() < self.residentRuntimeSoftCap()) return;
+      const overCap =
+        currentResidentRuntimeCount() + currentInFlightColdBuildCount() >=
+        self.residentRuntimeSoftCap();
+      // Admission: this init is about to start a cold build, so it counts as
+      // in-flight from here whether or not the check above finds anything to
+      // evict. Released exactly once `evictForCapIfNeeded`'s caller (`init`)
+      // either finishes building or fails/is interrupted — see
+      // `releaseColdBuildSlotIfReserved`.
+      self.reservedColdBuildSlot = true;
+      reserveColdBuildSlot();
+      if (!overCap) return;
       const candidate = pickEvictionCandidate();
       if (!candidate) {
         yield* Effect.annotateCurrentSpan({ "mcp.isolate.cap_overflow": true });
         return;
       }
       yield* Effect.sync(() => self.queueCapEvictionRequest(candidate));
+    });
+  }
+
+  /**
+   * Release this init's in-flight cold-build reservation (see
+   * `evictForCapIfNeeded`), if it is still holding one. Idempotent, mirroring
+   * `countedAsResident`'s guard discipline: called from both of its possible
+   * finishing points — the build's success path in `init`, and an
+   * `Effect.ensuring` finalizer covering the build's failure/interrupt path —
+   * so whichever happens releases the slot exactly once, and the other
+   * becomes a safe no-op.
+   */
+  private releaseColdBuildSlotIfReserved(): Effect.Effect<void> {
+    const self = this;
+    return Effect.sync(() => {
+      if (!self.reservedColdBuildSlot) return;
+      self.reservedColdBuildSlot = false;
+      releaseColdBuildSlot();
     });
   }
 
@@ -1104,7 +1166,32 @@ export abstract class McpAgentSessionDOBase<
 
   private closeRuntime(options: { readonly closeStreams?: boolean } = {}): Effect.Effect<void> {
     const self = this;
+    // A disposal is already tearing this runtime down — the idle alarm and a
+    // cap eviction request landing together, or a plain repeat call on any of
+    // `closeRuntime`'s existing callers. `server.close()`/`dbHandle.end()`
+    // are not safe to run twice concurrently on the same resources, and a
+    // second pass through the body below would double-release the residency
+    // counters. Wait for the SAME in-progress disposal instead of starting a
+    // second one; do not run the teardown body again.
+    if (self.disposingRuntime) {
+      const inProgress = self.disposingRuntime;
+      return Effect.promise(() => inProgress);
+    }
+    let resolveDisposal!: () => void;
+    const disposal = new Promise<void>((resolve) => {
+      resolveDisposal = resolve;
+    });
+    self.disposingRuntime = disposal;
     return Effect.gen(function* () {
+      // Flip this BEFORE the first async close below (`server.close()`), not
+      // after. `init` awaits `disposingRuntime` (set above) before deciding
+      // whether to rebuild, and it only gets the right answer because
+      // `initialized` is already `false` by the time that await resolves —
+      // otherwise a request that interleaved during the closes below would
+      // still see `initialized === true`, take `init`'s early-return path,
+      // and run against a server/engine that are mid-teardown or already
+      // gone.
+      self.initialized = false;
       yield* self.releaseAllPendingApprovalLeases();
       if (options.closeStreams ?? true) {
         yield* Effect.sync(() => self.closeActiveStreams());
@@ -1121,7 +1208,6 @@ export abstract class McpAgentSessionDOBase<
         self.dbHandle = null;
         yield* Effect.promise(() => Promise.resolve(dbHandle.end())).pipe(Effect.ignore);
       }
-      self.initialized = false;
       if (self.countedAsResident) {
         self.countedAsResident = false;
         releaseResidentRuntime();
@@ -1131,7 +1217,14 @@ export abstract class McpAgentSessionDOBase<
         // never removes an entry it did not add.
         releaseResidentSession(self.sessionIdForTelemetry());
       }
-    });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (self.disposingRuntime === disposal) self.disposingRuntime = null;
+          resolveDisposal();
+        }),
+      ),
+    );
   }
 
   private ensureRuntimeForApproval(): Effect.Effect<boolean> {
@@ -1190,6 +1283,16 @@ export abstract class McpAgentSessionDOBase<
   }
 
   async init(): Promise<void> {
+    if (this.disposingRuntime) {
+      // A disposal (idle alarm, cap eviction) is mid-teardown for this
+      // session's own Durable Object instance. `closeRuntime` flips
+      // `initialized` to `false` before its first async close specifically so
+      // this does not race it: wait for the disposal to actually finish —
+      // server closed, engine and db handle released, residency counters
+      // updated — before deciding whether a rebuild is even needed, instead
+      // of starting one against half-torn-down state.
+      await this.disposingRuntime;
+    }
     if (this.initialized) return;
     const props = isSessionProps(this.props) ? this.props : null;
     if (!props) {
@@ -1206,8 +1309,16 @@ export abstract class McpAgentSessionDOBase<
       // BEFORE `openSessionDbHandle`, not just before `buildRuntime`: the db
       // handle is one of the three things a resident runtime holds.
       yield* self.evictForCapIfNeeded();
-      const dbHandle = yield* self.openSessionDbHandle();
-      const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
+      // Wrapped so the in-flight cold-build reservation `evictForCapIfNeeded`
+      // just took is released exactly once this build finishes — success or
+      // failure/interrupt — rather than staying reserved (and over-counting
+      // against every other concurrent init's cap check) for the rest of this
+      // `init` call, which still has bookkeeping writes ahead of it.
+      const { dbHandle, mcpServer, engine } = yield* Effect.gen(function* () {
+        const dbHandle = yield* self.openSessionDbHandle();
+        const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
+        return { dbHandle, mcpServer, engine };
+      }).pipe(Effect.ensuring(self.releaseColdBuildSlotIfReserved()));
       self.dbHandle = dbHandle;
       self.server = mcpServer;
       self.engine = engine;
