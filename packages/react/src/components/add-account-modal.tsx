@@ -627,6 +627,14 @@ export const connectionExistsMessage = (label: string): string =>
  *  explicit choice. Personal: a connection is most often a personal credential. */
 export const DEFAULT_CONNECTION_OWNER: Owner = "user";
 
+/** The method the modal opens on. OAuth needs a registered app (or a DCR
+ *  round-trip) before "Connect" does anything; a key is one paste. When an
+ *  integration declares both, starting on OAuth greets most users with
+ *  "Register app" — a dead end — while the working method sits one tab over.
+ *  Prefer the first non-OAuth method; OAuth stays one click away. */
+export const preferredMethodId = (methods: readonly AuthMethod[]): string =>
+  (methods.find((method) => method.kind !== "oauth") ?? methods[0])?.id ?? "";
+
 const authMethodKey = (method: AuthMethod): string =>
   method.source === "custom" ? `custom:${String(method.template)}` : `declared:${method.id}`;
 
@@ -1425,7 +1433,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   );
   const [addingMethod, setAddingMethod] = useState(false);
 
-  const [methodId, setMethodId] = useState<string>(methods[0]?.id ?? "");
+  const [methodId, setMethodId] = useState<string>(preferredMethodId(methods));
   // One value per distinct credential input (`variable → pasted value`). A
   // single-secret method has just `{ token }`; a method with two distinct inputs
   // (e.g. Datadog's two keys) collects one value per variable.
@@ -1613,7 +1621,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             m.id === initialState.template || String(m.template) === initialState.template,
         )
       : undefined;
-    setMethodId(initialMethod?.id ?? allMethods[0]!.id);
+    setMethodId(initialMethod?.id ?? preferredMethodId(allMethods));
   }, [allMethods, initialState?.template, methodId]);
 
   // Non-secret prefill carried by an `oauth.clients.createHandoff` deep link.
