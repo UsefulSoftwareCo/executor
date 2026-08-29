@@ -1,6 +1,7 @@
 // oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
-import { afterEach, describe, expect, it } from "@effect/vitest";
+import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Schema } from "effect";
+import type * as Tracer from "effect/Tracer";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
@@ -14,6 +15,16 @@ import {
   type McpSessionModelResumeResult,
   type SessionMeta,
 } from "./agent-session-durable-object";
+import {
+  currentResidentRuntimeCount,
+  pickEvictionCandidate,
+  registerResidentSession,
+  releaseResidentSession,
+  resetResidentRuntimeCountForTest,
+  resetResidentSessionRegistryForTest,
+  residentSessionIdsForTest,
+  touchResidentSession,
+} from "./session-runtime-residency";
 
 class MemoryStorage {
   private readonly data = new Map<string, unknown>();
@@ -82,6 +93,14 @@ class MemoryStorage {
    */
   withoutIdName(): this {
     this.idName = undefined;
+    return this;
+  }
+
+  /** Give this storage's Durable Object a distinct name, so multiple harness
+   *  sessions in the same test resolve to distinct `sessionIdForTelemetry()`
+   *  values instead of all colliding on the default. */
+  withIdName(name: string): this {
+    this.idName = name;
     return this;
   }
 
@@ -918,5 +937,259 @@ describe("McpAgentSessionDOBase alarm name resolution", () => {
     expect(session.sessionIdForTelemetry(), "a placeholder keeps the log shape stable").toBe(
       "unresolved",
     );
+  });
+});
+
+// The isolate-wide residency gauge used to be purely observational. These pin
+// the enforcing half: past the soft cap, `init` evicts the least-recently
+// -active EVICTABLE session to make room, at most one per init, and never
+// blocks or fails an init over it even when nothing can be evicted.
+//
+// `residentRuntimeCount`/the resident-session registry are isolate (module)
+// scope, exactly like production — so every test here resets them, both
+// before (in case an earlier describe block in this file leaked residents by
+// calling `init()` without ever disposing) and after (so it does not leak
+// into whatever runs next).
+describe("McpAgentSessionDOBase residency cap eviction", () => {
+  type ResidencySession = {
+    ctx: MemoryStorage;
+    captureCause: (cause: Cause.Cause<unknown>) => void;
+    dbHandle: { readonly end: () => void } | null;
+    engine: ExecutionEngine<Cause.YieldableError> | null;
+    getConnections: () => Iterable<unknown>;
+    getSessionId: () => string;
+    init: () => Promise<void>;
+    initialized: boolean;
+    lastActivityMs: number;
+    pendingApprovalLeases: Map<string, never>;
+    props: Record<string, unknown>;
+    residentRuntimeSoftCap: () => number;
+    server?: McpServer;
+    sessionIdForTelemetry: () => string;
+    sessionTimeoutMs: () => number;
+    withTelemetry: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>;
+    buildMcpServer: () => Effect.Effect<{
+      mcpServer: McpServer;
+      engine: ExecutionEngine<Cause.YieldableError>;
+    }>;
+    openSessionDb: () => { readonly end: () => void };
+    resolveSessionMeta: () => Effect.Effect<SessionMeta>;
+  };
+
+  const residencySessionMeta = (organizationId: string): SessionMeta => ({
+    organizationId,
+    organizationName: "Org 1",
+    userId: "user-1",
+    resource: defaultMcpResource,
+  });
+
+  /** A session harness built to actually run `init()`, the entry point that
+   *  builds (and, on cold restore, rebuilds) a resident runtime. */
+  const makeResidencySession = (input: {
+    readonly id: string;
+    readonly cap?: number;
+    readonly hasActiveStream?: boolean;
+    readonly pausedExecutionCount?: number;
+  }): { readonly session: ResidencySession; readonly storage: MemoryStorage } => {
+    const storage = new MemoryStorage().withIdName(`streamable-http:${input.id}`);
+    const session = Object.create(McpAgentSessionDOBase.prototype) as ResidencySession;
+    session.ctx = storage;
+    session.captureCause = () => undefined;
+    session.dbHandle = null;
+    session.engine = null;
+    session.getConnections = () => (input.hasActiveStream ? [{ close: () => undefined }] : []);
+    session.getSessionId = () => input.id;
+    session.initialized = false;
+    session.lastActivityMs = 0;
+    session.pendingApprovalLeases = new Map<string, never>();
+    session.props = { session: { organizationId: input.id, userId: "user-1" } };
+    session.sessionTimeoutMs = () => 60_000;
+    session.residentRuntimeSoftCap = () => input.cap ?? 32;
+    session.resolveSessionMeta = () => Effect.succeed(residencySessionMeta(input.id));
+    session.openSessionDb = () => ({ end: () => undefined });
+    session.buildMcpServer = () =>
+      Effect.succeed({
+        mcpServer: makeServer(),
+        engine: {
+          ...makeEngine().engine,
+          pausedExecutionCount: () => Effect.succeed(input.pausedExecutionCount ?? 0),
+        },
+      });
+    return { session, storage };
+  };
+
+  /** A tracer that records every span + its attributes, to assert on the
+   *  `mcp.isolate.cap_overflow` attribute the `McpSessionDO.init` span
+   *  carries when nothing was evictable. */
+  const makeRecordingTracer = (): {
+    readonly tracer: Tracer.Tracer;
+    readonly spans: ReadonlyArray<{
+      readonly name: string;
+      readonly attributes: ReadonlyMap<string, unknown>;
+    }>;
+  } => {
+    const spans: Array<{ name: string; attributes: Map<string, unknown> }> = [];
+    const tracer: Tracer.Tracer = {
+      span: (options) => {
+        const attributes = new Map<string, unknown>();
+        spans.push({ name: options.name, attributes });
+        let status: Tracer.SpanStatus = { _tag: "Started", startTime: options.startTime };
+        return {
+          _tag: "Span",
+          name: options.name,
+          spanId: `span-${spans.length}`,
+          traceId: "trace-1",
+          parent: options.parent,
+          annotations: options.annotations,
+          get status() {
+            return status;
+          },
+          attributes,
+          links: options.links,
+          sampled: options.sampled,
+          kind: options.kind,
+          end: (endTime, exit) => {
+            status = { _tag: "Ended", startTime: options.startTime, endTime, exit };
+          },
+          attribute: (key, value) => {
+            attributes.set(key, value);
+          },
+          event: () => undefined,
+          addLinks: () => undefined,
+        };
+      },
+    };
+    return { tracer, spans };
+  };
+
+  beforeEach(() => {
+    // Earlier describe blocks in this file build sessions via `init()` too,
+    // without ever disposing them (that is out of scope for what they test) —
+    // so without this, residency here would start from whatever they left
+    // behind rather than zero.
+    resetResidentRuntimeCountForTest();
+    resetResidentSessionRegistryForTest();
+  });
+
+  afterEach(() => {
+    resetResidentRuntimeCountForTest();
+    resetResidentSessionRegistryForTest();
+  });
+
+  it("evicts the least-recently-active evictable session once the cap is reached, and the newer session survives", async () => {
+    const { session: sessionA } = makeResidencySession({ id: "session-cap-a", cap: 2 });
+    const { session: sessionB } = makeResidencySession({ id: "session-cap-b", cap: 2 });
+    const { session: sessionC } = makeResidencySession({ id: "session-cap-c", cap: 2 });
+
+    await sessionA.init();
+    await sessionB.init();
+    expect(currentResidentRuntimeCount(), "two sessions resident, right at the cap").toBe(2);
+
+    // Force a deterministic LRU order: real-clock timestamps from two `init`
+    // calls a tick apart are not reliable enough to assert on.
+    touchResidentSession("session-cap-a", Date.now() - 10_000);
+    touchResidentSession("session-cap-b", Date.now());
+
+    await sessionC.init();
+
+    expect(sessionA.initialized, "the least-recently-active session was evicted").toBe(false);
+    expect(sessionA.engine, "its engine was released").toBeNull();
+    expect(sessionB.initialized, "the newer session survives untouched").toBe(true);
+    expect(sessionC.initialized, "the session that triggered eviction still built").toBe(true);
+    expect(currentResidentRuntimeCount(), "one evicted, two resident").toBe(2);
+  });
+
+  it("proceeds with init and records overflow when nothing resident is currently evictable", async () => {
+    const { tracer, spans } = makeRecordingTracer();
+    const { session: sessionBusy } = makeResidencySession({
+      id: "session-busy",
+      cap: 1,
+      hasActiveStream: true,
+    });
+    const { session: sessionNew } = makeResidencySession({ id: "session-new", cap: 1 });
+    sessionNew.withTelemetry = (effect) => Effect.withTracer(effect, tracer);
+
+    await sessionBusy.init();
+    expect(currentResidentRuntimeCount()).toBe(1);
+
+    await sessionNew.init();
+
+    expect(sessionBusy.initialized, "a streaming session is never evicted").toBe(true);
+    expect(sessionNew.initialized, "init proceeds despite the cap").toBe(true);
+    expect(
+      currentResidentRuntimeCount(),
+      "the soft cap is exceeded rather than blocking init",
+    ).toBe(2);
+
+    const initSpan = spans.find((span) => span.name === "McpSessionDO.init");
+    expect(initSpan?.attributes.get("mcp.isolate.cap_overflow")).toBe(true);
+  });
+
+  it("cold-restores on the next request after being evicted for the cap", async () => {
+    const { session: sessionA } = makeResidencySession({ id: "session-restore-a", cap: 1 });
+    const { session: sessionB } = makeResidencySession({ id: "session-restore-b", cap: 1 });
+
+    await sessionA.init();
+    await sessionB.init();
+    expect(sessionA.initialized, "evicted to make room under the cap").toBe(false);
+
+    await sessionA.init();
+
+    expect(sessionA.initialized, "a later request rebuilds the evicted session").toBe(true);
+    expect(sessionA.engine, "a fresh engine is installed").not.toBeNull();
+    expect(sessionA.server, "a fresh server is installed").toBeDefined();
+  });
+
+  describe("resident session registry release", () => {
+    it("is idempotent", () => {
+      registerResidentSession({
+        sessionId: "idempotent-release",
+        lastActivityMs: Date.now(),
+        canEvict: () => true,
+        dispose: async () => undefined,
+      });
+
+      expect(() => releaseResidentSession("idempotent-release")).not.toThrow();
+      expect(
+        () => releaseResidentSession("idempotent-release"),
+        "releasing twice is a no-op",
+      ).not.toThrow();
+      expect(residentSessionIdsForTest()).not.toContain("idempotent-release");
+      expect(pickEvictionCandidate()).toBeUndefined();
+    });
+
+    it("releases the registry slot even when the candidate's own disposal fails, without touching the resident count", async () => {
+      const { session: sessionFailing, storage: storageFailing } = makeResidencySession({
+        id: "session-failing",
+        cap: 1,
+      });
+      const { session: sessionB } = makeResidencySession({ id: "session-b-after-failure", cap: 1 });
+
+      await sessionFailing.init();
+      // Simulate the candidate's OWN async re-check breaking (a Durable Object
+      // storage read failing, say) — deliberately AFTER `init`, so the
+      // registered `dispose` closure is what fails, not `init` itself.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the storage fake reproduces a rejecting DurableObjectStorage read.
+      storageFailing.list = async () => {
+        throw new Error("storage unavailable");
+      };
+
+      await sessionB.init();
+
+      expect(sessionFailing.initialized, "a failed disposal does not tear down the session").toBe(
+        true,
+      );
+      expect(sessionB.initialized, "the triggering init is never blocked by the failure").toBe(
+        true,
+      );
+      expect(
+        currentResidentRuntimeCount(),
+        "the failing candidate's own runtime is still actually resident",
+      ).toBe(2);
+      expect(
+        residentSessionIdsForTest(),
+        "the registry slot is released so a permanently-failing candidate cannot squat the LRU pick forever",
+      ).not.toContain("session-failing");
+    });
   });
 });

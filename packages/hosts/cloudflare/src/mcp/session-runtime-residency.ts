@@ -48,6 +48,109 @@ export const resetResidentRuntimeCountForTest = (): void => {
   peakResidentRuntimeCount = 0;
 };
 
+/**
+ * The isolate-wide ceiling on resident session runtimes, past which `init`
+ * evicts the least-recently-active evictable session to make room instead of
+ * letting residency climb unbounded.
+ *
+ * Production isolates have been observed OOM-killing every co-resident
+ * session somewhere between roughly 10 and 64 residents, and isolate memory
+ * is already sitting at the platform's 128MB limit at the fleet-wide median
+ * before this mechanism runs at all — there is no headroom left to discover
+ * the ceiling empirically per-isolate. 32 sits inside that failure band, so it
+ * bounds the COUNT-driven failure mode (an isolate cannot pile up unbounded
+ * residents no matter how many quiet-but-connected sessions land on it) while
+ * per-session footprint reduction, a separate effort, addresses the rest.
+ * It is a soft cap: an isolate that cannot find anything evictable is still
+ * allowed past it (see `pickEvictionCandidate`) rather than failing an init.
+ */
+export const RESIDENT_RUNTIME_SOFT_CAP = 32;
+
+/**
+ * One resident session runtime, as far as the isolate-wide eviction registry
+ * needs to know about it: when it was last active, whether it is safe to tear
+ * down right now, and how to actually tear it down.
+ *
+ * `canEvict` is consulted by `pickEvictionCandidate` to choose AMONG entries
+ * and is expected to be cheap and synchronous — it does not have to be the
+ * final word. `dispose` is expected to re-check liveness itself before
+ * actually releasing anything, using whatever signals it has (including ones
+ * `canEvict` could not afford to read), so a candidate that became active
+ * between the pick and the dispose call is left alone rather than torn down.
+ */
+export type ResidentSessionEntry = {
+  readonly sessionId: string;
+  lastActivityMs: number;
+  readonly canEvict: () => boolean;
+  readonly dispose: (reason: "cap") => Promise<void>;
+};
+
+/**
+ * Every session runtime currently resident in THIS isolate, keyed by session
+ * id. Dependency-free by design: this module is a leaf that both the session
+ * Durable Object and its tests import directly, and it must never need to
+ * know what an Effect, a Durable Object, or a storage API is.
+ *
+ * An entry lives here for exactly as long as its runtime is resident. It is
+ * added once, at the same moment `acquireResidentRuntime` counts it, and
+ * removed once, at the same moment `releaseResidentRuntime` releases it — the
+ * two are meant to move together, though this module does not enforce that;
+ * see `closeRuntime` on the Durable Object for where they are actually paired.
+ */
+const residentSessions = new Map<string, ResidentSessionEntry>();
+
+/** Start tracking a newly-resident session runtime for isolate-wide eviction. */
+export const registerResidentSession = (entry: ResidentSessionEntry): void => {
+  residentSessions.set(entry.sessionId, entry);
+};
+
+/** Record that a resident session just did something, so it sorts last for eviction. */
+export const touchResidentSession = (sessionId: string, lastActivityMs = Date.now()): void => {
+  const entry = residentSessions.get(sessionId);
+  if (entry) entry.lastActivityMs = lastActivityMs;
+};
+
+/**
+ * Stop tracking a session's runtime because it is no longer resident.
+ *
+ * Idempotent on purpose: `Map.delete` on an absent key is already a no-op, so
+ * this can be called from every path that might end a session's residency —
+ * a clean disposal, a failed one, a repeat call — without any caller having to
+ * first ask whether the entry is still there.
+ */
+export const releaseResidentSession = (sessionId: string): void => {
+  residentSessions.delete(sessionId);
+};
+
+/**
+ * The least-recently-active resident session that is currently safe to evict,
+ * or `undefined` when every resident is streaming, paused, or otherwise
+ * ineligible right now.
+ *
+ * `undefined` is a legitimate, expected answer — it means the isolate is over
+ * its soft cap but everything resident is doing real work, and the caller
+ * must let the new session build anyway rather than block or fail on it.
+ */
+export const pickEvictionCandidate = (): ResidentSessionEntry | undefined => {
+  let candidate: ResidentSessionEntry | undefined;
+  for (const entry of residentSessions.values()) {
+    if (!entry.canEvict()) continue;
+    if (!candidate || entry.lastActivityMs < candidate.lastActivityMs) {
+      candidate = entry;
+    }
+  }
+  return candidate;
+};
+
+/** Test-only: isolate-scoped module state outlives a single test case. */
+export const resetResidentSessionRegistryForTest = (): void => {
+  residentSessions.clear();
+};
+
+/** Test-only: read without mutating, to assert on registry membership directly. */
+export const residentSessionIdsForTest = (): ReadonlyArray<string> =>
+  Array.from(residentSessions.keys());
+
 type MemoryCapablePerformance = {
   readonly memory?: {
     readonly usedJSHeapSize?: unknown;

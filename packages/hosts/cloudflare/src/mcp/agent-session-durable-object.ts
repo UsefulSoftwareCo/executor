@@ -36,8 +36,14 @@ import {
 } from "./session-alarm-policy";
 import {
   acquireResidentRuntime,
+  currentResidentRuntimeCount,
+  pickEvictionCandidate,
+  registerResidentSession,
   releaseResidentRuntime,
+  releaseResidentSession,
   residencyAttributes,
+  RESIDENT_RUNTIME_SOFT_CAP,
+  touchResidentSession,
 } from "./session-runtime-residency";
 
 export type IncomingTraceHeaders = IncomingPropagationHeaders;
@@ -540,6 +546,11 @@ export abstract class McpAgentSessionDOBase<
 
   private async markActivity(now = Date.now()): Promise<void> {
     this.lastActivityMs = now;
+    // Keeps the isolate-wide eviction registry's LRU order current. A no-op
+    // when this session has no registry entry yet (nothing resident) or none
+    // any more (already disposed) — `touchResidentSession` is a lookup-then-set
+    // that quietly does nothing on a miss.
+    touchResidentSession(this.sessionIdForTelemetry(), now);
     await Promise.all([
       this.ctx.storage.put(LAST_ACTIVITY_KEY, now),
       this.ctx.storage.setAlarm(now + this.sessionTimeoutMs()),
@@ -662,15 +673,26 @@ export abstract class McpAgentSessionDOBase<
   }
 
   /**
-   * Drop this session's execution runtime because it has gone idle, returning
-   * its memory to the isolate. Nothing durable is discarded, so the next
-   * request restores the session and the client sees only restore latency.
+   * Drop this session's execution runtime, returning its memory to the
+   * isolate. Nothing durable is discarded, so the next request restores the
+   * session and the client sees only restore latency.
+   *
+   * `reason` disambiguates WHY on the shared span and log line without
+   * splitting them: `"idle"` is the alarm-driven path (this session itself
+   * went quiet), `"cap"` is another session's `init` evicting this one because
+   * the isolate was over its resident-runtime ceiling. The mechanism —
+   * `closeRuntime` plus dropping the durable alarm/activity bookkeeping — is
+   * identical either way; only the trigger differs, and callers are expected
+   * to have already established (via their own eligibility check) that
+   * disposing this session right now is safe.
    */
   private async disposeIdleRuntime(input: {
     readonly idleMs: number;
     readonly pausedExecutionCount: number;
     readonly activeStreamCount: number;
+    readonly reason?: "idle" | "cap";
   }): Promise<void> {
+    const reason = input.reason ?? "idle";
     console.info(
       JSON.stringify({
         event: "mcp_session_idle_runtime_dispose",
@@ -678,6 +700,7 @@ export abstract class McpAgentSessionDOBase<
         idleMs: input.idleMs,
         pausedExecutionCount: input.pausedExecutionCount,
         activeStreamCount: input.activeStreamCount,
+        reason,
       }),
     );
     const self = this;
@@ -691,12 +714,15 @@ export abstract class McpAgentSessionDOBase<
       // isolate is actually holding now rather than what it held a moment ago.
       yield* Effect.annotateCurrentSpan(residencyAttributes());
     }).pipe(
+      // Span name kept stable for dashboard continuity across both triggers;
+      // `mcp.session.dispose_reason` is what disambiguates them.
       Effect.withSpan("mcp.session.idle_runtime_dispose", {
         attributes: {
           "mcp.session.id": self.sessionId,
           "mcp.session.idle_ms": input.idleMs,
           "mcp.session.paused_execution_count": input.pausedExecutionCount,
           "mcp.session.active_stream_count": input.activeStreamCount,
+          "mcp.session.dispose_reason": reason,
         },
       }),
     );
@@ -705,6 +731,113 @@ export abstract class McpAgentSessionDOBase<
     // request's response path, and without the flush the span dies with the
     // isolate and the mechanism stays unobservable in production.
     await Effect.runPromise(this.withSpanFlush(this.withTelemetry(program)));
+  }
+
+  /**
+   * Isolate is over its resident-runtime soft cap and this session was the
+   * LRU-eligible pick (see `pickEvictionCandidate`). Re-checks every
+   * disqualifying signal `decideSessionAlarm` treats as active work — LIVE,
+   * not the snapshot `canEvict` used to be picked — because a session can
+   * start a request in the gap between being picked and being disposed here.
+   * `canEvict`'s snapshot is a cheap, synchronous, necessarily-optimistic
+   * filter for CHOOSING among candidates; this is the authoritative gate that
+   * actually decides whether disposing this session right now is safe, and it
+   * includes the one signal `canEvict` cannot see synchronously — undelivered
+   * stream responses still in storage. A session that is no longer eligible is
+   * left alone: eviction becomes a no-op instead of a wrongful teardown.
+   */
+  private async evictResidentRuntimeForCap(): Promise<void> {
+    const [pausedExecutionCount, runningExecutionCount] = await Promise.all([
+      this.pausedExecutionCount(),
+      this.runningExecutionCount(),
+    ]);
+    const activeStreamCount = this.activeStreamCount();
+    if (pausedExecutionCount > 0 || runningExecutionCount > 0 || activeStreamCount > 0) return;
+    const idleMs = this.lastActivityMs > 0 ? Date.now() - this.lastActivityMs : 0;
+    await this.disposeIdleRuntime({
+      idleMs,
+      pausedExecutionCount,
+      activeStreamCount,
+      reason: "cap",
+    });
+  }
+
+  /**
+   * Cheap, synchronous eligibility filter consulted by `pickEvictionCandidate`
+   * to choose AMONG resident sessions. Deliberately conservative rather than
+   * exhaustive: it mirrors the same "no active work" signals
+   * `decideSessionAlarm` treats as disqualifying, restricted to what can be
+   * answered without an async storage read (undelivered stream responses,
+   * `runningExecutionCount`, requires one). `evictResidentRuntimeForCap`
+   * re-checks the full set — including that signal — right before actually
+   * disposing, so a false "evictable" here can only ever produce a safe
+   * no-op, never a wrongful eviction.
+   */
+  private canEvictResidentRuntime(): boolean {
+    if (this.activeStreamCount() > 0) return false;
+    if (!this.engine) return true;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: this is a best-effort eviction-selection filter; a broken engine read must fail toward "not evictable", never toward crashing whichever OTHER session's init is picking a candidate.
+    try {
+      return Effect.runSync(this.engine.pausedExecutionCount()) === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The soft cap this instance enforces. A protected method rather than a bare
+   * reference to `RESIDENT_RUNTIME_SOFT_CAP`, matching `sessionTimeoutMs` and
+   * `maxPausedSessionIdleMs` elsewhere in this class, so tests can install a
+   * small cap and exercise real eviction without registering 32 sessions.
+   */
+  protected residentRuntimeSoftCap(): number {
+    return RESIDENT_RUNTIME_SOFT_CAP;
+  }
+
+  /**
+   * Before this session's own runtime is built, make room if the isolate is
+   * already at its resident-runtime cap. Evicts AT MOST ONE other session —
+   * never loops — and never fails or delays this init over it: if nothing is
+   * currently evictable (every resident is streaming or paused), this session
+   * still builds and the overflow is only recorded on the init span, because a
+   * memory-pressure mechanism must never itself become the reason a session
+   * fails to start.
+   */
+  private evictForCapIfNeeded(): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      if (currentResidentRuntimeCount() < self.residentRuntimeSoftCap()) return;
+      const candidate = pickEvictionCandidate();
+      if (!candidate) {
+        yield* Effect.annotateCurrentSpan({ "mcp.isolate.cap_overflow": true });
+        return;
+      }
+      yield* Effect.tryPromise({
+        try: () => candidate.dispose("cap"),
+        catch: (cause: unknown) => ({ _tag: "CapEvictionDisposeFailure" as const, cause }),
+      }).pipe(
+        Effect.catch((failure) =>
+          Effect.sync(() => {
+            // The candidate's OWN teardown failed. It is no longer safe to
+            // trust this entry as a future eviction target — a repeatedly
+            // failing disposal must not squat the LRU slot forever — but its
+            // resident-runtime count is untouched: whatever it holds is, as
+            // far as this session's init knows, still actually resident. The
+            // failure itself is unknown-shaped (whatever `dispose` threw), so
+            // it is logged as a plain defect rather than normalized into a
+            // message string.
+            releaseResidentSession(candidate.sessionId);
+            console.warn(
+              JSON.stringify({
+                event: "mcp_session_cap_eviction_failed",
+                sessionId: candidate.sessionId,
+              }),
+            );
+            console.error("[mcp-session] cap eviction dispose failed:", failure.cause);
+          }),
+        ),
+      );
+    });
   }
 
   private resolveAndStoreSessionMeta(token: McpSessionInit) {
@@ -918,6 +1051,11 @@ export abstract class McpAgentSessionDOBase<
       if (self.countedAsResident) {
         self.countedAsResident = false;
         releaseResidentRuntime();
+        // Pairs with `registerResidentSession` in `init`. Idempotent, and
+        // gated on the same flag that guards the counter release, so a
+        // `closeRuntime` that runs on a path where nothing was ever built
+        // never removes an entry it did not add.
+        releaseResidentSession(self.sessionIdForTelemetry());
       }
     });
   }
@@ -988,6 +1126,12 @@ export abstract class McpAgentSessionDOBase<
     const program = Effect.gen(function* () {
       yield* self.prepareErrorCaptureScope();
       const sessionMeta = yield* self.resolveAndStoreSessionMeta(props.session);
+      // Before building anything that will itself occupy isolate memory
+      // (a live db handle, the engine, the built tool catalog), make room if
+      // this isolate is already at its resident-runtime cap. Deliberately
+      // BEFORE `openSessionDbHandle`, not just before `buildRuntime`: the db
+      // handle is one of the three things a resident runtime holds.
+      yield* self.evictForCapIfNeeded();
       const dbHandle = yield* self.openSessionDbHandle();
       const { mcpServer, engine } = yield* self.buildRuntime(sessionMeta, dbHandle);
       self.dbHandle = dbHandle;
@@ -997,6 +1141,18 @@ export abstract class McpAgentSessionDOBase<
       if (!self.countedAsResident) {
         self.countedAsResident = true;
         acquireResidentRuntime();
+        // Paired with `releaseResidentSession` in `closeRuntime`. Registered
+        // as soon as this session counts as resident, so a cap check running
+        // in another session's `init` moments later already sees it as a
+        // candidate. `markActivity` below immediately corrects the initial
+        // timestamp via `touchResidentSession`, so `Date.now()` here only
+        // needs to be a safe placeholder, not the true last-activity time.
+        registerResidentSession({
+          sessionId: self.sessionIdForTelemetry(),
+          lastActivityMs: Date.now(),
+          canEvict: () => self.canEvictResidentRuntime(),
+          dispose: () => self.evictResidentRuntimeForCap(),
+        });
       }
       // The gauge on the way up. Paired with the same attributes on
       // `mcp.session.idle_runtime_dispose`, this is what shows whether idle
@@ -1299,7 +1455,12 @@ export abstract class McpAgentSessionDOBase<
       return;
     }
 
-    await this.disposeIdleRuntime({ idleMs, pausedExecutionCount, activeStreamCount });
+    await this.disposeIdleRuntime({
+      idleMs,
+      pausedExecutionCount,
+      activeStreamCount,
+      reason: "idle",
+    });
   }
 
   private validateApprovalIdentity(
