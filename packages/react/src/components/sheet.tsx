@@ -4,6 +4,7 @@ import * as React from "react";
 import { XIcon } from "lucide-react";
 import { Dialog as SheetPrimitive } from "radix-ui";
 
+import { useComposedRef } from "../lib/compose-refs";
 import { applyOutsideDismissPolicy } from "../lib/outside-dismiss";
 import { cn } from "../lib/utils";
 
@@ -44,31 +45,36 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
-  dismissOnOutsideClick = false,
+  dismissOnOutsideClick,
   onInteractOutside,
   onPointerDownOutside,
+  ref,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
   showCloseButton?: boolean;
-  /** Let a click outside the sheet close it. Off by default: a stray click on
-   *  the page behind a form must not discard what the user typed. Turn it on
-   *  for a sheet with nothing to lose — navigation, a picker, a read-only
-   *  panel. Escape and the close button close either way. */
+  /** Whether a click outside the sheet closes it. Unset, the sheet decides
+   *  from its contents: it stays open while it holds a form field — a stray
+   *  click on the page behind a form must not discard what the user typed —
+   *  and closes when it has nothing to lose. Pass a boolean to override the
+   *  detection. Escape and the close button close either way. */
   dismissOnOutsideClick?: boolean;
 }) {
+  const contentRef = React.useRef<React.ComponentRef<typeof SheetPrimitive.Content> | null>(null);
+  const composedRef = useComposedRef(ref, contentRef);
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
         data-slot="sheet-content"
+        ref={composedRef}
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event);
-          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);
         }}
         onInteractOutside={(event) => {
           onInteractOutside?.(event);
-          applyOutsideDismissPolicy(event, dismissOnOutsideClick);
+          applyOutsideDismissPolicy(event, dismissOnOutsideClick, contentRef.current);
         }}
         className={cn(
           "fixed z-50 flex flex-col gap-4 bg-background shadow-lg transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500",

@@ -49,6 +49,10 @@ export type RemoteConnectorInput = Omit<
   readonly headers?: Record<string, string>;
   readonly queryParams?: Record<string, string>;
   readonly authProvider?: OAuthClientProvider;
+  /** This provider only replays a resolved bearer. A 401 cannot be recovered
+   *  inside the MCP SDK and must return to core as reconnect-required before
+   *  the SDK attempts discovery or Dynamic Client Registration. */
+  readonly staticOAuthBearer?: boolean;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 };
 
@@ -153,6 +157,22 @@ const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTrans
   return Option.none();
 };
 
+/** Walks a (possibly SDK-wrapped) failure cause for the fetch adapter's
+ *  `McpOAuthReauthorizationRequired`. Shared with tool discovery: the same
+ *  interception fires during `tools/list`, where the SDK wraps the rejection
+ *  before it reaches the listing's catch site. */
+export const hasNestedOAuthReauthorization = (cause: unknown): boolean => {
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (Predicate.isTagged(current, "McpOAuthReauthorizationRequired")) return true;
+    const decodedCause = decodeExternalTransportCause(current);
+    if (Option.isNone(decodedCause)) return false;
+    current = decodedCause.value.cause ?? decodedCause.value.data?.cause;
+    if (current === undefined) return false;
+  }
+  return false;
+};
+
 const externalTransportCodes = (cause: unknown): ReadonlySet<string> => {
   const codes = new Set<string>();
   let current: unknown = cause;
@@ -228,8 +248,53 @@ const awaitAbort = (signal: AbortSignal): Effect.Effect<void> =>
     signal.addEventListener("abort", () => resume(Effect.void), { once: true });
   });
 
+/** JSON-RPC methods the 401 replay below may re-send. An HTTP 401 does not
+ *  guarantee the server did no work before rejecting, so replay is limited to
+ *  methods that are read-only or handshake-only: `initialize` and
+ *  `notifications/initialized` (handshake), `ping` (side-effect-free by
+ *  spec), and `tools/list` (discovery). That is every method this codebase
+ *  sends except `tools/call`, which may have executed its side effect before
+ *  the 401 and must NEVER run twice. The set is deliberately closed: an
+ *  unlisted or unparseable method does not replay either. */
+const REPLAYABLE_JSONRPC_METHODS: ReadonlySet<string> = new Set([
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+]);
+
+const JsonRpcMethodOnly = Schema.Struct({ method: Schema.String });
+const decodeJsonRpcMethods = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([JsonRpcMethodOnly, Schema.Array(JsonRpcMethodOnly)])),
+);
+
+/** Whether a 401-rejected request is safe to replay once. Only requests whose
+ *  buffered JSON-RPC body consists entirely of allowlisted read-only methods
+ *  qualify (a batch replays only when EVERY element is allowlisted). The one
+ *  bodyless exception is `GET`, the streamable-http server->client stream
+ *  open, which carries no JSON-RPC request and is read-only by HTTP
+ *  semantics. Everything else — `tools/call` above all — fails closed. */
+const isReplaySafeRequest = (init: RequestInit | undefined): boolean => {
+  const body = init?.body;
+  if (body == null) return httpMethodFrom(init?.method) === "GET";
+  // Both remote SDK transports send JSON-RPC bodies as `JSON.stringify`
+  // strings. Any other body shape cannot be verified read-only here.
+  if (typeof body !== "string") return false;
+  return Option.match(decodeJsonRpcMethods(body), {
+    onNone: () => false,
+    onSome: (parsed) => {
+      const messages = Array.isArray(parsed) ? parsed : [parsed];
+      return (
+        messages.length > 0 &&
+        messages.every((message) => REPLAYABLE_JSONRPC_METHODS.has(message.method))
+      );
+    },
+  });
+};
+
 const fetchFromHttpClientLayer = (
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
+  staticOAuthBearer: boolean,
 ): FetchLike => {
   const execute: FetchLike = async (url, init) => {
     const headers = headersFrom(init?.headers);
@@ -262,6 +327,10 @@ const fetchFromHttpClientLayer = (
         headers: responseHeaders,
       });
     }).pipe(Effect.mapError(normalizeHttpClientFailure), Effect.provide(httpClientLayer));
+    // Executor resolves and refreshes OAuth credentials before constructing
+    // this transport. If that stored bearer is rejected, the MCP SDK cannot
+    // complete its interactive fallback in a catalog refresh and would perform
+    // avoidable DCR first. Stop at the authenticated HTTP boundary instead.
     // A 403 carrying an RFC 6750 insufficient_scope challenge is intercepted
     // HERE, below the SDK: with an authProvider the SDK would consume the
     // challenge and re-run auth ("upscoping"), which our static-token
@@ -270,9 +339,39 @@ const fetchFromHttpClientLayer = (
     // tagged error from the fetch adapter (a true runtime edge: the SDK
     // consumes promise rejections) so it reaches the invoke/connect catch
     // sites verbatim.
-    const promise = Effect.runPromise(effect).then((response) => {
-      if (response.status === 403) {
-        const challenge = response.headers.get("www-authenticate");
+    const promise = Effect.runPromise(effect).then(async (response) => {
+      let settled = response;
+      if (staticOAuthBearer && settled.status === 401) {
+        // One immediate replay before classifying — but only for requests the
+        // allowlist proves read-only (`isReplaySafeRequest`). A lone 401 on
+        // discovery/handshake traffic can be a transient upstream blip (a
+        // proxy hiccup, a racing key rotation on the server), and stamping
+        // reauthorization-required from a single sample forces a needless
+        // reconnect; the replay itself is possible because every body this
+        // adapter builds is buffered (`applyBody`), never a one-shot stream.
+        // A side-effectful method (`tools/call`) never replays: a 401 does
+        // not guarantee the server did no work first, so re-sending could
+        // execute the action twice. Its single 401 classifies directly —
+        // the invocation has already failed either way, and the
+        // transient-blip concern only justified the retry on read-only
+        // paths. Retrying/classifying here is preferred over demanding a
+        // `WWW-Authenticate` challenge because a headerless 401
+        // (noncompliant server; the MCP auth spec requires the challenge)
+        // must STILL stop at this boundary — falling through would hand the
+        // 401 to the SDK, whose interactive fallback performs exactly the
+        // avoidable discovery/DCR this interception exists to prevent.
+        if (isReplaySafeRequest(init)) {
+          settled = await Effect.runPromise(effect);
+        }
+        if (settled.status === 401) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
+          throw new McpOAuthReauthorizationRequired({
+            message: "MCP OAuth re-authorization required",
+          });
+        }
+      }
+      if (settled.status === 403) {
+        const challenge = settled.headers.get("www-authenticate");
         if (
           challenge !== null &&
           detectInsufficientScope({ headers: { "www-authenticate": challenge } }) !== null
@@ -284,7 +383,7 @@ const fetchFromHttpClientLayer = (
           });
         }
       }
-      return response;
+      return settled;
     });
     // Mark the request promise observed (a no-op handler on the ORIGINAL
     // promise; callers still see the rejection). The MCP SDK fires some
@@ -335,7 +434,7 @@ const connectionFailure = (
   message: string,
   cause: unknown,
 ): McpConnectionError | McpOAuthReauthorizationRequired => {
-  if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
+  if (hasNestedOAuthReauthorization(cause)) {
     return new McpOAuthReauthorizationRequired({ message: "MCP OAuth re-authorization required" });
   }
   if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
@@ -388,7 +487,15 @@ const autoTransportFailure = (
 ): McpConnectionError =>
   new McpConnectionError({
     transport: "auto",
-    failureKind: "protocol",
+    // The SSE fallback is the TERMINAL attempt, so its structural
+    // classification is this failure's: a timed-out fallback is a timeout
+    // and a fallback that hit an HTTP wall carries that status — collapsing
+    // everything to "protocol" made the health check read a slow-but-alive
+    // server as a generic probe failure. "protocol" remains only the default
+    // for an unclassified fallback error.
+    failureKind: sse.failureKind ?? "protocol",
+    ...(sse.httpStatus !== undefined ? { httpStatus: sse.httpStatus } : {}),
+    ...(sse.insufficientScope !== undefined ? { insufficientScope: sse.insufficientScope } : {}),
     message: `MCP auto transport failed. Streamable HTTP: ${connectionAttemptSummary(streamableHttp)}. SSE fallback: ${connectionAttemptSummary(sse)}.`,
   });
 
@@ -521,7 +628,9 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   const headers = input.headers ?? {};
   const remoteTransport = input.remoteTransport ?? "auto";
   const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-  const fetch = input.httpClientLayer ? fetchFromHttpClientLayer(input.httpClientLayer) : undefined;
+  const fetch = input.httpClientLayer
+    ? fetchFromHttpClientLayer(input.httpClientLayer, input.staticOAuthBearer === true)
+    : undefined;
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 

@@ -73,7 +73,11 @@ const checkHealthWith = (values: Record<string, string | null>) =>
           readonly connection: string;
           readonly integration: string;
         };
-      }) => Effect.Effect<{ readonly status: string; readonly detail?: string }>
+      }) => Effect.Effect<{
+        readonly status: string;
+        readonly detail?: string;
+        readonly reason?: string;
+      }>
     )({
       ctx: { httpClientLayer: permissiveClientLayer },
       credential: {
@@ -96,6 +100,7 @@ describe("MCP health check with an unresolved credential", () => {
       expect(health.status).not.toBe("healthy");
       expect(health.status).toBe("expired");
       expect(String(health.detail ?? "")).toContain("token");
+      expect(health.reason).toBe("credential_missing");
     }),
   );
 

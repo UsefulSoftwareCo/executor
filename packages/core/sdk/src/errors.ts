@@ -228,6 +228,13 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
      *  NOT offer the ordinary per-server OAuth flow as an alternative route:
      *  that would let the user walk around the policy the IdP just enforced. */
     blockedByAdmin: Schema.optional(Schema.Boolean),
+    /** True when the failure is that no usable credential material EXISTS on
+     *  our side (no stored refresh token, an unresolvable provider item, a
+     *  deregistered OAuth client) — nothing was sent upstream and no
+     *  authorization server refused anything. Structural, so health telemetry
+     *  can separate "missing material" from "refresh rejected" without
+     *  reading the message. */
+    credentialMissing: Schema.optional(Schema.Boolean),
   },
 ) {}
 

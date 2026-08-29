@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import { useAtomValue, useAtomRefresh, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { IntegrationSlug, type Connection, type Owner } from "@executor-js/sdk/shared";
+import {
+  IntegrationSlug,
+  type Connection,
+  type OAuthClientSummary,
+  type Owner,
+} from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { toast } from "sonner";
 
 import {
   addConnectionOptimistic,
   connectionsForIntegrationAtom,
+  oauthClientsOptimisticAtom,
   refreshConnection,
   removeConnectionOptimistic,
   startOAuth,
@@ -23,11 +29,14 @@ import type { AuthMethod } from "../lib/auth-placements";
 import {
   connectionNeedsReconsent,
   oauthReconnectPayload,
+  reconnectClientsView,
   reconnectMode,
+  reconnectRoute,
   reconsentRequiredScopes,
+  retryReconnectClientsOnMenuOpen,
 } from "../plugins/oauth-reconnect";
 import { useOAuthPopupFlow } from "../plugins/oauth-sign-in";
-import { AddAccountModal } from "./add-account-modal";
+import { AddAccountModal, hasDcr } from "./add-account-modal";
 import { ConnectionEditSheet } from "./metadata-edit-sheet";
 import type { CreateCustomMethod } from "./add-custom-method-modal";
 import {
@@ -117,6 +126,19 @@ function AccountRow(props: {
   readonly showOwnerLabel: boolean;
   readonly onEdit: () => void;
   readonly onReconnect: () => void;
+  /** Reconnect routing needs the stored client binding; while the client
+   *  summaries carry no data the route is unknown, so the action is
+   *  disabled rather than guessed (same idiom as "Check now" above). */
+  readonly reconnectDisabled: boolean;
+  /** The summaries query failed: the Reconnect item stays disabled but says
+   *  so (never a silently dead action). Retained stale data never routes — a
+   *  binding changed since the snapshot could misroute. Opening the menu
+   *  retries the query via `onMenuOpenChange`, so the hint reflects a retry
+   *  that just failed, not a permanently stuck state. */
+  readonly reconnectFailed: boolean;
+  /** Forwarded to the row menu; the owner uses the OPEN transition to retry
+   *  a failed client-summaries query. */
+  readonly onMenuOpenChange: (open: boolean) => void;
   readonly onRemove: () => void;
 }) {
   const { connection, needsReconsent } = props;
@@ -245,7 +267,7 @@ function AccountRow(props: {
         {props.showOwnerLabel ? (
           <Badge variant="outline">{ownerLabel(connection.owner)}</Badge>
         ) : null}
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={props.onMenuOpenChange}>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
@@ -270,8 +292,17 @@ function AccountRow(props: {
             <DropdownMenuItem className="text-sm" onClick={props.onEdit}>
               Edit
             </DropdownMenuItem>
-            <DropdownMenuItem className="text-sm" onClick={props.onReconnect}>
+            <DropdownMenuItem
+              className="text-sm"
+              disabled={props.reconnectDisabled}
+              onClick={props.onReconnect}
+            >
               Reconnect
+              {props.reconnectFailed ? (
+                // Same failed-query voice as the modal's picker errors; the
+                // trailing placement mirrors DropdownMenuShortcut.
+                <span className="ml-auto text-xs text-destructive">Failed to load</span>
+              ) : null}
             </DropdownMenuItem>
             <DropdownMenuItem variant="destructive" className="text-sm" onClick={props.onRemove}>
               Remove
@@ -289,13 +320,29 @@ function OwnerAccounts(props: {
   readonly showOwnerLabels: boolean;
   readonly methods: readonly AuthMethod[];
   readonly onEdit: (connection: Connection) => void;
-  readonly onDcrReconnect: (connection: Connection) => void;
+  /** Hand the connection to the modal's automatic reconnect flow. Only called
+   *  once the stored binding was vetted as auto-minted DCR (or gone);
+   *  `storedClient` is that binding's summary — undefined when the row is
+   *  gone — so the handoff can carry its resource. */
+  readonly onDcrReconnect: (
+    connection: Connection,
+    storedClient: OAuthClientSummary | undefined,
+  ) => void;
   /** The integration's declared oauth scopes — compared against each connection's
    *  granted `oauthScope` to flag connections that must reconnect for new access. */
   readonly declaredScopes: readonly string[] | undefined;
 }) {
   const { integration, owner } = props;
   const connections = useAtomValue(connectionsForIntegrationAtom({ integration, owner }));
+  // Registered-app summaries: the Reconnect routing below inspects the STORED
+  // client binding (its origin kind and resource), not just the method's
+  // capability, before sending a connection into the automatic flow. Routing
+  // only ever reads a current successful load — never stale data — and a
+  // failed query marks the action failed (recoverable — opening the row menu
+  // retries the query).
+  const allClients = useAtomValue(oauthClientsOptimisticAtom);
+  const refreshClients = useAtomRefresh(oauthClientsOptimisticAtom);
+  const clientsView = reconnectClientsView(allClients);
   // Removal confirms in a dialog. State lives here (not in the row) because the
   // Remove menu item closes its dropdown on click, which would unmount a dialog
   // nested inside it — so the row only nominates the connection to remove.
@@ -327,11 +374,26 @@ function OwnerAccounts(props: {
         (candidate: AuthMethod) =>
           candidate.kind === "oauth" && String(candidate.template) === String(connection.template),
       );
-      if (
-        method?.oauth?.supportsDynamicRegistration === true ||
-        method?.oauth?.discoveryUrl != null
-      ) {
-        props.onDcrReconnect(connection);
+      // Route by the STORED binding's origin (`reconnectRoute`): an
+      // auto-minted DCR binding re-runs the automatic probe/registration flow
+      // (direct reuse dead-ends once the callback origin drifts, #1542); a
+      // static/BYO or first-party binding takes the direct path below even on
+      // a discovery-capable integration — re-registering would silently
+      // rebind the connection to an automatic client. Unless the client list
+      // is a CURRENT success the binding is UNKNOWN and no route may be
+      // chosen: the menu item is disabled until then, and this guard
+      // backstops a race — a permanent wrong choice on a guess is never
+      // acceptable. A failed refresh never routes, even when stale data is
+      // retained: a binding changed since the snapshot could repeat the
+      // origin-drift dead end or silently rebind to an automatic client.
+      const route = reconnectRoute(
+        clientsView.kind === "ready" ? clientsView.clients : undefined,
+        connection,
+        hasDcr(method),
+      );
+      if (route.kind === "unknown") return;
+      if (route.kind === "automatic") {
+        props.onDcrReconnect(connection, route.stored);
         return;
       }
       const payload = oauthReconnectPayload(connection);
@@ -451,6 +513,19 @@ function OwnerAccounts(props: {
             showOwnerLabel={props.showOwnerLabels}
             onEdit={() => props.onEdit(connection)}
             onReconnect={() => void handleReconnect(connection)}
+            // An OAuth Reconnect routes by the stored client binding; without
+            // a current successful load (loading or failed) the route is
+            // unknown, so the action waits. Static-credential rows refresh
+            // without the binding.
+            reconnectDisabled={
+              reconnectMode(connection) === "oauth" && clientsView.kind !== "ready"
+            }
+            // A failed load is surfaced on the item (not silently disabled)
+            // and recovers on menu open, which retries the query.
+            reconnectFailed={reconnectMode(connection) === "oauth" && clientsView.kind === "failed"}
+            onMenuOpenChange={(open: boolean) =>
+              retryReconnectClientsOnMenuOpen(open, clientsView, refreshClients)
+            }
             onRemove={() => setRemovingConnection(connection)}
           />
         ))}
@@ -632,7 +707,10 @@ export function AccountsSection(props: {
               showOwnerLabels={ownerDisplay.showOwnerLabels}
               methods={methods}
               onEdit={setEditingConnection}
-              onDcrReconnect={(connection: Connection) => {
+              onDcrReconnect={(
+                connection: Connection,
+                storedClient: OAuthClientSummary | undefined,
+              ) => {
                 if (connection.oauthClient == null) return;
                 setReconnectHandoff({
                   key: `reconnect:${connection.owner}:${String(connection.integration)}:${String(
@@ -648,6 +726,19 @@ export function AccountsSection(props: {
                     action: "reconnect",
                     slug: String(connection.oauthClient),
                     owner: connection.oauthClientOwner ?? connection.owner,
+                    // Vetted by the routing in `handleReconnect`: the stored
+                    // binding is auto-minted DCR (or its row is gone), so the
+                    // modal may re-run the automatic flow.
+                    dynamicRegistration: true,
+                    // The stored client's RFC 8707 resource — an EXPLICIT null
+                    // for a client registered WITHOUT a resource indicator
+                    // (that absence always survives re-registration); a stored
+                    // value is reconciled against the probe downstream, so a
+                    // migrated resource follows the server. Omitted when the
+                    // row is gone.
+                    ...(storedClient !== undefined
+                      ? { resource: storedClient.resource ?? null }
+                      : {}),
                   },
                 });
               }}

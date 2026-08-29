@@ -11,6 +11,7 @@ import {
   Predicate,
   Result,
   Schema,
+  Tracer,
 } from "effect";
 
 import {
@@ -28,7 +29,7 @@ import { ConnectionAlreadyExistsError } from "./errors";
 import { createExecutor } from "./executor";
 import { StorageError, type FumaDb } from "./fuma-runtime";
 import { HealthCheckResult } from "./health-check";
-import { definePlugin } from "./plugin";
+import { definePlugin, type ResolveToolsResult } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
 import { ToolResult } from "./tool-result";
@@ -2326,6 +2327,10 @@ const makeHealthHarness = (options?: {
     // Cleared before it runs, so the conflicting write it performs (through
     // the unwrapped `config.db`) is not intercepted again.
     beforeHealthPersist: null as Effect.Effect<void> | null,
+    // Replaces the plugin's `resolveTools` outcome, so a test can drive the
+    // incomplete-catalog path that persists a plugin-supplied health verdict
+    // (`stampSyncedWithHealth`).
+    resolveTools: null as Effect.Effect<ResolveToolsResult> | null,
   };
   // Wraps the executor's FumaDb handle so `beforeHealthPersist` can commit a
   // conflicting write in the exact window the write guards must close.
@@ -2378,7 +2383,11 @@ const makeHealthHarness = (options?: {
     credentialProviders: [countingProvider],
     storage: () => ({}),
     resolveTools: () =>
-      Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+      Effect.suspend(
+        () =>
+          hooks.resolveTools ??
+          Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+      ),
     invokeTool: ({ toolRow, credential, args }) =>
       Effect.as(
         hooks.onInvoke,
@@ -2488,8 +2497,13 @@ describe("agent read revalidation (coreTools connections.list)", () => {
   it.effect("concurrent lists past the freshness gate collapse to one probe", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
+      // Completed on probe entry, AFTER `counters.probes` has been bumped:
+      // awaiting it is the explicit "a probe has started" ordering point (a
+      // wall-clock sleep is a timing assumption that loses under suite load).
+      const entered = yield* Deferred.make<void>();
       const { executor, counters, stamp, persisted } = yield* makeHealthHarness({
-        probe: Deferred.await(gate).pipe(
+        probe: Deferred.succeed(entered, void 0).pipe(
+          Effect.andThen(Deferred.await(gate)),
           Effect.map(() => ({
             status: "healthy" as const,
             checkedAt: Date.now(),
@@ -2507,11 +2521,12 @@ describe("agent read revalidation (coreTools connections.list)", () => {
           { concurrency: "unbounded" },
         ),
       );
-      // The probe is held open by the gate, so NOTHING has been persisted yet:
-      // every one of the five lists must pass the freshness check and reach
-      // the probe path. Give them real time to get there — the counter then
-      // says how many probes actually started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until the first probe has provably started. The gate still holds
+      // it open, so NOTHING has been persisted: every list that runs must pass
+      // the freshness check into the probe path, and the in-flight gate must
+      // keep the count at one — any duplicate a later list starts is caught by
+      // the final count below.
+      yield* Deferred.await(entered);
       expect(counters.probes).toBe(1);
 
       yield* Deferred.succeed(gate, void 0);
@@ -2970,12 +2985,53 @@ describe("verdict write guards close the check-to-write window", () => {
       expect(row?.lastHealth).toMatchObject({ status: "degraded", detail: SYNC_DETAIL });
     }),
   );
+
+  it.effect("tool-sync verdict persist: a reconnect landing inside the window wins", () =>
+    Effect.gen(function* () {
+      const { executor, stamp, persisted, hooks } = yield* makeHealthHarness();
+      // Age the stamp so the reconnect's bump lands in a different granule.
+      yield* stamp({ updated_at: new Date(Date.now() - STALE_MS) });
+      // The refresh's discovery meets a reauthorization condition on the OLD
+      // credential and reports an actionable expired verdict...
+      hooks.resolveTools = Effect.succeed({
+        tools: [],
+        incomplete: true,
+        incompleteReason: "MCP OAuth re-authorization required",
+        health: {
+          status: "expired" as const,
+          checkedAt: Date.now(),
+          detail: "MCP OAuth reauthorization required",
+        },
+      });
+      // ...while a reconnect commits inside the check-to-write window: the
+      // replacement grant clears the verdict and any dead-grant state and
+      // bumps the stamp. The read-side dead-grant guard cannot refuse the
+      // stale verdict — the reconnected row has nothing for it to observe —
+      // so only the compare-and-swap can.
+      hooks.beforeHealthPersist = stamp({
+        provider_state: null,
+        last_health: null,
+        updated_at: new Date(),
+      }).pipe(Effect.asVoid);
+
+      yield* executor.connections.refresh(REF);
+
+      const row = yield* persisted();
+      expect(row?.lastHealth ?? null).toBeNull();
+    }),
+  );
 });
 
 describe("credential-only health path", () => {
   it.effect("concurrent checks collapse to one credential resolution", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
+      // Completed by the provider on entry, AFTER the resolve counter has
+      // been bumped: awaiting it is the explicit "a resolution has started"
+      // ordering point. A wall-clock sleep here is a timing assumption — under
+      // parallel suite load the forked checks may not have finished their row
+      // loads yet, and the counter reads 0.
+      const entered = yield* Deferred.make<void>();
       const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
       // No declared probe spec + an OAuth client on the row routes checkHealth
       // down the credential-only path: the verdict is "the credential
@@ -2983,7 +3039,9 @@ describe("credential-only health path", () => {
       // behind the same in-flight gate as probing, so concurrent checks must
       // collapse to ONE resolution.
       yield* stamp({ oauth_client: "acme", expires_at: null });
-      hooks.onResolve = Deferred.await(gate);
+      hooks.onResolve = Deferred.succeed(entered, void 0).pipe(
+        Effect.andThen(Deferred.await(gate)),
+      );
       counters.resolves = 0;
       const ref = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
 
@@ -2992,10 +3050,12 @@ describe("credential-only health path", () => {
           concurrency: "unbounded",
         }),
       );
-      // The resolution is held open by the gate, so nothing has been
-      // persisted: both checks must reach the credential path. Give them real
-      // time to get there — the counter then says how many resolutions started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until the first resolution has provably entered the provider.
+      // The gate still holds it open, so nothing has been persisted: while it
+      // holds, the in-flight gate must keep the count at exactly one — and any
+      // duplicate the second check ever starts is caught by the final count
+      // below.
+      yield* Deferred.await(entered);
       expect(counters.resolves).toBe(1);
 
       yield* Deferred.succeed(gate, void 0);
@@ -3055,6 +3115,11 @@ describe("health probe gate key integrity", () => {
     Effect.gen(function* () {
       const counters = { probes: 0 };
       const gate = yield* Deferred.make<void>();
+      // Completed by the probe that brings the count to two: awaiting it is
+      // the explicit "both probes started" ordering point. A collided gate
+      // never completes it (the second check joins the first probe's Deferred
+      // instead of starting its own), which fails the test by timeout.
+      const bothEntered = yield* Deferred.make<void>();
       // Every probe increments the shared counter and then parks on the gate,
       // so both checks are provably in flight at once: nothing is persisted,
       // and a collided gate would let the second check join the first probe's
@@ -3070,7 +3135,10 @@ describe("health probe gate key integrity", () => {
         checkHealth: () =>
           Effect.suspend(() => {
             counters.probes += 1;
-            return Deferred.await(gate).pipe(
+            const arrived =
+              counters.probes >= 2 ? Deferred.succeed(bothEntered, void 0) : Effect.void;
+            return arrived.pipe(
+              Effect.andThen(Deferred.await(gate)),
               Effect.map(() => ({
                 status: "healthy" as const,
                 checkedAt: Date.now(),
@@ -3110,9 +3178,10 @@ describe("health probe gate key integrity", () => {
 
       const checkA = yield* Effect.forkChild(executorA.connections.checkHealth(ref));
       const checkB = yield* Effect.forkChild(executorB.connections.checkHealth(ref));
-      // Give both fibers real time to reach the probe path while the gate
-      // holds every probe open; the counter then says how many started.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)));
+      // Wait until both probes have provably started; the gate holds every
+      // probe open, so both checks are in flight at once and nothing has been
+      // persisted.
+      yield* Deferred.await(bothEntered);
       expect(counters.probes).toBe(2);
 
       yield* Deferred.succeed(gate, void 0);
@@ -3121,6 +3190,123 @@ describe("health probe gate key integrity", () => {
       expect(resultA.status).toBe("healthy");
       expect(resultB.status).toBe("healthy");
       expect(counters.probes).toBe(2);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Flip telemetry on the health span. `previous_status` + `changed` record
+// which verdict a check REPLACED, so flapping (healthy↔degraded oscillation)
+// is a queryable dimension instead of a per-connection diff over consecutive
+// spans; `reason` carries the enumerable failure mechanism where the free-text
+// `detail` can never go. Asserted through the span because the span IS the
+// deliverable: nothing else user-visible changes.
+// ---------------------------------------------------------------------------
+
+/** Records every span the program opens, so stamped attributes can be read
+ *  back (same pattern as the MCP plugin's telemetry tests). */
+const recordingTracer = (spans: Array<Tracer.NativeSpan>) =>
+  Tracer.make({
+    span: (options) => {
+      const span = new Tracer.NativeSpan(options);
+      spans.push(span);
+      return span;
+    },
+    context: (primitive, fiber) => primitive["~effect/Effect/evaluate"](fiber),
+  });
+
+describe("connections.checkHealth flip telemetry", () => {
+  const REF = {
+    owner: "org",
+    integration: INTEG,
+    name: ConnectionName.make("main"),
+  } as const;
+
+  const lastHealthSpan = (spans: ReadonlyArray<Tracer.NativeSpan>): Tracer.NativeSpan => {
+    const matches = spans.filter((span) => span.name === "executor.connection.health.check");
+    const last = matches[matches.length - 1];
+    expect(last).toBeDefined();
+    // SAFETY: the expect above fails the test before this narrows undefined.
+    return last as Tracer.NativeSpan;
+  };
+
+  it.effect("stamps previous_status + changed=true when a probe replaces a verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "degraded", checkedAt: Date.now() - STALE_MS, detail: "HTTP 502" },
+      });
+
+      const result = yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+      expect(result.status).toBe("healthy");
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.status")).toBe("healthy");
+      expect(span.attributes.get("executor.health.previous_status")).toBe("degraded");
+      expect(span.attributes.get("executor.health.changed")).toBe(true);
+    }),
+  );
+
+  it.effect("stamps changed=false when a probe reconfirms the persisted verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, stamp } = yield* makeHealthHarness();
+      yield* stamp({
+        last_health: { status: "healthy", checkedAt: Date.now() - STALE_MS, detail: "probe ok" },
+      });
+
+      yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.previous_status")).toBe("healthy");
+      expect(span.attributes.get("executor.health.changed")).toBe(false);
+    }),
+  );
+
+  it.effect("stamps neither flip key on a first-ever verdict", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor } = yield* makeHealthHarness();
+
+      yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+
+      // Never-checked is not a flip: a fleet-wide first probe must not read
+      // as a wave of changes.
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.has("executor.health.previous_status")).toBe(false);
+      expect(span.attributes.has("executor.health.changed")).toBe(false);
+    }),
+  );
+
+  it.effect("stamps the probe's reason on the span and persists it on the row", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const { executor, persisted } = yield* makeHealthHarness({
+        probe: Effect.sync(() => ({
+          status: "degraded" as const,
+          checkedAt: Date.now(),
+          detail: "upstream deadline exceeded",
+          reason: "probe_timeout" as const,
+        })),
+      });
+
+      const result = yield* executor.connections
+        .checkHealth(REF)
+        .pipe(Effect.provideService(Tracer.Tracer, recordingTracer(spans)));
+      expect(result.reason).toBe("probe_timeout");
+
+      const span = lastHealthSpan(spans);
+      expect(span.attributes.get("executor.health.reason")).toBe("probe_timeout");
+
+      const row = yield* persisted();
+      expect(row?.lastHealth?.reason).toBe("probe_timeout");
     }),
   );
 });

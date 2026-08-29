@@ -209,12 +209,29 @@ const probe = async (): Promise<void> => {
 const watchdog = async () => {
   let consecutiveFailures = 0;
   let restarts = 0;
+  // Heartbeat: the CI e2e cascade of 2026-08-28 (run 33129376530) showed the
+  // app starving on CONNECT_TIMEOUT for 100+ seconds while every watchdog
+  // probe silently PASSED — the stall was on the app's side of the socket,
+  // not this server's. A silent-when-healthy watchdog cannot distinguish
+  // "healthy" from "not running", and it discards the one signal that would
+  // test the leading theory (workerd leaking dev-db connections until its
+  // socket layer starves): the active connection count over time. Log stats
+  // periodically and whenever the count jumps a bucket.
+  let lastHeartbeatAt = Date.now();
+  let lastLoggedBucket = 0;
   for (;;) {
     await sleep(WATCHDOG_INTERVAL_MS);
     if (stopping) return;
     try {
       await probe();
       consecutiveFailures = 0;
+      const stats = server.getStats();
+      const bucket = Math.floor(stats.activeConnections / 50);
+      if (bucket !== lastLoggedBucket || Date.now() - lastHeartbeatAt >= 60_000) {
+        lastLoggedBucket = bucket;
+        lastHeartbeatAt = Date.now();
+        console.log(`[dev-db][watchdog] healthy; stats: ${JSON.stringify(stats)}`);
+      }
     } catch (cause) {
       consecutiveFailures += 1;
       console.error(

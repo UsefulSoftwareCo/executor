@@ -1144,9 +1144,22 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // token grant doesn't involve the redirect URI).
       const takenSlugs = new Set(candidates.map((client) => String(client.slug)));
       if (resource !== null) {
-        const matchingResource = candidates.find((client) => client.resource === resource);
-        if (matchingResource && redirectMatches(matchingResource)) {
-          return { existingSlug: matchingResource.slug, registrationSlug: matchingResource.slug };
+        // Prefer a candidate matching resource AND the current redirect across
+        // ALL candidates (mirroring the resource-less branch below). Candidates
+        // are oldest-first, so after an origin drift the oldest matching-
+        // resource row is the STRANDED one — but the first drift recovery
+        // already minted a client bound to the CURRENT callback, and later
+        // reconnects must reuse that instead of registering another duplicate
+        // each time. Known limitation: the legacy null-redirect rule in
+        // `redirectMatches` (a legacy row with no stored redirect matches any
+        // flow redirect) still lets such a row win over a later, exactly-
+        // matching one; kept deliberately so upgrades don't re-register every
+        // client whose callback never changed.
+        const reusable = candidates.find(
+          (client) => client.resource === resource && redirectMatches(client),
+        );
+        if (reusable) {
+          return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
         }
         const slug = uniqueDcrSlug(
           dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug),

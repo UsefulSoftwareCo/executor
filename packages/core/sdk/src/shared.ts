@@ -131,6 +131,7 @@ export {
 // Health-check vocabulary (pure Schema + helpers).
 export {
   HealthStatus,
+  HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,
   HealthCheckCandidate,

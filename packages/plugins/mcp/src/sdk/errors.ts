@@ -40,8 +40,17 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
   {
     stage: Schema.Literals(["connect", "list_tools"]),
     message: Schema.String,
-    /** HTTP status from the underlying connect failure, when known. */
+    /** HTTP status from the underlying connect or tools/list failure, when
+     *  known. */
     httpStatus: Schema.optional(Schema.Number),
+    /** The MCP OAuth provider reached the interactive authorization boundary.
+     *  Catalog callers use this structural signal to request reconnect without
+     *  parsing or exposing an upstream error message. */
+    reauthorizationRequired: Schema.optional(Schema.Boolean),
+    /** Discovery hit its deadline (`discoverTools` timeout). Structural, so
+     *  the health check can report `probe_timeout` — a slow-but-alive server —
+     *  without string-matching the message. */
+    timedOut: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

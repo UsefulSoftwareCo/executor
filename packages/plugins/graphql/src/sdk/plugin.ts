@@ -169,6 +169,13 @@ const healthFromIntrospectionError = (
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       checkedAt,
       detail: appendUpstreamMessage(`${statusDetail} ${GRAPHQL_AUTH_DETAIL}`, upstream),
+      // `upstream_status` means "a non-2xx HTTP verdict" — any such status
+      // here claims it (401/403, but also e.g. a 400 whose body names an auth
+      // failure). An auth message inside an HTTP 200 body (the common GraphQL
+      // shape) has no HTTP verdict — omit the reason rather than mislabel it.
+      ...(httpStatus !== undefined && (httpStatus < 200 || httpStatus >= 300)
+        ? { reason: "upstream_status" as const }
+        : {}),
     };
   }
 
@@ -182,6 +189,8 @@ const healthFromIntrospectionError = (
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       checkedAt,
       detail: GRAPHQL_INVALID_SCHEMA_DETAIL,
+      // The response arrived but was unusable — no upstream HTTP verdict.
+      reason: "probe_failed",
     };
   }
 
@@ -190,6 +199,7 @@ const healthFromIntrospectionError = (
       status: "degraded",
       checkedAt,
       detail: GRAPHQL_NETWORK_DETAIL,
+      reason: "probe_failed",
     };
   }
 
@@ -202,6 +212,9 @@ const healthFromIntrospectionError = (
         "Schema introspection returned GraphQL errors. Check that introspection is enabled and the credential can read the schema.",
         upstream,
       ),
+      // GraphQL errors ride an HTTP 200; the response body, not the status,
+      // is what failed the probe.
+      reason: "probe_failed",
     };
   }
 
@@ -209,6 +222,9 @@ const healthFromIntrospectionError = (
     status: "degraded",
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     checkedAt,
+    ...(httpStatus !== undefined && (httpStatus < 200 || httpStatus >= 300)
+      ? { reason: "upstream_status" as const }
+      : { reason: "probe_failed" as const }),
     detail: appendUpstreamMessage(
       httpStatus !== undefined
         ? `Schema introspection failed with HTTP ${httpStatus}. Check the endpoint and upstream status, then try again.`
@@ -710,6 +726,7 @@ const checkGraphqlHealth = (input: {
         status: "expired",
         checkedAt,
         detail: `Enter a credential value for ${missing.join(", ")}, then try again.`,
+        reason: "credential_missing",
       } satisfies HealthCheckResult;
     }
 

@@ -5,7 +5,7 @@ import {
   ProviderKey,
   type CredentialProvider,
   type ProviderItemId,
-} from "@executor-js/sdk";
+} from "@executor-js/sdk/core";
 
 import type { KeychainError } from "./errors";
 import { getPassword, setPassword, deletePassword } from "./keyring";

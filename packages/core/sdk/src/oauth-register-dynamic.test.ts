@@ -656,6 +656,56 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  // After the A→B drift recovery above, the owner holds TWO matching-resource
+  // clients: the stale one (bound to redirect A, oldest) and the recovery one
+  // (bound to redirect B). The reuse decision must prefer a candidate matching
+  // resource AND the current redirect across ALL candidates — taking only the
+  // OLDEST matching-resource candidate and then checking its redirect would
+  // mint yet another client on EVERY reconnect after the first drift.
+  it.effect(
+    "reuses the drift-recovery client on later reconnects instead of registering again",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+          const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+          const registerAt = (slug: string, redirectUri: string) =>
+            executor.oauth.registerDynamicClient({
+              owner: "org",
+              slug: OAuthClientSlug.make(slug),
+              issuer: probe.issuer,
+              registrationEndpoint: probe.registrationEndpoint!,
+              authorizationUrl: probe.authorizationUrl,
+              tokenUrl: probe.tokenUrl,
+              resource: probe.resource,
+              scopes: ["read"],
+              tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+              clientName: "Acme DCR",
+              redirectUri,
+              originIntegration: INTEG,
+            });
+
+          // Original sandbox at redirect A, then the drift recovery at redirect B.
+          yield* registerAt("original-sandbox", FLOW_REDIRECT_URI);
+          const driftedRedirectUri = "https://localhost:6410/api/oauth/callback";
+          const recovered = yield* registerAt("recreated-sandbox", driftedRedirectUri);
+          yield* server.clearRequests;
+
+          // A later reconnect at the SAME (current) redirect B: the recovery
+          // client already matches resource + redirect, so it is reused — no
+          // third registration, no third row.
+          const reused = yield* registerAt("later-reconnect", driftedRedirectUri);
+          expect(registerRequestCount(yield* server.requests)).toBe(0);
+          expect(String(reused)).toBe(String(recovered));
+          const clients = yield* executor.oauth.listClients();
+          expect(clients).toHaveLength(2);
+        }),
+      ),
+  );
+
   // Regression: Mercury's authorization server vets `client_name` and rejects
   // any value containing its own brand with `invalid_client_metadata`, which
   // the old auto-generated "Executor for Mercury MCP" always tripped. The UI
