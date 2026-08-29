@@ -157,7 +157,11 @@ const nestedMcpHttpTransportError = (cause: unknown): Option.Option<McpHttpTrans
   return Option.none();
 };
 
-const hasNestedOAuthReauthorization = (cause: unknown): boolean => {
+/** Walks a (possibly SDK-wrapped) failure cause for the fetch adapter's
+ *  `McpOAuthReauthorizationRequired`. Shared with tool discovery: the same
+ *  interception fires during `tools/list`, where the SDK wraps the rejection
+ *  before it reaches the listing's catch site. */
+export const hasNestedOAuthReauthorization = (cause: unknown): boolean => {
   let current: unknown = cause;
   for (let depth = 0; depth < 8; depth += 1) {
     if (Predicate.isTagged(current, "McpOAuthReauthorizationRequired")) return true;
@@ -291,15 +295,31 @@ const fetchFromHttpClientLayer = (
     // tagged error from the fetch adapter (a true runtime edge: the SDK
     // consumes promise rejections) so it reaches the invoke/connect catch
     // sites verbatim.
-    const promise = Effect.runPromise(effect).then((response) => {
-      if (staticOAuthBearer && response.status === 401) {
-        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
-        throw new McpOAuthReauthorizationRequired({
-          message: "MCP OAuth re-authorization required",
-        });
+    const promise = Effect.runPromise(effect).then(async (response) => {
+      let settled = response;
+      if (staticOAuthBearer && settled.status === 401) {
+        // One immediate replay before classifying: a lone 401 can be a
+        // transient upstream blip (a proxy hiccup, a racing key rotation on
+        // the server), and stamping reauthorization-required from a single
+        // sample forces a needless reconnect. Replaying is safe — a 401
+        // refused the request before processing it, and every body this
+        // adapter builds is buffered (`applyBody`), never a one-shot stream.
+        // Retrying is preferred over demanding a `WWW-Authenticate` challenge
+        // because a headerless 401 (noncompliant server; the MCP auth spec
+        // requires the challenge) must STILL stop at this boundary — falling
+        // through would hand the 401 to the SDK, whose interactive fallback
+        // performs exactly the avoidable discovery/DCR this interception
+        // exists to prevent.
+        settled = await Effect.runPromise(effect);
+        if (settled.status === 401) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Fetch-compatible adapter can only signal through a rejected promise
+          throw new McpOAuthReauthorizationRequired({
+            message: "MCP OAuth re-authorization required",
+          });
+        }
       }
-      if (response.status === 403) {
-        const challenge = response.headers.get("www-authenticate");
+      if (settled.status === 403) {
+        const challenge = settled.headers.get("www-authenticate");
         if (
           challenge !== null &&
           detectInsufficientScope({ headers: { "www-authenticate": challenge } }) !== null
@@ -311,7 +331,7 @@ const fetchFromHttpClientLayer = (
           });
         }
       }
-      return response;
+      return settled;
     });
     // Mark the request promise observed (a no-op handler on the ORIGINAL
     // promise; callers still see the rejection). The MCP SDK fires some

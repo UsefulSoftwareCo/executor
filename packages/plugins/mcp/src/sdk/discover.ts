@@ -4,8 +4,9 @@
 
 import { Duration, Effect, Option, Predicate } from "effect";
 
-import type { McpConnection, McpConnector } from "./connection";
+import { hasNestedOAuthReauthorization, type McpConnection, type McpConnector } from "./connection";
 import { McpToolDiscoveryError } from "./errors";
+import { httpStatusFromCause } from "./http-status";
 import {
   decodeListToolsPage,
   extractManifestFromListToolsResult,
@@ -49,11 +50,34 @@ const listAllTools = (
       const params: { cursor?: string } | undefined = cursor === undefined ? undefined : { cursor };
       const listResult = yield* Effect.tryPromise({
         try: () => connection.client.listTools(params),
-        catch: () =>
-          new McpToolDiscoveryError({
+        // A bearer accepted at the handshake can be rejected by the time the
+        // listing runs (revocation landing mid-discovery). The fetch adapter's
+        // reauthorization interception fires here exactly as during connect,
+        // so keep the structural signals — the reauthorization tag and the
+        // HTTP status — instead of collapsing every listing failure into a
+        // generic discovery error; discarding them left the connection on a
+        // sticky degraded verdict instead of reconnect-required. Statuses come
+        // from `httpStatusFromCause` only: the connection-only numeric-code
+        // decode must stay out, since JSON-RPC error codes are not HTTP
+        // statuses.
+        catch: (cause) => {
+          if (hasNestedOAuthReauthorization(cause)) {
+            return new McpToolDiscoveryError({
+              stage: "list_tools",
+              message: "Failed listing MCP tools: MCP OAuth re-authorization required",
+              reauthorizationRequired: true,
+            });
+          }
+          const httpStatus = httpStatusFromCause(cause);
+          return new McpToolDiscoveryError({
             stage: "list_tools",
-            message: "Failed listing MCP tools",
-          }),
+            message:
+              httpStatus === undefined
+                ? "Failed listing MCP tools"
+                : `Failed listing MCP tools (HTTP ${httpStatus})`,
+            ...(httpStatus === undefined ? {} : { httpStatus }),
+          });
+        },
       });
 
       const decoded = decodeListToolsPage(listResult);
