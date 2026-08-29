@@ -595,7 +595,8 @@ export function IntegrationBrowsePage() {
           kindKey: surface.kind,
           domain: entry.domain,
           ...(description ? { description } : {}),
-          iconUrl: catalogLogoUrl(entry.domain, 10),
+          iconUrl:
+            (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
           onSelect: () => void pickCatalogEntry(entry, surface.kind, known?.url),
           added: isAdded(surface.kind, known?.slug),
           busy: resolvingDomain === entry.domain,

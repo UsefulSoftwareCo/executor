@@ -43,6 +43,9 @@ export interface CatalogSurface {
    *  machine-readable locator, in which case the surface document still has to
    *  be fetched on click. */
   readonly url?: string;
+  /** A hand-picked product mark (Google Calendar's own logo rather than the
+   *  generic G), present only on curated surfaces. */
+  readonly icon?: string;
   /** How to authenticate, for surfaces whose connect target cannot describe
    *  it itself — a GraphQL endpoint has no spec document, so the registry is
    *  the only carrier of facts like Linear's no-Bearer-prefix header. */
@@ -118,6 +121,7 @@ const SearchResponse = Schema.Struct({
             kind: Schema.String,
             slug: Schema.String,
             url: Schema.optional(Schema.String),
+            icon: Schema.optional(Schema.String),
             auth: Schema.optional(
               Schema.Struct({
                 kind: Schema.optional(Schema.String),
@@ -147,6 +151,7 @@ export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntr
                     kind: surface.kind,
                     slug: surface.slug,
                     ...(surface.url ? { url: surface.url } : {}),
+                    ...(surface.icon ? { icon: surface.icon } : {}),
                     ...(surface.auth ? { auth: surface.auth } : {}),
                     ...(surface.specOverrides && surface.specOverrides.length > 0
                       ? { specOverrides: surface.specOverrides }
