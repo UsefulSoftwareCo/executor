@@ -19,7 +19,6 @@ import { Button } from "../components/button";
 import { Input } from "../components/input";
 import { PageContainer, PageHeader } from "../components/page";
 import { Skeleton } from "../components/skeleton";
-import { cn } from "../lib/utils";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import {
   availableCatalogKinds,
@@ -298,29 +297,6 @@ function CardSkeleton(props: { readonly index: number }) {
   );
 }
 
-function KindChip(props: {
-  readonly label: string;
-  readonly active: boolean;
-  readonly onSelect: () => void;
-}) {
-  return (
-    // oxlint-disable-next-line react/forbid-elements -- a filter chip, not a Button variant
-    <button
-      type="button"
-      onClick={props.onSelect}
-      aria-pressed={props.active}
-      className={cn(
-        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-        props.active
-          ? "border-foreground/20 bg-foreground text-background"
-          : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-      )}
-    >
-      {props.label}
-    </button>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -333,7 +309,6 @@ export function IntegrationBrowsePage() {
   const installed = useAtomValue(integrationsOptimisticAtom);
 
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<CatalogKind | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Resolve-on-click failures belong on the card that was clicked — a page-top
@@ -357,7 +332,7 @@ export function IntegrationBrowsePage() {
   // Nothing to exclude now that the registry is the only source.
   const excludeDomains = useMemo(() => new Set<string>(), []);
 
-  const catalog = useCatalogBrowse({ query: listQuery, ...(kind ? { kind } : {}) });
+  const catalog = useCatalogBrowse({ query: listQuery });
   const catalogEntries = useMemo(
     () => filterCatalogEntries(catalog.entries, { excludeDomains, availableKinds }),
     [catalog.entries, excludeDomains, availableKinds],
@@ -541,7 +516,6 @@ export function IntegrationBrowsePage() {
     const rows: Row[] = [];
     for (const entry of allPresets) {
       if (entry.preset.url !== undefined || entry.preset.endpoint !== undefined) continue;
-      if (kind !== null && entry.pluginKey !== kind) continue;
       if (text.length > 0) {
         const corpus =
           `${entry.preset.name} ${entry.preset.summary ?? ""} ${entry.preset.family ?? ""} ${entry.pluginLabel}`.toLowerCase();
@@ -566,7 +540,7 @@ export function IntegrationBrowsePage() {
       });
     }
     return rows;
-  }, [allPresets, kind, text, pickPreset, isAdded]);
+  }, [allPresets, text, pickPreset, isAdded]);
 
   // --- Catalog rows: one per (service, surface) -----------------------------
   const catalogRows = useMemo<readonly Row[]>(() => {
@@ -688,27 +662,10 @@ export function IntegrationBrowsePage() {
         ) : null}
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-1.5">
-        <KindChip label="All" active={kind === null} onSelect={() => setKind(null)} />
-        {availableKinds.map((candidate) => (
-          <KindChip
-            key={candidate}
-            label={CATALOG_KIND_LABEL[candidate]}
-            active={kind === candidate}
-            onSelect={() => setKind(candidate)}
-          />
-        ))}
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          Can&apos;t find it? Paste its URL above.
-        </span>
-      </div>
-
       {/* Above the results, not below: an endless list has no reachable
           bottom, and this is the escape hatch for exactly the person the
-          list is failing. One quiet line — the label carries the action, so
-          the chips can stay as bare format names without colliding with the
-          facet pills above (those FILTER, these CREATE, and the plus mark +
-          leading verb keep that legible). */}
+          list is failing. One quiet line; the label carries the action, so
+          the chips stay bare format names. */}
       <div className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="shrink-0 text-xs text-muted-foreground">Start from scratch:</span>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -734,6 +691,9 @@ export function IntegrationBrowsePage() {
             ),
           )}
         </div>
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+          Can&apos;t find it? Paste its URL above.
+        </span>
       </div>
 
       {error ? (
