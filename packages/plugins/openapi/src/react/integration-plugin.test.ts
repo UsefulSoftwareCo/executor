@@ -2,10 +2,14 @@ import { describe, expect, it } from "@effect/vitest";
 import { Option } from "effect";
 
 import { decodeOpenApiSpecOverrides } from "../sdk/spec-overrides";
+import { Exit } from "effect";
+
 import {
   composeQuickAddAuth,
+  performQuickAdd,
   quickAddRequestPayloads,
   quickAddSpecPlan,
+  type QuickAddDeps,
 } from "./integration-plugin";
 
 // The quick add's composition is where review found bugs twice: first it
@@ -144,5 +148,94 @@ describe("quickAddRequestPayloads", () => {
     expect(requests.add.specOverrides).toEqual(requests.preview.specOverrides);
     expect(requests.add.displayDomain).toBe("figma.com");
     expect(requests.add.spec).toEqual({ kind: "url", url: "https://example.com/spec.yaml" });
+  });
+});
+
+describe("performQuickAdd", () => {
+  // The OPERATION under test, with the two mutations captured — the guard
+  // the review demanded twice: helper tests kept passing while a call site
+  // could quietly stop using the shared plan.
+  it("sends the identical spec plan to preview and add, and composed auth", async () => {
+    const previews: unknown[] = [];
+    const adds: unknown[] = [];
+    const deps: QuickAddDeps = {
+      presets: [
+        {
+          id: "figma",
+          name: "Figma",
+          summary: "",
+          url: "https://example.com/spec.yaml",
+          specFormat: "fmt",
+          specOverrides: [...scopeOverride],
+        },
+      ],
+      preview: (payload) => {
+        previews.push(payload);
+        return Promise.resolve(
+          Exit.succeed({
+            headerPresets: [],
+            oauth2Presets: [
+              {
+                label: "OAuth2",
+                securitySchemeName: "OAuth2",
+                flow: "authorizationCode" as const,
+                authorizationUrl: Option.some("https://example.com/authorize"),
+                tokenUrl: "https://example.com/token",
+                resource: Option.none(),
+                refreshUrl: Option.none(),
+                scopes: { "files:read": "" },
+                identityScopes: [] as const,
+              },
+            ],
+            servers: [{ url: "https://api.example.com" }],
+          }),
+        );
+      },
+      add: (payload) => {
+        adds.push(payload);
+        return Promise.resolve(Exit.succeed({ slug: "figma_api" }));
+      },
+    };
+    const result = await performQuickAdd(deps, {
+      url: "https://example.com/spec.yaml",
+      name: "Figma API",
+      slug: "figma-api",
+      domain: "figma.com",
+      authHeader: "Authorization: Bearer {token}",
+    });
+    expect(result).toEqual({ ok: true, slug: "figma_api" });
+    expect(previews).toHaveLength(1);
+    expect(adds).toHaveLength(1);
+    const preview = previews[0] as Record<string, unknown>;
+    const add = adds[0] as Record<string, unknown>;
+    // The regression contract: BOTH real payloads carry the one spec plan.
+    expect(preview.specFormat).toBe("fmt");
+    expect(preview.specOverrides).toEqual(scopeOverride);
+    expect(add.specFormat).toBe(preview.specFormat);
+    expect(add.specOverrides).toEqual(preview.specOverrides);
+    expect(add.slug).toBe("figma_api");
+    expect(add.displayDomain).toBe("figma.com");
+    // Auth derived from the overridden document, registry key appended.
+    const template = add.authenticationTemplate as readonly unknown[];
+    expect(JSON.stringify(template)).toContain("files:read");
+    expect(JSON.stringify(template)).toContain("Authorization");
+  });
+
+  it("skips the preview entirely when the registry declared no header", async () => {
+    const previews: unknown[] = [];
+    const deps: QuickAddDeps = {
+      presets: [],
+      preview: (payload) => {
+        previews.push(payload);
+        return Promise.resolve(Exit.fail("unexpected"));
+      },
+      add: () => Promise.resolve(Exit.succeed({ slug: "plain" })),
+    };
+    const result = await performQuickAdd(deps, {
+      url: "https://example.com/openapi.json",
+      name: "Plain API",
+    });
+    expect(result).toEqual({ ok: true, slug: "plain" });
+    expect(previews).toHaveLength(0);
   });
 });

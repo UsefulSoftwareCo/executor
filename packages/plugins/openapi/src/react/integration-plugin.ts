@@ -130,6 +130,85 @@ export const composeQuickAddAuth = (
   ];
 };
 
+export interface QuickAddDeps {
+  readonly presets: readonly IntegrationPreset[];
+  /** The two mutations, injected so the OPERATION is testable against its
+   *  actual outgoing payloads — helper-level tests kept passing while a call
+   *  site quietly stopped using the shared plan. */
+  readonly preview: (
+    payload: ReturnType<typeof quickAddRequestPayloads>["preview"],
+  ) => Promise<Exit.Exit<NonNullable<Parameters<typeof composeQuickAddAuth>[2]>, unknown>>;
+  readonly add: (
+    payload: ReturnType<typeof quickAddRequestPayloads>["add"] & {
+      readonly family?: string;
+      readonly healthCheck?: IntegrationPreset["healthCheck"];
+      readonly authenticationTemplate?: ReturnType<typeof openApiWireAuthInput>[];
+    },
+  ) => Promise<Exit.Exit<{ readonly slug: string }, unknown>>;
+}
+
+/** The complete quick-add operation, pure of React: everything between the
+ *  picker's click and the two API calls. */
+export const performQuickAdd = async (
+  deps: QuickAddDeps,
+  input: IntegrationQuickAddInput,
+): Promise<IntegrationQuickAddResult> => {
+  const { presets } = deps;
+  const slug = slugifyNamespace(input.slug ?? input.name);
+  if (!slug) return { ok: false, reason: "no derivable slug" };
+  // Registry overrides arrive as untyped JSON; a malformed patch goes to
+  // the configuration screen (its editor renders the parse error) rather
+  // than being silently dropped from a "successful" quick add.
+  const specOverrides = input.specOverrides
+    ? decodeOpenApiSpecOverrides(input.specOverrides)
+    : undefined;
+  if (input.specOverrides && input.specOverrides.length > 0 && specOverrides === undefined) {
+    return { ok: false, reason: "unparseable spec overrides" };
+  }
+  const preset = presetForSpecUrl(presets, input.url);
+  const registryPlacement = input.authHeader ? placementFromHeaderPattern(input.authHeader) : null;
+  const presetMethods = (preset?.authTemplate ?? []).flatMap((template) =>
+    template.kind === "oauth2"
+      ? [
+          openApiWireAuthInput({
+            ...template,
+            slug: AuthTemplateSlug.make(template.slug),
+            resource: template.resource ?? undefined,
+          }),
+        ]
+      : [],
+  );
+  // ONE spec plan for both preview and add: deriving auth from a
+  // different effective document than the one stored is how a preset's
+  // scope overrides got silently dropped.
+  const specPlan = quickAddSpecPlan(preset, specOverrides);
+  const requests = quickAddRequestPayloads(
+    { url: input.url, name: input.name, ...(input.domain ? { domain: input.domain } : {}) },
+    slug,
+    specPlan,
+  );
+  let preview: Parameters<typeof composeQuickAddAuth>[2] = null;
+  if (presetMethods.length === 0 && registryPlacement) {
+    // Composing with spec knowledge needs the spec: one preview call,
+    // only on this path (a plain registry row with no auth facts still
+    // adds with zero extra round trips).
+    const previewExit = await deps.preview(requests.preview);
+    if (Exit.isFailure(previewExit)) return { ok: false, reason: "preview failed" };
+    preview = previewExit.value;
+  }
+  const authenticationTemplate = composeQuickAddAuth(presetMethods, registryPlacement, preview);
+  const exit = await deps.add({
+    ...requests.add,
+    ...(preset?.family ? { family: preset.family } : {}),
+    ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),
+    ...(authenticationTemplate.length > 0
+      ? { authenticationTemplate: [...authenticationTemplate] }
+      : {}),
+  });
+  if (Exit.isFailure(exit)) return { ok: false, reason: "add failed" };
+  return { ok: true, slug: String(exit.value.slug) };
+};
+
 function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
   return function useOpenApiQuickAdd(): (
     input: IntegrationQuickAddInput,
@@ -137,70 +216,15 @@ function makeUseQuickAdd(presets: readonly IntegrationPreset[]) {
     const doAdd = useAtomSet(addOpenApiSpec, { mode: "promiseExit" });
     const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
     return useCallback(
-      async (input) => {
-        const slug = slugifyNamespace(input.slug ?? input.name);
-        if (!slug) return { ok: false, reason: "no derivable slug" };
-        // Registry overrides arrive as untyped JSON; a malformed patch goes to
-        // the configuration screen (its editor renders the parse error) rather
-        // than being silently dropped from a "successful" quick add.
-        const specOverrides = input.specOverrides
-          ? decodeOpenApiSpecOverrides(input.specOverrides)
-          : undefined;
-        if (input.specOverrides && input.specOverrides.length > 0 && specOverrides === undefined) {
-          return { ok: false, reason: "unparseable spec overrides" };
-        }
-        const preset = presetForSpecUrl(presets, input.url);
-        const registryPlacement = input.authHeader
-          ? placementFromHeaderPattern(input.authHeader)
-          : null;
-        const presetMethods = (preset?.authTemplate ?? []).flatMap((template) =>
-          template.kind === "oauth2"
-            ? [
-                openApiWireAuthInput({
-                  ...template,
-                  slug: AuthTemplateSlug.make(template.slug),
-                  resource: template.resource ?? undefined,
-                }),
-              ]
-            : [],
-        );
-        // ONE spec plan for both preview and add: deriving auth from a
-        // different effective document than the one stored is how a preset's
-        // scope overrides got silently dropped.
-        const specPlan = quickAddSpecPlan(preset, specOverrides);
-        const requests = quickAddRequestPayloads(
-          { url: input.url, name: input.name, ...(input.domain ? { domain: input.domain } : {}) },
-          slug,
-          specPlan,
-        );
-        let preview: Parameters<typeof composeQuickAddAuth>[2] = null;
-        if (presetMethods.length === 0 && registryPlacement) {
-          // Composing with spec knowledge needs the spec: one preview call,
-          // only on this path (a plain registry row with no auth facts still
-          // adds with zero extra round trips).
-          const previewExit = await doPreview({ payload: requests.preview });
-          if (Exit.isFailure(previewExit)) return { ok: false, reason: "preview failed" };
-          preview = previewExit.value;
-        }
-        const authenticationTemplate = composeQuickAddAuth(
-          presetMethods,
-          registryPlacement,
-          preview,
-        );
-        const exit = await doAdd({
-          payload: {
-            ...requests.add,
-            ...(preset?.family ? { family: preset.family } : {}),
-            ...(preset?.healthCheck ? { healthCheck: preset.healthCheck } : {}),
-            ...(authenticationTemplate.length > 0
-              ? { authenticationTemplate: [...authenticationTemplate] }
-              : {}),
+      (input) =>
+        performQuickAdd(
+          {
+            presets,
+            preview: (payload) => doPreview({ payload }),
+            add: (payload) => doAdd({ payload, reactivityKeys: integrationWriteKeys }),
           },
-          reactivityKeys: integrationWriteKeys,
-        });
-        if (Exit.isFailure(exit)) return { ok: false, reason: "add failed" };
-        return { ok: true, slug: String(exit.value.slug) };
-      },
+          input,
+        ),
       [doAdd, doPreview],
     );
   };
