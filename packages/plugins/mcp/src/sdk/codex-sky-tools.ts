@@ -31,7 +31,7 @@ const num = (description: string): JsonSchema => ({ type: "number", description 
 const int = (description: string): JsonSchema => ({ type: "integer", description });
 
 const APP: JsonSchema = str(
-  "Bundle id or name of the target app, e.g. `com.apple.Safari` or `Safari`.",
+  "The target app as a display name, bundle id, or full app path — e.g. `Safari` or `com.apple.Safari`. The app does not need to be running: reading its state launches it.",
 );
 const ELEMENT_INDEX = int(
   "Index of the target element, from the accessibility tree returned by `get_app_state`.",
@@ -63,7 +63,7 @@ export const SKY_TOOLS: readonly SkyToolDefinition[] = [
     method: "list_apps",
     takesArgs: false,
     description:
-      "List the apps on this Mac — those running now plus those used recently, with usage counts. Use this first to resolve an app's bundle id.",
+      "List the apps on this Mac — those running now plus those used recently, with usage counts. Use this to DISCOVER what is available; do not call it just to resolve an identifier for an app you can already name, and do not call it to launch one. If an action fails against a display name, retry with that app's bundle id from here before debugging anything else.",
     inputSchema: object({}, []),
   },
   {
@@ -71,7 +71,7 @@ export const SKY_TOOLS: readonly SkyToolDefinition[] = [
     method: "get_app_state",
     takesArgs: true,
     description:
-      "Read an app's current state: a screenshot URL plus its accessibility tree as text. Call this before interacting, and again after actions that change the UI — element indexes come from here and are only valid for the state that produced them.",
+      "Read an app's current state: a screenshot URL plus its accessibility tree as text. Call this before interacting, and again after actions that change the UI — element indexes come from here and are only valid for the state that produced them. By default the tree is a DIFF against the previous read of this app (only what was added, removed, or changed); set `disableDiff` when you need the whole tree again, including after any read whose text you did not use. No pause is needed after an action: the runtime waits for the UI to settle before capturing.",
     inputSchema: object(
       {
         app: APP,
@@ -111,7 +111,7 @@ export const SKY_TOOLS: readonly SkyToolDefinition[] = [
     method: "type_text",
     takesArgs: true,
     description:
-      "Type text into the app's focused element, as keystrokes. Focus the target first (usually by clicking it).",
+      "Type text into the app's focused element, as keystrokes. Focus the target first (usually by clicking it). A newline in the text is typed as Return, which most composers and forms treat as send or submit — use `paste` for multiline content instead.",
     inputSchema: object({ app: APP, text: str("The literal text to type.") }, ["app", "text"]),
   },
   {
@@ -119,7 +119,7 @@ export const SKY_TOOLS: readonly SkyToolDefinition[] = [
     method: "press_key",
     takesArgs: true,
     description:
-      "Press a key or key combination, e.g. `Return`, `Escape`, `cmd+a`. Use this for shortcuts and navigation rather than typing control characters.",
+      "Press a key or key combination in xdotool syntax — `Return`, `Tab`, `super+c` (Command), `Up`, `KP_0`. Targets this app, so it cannot invoke global shortcuts. Use it for shortcuts and navigation rather than typing control characters.",
     inputSchema: object({ app: APP, key: str("Key or combination to press.") }, ["app", "key"]),
   },
   {
@@ -127,7 +127,7 @@ export const SKY_TOOLS: readonly SkyToolDefinition[] = [
     method: "paste",
     takesArgs: true,
     description:
-      "Paste content into the app. Much faster and more reliable than `type_text` for anything long, and the only way to insert markdown or HTML.",
+      "Paste content into the app. Much faster and more reliable than `type_text` for anything long or multiline, and the only way to insert markdown or HTML. It uses the system pasteboard and restores whatever the user had on it afterwards.",
     inputSchema: object(
       {
         app: APP,
