@@ -232,65 +232,66 @@ function RowIcon(props: { readonly src?: string; readonly alt: string }) {
   );
 }
 
-function ResultRow(props: { readonly row: Row }) {
+function ResultCard(props: { readonly row: Row }) {
   const { row } = props;
   return (
     <div
       data-testid={row.testId}
-      className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-accent/40"
+      className="flex flex-col gap-2.5 rounded-lg border border-border/60 p-4 transition-colors hover:border-border hover:bg-accent/20"
     >
-      <span className="flex size-8 shrink-0 items-center justify-center">
-        <RowIcon {...(row.iconUrl ? { src: row.iconUrl } : {})} alt={row.title} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{row.title}</span>
-          {row.domain ? (
-            <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground/70">
-              {row.domain}
-            </span>
-          ) : null}
+      <div className="flex items-start justify-between gap-2">
+        <span className="flex size-8 shrink-0 items-center justify-center">
+          <RowIcon {...(row.iconUrl ? { src: row.iconUrl } : {})} alt={row.title} />
         </span>
-        {row.description ? (
-          <span className="block truncate text-xs text-muted-foreground">{row.description}</span>
-        ) : null}
-      </span>
-      <span className="flex shrink-0 items-center gap-1.5">
         {row.added ? (
-          <span className="flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
+          <span className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-muted-foreground">
             <CheckIcon className="size-3.5" aria-hidden />
             Added
           </span>
         ) : row.busy ? (
-          <span className="px-2 text-xs text-muted-foreground">Adding…</span>
+          <span className="px-2 py-1.5 text-xs text-muted-foreground">Adding…</span>
         ) : (
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={row.onSelect}
-            // Every row's button reads "Add", so the visible label alone is
-            // useless to a screen reader; the accessible name carries the row.
+            // Every card's button reads "Add", so the visible label alone is
+            // useless to a screen reader; the accessible name carries the card.
             aria-label={`Add ${row.title}`}
           >
             Add
           </Button>
         )}
-      </span>
+      </div>
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-foreground">{row.title}</p>
+        {row.domain ? (
+          <p className="truncate font-mono text-[11px] text-muted-foreground/70">{row.domain}</p>
+        ) : null}
+      </div>
+      {row.description ? (
+        <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+          {row.description}
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function RowSkeleton(props: { readonly index: number }) {
+function CardSkeleton(props: { readonly index: number }) {
   const { index } = props;
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5">
-      <Skeleton className="size-8 shrink-0 rounded-md" />
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <Skeleton className="h-3.5" style={{ width: `${20 + ((index * 11) % 20)}%` }} />
-        <Skeleton className="h-3" style={{ width: `${45 + ((index * 13) % 30)}%` }} />
+    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 p-4">
+      <div className="flex items-start justify-between gap-2">
+        <Skeleton className="size-8 rounded-md" />
+        <Skeleton className="h-8 w-16 rounded-md" />
       </div>
-      <Skeleton className="h-8 w-16 rounded-md" />
+      <div className="space-y-1.5">
+        <Skeleton className="h-3.5" style={{ width: `${40 + ((index * 11) % 30)}%` }} />
+        <Skeleton className="h-3" style={{ width: `${55 + ((index * 13) % 30)}%` }} />
+      </div>
+      <Skeleton className="h-3" style={{ width: `${70 + ((index * 7) % 25)}%` }} />
     </div>
   );
 }
@@ -719,9 +720,9 @@ export function IntegrationBrowsePage() {
       ) : null}
 
       {loading ? (
-        <div className="flex flex-col gap-1">
-          {Array.from({ length: 8 }).map((_, index) => (
-            <RowSkeleton key={index} index={index} />
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 9 }).map((_, index) => (
+            <CardSkeleton key={index} index={index} />
           ))}
         </div>
       ) : results.length === 0 ? (
@@ -731,22 +732,20 @@ export function IntegrationBrowsePage() {
             : "Nothing matches that. Paste the URL of an MCP server, OpenAPI spec, or GraphQL endpoint to add it directly."}
         </p>
       ) : (
-        <div className="flex flex-col gap-0.5">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {results.map((row) => (
-            <ResultRow key={row.key} row={row} />
+            <ResultCard key={row.key} row={row} />
           ))}
           {catalog.loadingMore
             ? Array.from({ length: 3 }, (_, index) => (
-                <div key={`more-${index}`} className="flex items-center gap-3 px-3 py-2.5">
-                  <Skeleton className="size-8 shrink-0 rounded-md" />
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <Skeleton className="h-3.5 w-40" />
-                    <Skeleton className="h-3 w-64" />
-                  </div>
-                </div>
+                <CardSkeleton key={`more-${index}`} index={index} />
               ))
             : null}
-          {catalog.hasMore ? <LoadMoreSentinel onVisible={catalog.loadMore} /> : null}
+          {catalog.hasMore ? (
+            <div className="col-span-full">
+              <LoadMoreSentinel onVisible={catalog.loadMore} />
+            </div>
+          ) : null}
         </div>
       )}
 
