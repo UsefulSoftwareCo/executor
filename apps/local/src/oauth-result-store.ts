@@ -29,26 +29,34 @@ const RESULT_TTL_MS = 10 * 60 * 1000; // 10 minutes — long enough for slow MFA
 const store = new Map<string, StoredResult>();
 
 /**
- * Long-poll waiters, keyed by sessionId. Each entry is a wake callback for
- * one held `/api/oauth/await/:sessionId` request. `publishOAuthResult` wakes
- * every waiter for the session; each waker runs `consumeOAuthResult`, so the
- * store's one-shot semantics decide which request receives the result (the
- * rest see null, which clients treat as "still pending").
+ * Long-poll waiters, keyed by sessionId. Each entry is the wake callback for
+ * the single held `/api/oauth/await/:sessionId` request for that session.
+ * `publishOAuthResult` wakes the waiter, which runs `consumeOAuthResult` and
+ * answers with the result.
+ *
+ * Held waiters are bounded — each pins a connection, a registry entry, and a
+ * deadline timer, and the route only needs a bearer, so unbounded holds are a
+ * DoS surface. At most one waiter is held per session (the patched client
+ * polls sequentially; an unpatched client polling every second would
+ * otherwise stack ~25 holds per flow against a 25s deadline), and at most
+ * `MAX_HELD_WAITERS_TOTAL` across all sessions. Over either bound,
+ * `waitForOAuthResult` degrades to the pre-long-poll behavior: it answers the
+ * current store value immediately (null = still pending) instead of holding,
+ * so over-cap callers see exactly what an old server would have sent.
  */
-const waiters = new Map<string, Set<() => void>>();
+const MAX_HELD_WAITERS_TOTAL = 64;
+
+const waiters = new Map<string, () => void>();
 
 const removeWaiter = (sessionId: string, wake: () => void): void => {
-  const pending = waiters.get(sessionId);
-  if (!pending) return;
-  pending.delete(wake);
-  if (pending.size === 0) waiters.delete(sessionId);
+  if (waiters.get(sessionId) === wake) waiters.delete(sessionId);
 };
 
-const wakeWaiters = (sessionId: string): void => {
-  const pending = waiters.get(sessionId);
-  if (!pending) return;
+const wakeWaiter = (sessionId: string): void => {
+  const wake = waiters.get(sessionId);
+  if (!wake) return;
   waiters.delete(sessionId);
-  for (const wake of pending) wake();
+  wake();
 };
 
 const cleanupExpired = (now: number) => {
@@ -67,7 +75,7 @@ export const publishOAuthResult = (result: AnyResult): void => {
   const now = Date.now();
   cleanupExpired(now);
   store.set(sessionId, { result, expiresAt: now + RESULT_TTL_MS });
-  wakeWaiters(sessionId);
+  wakeWaiter(sessionId);
 };
 
 /**
@@ -90,6 +98,10 @@ export const consumeOAuthResult = (sessionId: string): AnyResult | null => {
  * The latter two resolve `null` — the same "still pending" answer an
  * immediate poll gives — so the caller's retry loop keeps working. A
  * waiter that times out or aborts is always removed from the registry.
+ *
+ * Holding is bounded (see the waiter registry above): when the session
+ * already has a held waiter, or the global held-waiter ceiling is reached,
+ * this answers `null` immediately instead of holding.
  */
 export const waitForOAuthResult = (
   sessionId: string,
@@ -98,6 +110,9 @@ export const waitForOAuthResult = (
   const immediate = consumeOAuthResult(sessionId);
   if (immediate !== null) return Promise.resolve(immediate);
   if (opts.timeoutMs <= 0 || opts.signal?.aborted === true) return Promise.resolve(null);
+  if (waiters.has(sessionId) || waiters.size >= MAX_HELD_WAITERS_TOTAL) {
+    return Promise.resolve(null);
+  }
 
   return new Promise((resolve) => {
     let done = false;
@@ -113,9 +128,7 @@ export const waitForOAuthResult = (
     const onAbort = () => finish(null);
     const timer = setTimeout(() => finish(null), opts.timeoutMs);
 
-    const pending = waiters.get(sessionId) ?? new Set<() => void>();
-    pending.add(wake);
-    waiters.set(sessionId, pending);
+    waiters.set(sessionId, wake);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 };
@@ -123,9 +136,12 @@ export const waitForOAuthResult = (
 /** Test-only — clears the store and resolves any held waiters as pending. */
 export const __resetOAuthResultStoreForTests = (): void => {
   store.clear();
-  for (const sessionId of [...waiters.keys()]) wakeWaiters(sessionId);
+  for (const sessionId of [...waiters.keys()]) wakeWaiter(sessionId);
 };
 
-/** Test-only — number of held long-poll waiters for a sessionId. */
+/** Test-only — number of held long-poll waiters for a sessionId (0 or 1). */
 export const __oauthAwaitWaiterCountForTests = (sessionId: string): number =>
-  waiters.get(sessionId)?.size ?? 0;
+  waiters.has(sessionId) ? 1 : 0;
+
+/** Test-only — total held long-poll waiters across all sessions. */
+export const __oauthAwaitHeldWaiterTotalForTests = (): number => waiters.size;

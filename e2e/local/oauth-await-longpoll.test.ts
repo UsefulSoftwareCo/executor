@@ -9,14 +9,17 @@
 // The journey, against a real `executor web` boot:
 //
 //   1. `oauth.start` a connect → the await sessionId (= `started.state`).
-//   2. Issue TWO await requests BEFORE the provider callback. Both must be
-//      held open — a pre-long-poll server answers `null` immediately, which
-//      this scenario rejects explicitly.
+//   2. Issue an await BEFORE the provider callback. It must be held open — a
+//      pre-long-poll server answers `null` immediately, which this scenario
+//      rejects explicitly. A SECOND await for the same session must answer
+//      `null` instantly instead of holding: held waiters are capped at one
+//      per session, so an unpatched 1s-interval client degrades to exactly
+//      the old poll behavior instead of stacking held connections.
 //   3. Complete the provider consent and land the REAL `/api/oauth/callback`
 //      redirect (the path that publishes the result and wakes waiters).
-//   4. Both held requests resolve promptly (well under the old 1s poll tick).
-//      Exactly ONE carries the ok result; the other answers `null` — still
-//      pending — pinning single-consumer delivery of the one-shot result.
+//   4. The held request resolves promptly (well under the old 1s poll tick)
+//      and carries the ok result — single-consumer delivery of the one-shot
+//      result.
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -167,13 +170,11 @@ scenario(
           // renderer passes to openOAuthSystemBrowser.
           const sessionId = started.state;
 
-          // -- 2. Await BEFORE the callback: the requests must be held. ------
-          const firstAwait = issueAwait(server, sessionId);
-          const secondAwait = issueAwait(server, sessionId);
+          // -- 2. Await BEFORE the callback: the request must be held. -------
+          const heldAwait = issueAwait(server, sessionId);
           const observed = yield* Effect.promise(() =>
             Promise.race([
-              firstAwait.then(() => "answered" as const),
-              secondAwait.then(() => "answered" as const),
+              heldAwait.then(() => "answered" as const),
               new Promise<"held">((resolve) =>
                 setTimeout(() => resolve("held"), HELD_OBSERVATION_MS),
               ),
@@ -183,6 +184,28 @@ scenario(
             observed,
             "an await issued mid-flow is held open, not answered null immediately (the pre-long-poll behavior)",
           ).toBe("held");
+
+          // A second await while one is already held: over the one-per-session
+          // cap, so it answers null instantly — the pre-long-poll behavior an
+          // unpatched 1s-interval client relies on — instead of stacking a
+          // held connection.
+          const overCap = yield* Effect.promise(() =>
+            Promise.race([
+              issueAwait(server, sessionId),
+              new Promise<"held">((resolve) =>
+                setTimeout(() => resolve("held"), HELD_OBSERVATION_MS),
+              ),
+            ]),
+          );
+          expect(overCap, "an over-cap await answers immediately instead of holding").not.toBe(
+            "held",
+          );
+          if (overCap === "held") return yield* Effect.die("over-cap await was held");
+          expect(overCap.status, "an over-cap await answers 200 like an immediate poll").toBe(200);
+          expect(
+            overCap.body,
+            "an over-cap await answers null — still pending — exactly like the old server",
+          ).toBeNull();
 
           // -- 3. Complete consent and land the real callback redirect. ------
           const redirected = yield* resolveProviderConsent(started.authorizationUrl);
@@ -207,21 +230,15 @@ scenario(
             "Connected",
           );
 
-          // -- 4. Both held requests answer promptly; one carries the result.
-          const answers = yield* Effect.promise(() => Promise.all([firstAwait, secondAwait]));
-          for (const answer of answers) {
-            expect(answer.status, "a held await answers 200 like an immediate poll").toBe(200);
-          }
-          const delivered = answers.filter((answer) => answer.body !== null);
-          expect(delivered, "exactly one await receives the one-shot result").toHaveLength(1);
-          expect(delivered[0]?.body).toMatchObject({ ok: true, sessionId });
+          // -- 4. The held request answers promptly with the one-shot result.
+          const answer = yield* Effect.promise(() => heldAwait);
+          expect(answer.status, "a held await answers 200 like an immediate poll").toBe(200);
           expect(
-            answers.filter((answer) => answer.body === null),
-            "the other await answers null — still pending — so a retrying client keeps working",
-          ).toHaveLength(1);
+            answer.body,
+            "the held await receives the one-shot result the callback published",
+          ).toMatchObject({ ok: true, sessionId });
 
-          const lastSettledAt = Math.max(...answers.map((answer) => answer.settledAt));
-          const sinceCallback = lastSettledAt - callbackCompletedAt;
+          const sinceCallback = answer.settledAt - callbackCompletedAt;
           // Console output is swallowed by the runner, so park the measured
           // timings in the run dir as reviewable evidence.
           writeFileSync(

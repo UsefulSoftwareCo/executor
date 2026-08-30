@@ -7,6 +7,7 @@ import { OAUTH_POPUP_MESSAGE_TYPE, type OAuthPopupResult } from "@executor-js/sd
 
 import { acquireDataDirOwnership } from "./db/data-dir-ownership";
 import {
+  __oauthAwaitHeldWaiterTotalForTests,
   __oauthAwaitWaiterCountForTests,
   __resetOAuthResultStoreForTests,
   consumeOAuthResult,
@@ -298,6 +299,47 @@ describe("startServer OAuth await long-poll", () => {
     // The dead waiter must not consume a result published afterwards.
     publishOAuthResult(awaitResult("session-gone"));
     expect(consumeOAuthResult("session-gone")).toMatchObject({ sessionId: "session-gone" });
+  });
+
+  it("holds one request per session; stacked requests answer null instantly and one consumer wins", async () => {
+    // The mixed-version rollout hazard: an unpatched desktop client polls
+    // every second and would stack ~25 concurrent requests per flow against
+    // a holding server. Only the first request may hold — the rest must get
+    // the pre-long-poll instant "still pending" answer.
+    const baseUrl = await startTestServer();
+
+    const held = fetch(`${baseUrl}/api/oauth/await/session-stacked`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    // Deterministic ordering: the first request is registered before any
+    // stacked request is issued.
+    await untilWaiterCount("session-stacked", 1);
+
+    const stacked = await Promise.all(
+      [1, 2, 3].map(() =>
+        fetch(`${baseUrl}/api/oauth/await/session-stacked`, {
+          headers: { authorization: `Bearer ${TOKEN}` },
+        }),
+      ),
+    );
+    // The stacked requests settled BEFORE any publish — instant null answers,
+    // not held connections.
+    for (const response of stacked) {
+      expect(response.status).toBe(200);
+      expect(await response.json()).toBeNull();
+    }
+    expect(__oauthAwaitWaiterCountForTests("session-stacked")).toBe(1);
+    expect(__oauthAwaitHeldWaiterTotalForTests()).toBe(1);
+
+    publishOAuthResult(awaitResult("session-stacked"));
+    const response = await held;
+    // Exactly one consumer overall receives the one-shot result: the held
+    // request. Nothing is left behind for a later poll.
+    expect(await response.json()).toMatchObject({ sessionId: "session-stacked" });
+    expect(consumeOAuthResult("session-stacked")).toBeNull();
+    // The registry drains completely — no leaked waiters.
+    expect(__oauthAwaitWaiterCountForTests("session-stacked")).toBe(0);
+    expect(__oauthAwaitHeldWaiterTotalForTests()).toBe(0);
   });
 });
 

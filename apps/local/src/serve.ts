@@ -467,6 +467,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         // client wait for its next poll tick. On deadline (or client
         // disconnect) answer null — "still pending" — so the client's outer
         // retry loop reconnects. `idleTimeout: 0` above permits the hold.
+        // Holds are bounded (one per session, small global cap — see
+        // oauth-result-store.ts); over-cap requests answer immediately with
+        // the current store value, i.e. the pre-long-poll poll behavior.
         const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(url.pathname);
         if (awaitMatch && req.method === "GET") {
           const result = await waitForOAuthResult(awaitMatch[1], {
