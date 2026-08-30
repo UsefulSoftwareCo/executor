@@ -1,5 +1,44 @@
 # executor
 
+## 1.6.4
+
+### Patch Changes
+
+- [#1858](https://github.com/UsefulSoftwareCo/executor/pull/1858) [`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add locally installed OpenAI Codex plugins as one-click integrations: Messages
+  (iMessage/SMS), Chrome, Computer Use, Computer History, and OpenAI Developer
+  Docs. They appear in the connect dialog with their own icons, and a card that
+  cannot run yet says what to install and links to it.
+
+  Tool calls reach the plugins through `codex app-server` rather than a plugin's
+  own MCP server, because their services only honour calls from a Codex host
+  session. Computer Use and Chrome ship no MCP server at all, so their APIs are
+  projected as typed tools — `list_apps`, `click`, `read_page`, `navigate` — that
+  compile to a single call each. No model turn is involved; nothing is bundled or
+  downloaded, and a machine without Codex simply sees the setup steps.
+
+  A plugin's own approval prompt now reaches the caller, and states the terms it
+  carries: a browser prompt that persists for a site says so. Approvals are asked
+  once per session rather than per call.
+
+  Elicitation requests can carry implementation-defined metadata through
+  `FormElicitation` / `UrlElicitation`, and a paused execution reports it. Both
+  fields are optional and additive.
+
+- [#1477](https://github.com/UsefulSoftwareCo/executor/pull/1477) [`c0c7a0d`](https://github.com/UsefulSoftwareCo/executor/commit/c0c7a0db41623077ba8b7d09de5ef8ee8e6a99e3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Stop exporting credential-bearing URLs in telemetry. Every query parameter
+  value, URL fragment, and userinfo component is stripped from exported span
+  URLs — no parameter name is trusted — on every exporter path: the cloud span
+  processors, the self-host OTLP exporter, the browser client's OTLP exporter,
+  and the forwarded browser trace batches. User-supplied MCP endpoints are
+  sanitized before being stamped onto spans.
+
+- [#1841](https://github.com/UsefulSoftwareCo/executor/pull/1841) [`d13151a`](https://github.com/UsefulSoftwareCo/executor/commit/d13151ac19453f11b40c7f49303a10854c66e464) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - 1Password: multiple named accounts. The provider now holds any number of named accounts — a work account next to a personal one, or a service-account token next to desktop-app biometrics — each scoping its own set of vaults. The settings card lists every account with independent edit and disconnect, existing single-account configs upgrade in place, and `op://` refs keep their vault-first addressing: a vault name that exists in more than one account is an explicit ambiguity error, never a silent pick.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/local@1.6.4
+  - @executor-js/api@1.4.67
+  - @executor-js/runtime-quickjs@1.6.4
+
 ## 1.6.3
 
 ### Patch Changes

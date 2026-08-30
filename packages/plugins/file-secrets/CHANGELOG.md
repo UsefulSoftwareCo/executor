@@ -1,5 +1,14 @@
 # @executor-js/plugin-file-secrets
 
+## 1.6.4
+
+### Patch Changes
+
+- [#1838](https://github.com/UsefulSoftwareCo/executor/pull/1838) [`939b96f`](https://github.com/UsefulSoftwareCo/executor/commit/939b96f694a420cd6151c4e402cff7f1ab4b327a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Import plugin-authoring symbols from `@executor-js/sdk/core` instead of the package root. The published root is the Promise surface and does not export `StorageError`, `definePlugin`, `PluginCtx`, or `Plugin`, so both packages failed to load when installed from npm.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+
 ## 1.6.3
 
 ### Patch Changes

@@ -1,5 +1,43 @@
 # @executor-js/plugin-mcp
 
+## 1.6.4
+
+### Patch Changes
+
+- [#1858](https://github.com/UsefulSoftwareCo/executor/pull/1858) [`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add locally installed OpenAI Codex plugins as one-click integrations: Messages
+  (iMessage/SMS), Chrome, Computer Use, Computer History, and OpenAI Developer
+  Docs. They appear in the connect dialog with their own icons, and a card that
+  cannot run yet says what to install and links to it.
+
+  Tool calls reach the plugins through `codex app-server` rather than a plugin's
+  own MCP server, because their services only honour calls from a Codex host
+  session. Computer Use and Chrome ship no MCP server at all, so their APIs are
+  projected as typed tools — `list_apps`, `click`, `read_page`, `navigate` — that
+  compile to a single call each. No model turn is involved; nothing is bundled or
+  downloaded, and a machine without Codex simply sees the setup steps.
+
+  A plugin's own approval prompt now reaches the caller, and states the terms it
+  carries: a browser prompt that persists for a site says so. Approvals are asked
+  once per session rather than per call.
+
+  Elicitation requests can carry implementation-defined metadata through
+  `FormElicitation` / `UrlElicitation`, and a paused execution reports it. Both
+  fields are optional and additive.
+
+- [#1818](https://github.com/UsefulSoftwareCo/executor/pull/1818) [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84) Thanks [@ramarivera](https://github.com/ramarivera)! - **Rejected MCP OAuth grants now request reconnect without registering a disposable client**
+
+  Remote MCP catalog discovery used the MCP SDK's interactive OAuth fallback when an upstream rejected Executor's stored bearer with `401`. A background refresh cannot finish that browser authorization, but the SDK first fetched OAuth metadata and dynamically registered another client. Executor then preserved the old catalog under a generic degraded health verdict, so clients saw zero or stale tools without a reliable reconnect signal.
+
+  Executor now stops at the authenticated HTTP boundary for OAuth-backed MCP transports. A rejected stored bearer becomes a structured reauthorization result before OAuth discovery or Dynamic Client Registration runs. Catalog refresh still preserves the last authoritative tools, but records the connection as expired with a reconnect-required detail so the UI and API can direct the user through authorization again.
+
+  API-key and unauthenticated MCP transports keep their existing `401` behavior, and ordinary incomplete discovery results remain degraded.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`9dcfaa5`](https://github.com/UsefulSoftwareCo/executor/commit/9dcfaa5ee8ad2ebc17407caf94d8d4dcf55e3562), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/react@1.4.67
+  - @executor-js/api@1.4.67
+  - @executor-js/config@1.6.4
+
 ## 1.6.3
 
 ### Patch Changes

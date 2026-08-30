@@ -1,5 +1,23 @@
 # @executor-js/plugin-onepassword
 
+## 1.6.4
+
+### Patch Changes
+
+- [#1860](https://github.com/UsefulSoftwareCo/executor/pull/1860) [`2cad774`](https://github.com/UsefulSoftwareCo/executor/commit/2cad7745dea1afb9282c3888f4e9c59ce6fe4332) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **1Password-backed connections no longer pay a 1Password read on every tool call**
+
+  Each tool call resolves its connection's credential, and for 1Password-backed connections every resolution shelled out to the `op` CLI — roughly a second per call under desktop-app auth, multiplying the latency of every call several times over. The spawn was also synchronous, so one slow resolution (for example `op` waiting on a 1Password approval prompt) blocked the whole local server for every other request, with no timeout on that path.
+
+  Three changes:
+  - Successful resolutions are now served from memory for a short TTL (default 60s, `secretCacheTtlMs`). The cache keys by a fingerprint of the provider config, so editing or removing an account drops all cached secrets at once; not-found, ambiguity, and failure outcomes are never retained. Concurrent resolutions of the same ref share one backend read even with the TTL set to `0`.
+  - The `op` CLI now runs as an asynchronous spawn with a hard deadline (the plugin's existing `timeoutMs`), so a stuck `op` fails with the troubleshooting message instead of freezing the server. Auth reaches the child per spawn (service-account token via the environment, desktop account via `--account`) instead of through the previous backend's process-global token state.
+  - Services are memoized per auth identity, so the SDK fallback reuses one authenticated client instead of re-authenticating per resolution.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`9dcfaa5`](https://github.com/UsefulSoftwareCo/executor/commit/9dcfaa5ee8ad2ebc17407caf94d8d4dcf55e3562), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/react@1.4.67
+  - @executor-js/api@1.4.67
+
 ## 1.6.3
 
 ### Patch Changes
