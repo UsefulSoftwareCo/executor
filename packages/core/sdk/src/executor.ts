@@ -10,7 +10,6 @@ import {
   Option,
   Predicate,
   Ref,
-  Scheduler,
   Schema,
   Semaphore,
 } from "effect";
@@ -5817,28 +5816,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // handler at construction), so an abandoned read cannot
         // unhandled-reject; a fiber interrupted before it ever ran issues no
         // read at all.
-        // Launch order is STRUCTURAL, not scheduling-dependent. The dominant
-        // tool-row read is forked FIRST with `startImmediately: true` under
-        // `PreventSchedulerYield`: an immediate fork evaluates the child
-        // INLINE (`forkUnsafe` calls `child.evaluate` on the spot), and with
-        // the yield-prevention ref inherited at fork the child's run loop
-        // cannot insert a cooperative `yieldNow` mid-launch, so the child
-        // runs synchronously until its first genuine suspension — the
-        // driver-promise await, i.e. the read is ISSUED before the fork
-        // returns. The speculative reads are then forked plainly, which only
-        // schedules them on the fiber's dispatcher for the next tick. That
-        // makes dominant-before-speculative unconditional: without the
-        // guard, the fiber's operation budget (`MaxOpsBeforeYield`) can
-        // expire anywhere in this window, and the parked continuation queues
-        // BEHIND already-scheduled children — plain-forking the dominant (or
-        // forking it immediately but without `PreventSchedulerYield`) lets
-        // the speculative reads launch first whenever that boundary lands
-        // here. The cost of the ref is only that this one bounded read (one
-        // projected row) never cooperatively yields; the speculative
-        // children are forked OUTSIDE the provide, so their scheduling is
-        // untouched, and the dispatcher runs them whether or not this fiber
-        // ever suspends, so a synchronous parent path delays them by one
-        // tick but cannot starve them.
+        // Launch order is dominant-first by construction, best-effort under
+        // the scheduler. The dominant tool-row read is forked FIRST with
+        // `startImmediately: true`: an immediate fork evaluates the child
+        // INLINE (`forkUnsafe` calls `child.evaluate` on the spot), so the
+        // read is normally issued before the speculative forks below are
+        // even scheduled (a plain fork only queues its child on the
+        // dispatcher for the next tick). The one exception is deliberate: if
+        // the child's own operation budget (`MaxOpsBeforeYield`) expires
+        // inside the launch window, the inline segment parks and a
+        // speculative read may launch first. That reversal is materially
+        // free, so it is NOT suppressed: on a synchronous driver the reads
+        // serialize whichever order they start (same wall time), and on an
+        // asynchronous driver every read suspends at its first await and
+        // they overlap regardless of order. Suppressing the yield (a
+        // fiber-lifetime `PreventSchedulerYield`) is NOT an option here —
+        // the ref is inherited by everything the child runs and provably
+        // keeps effect timeouts from firing across CPU-bound stretches.
         const toolRowFiber = yield* Effect.forkChild(
           core.findFirst("tool", {
             where: (b: AnyCb) =>
@@ -5851,7 +5845,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             select: TOOL_INVOCATION_COLUMNS,
           }),
           { startImmediately: true },
-        ).pipe(Effect.provideService(Scheduler.PreventSchedulerYield, true));
+        );
         const policyRulesFiber = yield* Effect.forkChild(listActivePolicyRuleSet());
         const connectionRowFiber = yield* Effect.forkChild(
           findConnectionRow({
@@ -5957,22 +5951,26 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // the two run concurrently. Both start only after
           // `enforceApproval` above completes — a declined call must never
           // trigger the token refresh credential resolution can perform.
-          // Credential resolution is the dominant work here and must launch
-          // first, so it uses the same structural launch-order shape as the
-          // pre-approval forks above: an immediate fork under
-          // `PreventSchedulerYield` issues its first I/O inline before the
-          // plain integration-row fork is even scheduled, no matter where
-          // the fiber's operation budget expires. The integration fork
-          // is joined after `values`, so a credential resolution failure
-          // keeps dominating a storage failure exactly as it did when the
-          // reads were sequential (`Fiber.join` resumes with the credential
-          // fiber's exact Exit); on that failure path the integration fork
-          // is interrupted rather than joined, so a hung integration read
-          // cannot gate the credential error and a failed one is deliberately
-          // abandoned, never silently dropped as an unobserved value.
+          // Credential resolution is the dominant work here and launches
+          // first: an immediate fork evaluates it inline to its first
+          // suspension before the plain integration-row fork is even
+          // scheduled (best-effort — see the launch-order comment at the
+          // pre-approval forks for why the rare budget-yield reversal is
+          // accepted and why suppressing it is off the table: credential
+          // resolution runs extension-owned provider code, and a
+          // fiber-lifetime yield guard would disable the provider-call
+          // timeout across it and leak into the detached refresh fork). The
+          // integration fork is joined after `values`, so a credential
+          // resolution failure keeps dominating a storage failure exactly as
+          // it did when the reads were sequential (`Fiber.join` resumes with
+          // the credential fiber's exact Exit); on that failure path the
+          // integration fork is interrupted rather than joined, so a hung
+          // integration read cannot gate the credential error and a failed
+          // one is deliberately abandoned, never silently dropped as an
+          // unobserved value.
           const valuesFiber = yield* Effect.forkChild(resolveConnectionValues(connectionRow), {
             startImmediately: true,
-          }).pipe(Effect.provideService(Scheduler.PreventSchedulerYield, true));
+          });
           const integrationRowFiber = yield* Effect.forkChild(
             findIntegrationRow(parsed.integration),
           );
