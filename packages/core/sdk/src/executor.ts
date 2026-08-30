@@ -5396,30 +5396,41 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           try: () => ownedKeys(input.owner),
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
-        const existing = yield* core.findMany("tool_policy", {
-          where: byOwner(input.owner),
-        });
-        // Default placement is specificity-aware (below any more-specific
-        // rule), not top-of-list: a client that omits position — the UI when
-        // its policy list is stale, the API, an agent tool — must not have its
-        // broad rule silently shadow an existing narrow one.
-        const position = input.position ?? positionForNewPattern(input.pattern, existing);
-        const id = PolicyId.make(
-          `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+        // The read-decide-write (existing-row scan → specificity-aware
+        // position → create) runs inside ONE transaction so two concurrent
+        // policy creates can never interleave their scans and both commit a
+        // rule at the same position, or a create observe a torn sibling
+        // write. Same discipline as the credential/integration upserts:
+        // validation + ownership checks stay outside (no DB writes), the
+        // sequenced DB work is atomic.
+        return yield* transaction(
+          Effect.gen(function* () {
+            const existing = yield* core.findMany("tool_policy", {
+              where: byOwner(input.owner),
+            });
+            // Default placement is specificity-aware (below any more-specific
+            // rule), not top-of-list: a client that omits position — the UI
+            // when its policy list is stale, the API, an agent tool — must
+            // not have its broad rule silently shadow an existing narrow one.
+            const position = input.position ?? positionForNewPattern(input.pattern, existing);
+            const id = PolicyId.make(
+              `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+            );
+            const now = new Date();
+            const created = yield* core.create("tool_policy", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(id),
+              pattern: input.pattern,
+              action: input.action,
+              position,
+              created_at: now,
+              updated_at: now,
+            });
+            return rowToToolPolicy(created);
+          }),
         );
-        const now = new Date();
-        const created = yield* core.create("tool_policy", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          id: String(id),
-          pattern: input.pattern,
-          action: input.action,
-          position,
-          created_at: now,
-          updated_at: now,
-        });
-        return rowToToolPolicy(created);
       });
 
     const policiesUpdate = (
@@ -5433,20 +5444,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
         const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
-        const existing = yield* core.findFirst("tool_policy", { where });
-        if (!existing) {
-          return yield* new StorageError({
-            message: `Tool policy not found: ${input.id}`,
-            cause: undefined,
-          });
-        }
-        const set: Record<string, unknown> = { updated_at: new Date() };
-        if (input.pattern !== undefined) set.pattern = input.pattern;
-        if (input.action !== undefined) set.action = input.action;
-        if (input.position !== undefined) set.position = input.position;
-        yield* core.updateMany("tool_policy", { where, set });
-        const updated = yield* core.findFirst("tool_policy", { where });
-        return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
+        // Existence check → update → re-read inside ONE transaction: a
+        // concurrent update cannot interleave between the existence check and
+        // the write, so two racing updates both land (sequenced commits) and
+        // neither observes the other's torn state. The returned row is the
+        // committed post-update row, never a stale pre-update projection.
+        return yield* transaction(
+          Effect.gen(function* () {
+            const existing = yield* core.findFirst("tool_policy", { where });
+            if (!existing) {
+              return yield* new StorageError({
+                message: `Tool policy not found: ${input.id}`,
+                cause: undefined,
+              });
+            }
+            const set: Record<string, unknown> = { updated_at: new Date() };
+            if (input.pattern !== undefined) set.pattern = input.pattern;
+            if (input.action !== undefined) set.action = input.action;
+            if (input.position !== undefined) set.position = input.position;
+            yield* core.updateMany("tool_policy", { where, set });
+            const updated = yield* core.findFirst("tool_policy", { where });
+            return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
+          }),
+        );
       });
 
     const policiesRemove = (input: RemoveToolPolicyInput): Effect.Effect<void, StorageFailure> =>
