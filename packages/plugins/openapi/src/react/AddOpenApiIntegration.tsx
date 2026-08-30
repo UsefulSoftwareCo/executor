@@ -178,7 +178,16 @@ export default function AddOpenApiIntegration(props: {
   const integrationPlugins = useIntegrationPlugins();
   const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
   const openApiPresets = openApiPlugin?.presets;
-  const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
+  // A `?preset=` deep link is self-sufficient: the preset's own URL seeds the
+  // field. The connect dialog used to pass `&url=` alongside, which hid that
+  // this never worked on its own — preset links from agents and docs carry
+  // only the id.
+  const [specUrl, setSpecUrl] = useState(
+    () =>
+      props.initialUrl ??
+      openApiPresets?.find((preset) => preset.id === props.initialPreset)?.url ??
+      "",
+  );
   const [specOverridesDraft, setSpecOverridesDraft] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
