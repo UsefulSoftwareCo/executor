@@ -1,5 +1,7 @@
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 
+import { sha256Hex } from "@executor-js/sdk";
+
 import { ApiKeyManagementError } from "./errors";
 import { WorkOSClient } from "./workos";
 
@@ -277,6 +279,98 @@ const createdFromResponse = (value: unknown): CreatedApiKey | null =>
     },
   });
 
+// ---------------------------------------------------------------------------
+// Per-isolate validation cache.
+//
+// Every /mcp request and every api-key-authenticated /api/* request funnels
+// through `validate`, and each call is a live WorkOS round trip (~100-150ms).
+// The JWT bearer path beside it verifies locally against a JWKS cached for an
+// hour; api keys had no cache at all. This is the same bounded TTL map the
+// engine already uses for billing outcomes (engine/execution-gate.ts).
+//
+// Security shape, stated explicitly because this is auth code:
+//   - The map key is the SHA-256 digest of the presented key value, never the
+//     raw credential, so the map's keys cannot be reversed into a usable key.
+//     The digest reaches no log, span, or error message.
+//   - Only SUCCESSFUL validations are cached. An invalid key and an upstream
+//     failure always miss: an attacker probing bad keys cannot poison the map
+//     (the size bound alone handles memory), and a just-created key works
+//     immediately instead of waiting out a stale negative entry.
+//   - REVOCATION WINDOW: a revoked key keeps working for up to the TTL (60s)
+//     in any isolate that validated it before revocation. That is the price
+//     of the cache, and it is far tighter than the 1h JWKS rotation window
+//     the JWT path already accepts.
+//   - Concurrent misses for the same key each call WorkOS; there is no
+//     in-flight dedupe. The duplicate window is one round trip per key per
+//     TTL per isolate — exactly the cost EVERY request paid before this
+//     cache — and dedupe would add interruption-safety machinery (a
+//     cancelled leader must not strand its waiters) to auth-critical code.
+// ---------------------------------------------------------------------------
+
+const API_KEY_VALIDATION_CACHE_TTL_MS = 60_000;
+// Sweep guard so a long-lived isolate serving many keys can't grow the cache
+// map unbounded (mirrors BALANCE_CACHE_MAX_ENTRIES in execution-gate.ts).
+const API_KEY_VALIDATION_CACHE_MAX_ENTRIES = 10_000;
+
+export type ApiKeyValidate = (
+  value: string,
+) => Effect.Effect<ApiKeyOwner | null, ApiKeyValidationError>;
+
+/**
+ * Wrap a `validate` function with the per-isolate success cache described
+ * above. Exported for tests only — production use is the single instance the
+ * `ApiKeyService.WorkOS` layer builds, which lives in `boot` and is therefore
+ * constructed once per isolate.
+ *
+ * The `ttlMs` / `maxEntries` / `now` knobs exist so tests can exercise expiry
+ * and the size bound without waiting on wall time; production passes nothing.
+ */
+export const makeCachedApiKeyValidate = (
+  validate: ApiKeyValidate,
+  options?: {
+    readonly ttlMs?: number;
+    readonly maxEntries?: number;
+    readonly now?: () => number;
+  },
+): {
+  readonly validate: ApiKeyValidate;
+  /** Test seam: the digests currently cached, so tests can assert the raw
+   *  credential never appears as a map key. */
+  readonly cacheKeys: () => ReadonlyArray<string>;
+} => {
+  const ttlMs = options?.ttlMs ?? API_KEY_VALIDATION_CACHE_TTL_MS;
+  const maxEntries = options?.maxEntries ?? API_KEY_VALIDATION_CACHE_MAX_ENTRIES;
+  const now = options?.now ?? Date.now;
+  const cache = new Map<string, { readonly owner: ApiKeyOwner; readonly expiresAtMs: number }>();
+
+  const writeCache = (digest: string, owner: ApiKeyOwner, nowMs: number): void => {
+    if (cache.size >= maxEntries) {
+      for (const [key, entry] of cache) {
+        if (entry.expiresAtMs <= nowMs) cache.delete(key);
+      }
+      // Still saturated after dropping expired entries: reset rather than grow.
+      if (cache.size >= maxEntries) cache.clear();
+    }
+    cache.set(digest, { owner, expiresAtMs: nowMs + ttlMs });
+  };
+
+  return {
+    cacheKeys: () => [...cache.keys()],
+    validate: (value) =>
+      Effect.gen(function* () {
+        const digest = yield* sha256Hex(value);
+        const nowMs = now();
+        const cached = cache.get(digest);
+        if (cached && cached.expiresAtMs > nowMs) return cached.owner;
+        const owner = yield* validate(value);
+        // Cache only a resolved owner — see the block comment above for why
+        // null results and failures always stay misses.
+        if (owner) writeCache(digest, owner, nowMs);
+        return owner;
+      }),
+  };
+};
+
 export class ApiKeyService extends Context.Service<
   ApiKeyService,
   {
@@ -320,12 +414,15 @@ export class ApiKeyService extends Context.Service<
   static WorkOS = Layer.effect(this)(
     Effect.gen(function* () {
       const workos = yield* WorkOSClient;
+      // Built once with the boot layer, so the success cache is per-isolate.
+      const cachedValidate = makeCachedApiKeyValidate((value) =>
+        workos.validateApiKey(value).pipe(
+          Effect.map(ownerFromResponse),
+          Effect.mapError((cause) => new ApiKeyValidationError({ cause })),
+        ),
+      );
       return {
-        validate: (value: string) =>
-          workos.validateApiKey(value).pipe(
-            Effect.map(ownerFromResponse),
-            Effect.mapError((cause) => new ApiKeyValidationError({ cause })),
-          ),
+        validate: cachedValidate.validate,
         listUserKeys: ({ accountId, organizationId }) =>
           workos.listUserApiKeys(accountId, organizationId).pipe(
             Effect.map(listFromResponse),
