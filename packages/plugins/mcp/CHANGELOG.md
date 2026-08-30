@@ -1,5 +1,29 @@
 # @executor-js/plugin-mcp
 
+## 1.6.7
+
+### Patch Changes
+
+- [#1876](https://github.com/UsefulSoftwareCo/executor/pull/1876) [`75b3674`](https://github.com/UsefulSoftwareCo/executor/commit/75b3674136b44a2e43fb23eb7a058e7e51528527) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Let macOS ask before denying Codex plugins Automation access. The desktop app
+  and its bundled daemon are hardened-runtime signed without the Apple Events
+  entitlement, so tccd refused to even show the consent prompt: every Messages
+  call was denied silently, no Automation row was ever created in System
+  Settings, and the access check sat on "Checking…" for a full minute before
+  misreporting the hang as a failed start. The app and daemon are now signed
+  with `com.apple.security.automation.apple-events` and carry a usage
+  description, so the first call raises the real consent prompt and the grant
+  becomes visible in Privacy & Security → Automation.
+
+  The access check also stops waiting after 25 seconds and says what a hang
+  means — answer the permission prompt on screen, then check again — instead of
+  blaming the Codex install.
+
+- Updated dependencies [[`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322)]:
+  - @executor-js/sdk@1.6.7
+  - @executor-js/api@1.4.70
+  - @executor-js/config@1.6.7
+  - @executor-js/react@1.4.70
+
 ## 1.6.6
 
 ### Patch Changes

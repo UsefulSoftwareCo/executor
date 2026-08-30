@@ -1,5 +1,13 @@
 # @executor-js/sdk
 
+## 1.6.7
+
+### Patch Changes
+
+- [#1867](https://github.com/UsefulSoftwareCo/executor/pull/1867) [`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Faster dynamic tool calls: independent storage reads run concurrently**
+
+  Every dynamic tool call paid for its bookkeeping reads one at a time: first the tool row, then the active policy rules, then the connection row, and later the credential resolution followed by the integration row. Each read is a separate storage round-trip, so the serial chain added tens of milliseconds per call locally and more against a remote database. The reads are mutually independent, so they now run concurrently: the tool, policy, and connection reads overlap before approval, and credential resolution overlaps the integration read after approval. Approval enforcement still completes before credential resolution starts — a declined call never triggers a token refresh — and each read's failure still surfaces at the same point with the same error as before.
+
 ## 1.6.6
 
 ## 1.6.5

@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-onepassword",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/plugins/onepassword",
   "bugs": {
     "url": "https://github.com/UsefulSoftwareCo/executor/issues"

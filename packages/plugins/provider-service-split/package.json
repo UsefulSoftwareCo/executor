@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/plugin-provider-service-split",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "private": true,
   "type": "module",
   "exports": {

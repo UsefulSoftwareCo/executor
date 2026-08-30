@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/react",
-  "version": "1.4.69",
+  "version": "1.4.70",
   "private": true,
   "type": "module",
   "exports": {

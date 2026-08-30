@@ -1,5 +1,15 @@
 # @executor-js/cloudflare
 
+## 0.0.49
+
+### Patch Changes
+
+- Updated dependencies [[`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322)]:
+  - @executor-js/sdk@1.6.7
+  - @executor-js/api@1.4.70
+  - @executor-js/execution@1.6.7
+  - @executor-js/host-mcp@1.4.4
+
 ## 0.0.48
 
 ### Patch Changes
