@@ -9,9 +9,11 @@
 // outage once the old key is revoked. So the memo is keyed on a fingerprint
 // of exactly the binding values the layer captures at build: same
 // fingerprint -> reuse (one string compare per request), changed fingerprint
-// -> build fresh. The rebuild also resets the ApiKeyService validation cache
-// living inside the layer, which is required — a rotated key must not serve
-// cached validations.
+// -> build fresh. The ApiKeyService validation cache is NOT tied to the
+// runtime — its map is module-scope in api-keys.ts (shared with the /api/*
+// plane so revocation can invalidate it everywhere), so after a rotation its
+// remaining entries age out within the 60s TTL rather than dropping with the
+// rebuild.
 //
 // The superseded runtime is DROPPED, not disposed. `ManagedRuntime.dispose`
 // tears down the runtime's scope, and requests already in flight may still be

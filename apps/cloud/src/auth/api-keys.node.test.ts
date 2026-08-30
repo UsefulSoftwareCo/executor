@@ -1,8 +1,13 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeEach, describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { ApiKeyService } from "./api-keys";
+import { ApiKeyService, resetApiKeyValidationCacheForTest } from "./api-keys";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
+
+// Every case validates the same "test_key" value through the REAL layer, whose
+// success cache is module-scope — without a reset, one case's decoded owner
+// would be served to the next in place of its own stubbed response.
+beforeEach(() => resetApiKeyValidationCacheForTest());
 
 const stubWorkOS = (overrides: Partial<WorkOSClientService>) =>
   Layer.succeed(

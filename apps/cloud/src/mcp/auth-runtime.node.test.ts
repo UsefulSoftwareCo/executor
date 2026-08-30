@@ -1,7 +1,7 @@
-import { describe, expect, it } from "@effect/vitest";
+import { beforeEach, describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, ManagedRuntime } from "effect";
 
-import { ApiKeyService } from "../auth/api-keys";
+import { ApiKeyService, resetApiKeyValidationCacheForTest } from "../auth/api-keys";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import {
   makeBindingKeyedRuntime,
@@ -64,6 +64,11 @@ const bindings = (overrides?: Partial<McpAuthBindings>): McpAuthBindings => ({
 });
 
 describe("makeBindingKeyedRuntime", () => {
+  // The validation cache is module-scope in api-keys.ts, so it outlives both
+  // a test case and (deliberately) a runtime swap; reset it per case so each
+  // test observes only its own upstream calls.
+  beforeEach(() => resetApiKeyValidationCacheForTest());
+
   it.effect("reuses the runtime — and its validation cache — while bindings are unchanged", () =>
     Effect.gen(function* () {
       const { counters, runtimeFor, request } = makeCountingAuthRuntime();
@@ -80,7 +85,7 @@ describe("makeBindingKeyedRuntime", () => {
     }),
   );
 
-  it.effect("rebuilds a fresh runtime — resetting the validation cache — on a binding change", () =>
+  it.effect("rebuilds a fresh runtime on a binding change; cached validations survive", () =>
     Effect.gen(function* () {
       const { counters, runtimeFor, request } = makeCountingAuthRuntime();
 
@@ -88,11 +93,15 @@ describe("makeBindingKeyedRuntime", () => {
       yield* request("fingerprint_a");
       expect(counters.upstreamCalls).toBe(1);
 
-      // Rotated bindings: a fresh runtime (fresh ApiKeyService, empty cache),
-      // so the same key must be re-validated upstream.
+      // Rotated bindings: a fresh runtime and auth stack — but NOT a fresh
+      // validation cache. The cache map is module-scope (shared with the
+      // /api/* plane so revocation can invalidate it everywhere; see
+      // agent-handler.ts), so an already-validated key keeps hitting it and
+      // its entries age out within the TTL rather than dropping with the
+      // runtime.
       yield* request("fingerprint_b");
       expect(counters.builds).toBe(2);
-      expect(counters.upstreamCalls).toBe(2);
+      expect(counters.upstreamCalls).toBe(1);
       expect(runtimeFor("fingerprint_b")).not.toBe(before);
     }),
   );
@@ -105,8 +114,11 @@ describe("makeBindingKeyedRuntime", () => {
       yield* request("fingerprint_b");
       yield* request("fingerprint_a");
 
+      // Three runtime builds (the memo holds one entry), one upstream call:
+      // the module-scope validation cache serves the repeat validations
+      // across every swap.
       expect(counters.builds).toBe(3);
-      expect(counters.upstreamCalls).toBe(3);
+      expect(counters.upstreamCalls).toBe(1);
     }),
   );
 });

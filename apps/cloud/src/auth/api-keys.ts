@@ -332,6 +332,12 @@ type ApiKeyValidationCacheEntry = {
 // on the per-request plane at all.
 const isolateApiKeyValidationCache = new Map<string, ApiKeyValidationCacheEntry>();
 
+/** Test-only: module state outlives a single test case (mirrors
+ *  `resetBuildSlotsForTest` in mcp/session-build-semaphore.ts). */
+export const resetApiKeyValidationCacheForTest = (): void => {
+  isolateApiKeyValidationCache.clear();
+};
+
 export type ApiKeyValidate = (
   value: string,
 ) => Effect.Effect<ApiKeyOwner | null, ApiKeyValidationError>;
