@@ -137,4 +137,25 @@ describe("mcpAuthBindingsFingerprint", () => {
       mcpAuthBindingsFingerprint(bindings()),
     );
   });
+
+  it("never collides when a delimiter-like byte sits inside a value", () => {
+    // Bindings may contain any byte (workerd Text permits embedded NUL). A
+    // raw joined fingerprint would let a NUL inside one value shift the field
+    // boundary so two DIFFERENT binding sets collide — suppressing the
+    // rebuild a rotation requires. JSON encoding escapes every byte, so these
+    // two sets, which collide under a NUL join, must fingerprint differently.
+    const a = mcpAuthBindingsFingerprint(
+      bindings({
+        WORKOS_COOKIE_PASSWORD: "cookie\u0000https://old.example/path",
+        WORKOS_API_URL: "https://new.example",
+      }),
+    );
+    const b = mcpAuthBindingsFingerprint(
+      bindings({
+        WORKOS_COOKIE_PASSWORD: "cookie",
+        WORKOS_API_URL: "https://old.example/path\u0000https://new.example",
+      }),
+    );
+    expect(a).not.toBe(b);
+  });
 });

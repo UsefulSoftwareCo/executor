@@ -45,18 +45,24 @@ export type McpAuthBindings = Pick<
  * encoded as the empty string — the same "no override" the client resolves it
  * to (see `workosApiUrlOptions`).
  *
+ * JSON-encoded rather than delimiter-joined: bindings may contain any byte
+ * (workerd Text permits embedded NUL), so a raw join is not injective — a
+ * delimiter byte inside one value could make two different binding sets
+ * collide and suppress the rebuild a rotation requires. JSON escapes every
+ * byte, so distinct value tuples always produce distinct fingerprints.
+ *
  * Not included: the module-scope env reads in mcp/auth.ts (AUTHKIT_DOMAIN,
  * RESOURCE_ORIGIN, the JWKS cache, the JWT audience). Those are frozen at the
  * isolate's first module evaluation, so rebuilding the runtime cannot refresh
  * them — keying on them would force rebuilds that change nothing.
  */
 export const mcpAuthBindingsFingerprint = (env: McpAuthBindings): string =>
-  [
+  JSON.stringify([
     env.WORKOS_API_KEY,
     env.WORKOS_CLIENT_ID,
     env.WORKOS_COOKIE_PASSWORD,
     env.WORKOS_API_URL ?? "",
-  ].join("\u0000");
+  ]);
 
 /**
  * Memoize one built runtime per fingerprint value (holding only the latest):
