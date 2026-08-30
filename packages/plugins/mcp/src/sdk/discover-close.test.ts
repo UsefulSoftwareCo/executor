@@ -9,6 +9,7 @@ const discoveryClient = (): McpConnection["client"] =>
     listTools: () => Promise.resolve({ tools: [] }),
     getServerVersion: () => ({ name: "hanging-close", version: "1.0.0" }),
     getInstructions: () => undefined,
+    setRequestHandler: () => undefined,
   });
 
 const hangingCloseConnector = (state: { closeStarted: boolean }): McpConnector =>
