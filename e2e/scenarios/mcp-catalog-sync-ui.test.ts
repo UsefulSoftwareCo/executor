@@ -40,7 +40,7 @@ scenario(
           // The URL auto-probes (debounced); the method list appears once the
           // probe lands — an open server seeds the detected no-auth method.
           await page.getByText("How does this server authenticate?").waitFor();
-          await page.getByText("Method 1 · Detected").waitFor();
+          await page.getByText("No authentication · Detected").waitFor();
         });
 
         await step("Add the integration", async () => {

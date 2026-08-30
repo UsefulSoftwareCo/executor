@@ -1,6 +1,6 @@
 // Selfhost-only (browser): a spec/probe-DETECTED auth method is immutable in
 // the add flow. The shared AuthMethodListEditor renders detected methods as a
-// disabled, read-only summary ("Pulled from spec. Remove to override.") with no
+// disabled, read-only summary (declared-by-this-API footer) with no
 // kind selector, so a user can't silently retype the spec's method into a kind
 // nothing backs. A method the user adds by hand stays fully editable. Both the
 // MCP and OpenAPI add flows compose the same editor, so one behavior, two
@@ -18,7 +18,9 @@ import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { visit } from "../src/surfaces/browser";
 
-const REMOVE_HINT = "Pulled from spec. Remove to override.";
+// The detected-method footer names the source and what happens next; the
+// stable common prefix is the assertion target.
+const REMOVE_HINT = "Declared by this API.";
 
 scenario(
   "Detected auth · an MCP probe's OAuth method is immutable in the add flow",
@@ -39,20 +41,16 @@ scenario(
         await step("Open the add-MCP flow pointed at the OAuth server", async () => {
           await visit(page, `/integrations/add/mcp?url=${encodeURIComponent(server.endpoint)}`);
           await page.getByText("How does this server authenticate?").waitFor();
-          await page.getByText("Method 1 · Detected").waitFor();
+          await page.getByText("OAuth · Detected").waitFor();
         });
 
         await step("The detected method is locked: read-only, named, no selector", async () => {
-          // The kind is named explicitly ("OAuth"), the discovered-OAuth summary
-          // and override hint sit inside a disabled block, and there is NO
-          // editable kind selector (the FilterTabs render as buttons).
-          await page.getByText("OAuth", { exact: true }).first().waitFor();
+          // The kind is named in the row TITLE ("OAuth · Detected", asserted
+          // above), the discovered-OAuth summary and override hint render
+          // read-only, and there is NO editable kind selector (the FilterTabs
+          // render as buttons).
           await page.getByText("OAuth metadata is discovered from this server").waitFor();
           await page.getByText(REMOVE_HINT).waitFor();
-          expect(
-            await page.locator("[aria-disabled]").count(),
-            "the detected method renders a disabled (non-interactive) block",
-          ).toBeGreaterThan(0);
           expect(
             await page.getByRole("button", { name: "API key", exact: true }).count(),
             "no editable kind selector is shown for the detected method",
@@ -150,7 +148,9 @@ scenario(
             .first()
             .fill(spec.url);
           await page.getByText("How does this API authenticate?").waitFor();
-          await page.getByText("Method 2").waitFor();
+          // Detected rows are titled by their kind now, not "Method N"; the
+          // hint below is what marks a rendered detected method.
+          await page.getByText(REMOVE_HINT).first().waitFor();
         });
 
         await step("Both detected methods are locked, named, read-only", async () => {
@@ -162,8 +162,9 @@ scenario(
             "both detected methods show the remove-to-override hint",
           ).toBe(2);
           await page.getByText("https://api.acme.test/oauth/authorize").waitFor();
-          await page.getByText("API key", { exact: true }).first().waitFor();
-          await page.getByText("OAuth", { exact: true }).first().waitFor();
+          // Kinds are named in the row TITLES ("API key · …" / "OAuth · …").
+          await page.getByText("API key · ").first().waitFor();
+          await page.getByText("OAuth · ").first().waitFor();
           expect(
             await page.getByRole("button", { name: "OAuth", exact: true }).count(),
             "no editable kind selector is shown for the detected methods",

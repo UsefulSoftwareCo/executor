@@ -46,7 +46,7 @@ scenario(
         });
 
         await step("The probe seeded the detected method", async () => {
-          await page.getByText("Method 1 · Detected").waitFor();
+          await page.getByText("No authentication · Detected").waitFor();
         });
 
         await step("Declare an API key method alongside it", async () => {

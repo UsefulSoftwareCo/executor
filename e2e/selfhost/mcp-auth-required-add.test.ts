@@ -61,7 +61,7 @@ scenario(
           });
 
           await step("The probe seeded a detected Bearer-header method", async () => {
-            await page.getByText("Method 1 · Detected").waitFor();
+            await page.getByText("API key · Detected").waitFor();
             // The preview card flags the gate rather than failing the probe.
             await page.getByText("Auth required").first().waitFor();
           });
