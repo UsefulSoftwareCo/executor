@@ -25,7 +25,6 @@ import {
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
-import { PresetIcon } from "../components/preset-icon";
 import { groupIntegrations, type IntegrationFamilyGroup } from "../lib/integration-grouping";
 import { IntegrationHealthSummary } from "../components/integration-health-summary";
 import { IntegrationIconWithAccount } from "../components/integration-icon-with-account";
