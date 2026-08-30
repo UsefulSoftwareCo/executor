@@ -29,6 +29,13 @@ describe("extractArtifactRoles", () => {
     expect(roles).toEqual([{ role: "vercel", integration: "vercel" }]);
   });
 
+  it("reads a hyphenated integration from a bracket reference", () => {
+    const roles = extractArtifactRoles(
+      `useQuery(tools["cloudflare-bindings"].d1_database_query.queryOptions({ sql: "SELECT 1" }));`,
+    );
+    expect(roles).toEqual([{ role: "cloudflare-bindings", integration: "cloudflare-bindings" }]);
+  });
+
   it("collapses repeated references to one role", () => {
     const roles = extractArtifactRoles(
       `useQuery(tools.linear.issues.list.queryOptions({}));
@@ -104,6 +111,14 @@ describe("oldStyleAddressRejection", () => {
     expect(
       oldStyleAddressRejection(`useQuery(tools.inventory.org.main.listItems.queryOptions({}));`),
     ).toContain("tools.inventory.org.");
+  });
+
+  it("rejects a bracketed old-style address", () => {
+    expect(
+      oldStyleAddressRejection(
+        `useQuery(tools["cloudflare-bindings"].org.main.d1_database_query.queryOptions({}));`,
+      ),
+    ).toContain('tools["cloudflare-bindings"].org.');
   });
 
   it("accepts the short form", () => {

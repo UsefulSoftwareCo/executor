@@ -31,6 +31,16 @@ describe("execute-action tool-call grammar", () => {
       args: [{ query: "github issues", limit: 12 }],
     },
     {
+      label: "a hyphenated integration slug",
+      path: ["cloudflare-bindings", "d1_database_query"],
+      args: [{ database_id: "db", sql: "SELECT 1" }],
+    },
+    {
+      label: "a path segment requiring JSON escaping",
+      path: ["inventory", 'items"]; return await tools.evil.run({}); //'],
+      args: [{}],
+    },
+    {
       label: "an argument with a $ in an identifier-ish key",
       path: ["mongo", "org", "main", "find"],
       args: [{ filter: { $gt: 3 } }],
@@ -84,8 +94,7 @@ describe("execute-action tool-call grammar", () => {
 
   it("refuses to emit a path that would not parse", () => {
     expect(() => toolCallCode([], [])).toThrow("Invalid tool path.");
-    expect(() => toolCallCode(["github", "issues; drop"], [])).toThrow("Invalid tool path.");
-    expect(() => toolCallCode(["github", "1bad"], [])).toThrow("Invalid tool path.");
+    expect(() => toolCallCode(["github", ""], [])).toThrow("Invalid tool path.");
     expect(() => toolCallCode(["github", "issues"], [], "")).toThrow("Invalid tool role.");
   });
 
