@@ -9,7 +9,7 @@ import { integrationsOptimisticAtom } from "@executor-js/react/api/atoms";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { addIntegrationErrorMessage } from "@executor-js/react/lib/integration-add";
 
-import { addMcpServer, codexPluginsAtom } from "./atoms";
+import { addMcpServer, checkCodexPluginAccess, codexPluginsAtom } from "./atoms";
 import { CODEX_PERMISSIONS } from "../sdk/codex-permissions";
 
 // ---------------------------------------------------------------------------
@@ -28,8 +28,11 @@ export default function CodexPluginAdd(props: {
   const pluginsResult = useAtomValue(codexPluginsAtom);
   const integrationsResult = useAtomValue(integrationsOptimisticAtom);
   const doAddServer = useAtomSet(addMcpServer, { mode: "promiseExit" });
+  const doCheckAccess = useAtomSet(checkCodexPluginAccess, { mode: "promiseExit" });
 
   const [adding, setAdding] = useState(false);
+  const [access, setAccess] = useState<{ status: string; message?: string } | null>(null);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const plugin = AsyncResult.isSuccess(pluginsResult)
@@ -71,6 +74,22 @@ export default function CodexPluginAdd(props: {
       return;
     }
     props.onComplete(exit.value.slug);
+  };
+
+  const handleCheck = async () => {
+    setChecking(true);
+    setAccess(null);
+    // Runs the plugin's own read-only probe down the real path. When macOS has
+    // not asked yet, THIS is what makes it ask — so the check doubles as the
+    // grant flow.
+    // Reads nothing and writes nothing, so no cache is invalidated by it.
+    const exit = await doCheckAccess({ params: { id: props.presetId }, reactivityKeys: [] });
+    setAccess(
+      Exit.isSuccess(exit)
+        ? (exit.value as { status: string; message?: string })
+        : { status: "blocked", message: "Could not reach the plugin." },
+    );
+    setChecking(false);
   };
 
   if (!AsyncResult.isSuccess(pluginsResult)) {
@@ -169,6 +188,30 @@ export default function CodexPluginAdd(props: {
             macOS asks the first time this runs. If you miss the prompt, it will not ask again —
             enable it here.
           </p>
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void handleCheck()}
+              loading={checking}
+              disabled={!plugin.available}
+            >
+              Check access
+            </Button>
+            {access !== null && (
+              <span
+                className={
+                  access.status === "ok"
+                    ? "text-[12px] text-foreground"
+                    : "text-[12px] text-destructive"
+                }
+              >
+                {access.status === "ok"
+                  ? "Working — macOS is allowing this."
+                  : (access.message ?? "Blocked.")}
+              </span>
+            )}
+          </div>
           <ul className="flex flex-col gap-1.5">
             {permissions.map((permission) => (
               <li key={permission.id} className="flex items-baseline justify-between gap-3">

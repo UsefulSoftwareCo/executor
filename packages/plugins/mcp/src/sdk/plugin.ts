@@ -1378,6 +1378,82 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       // scanner touches node:fs, so it stays behind a dynamic import (the
       // stdio-connector pattern) and behind the stdio gate: with stdio off the
       // presets could not be added anyway.
+      /** Ask a Codex plugin whether macOS will actually let it work.
+       *
+       *  Runs the plugin's own read-only probe tool down the REAL path — the
+       *  same bridge, spawn, and service a live call uses — because that is
+       *  the only honest answer available. macOS exposes no way to read
+       *  another app's privacy decisions, and the grants here are split across
+       *  two identities (the host holds Automation; the Codex service holds
+       *  the rest), so nothing short of trying it can tell the user where they
+       *  stand. A denial is reported as the grant to enable.
+       *
+       *  Safe to run on demand: every probe tool is a listing or a status
+       *  read. If macOS has not yet asked, this is what makes it ask. */
+      const checkCodexPluginAccess = (id: string) =>
+        Effect.gen(function* () {
+          if (!allowStdio) return { status: "unsupported" as const };
+          const plugins = yield* listCodexPlugins();
+          const plugin = plugins.find((entry) => entry.id === id);
+          if (plugin === undefined) return { status: "unknown" as const };
+          if (!plugin.available) return { status: "not-installed" as const };
+
+          const mod = yield* Effect.promise(() => import("./codex-plugin-presets"));
+          const preset = mod.CURATED_CODEX_PLUGINS.find((entry) => entry.id === id);
+          const probe = preset?.probeTool;
+          if (probe === undefined) return { status: "nothing-to-check" as const };
+
+          const connector = createMcpConnector({
+            transport: "stdio",
+            command: plugin.command,
+            args: plugin.args,
+            env: plugin.env === undefined ? undefined : { ...plugin.env },
+            ...(plugin.appServer === undefined ? {} : { appServer: plugin.appServer }),
+          });
+
+          return yield* Effect.gen(function* () {
+            const connection = yield* connector;
+            const result = yield* Effect.tryPromise({
+              try: () => connection.client.callTool({ name: probe.name, arguments: probe.args }),
+              catch: () =>
+                new McpConnectionError({
+                  transport: "appserver",
+                  message: "The plugin did not answer.",
+                }),
+            }).pipe(Effect.ensuring(Effect.promise(() => connection.close())));
+
+            const text = (Array.isArray(result.content) ? result.content : [])
+              .map((block) => (block as { readonly text?: unknown }).text)
+              .filter((value): value is string => typeof value === "string")
+              .join(" ");
+            if (result.isError === true) {
+              return { status: "blocked" as const, message: text };
+            }
+            return { status: "ok" as const };
+          }).pipe(
+            // Any failure to even reach the plugin is reported the same way a
+            // refusal is: the user cares that it does not work and why, not
+            // which layer said no.
+            // Distinguish the two ways this can fail by TAG, not by reading a
+            // message off an unknown: the plugin refused, or we never reached
+            // it at all.
+            Effect.catchTags({
+              McpConnectionError: () =>
+                Effect.succeed({
+                  status: "blocked" as const,
+                  message:
+                    "Could not start the plugin. Check that Codex is installed and signed in.",
+                }),
+              McpOAuthReauthorizationRequired: () =>
+                Effect.succeed({
+                  status: "blocked" as const,
+                  message: "The plugin needs to be re-authorized in Codex.",
+                }),
+            }),
+            Effect.withSpan("mcp.plugin.check_codex_plugin_access"),
+          );
+        });
+
       const listCodexPlugins = () =>
         allowStdio
           ? Effect.promise(() => import("./codex-plugins")).pipe(
@@ -1395,6 +1471,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         configureServer,
         configureAuth,
         listCodexPlugins,
+        checkCodexPluginAccess,
       };
     },
 
@@ -1961,4 +2038,17 @@ export interface McpPluginExtension {
   /** Locally installed Codex plugins with stdio MCP servers, as one-click
    *  presets. Empty when stdio is disabled. */
   readonly listCodexPlugins: () => Effect.Effect<readonly CodexPluginEntry[], never>;
+  readonly checkCodexPluginAccess: (id: string) => Effect.Effect<
+    {
+      readonly status:
+        | "ok"
+        | "blocked"
+        | "not-installed"
+        | "nothing-to-check"
+        | "unknown"
+        | "unsupported";
+      readonly message?: string;
+    },
+    never
+  >;
 }

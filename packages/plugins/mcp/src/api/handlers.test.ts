@@ -31,6 +31,7 @@ const failingExtension: McpPluginExtension = {
   configureServer: () => unused,
   configureAuth: () => unused,
   listCodexPlugins: () => Effect.succeed([]),
+  checkCodexPluginAccess: () => Effect.succeed({ status: "unknown" as const }),
 };
 
 const Api = addGroup(McpGroup);

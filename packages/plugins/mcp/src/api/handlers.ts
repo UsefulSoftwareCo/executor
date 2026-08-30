@@ -182,6 +182,14 @@ export const McpHandlers = HttpApiBuilder.group(ExecutorApiWithMcp, "mcp", (hand
         }),
       ),
     )
+    .handle("checkCodexPluginAccess", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* McpExtensionService;
+          return yield* ext.checkCodexPluginAccess(params.id);
+        }),
+      ),
+    )
     .handle("getCodexPluginIcon", ({ params }) =>
       capture(
         Effect.gen(function* () {

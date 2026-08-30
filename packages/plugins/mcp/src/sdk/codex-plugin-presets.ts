@@ -18,6 +18,10 @@ export interface CuratedCodexPlugin {
   /** The MCP server name this plugin registers inside Codex — the `server`
    *  the app-server bridge calls tools against. */
   readonly server: string;
+  /** A read-only tool that exercises this plugin's macOS permissions, used to
+   *  CHECK access without changing anything. Chosen for having no side
+   *  effects: listing, reading status. Absent means nothing to check. */
+  readonly probeTool?: { readonly name: string; readonly args: Readonly<Record<string, unknown>> };
   /** A public image for this plugin, used when the machine-local icon cannot
    *  be read (i.e. Codex is not installed here). Only some plugins have one
    *  published; the rest fall back to the provider's mark. */
@@ -92,6 +96,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "messages",
     name: "Messages",
     slug: "codex_messages",
+    probeTool: { name: "find_chats", args: { limit: 1 } },
     // Served by the app itself (`packages/app/public`), because the Messages
     // app icon is published nowhere hotlinkable: it is a system app, absent
     // from the App Store artwork API, and `messages.apple.com` resolves to
@@ -107,6 +112,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-use",
     name: "Computer Use",
     slug: "codex_computer_use",
+    probeTool: { name: "list_apps", args: {} },
     publicIcon: "https://learn.chatgpt.com/images/codex/icons/computer-use-plugin-icon.png",
     requires: "computer-use-app",
     server: "node_repl",
@@ -121,6 +127,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "chrome",
     name: "Chrome",
     slug: "codex_chrome",
+    probeTool: { name: "list_tabs", args: {} },
     publicIcon: "https://learn.chatgpt.com/images/codex/icons/chrome-production-large.png",
     server: "node_repl",
     surface: "browser",
@@ -145,6 +152,7 @@ export const CURATED_CODEX_PLUGINS: readonly CuratedCodexPlugin[] = [
     pluginName: "computer-history",
     name: "Computer History",
     slug: "codex_computer_history",
+    probeTool: { name: "computer_history_status", args: {} },
     requires: "computer-use-app",
     server: "computer-history",
     summary:
