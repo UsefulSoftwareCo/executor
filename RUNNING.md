@@ -40,6 +40,30 @@ develop on its `main`, publish a bump, then bump the dependency here. The
 The e2e globalsetup files are the source of truth for "how do I boot a
 working instance of X" — read them before inventing a boot path.
 
+A desktop dev run collides with an INSTALLED Executor in three places, all of
+which look like something else. Give the dev run its own of each:
+
+```
+HOME=/tmp/executor-dev-home \
+EXECUTOR_DESKTOP_USER_DATA=/tmp/executor-desktop-dev-userdata \
+EXECUTOR_DESKTOP_SETTINGS_DIR=/tmp/executor-desktop-dev-settings \
+bun run dev
+```
+
+- **userData** holds Electron's single-instance lock, so the second process
+  quits at startup with **exit code 0 and no message** — the log simply stops
+  after "starting electron app".
+- **`~/.executor`** holds the sidecar's SQLite, taken by whoever opened it
+  first; the app reports "Failed to open local SQLite data". `HOME` moves it,
+  so symlink `.codex`, `.config` and friends into the fake home or anything
+  reading them (Codex plugins included) loses its state.
+- **The port** comes from `settings.json` in the settings dir; write
+  `{"server":{"port":<free>}}` there before the first launch.
+
+Renderer edits inside a workspace package can be served from vite's dep
+cache rather than the source the package exports. If a change does not appear
+after a reload, delete `apps/desktop/node_modules/.vite` and restart.
+
 ## E2E: running, viewing, sharing
 
 `e2e/AGENTS.md` covers writing scenarios. Operationally:
