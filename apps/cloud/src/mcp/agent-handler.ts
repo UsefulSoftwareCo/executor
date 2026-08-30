@@ -27,6 +27,7 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
+import { makeBindingKeyedRuntime, mcpAuthBindingsFingerprint } from "./auth-runtime";
 import { isMcpSessionMetaUnavailable } from "./session-meta";
 import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
@@ -135,16 +136,27 @@ const authenticate = (request: Request) =>
 // WorkOS client, `ApiKeyService` and with it the api-key validation success
 // cache — on every MCP request, so that cache never survived a request on this
 // plane (the /api/* plane resolves the same service from the app's `boot`
-// layer, built once per isolate). A lazily created ManagedRuntime (the
-// auth/doc-gate.ts pattern) builds `cloudMcpAuth` on the first request and
-// memoizes it for the isolate's lifetime; `runTraced` runs every program on it.
-// Nothing inside the layer is request-scoped: the WorkOS client holds no
-// sockets (just config), the JWKS cache is already module-scope, and
+// layer, built once per isolate). A lazily created ManagedRuntime builds
+// `cloudMcpAuth` on the first request and memoizes it; `runTraced` runs every
+// program on it. Nothing inside the layer is request-scoped: the WorkOS client
+// holds no sockets (just config), the JWKS cache is already module-scope, and
 // `McpOrganizationAuthLive` builds its postgres socket FRESH inside every
 // `authorize` call precisely so the service itself can outlive a request
 // (Cloudflare Workers' I/O isolation — see makeMcpOrganizationAuthServices).
-let mcpAuthRuntime: ManagedRuntime.ManagedRuntime<McpAuthProvider, never> | undefined;
-const getMcpAuthRuntime = () => (mcpAuthRuntime ??= ManagedRuntime.make(cloudMcpAuth));
+//
+// The memo is keyed on the WorkOS binding values the layer captures at build,
+// NOT held forever: Cloudflare reuses warm isolates across binding-only
+// deployments, so a bare `??=` would keep authenticating with a rotated-out
+// WORKOS_API_KEY until isolate eviction. `runTraced` fingerprints the
+// request's own `env` (a string compare per request) and the cache swaps in a
+// fresh runtime — fresh ApiKeyService validation cache included, as a rotated
+// key must not serve cached validations — when the bindings changed. See
+// auth-runtime.ts for the drop-vs-dispose reasoning.
+const mcpAuthRuntimeFor: (
+  fingerprint: string,
+) => ManagedRuntime.ManagedRuntime<McpAuthProvider, never> = makeBindingKeyedRuntime(() =>
+  ManagedRuntime.make(cloudMcpAuth),
+);
 
 // The pre-Agents envelope ran the MCP auth path inside the Effect app, whose
 // HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
@@ -163,13 +175,14 @@ const getMcpAuthRuntime = () => (mcpAuthRuntime ??= ManagedRuntime.make(cloudMcp
 // spans keep exporting exactly as before.
 const runTraced = <A>(
   request: Request,
+  env: Env,
   program: Effect.Effect<A, never, McpAuthProvider>,
 ): Promise<A> => {
   const parsed = parseTraceparent(
     request.headers.get("traceparent"),
     request.headers.get("tracestate"),
   );
-  return getMcpAuthRuntime().runPromise(
+  return mcpAuthRuntimeFor(mcpAuthBindingsFingerprint(env)).runPromise(
     (parsed ? OtelTracer.withSpanContext(program, parsed) : program).pipe(
       Effect.provide(WorkerTelemetryLive),
     ),
@@ -245,7 +258,7 @@ export const makeCloudMcpAgentHandler = () => {
     }
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await runTraced(request, authenticate(request));
+    const { auth, outcome } = await runTraced(request, env, authenticate(request));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       // Destroying a live session on auth grounds requires a POSITIVE
       // determination that access is genuinely gone — only `Forbidden` carries
@@ -293,7 +306,11 @@ export const makeCloudMcpAgentHandler = () => {
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: an unrecognized failure is a real defect and must reach the runtime unchanged
           throw error;
         }
-        await runTraced(request, recordDurableObjectFailure(failure, "validate_session_owner"));
+        await runTraced(
+          request,
+          env,
+          recordDurableObjectFailure(failure, "validate_session_owner"),
+        );
         return durableObjectFailureResponse(failure);
       }
       if (owner === "not_found") {
@@ -311,7 +328,11 @@ export const makeCloudMcpAgentHandler = () => {
     }
 
     const resource = resourceFromPath(request);
-    const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
+    const props = await runTraced(
+      request,
+      env,
+      propsForPrincipal(request, outcome.principal, resource),
+    );
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withVerifiedIdentityHeaders(
       request,
@@ -362,7 +383,7 @@ export const makeCloudMcpAgentHandler = () => {
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: rethrow anything that isn't a recognized platform failure to the Workers runtime unchanged
         throw error;
       }
-      await runTraced(request, recordDurableObjectFailure(failure, "session_fetch"));
+      await runTraced(request, env, recordDurableObjectFailure(failure, "session_fetch"));
       return durableObjectFailureResponse(failure);
     }
     // The agents SDK answers a bare DELETE with 204; the old envelope's
