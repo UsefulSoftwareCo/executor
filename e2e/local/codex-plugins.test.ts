@@ -143,23 +143,28 @@ scenario(
             });
           }
           // Curated entries carry the app-server bridge recipe: `codex
-          // app-server` plus the server name the bridge calls tools on.
+          // app-server`, the server name the bridge calls tools on, and the
+          // preset it came from — that last one is what lets a macOS refusal
+          // name the exact grant to enable.
           const messages = byId.get("codex-messages");
           expect(messages?.command.endsWith("codex"), "curated entries spawn the codex CLI").toBe(
             true,
           );
           expect(messages?.args, "curated entries run the app-server").toEqual(["app-server"]);
           expect(messages?.appServer, "curated entries name their Codex server").toEqual({
+            presetId: "codex-messages",
             server: "messages",
           });
           // Computer Use and Chrome have no server of their own: both are
           // projected onto `node_repl`, and Chrome carries the client module
           // its surface imports, resolved through the `latest` symlink.
           expect(byId.get("codex-computer-use")?.appServer).toEqual({
+            presetId: "codex-computer-use",
             server: "node_repl",
             surface: "sky",
           });
           expect(byId.get("codex-chrome")?.appServer).toEqual({
+            presetId: "codex-chrome",
             server: "node_repl",
             surface: "browser",
             modulePath: join(codexHome, CHROME_CLIENT_RELATIVE),
