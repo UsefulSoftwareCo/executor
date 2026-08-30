@@ -999,7 +999,7 @@ describe("oauth.start / oauth.complete", () => {
         );
         expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
         const startError = error as OAuthStartError;
-        expect(startError.message).toContain("must use a Workspace app");
+        expect(startError.message).toContain("must use an org-owned OAuth client");
       }),
     ),
   );

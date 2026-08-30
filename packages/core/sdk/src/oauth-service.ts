@@ -878,6 +878,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     input: CreateOAuthClientInput,
   ): Effect.Effect<OAuthClientSlug, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
+      if (input.owner === "user" && deps.subject === "local") {
+        return yield* new StorageError({
+          message:
+            'User-owned OAuth clients are not supported on single-workspace hosts. Use owner "org" instead.',
+          cause: undefined,
+        });
+      }
       // The `first-party:` namespace is reserved for config-declared apps — a
       // stored row under it would be shadowed by (or worse, impersonate) the
       // host's own app.
@@ -1665,7 +1672,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       });
       if (!firstPartyFlow && input.owner === "org" && input.clientOwner === "user") {
         return yield* new OAuthStartError({
-          message: "A Workspace connection must use a Workspace app.",
+          message: "An org connection must use an org-owned OAuth client.",
         });
       }
       // Load the app by its EXPLICIT owner (the caller knows it — no derivation).
