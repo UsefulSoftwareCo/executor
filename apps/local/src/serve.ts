@@ -13,7 +13,7 @@ import type { Subprocess } from "bun";
 import { setOAuthCompletionListener } from "@executor-js/api";
 import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
 import { loadOrMintLocalAuthToken } from "./auth";
-import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
+import { publishOAuthResult, waitForOAuthResult } from "./oauth-result-store";
 import { disposeAnalytics } from "./analytics";
 import { startIntegrationsRefresh } from "./integrations";
 import { disposeServerHandlers, getServerHandlers } from "./main";
@@ -26,6 +26,11 @@ import {
   makeIsAuthorized,
   normalizeCredential,
 } from "./serve-shared";
+
+// How long one /api/oauth/await request is held open waiting for the OAuth
+// completion to be published. Shorter than the client's overall timeout; the
+// client reconnects after each deadline, so this only bounds a single hold.
+const OAUTH_AWAIT_LONG_POLL_DEADLINE_MS = 25_000;
 
 // ---------------------------------------------------------------------------
 // Static files
@@ -457,9 +462,17 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         // OAuth result polling — local-only, served outside the typed API
         // because cloud (Cloudflare Workers, stateless) can't back the
         // in-memory store. See setOAuthCompletionListener above.
+        // Long-poll: hold the request until the completion listener publishes
+        // for this session, then answer immediately instead of making the
+        // client wait for its next poll tick. On deadline (or client
+        // disconnect) answer null — "still pending" — so the client's outer
+        // retry loop reconnects. `idleTimeout: 0` above permits the hold.
         const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(url.pathname);
         if (awaitMatch && req.method === "GET") {
-          const result = consumeOAuthResult(awaitMatch[1]);
+          const result = await waitForOAuthResult(awaitMatch[1], {
+            timeoutMs: OAUTH_AWAIT_LONG_POLL_DEADLINE_MS,
+            signal: req.signal,
+          });
           return withCors(
             new Response(JSON.stringify(result), {
               headers: { "content-type": "application/json" },
