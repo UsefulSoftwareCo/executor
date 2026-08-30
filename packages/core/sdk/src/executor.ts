@@ -5794,19 +5794,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return yield* new ToolNotFoundError({ address });
         }
 
-        // Find the tool row — projected: invoke needs routing/policy fields
-        // only, never the multi-KB input/output schema JSON (`tools.schema`
-        // is the schema-bearing surface).
-        const row = yield* core.findFirst("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
+        // The three storage reads this call needs — the tool row (projected:
+        // invoke needs routing/policy fields only, never the multi-KB
+        // input/output schema JSON; `tools.schema` is the schema-bearing
+        // surface), the active policy rule set, and the connection row — are
+        // mutually independent, so they run concurrently instead of paying
+        // three serial round-trips. The policy and connection reads are
+        // captured as Exits and unwrapped at exactly the points the
+        // sequential code performed them, so the caller-visible error for a
+        // given input is unchanged: a tool-row read failure still dominates,
+        // and a policy or connection read failure still surfaces only where
+        // the old code would have executed that read.
+        const { row, policyRulesExit, connectionRowExit } = yield* Effect.all(
+          {
+            row: core.findFirst("tool", {
+              where: (b: AnyCb) =>
+                b.and(
+                  byOwner(parsed.owner)(b),
+                  b("integration", "=", String(parsed.integration)),
+                  b("connection", "=", String(parsed.connection)),
+                  b("name", "=", String(parsed.tool)),
+                ),
+              select: TOOL_INVOCATION_COLUMNS,
+            }),
+            policyRulesExit: Effect.exit(listActivePolicyRuleSet()),
+            connectionRowExit: Effect.exit(
+              findConnectionRow({
+                owner: parsed.owner,
+                integration: parsed.integration,
+                name: parsed.connection,
+              }),
             ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
+          },
+          { concurrency: 3 },
+        );
         if (!row) {
           const searchMatches = yield* searchToolRowsForConnection(parsed);
           const connectionTools =
@@ -5817,12 +5838,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // the reader after a tool that was never the problem, so name the
           // connection and point at the surface that knows the cause.
           const connectionExists =
-            connectionTools.length === 0 &&
-            (yield* findConnectionRow({
-              owner: parsed.owner,
-              integration: parsed.integration,
-              name: parsed.connection,
-            })) !== null;
+            connectionTools.length === 0 && (yield* connectionRowExit) !== null;
           return yield* new ToolNotFoundError({
             address,
             suggestions: toolSuggestions(connectionTools),
@@ -5835,7 +5851,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         // Resolve policy (owner-ranked).
         const toolForPolicy = rowToTool(row);
-        const policyRules = yield* listActivePolicyRuleSet();
+        const policyRules = yield* policyRulesExit;
         const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
         const policy = yield* resolvePolicyFromRuleSet(
           normalizedPolicyId(toolForPolicy),
@@ -5863,12 +5879,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Find the connection row.
-        const connectionRow = yield* findConnectionRow({
-          owner: parsed.owner,
-          integration: parsed.integration,
-          name: parsed.connection,
-        });
+        // Unwrap the connection row (read concurrently above).
+        const connectionRow = yield* connectionRowExit;
         if (!connectionRow) {
           return yield* new ConnectionNotFoundError({
             owner: parsed.owner,
@@ -5903,9 +5915,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
 
         // Resolve every named credential input (`variable → value`); `value` is
-        // the primary `token` for single-input + OAuth callers.
-        const values = yield* resolveConnectionValues(connectionRow);
-        const integrationRow = yield* findIntegrationRow(parsed.integration);
+        // the primary `token` for single-input + OAuth callers. The
+        // integration-row read is independent of credential resolution, so
+        // the two run concurrently. Both start only after `enforceApproval`
+        // above completes — a declined call must never trigger the token
+        // refresh credential resolution can perform. The integration read is
+        // captured as an Exit and unwrapped after `values`, so a credential
+        // resolution failure keeps dominating a storage failure exactly as
+        // it did when the reads were sequential.
+        const { values, integrationRowExit } = yield* Effect.all(
+          {
+            values: resolveConnectionValues(connectionRow),
+            integrationRowExit: Effect.exit(findIntegrationRow(parsed.integration)),
+          },
+          { concurrency: 2 },
+        );
+        const integrationRow = yield* integrationRowExit;
         const grantedScopes = grantedScopesFromRow(connectionRow);
         const invokeTool = runtime.plugin.invokeTool;
         const invokeWith = (

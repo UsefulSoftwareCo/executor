@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Predicate, Result } from "effect";
 
+import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
+import { createExecutor } from "./executor";
+import type { FumaDb } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -15,7 +18,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
-import { makeTestExecutor, memoryCredentialsPlugin } from "./testing";
+import { makeTestConfig, makeTestExecutor, memoryCredentialsPlugin } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
@@ -780,6 +783,233 @@ describe("muscle memory (observed output shapes)", () => {
       yield* executor.execute(addr("inspect"), { pet: { lives: 9 } });
       const schema = yield* executor.tools.schema(addr("inspect"));
       expect(schema?.outputSchema).toEqual({ $ref: "#/$defs/Owner" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic tool-call read concurrency. The invoke path runs its independent
+// storage reads concurrently: tool row + policy rules + connection row before
+// approval, then credential resolution + integration row after approval.
+// These tests pin the overlap itself AND the invariants the overlap must not
+// disturb — most importantly that a declined approval never starts credential
+// resolution (which can trigger an upstream token refresh).
+// ---------------------------------------------------------------------------
+
+/** Records which armed reads are simultaneously in flight. Each armed read
+ *  registers on entry, then HOLDS its result until every other armed read has
+ *  also started — so genuinely concurrent reads all overlap and the probe
+ *  observes it. A sequential ordering would deadlock on that barrier, so a
+ *  fallback timer releases each held read; the run then completes with
+ *  `sawAllInFlight() === false` and the assertion (not a hang) reports the
+ *  regression. */
+const makeReadOverlapProbe = () => {
+  let targets: ReadonlySet<string> = new Set();
+  let sawAll = false;
+  const started = new Set<string>();
+  const inFlight = new Set<string>();
+  let release: (() => void) | undefined;
+  let barrier: Promise<void> | undefined;
+  const observe = async (key: string): Promise<void> => {
+    if (barrier === undefined || !targets.has(key) || started.has(key)) return;
+    started.add(key);
+    inFlight.add(key);
+    if (started.size === targets.size) {
+      if (inFlight.size === targets.size) sawAll = true;
+      release?.();
+    }
+    await Promise.race([
+      barrier,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 250);
+      }),
+    ]);
+    inFlight.delete(key);
+  };
+  return {
+    arm: (keys: readonly string[]) => {
+      targets = new Set(keys);
+      barrier = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+    observe,
+    sawAllInFlight: () => sawAll,
+  };
+};
+
+/** Wrap a test `FumaDb` so every read reports to the probe as
+ *  `<table>.<method>` before it executes. `withContext` re-wraps so the
+ *  executor's context-bound handles stay observed. */
+const withObservedReads = (db: FumaDb, observe: (key: string) => Promise<void>): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "findFirst" || prop === "findMany") {
+          return async (table: unknown, query: unknown) => {
+            await observe(`${String(table)}.${prop}`);
+            return (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+              target,
+              table,
+              query,
+            );
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
+const countingProvider = (calls: { count: number }, onGet?: () => Promise<void>) => {
+  const store = new Map<string, string>();
+  const provider: CredentialProvider = {
+    key: ProviderKey.make("memory"),
+    writable: true,
+    get: (id) =>
+      Effect.promise(async () => {
+        calls.count++;
+        await onGet?.();
+        return store.get(String(id)) ?? null;
+      }),
+    set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+  };
+  return provider;
+};
+
+const invokeConcurrencyPlugin = (provider: CredentialProvider) =>
+  definePlugin(() => ({
+    id: "demo" as const,
+    credentialProviders: [provider],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("run"), description: "run" }] }),
+    invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+    extension: (ctx) => ({
+      seed: () => ctx.core.integrations.register({ slug: INTEG, description: "Demo", config: {} }),
+    }),
+  }))();
+
+const seedRunConnection = <
+  E extends {
+    readonly demo: { readonly seed: () => Effect.Effect<unknown, unknown> };
+    readonly connections: {
+      readonly create: (input: {
+        owner: "org";
+        name: ConnectionName;
+        integration: IntegrationSlug;
+        template: AuthTemplateSlug;
+        from: { provider: ProviderKey; id: ProviderItemId };
+      }) => Effect.Effect<unknown, unknown>;
+    };
+  },
+>(
+  executor: E,
+) =>
+  Effect.gen(function* () {
+    yield* executor.demo.seed();
+    yield* executor.connections.create({
+      owner: "org",
+      name: CONN,
+      integration: INTEG,
+      template: TEMPLATE,
+      from: {
+        provider: ProviderKey.make("memory"),
+        id: ProviderItemId.make("v"),
+      },
+    });
+  });
+
+describe("execute read concurrency", () => {
+  it.effect("overlaps the tool, policy, and connection reads on the invoke path", () =>
+    Effect.gen(function* () {
+      const probe = makeReadOverlapProbe();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withObservedReads(config.db, probe.observe),
+      });
+      yield* seedRunConnection(executor);
+
+      probe.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
+      const out = yield* executor.execute(addr("run"), {});
+      expect(out).toEqual({ ran: "run" });
+      // All three pre-approval reads were in flight at the same instant.
+      expect(probe.sawAllInFlight()).toBe(true);
+    }),
+  );
+
+  it.effect("overlaps credential resolution with the integration-row read after approval", () =>
+    Effect.gen(function* () {
+      const probe = makeReadOverlapProbe();
+      const calls = { count: 0 };
+      const provider = countingProvider(calls, () => probe.observe("credential.get"));
+      const config = makeTestConfig({
+        plugins: [invokeConcurrencyPlugin(provider)] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withObservedReads(config.db, probe.observe),
+      });
+      yield* seedRunConnection(executor);
+
+      probe.arm(["credential.get", "integration.findFirst"]);
+      const out = yield* executor.execute(addr("run"), {});
+      expect(out).toEqual({ ran: "run" });
+      expect(probe.sawAllInFlight()).toBe(true);
+    }),
+  );
+
+  it.effect("a declined approval never resolves credentials", () =>
+    Effect.gen(function* () {
+      const calls = { count: 0 };
+      const executor = yield* makeTestExecutor({
+        plugins: [invokeConcurrencyPlugin(countingProvider(calls))] as const,
+      });
+      yield* seedRunConnection(executor);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "demo.*",
+        action: "require_approval",
+      });
+
+      // Setup (connection create / tool sync) may read the credential; only
+      // reads issued by the declined call itself are the regression signal.
+      calls.count = 0;
+      const decliningHandler: ElicitationHandler = () =>
+        Effect.succeed(ElicitationResponse.make({ action: "decline" }));
+      const result = yield* Effect.result(
+        executor.execute(addr("run"), {}, { onElicitation: decliningHandler }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ElicitationDeclinedError")(result.failure)).toBe(true);
+      // The decline happened BEFORE credential resolution started: a token
+      // refresh (a network side effect) must never fire for a declined call.
+      expect(calls.count).toBe(0);
+    }),
+  );
+
+  it.effect("fails with ConnectionNotFoundError when the tool row outlives its connection", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor(config);
+      yield* seedRunConnection(executor);
+
+      // Remove ONLY the connection row, leaving the tool rows behind — the
+      // inconsistent state the ConnectionNotFoundError branch reports. The
+      // concurrent connection read must still surface this error, not a
+      // policy or tool-row failure.
+      yield* Effect.promise(() => config.db.deleteMany("connection", {}));
+
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ConnectionNotFoundError")(result.failure)).toBe(true);
     }),
   );
 });
