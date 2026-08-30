@@ -113,14 +113,6 @@ describe("oldStyleAddressRejection", () => {
     ).toContain("tools.inventory.org.");
   });
 
-  it("rejects a bracketed old-style address", () => {
-    expect(
-      oldStyleAddressRejection(
-        `useQuery(tools["cloudflare-bindings"].org.main.d1_database_query.queryOptions({}));`,
-      ),
-    ).toContain('tools["cloudflare-bindings"].org.');
-  });
-
   it("accepts the short form", () => {
     expect(
       oldStyleAddressRejection(`useQuery(tools.vercel.domains.getDomains.queryOptions({}));`),

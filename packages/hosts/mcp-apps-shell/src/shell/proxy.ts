@@ -34,6 +34,7 @@ export type RequestTrustedInteraction = (
 ) => Promise<TrustedInteractionResponse>;
 
 const TOOL_PATH_IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$-]*$/;
 
 const formatToolPathSegment = (segment: string): string =>
   TOOL_PATH_IDENTIFIER.test(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
@@ -42,10 +43,6 @@ const formatToolPathSegment = (segment: string): string =>
  * The ONE grammar the shell ever puts on the `execute-action` wire:
  *
  *     return await tools<segment>("<role>")?<segment>*(<JSON>)
- *
- * A segment is either `.identifier` or `["JSON-escaped slug"]`. The bracket
- * form lets integrations and tools with names such as `cloudflare-bindings`
- * use the same narrow channel without making their slug executable source.
  *
  * A single proxy-shaped tool call, nothing else — no statements, no loops, no
  * composition. The server parses `execute-action` against exactly this shape
@@ -70,7 +67,7 @@ export function toolCallCode(
 ): string {
   if (path.length === 0) throw new Error("Invalid tool path.");
   const parts = path.map((part) => {
-    if (typeof part !== "string" || part.length === 0) {
+    if (typeof part !== "string" || !TOOL_PATH_SEGMENT.test(part)) {
       throw new Error("Invalid tool path.");
     }
     return part;

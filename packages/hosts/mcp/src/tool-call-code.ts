@@ -14,10 +14,6 @@
  *
  *     return await tools<segment>("<role>")?<segment>*(<JSON>)
  *
- * A segment is either `.identifier` or a JSON-escaped bracket lookup. The
- * latter keeps hyphenated integration and tool slugs inert while preserving
- * the one-call grammar.
- *
  * One awaited tool call, one JSON-literal argument, nothing else — no
  * statements, no loops, no composition. `execute` (the model-facing codemode
  * tool) is untouched; this constraint is only for the app-originated channel.
@@ -37,43 +33,22 @@
 import { Option, Schema } from "effect";
 
 const JSON_STRING_LITERAL = String.raw`"(?:[^"\\]|\\.)*"`;
-const PATH_SEGMENT = String.raw`(?:\.[A-Za-z_$][\w$]*|\[${JSON_STRING_LITERAL}\])`;
+const IDENTIFIER = String.raw`[A-Za-z_$][\w$]*`;
+const SLUG = String.raw`[A-Za-z_$][\w$-]*`;
+const PATH_SEGMENT = String.raw`(?:\.${IDENTIFIER}|\["${SLUG}"\])`;
 const TOOL_CALL_CODE = new RegExp(
   String.raw`^return await tools(${PATH_SEGMENT})(?:\((${JSON_STRING_LITERAL})\))?((?:${PATH_SEGMENT})*)\((.*)\);?$`,
   "s",
 );
-const PATH_SEGMENT_MATCHER = new RegExp(
-  String.raw`(?:\.([A-Za-z_$][\w$]*)|\[(${JSON_STRING_LITERAL})\])`,
-  "gy",
-);
+const PATH_SEGMENT_MATCHER = new RegExp(String.raw`(?:\.(${IDENTIFIER})|\["(${SLUG})"\])`, "g");
 
 /** The proxy's argument is always `JSON.stringify` output, so anything that
  *  does not decode is, by construction, not something the proxy emitted. */
 const decodeArgs = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-const decodeJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
+const decodeRole = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
 
-const decodePath = (serialized: string): readonly string[] | null => {
-  const path: string[] = [];
-  let offset = 0;
-  while (offset < serialized.length) {
-    PATH_SEGMENT_MATCHER.lastIndex = offset;
-    const match = PATH_SEGMENT_MATCHER.exec(serialized);
-    if (!match) return null;
-
-    const identifier = match[1];
-    if (identifier !== undefined) {
-      path.push(identifier);
-    } else {
-      const bracketed = match[2];
-      if (bracketed === undefined) return null;
-      const decoded = decodeJsonString(bracketed);
-      if (Option.isNone(decoded) || decoded.value.length === 0) return null;
-      path.push(decoded.value);
-    }
-    offset = PATH_SEGMENT_MATCHER.lastIndex;
-  }
-  return path;
-};
+const decodePath = (serialized: string): readonly string[] =>
+  Array.from(serialized.matchAll(PATH_SEGMENT_MATCHER), (match) => match[1] ?? match[2] ?? "");
 
 export type ParsedToolCall = {
   /** The path segments under `tools`, e.g. `["github", "issues", "create"]`.
@@ -92,7 +67,6 @@ export type ParsedToolCall = {
 export const TOOL_CALL_CONTRACT_MESSAGE = [
   "execute-action accepts a single tool call, not arbitrary code.",
   'The only accepted form is `return await tools<integration>("<role>")?<path>(<json>)` —',
-  "segments use dot notation for identifiers or JSON-string bracket notation otherwise —",
   "exactly what the shell's `tools.*` proxy emits.",
   "Interactive UI reaches integrations declaratively:",
   "`tools.<integration>.<tool>.queryOptions(...)` / `.infiniteQueryOptions(...)` for reads,",
@@ -116,19 +90,19 @@ export const parseToolCallCode = (code: string): ParsedToolCall | null => {
   if (Option.isNone(args)) return null;
 
   const path = decodePath(`${root}${serializedRest}`);
-  if (!path || path.length === 0) return null;
 
   if (serializedRole === undefined) return { path, args: args.value };
 
   // The role is a JSON string literal for the same reason the args are a JSON
   // literal: it decodes or it was not the proxy's emission.
-  const role = decodeJsonString(serializedRole);
+  const role = decodeRole(serializedRole);
   if (Option.isNone(role) || role.value.length === 0) return null;
 
   return { path, role: role.value, args: args.value };
 };
 
 const TOOL_PATH_IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$-]*$/;
 
 const formatToolPathSegment = (segment: string): string =>
   TOOL_PATH_IDENTIFIER.test(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
@@ -150,7 +124,7 @@ const formatToolPathSegment = (segment: string): string =>
  */
 export const formatToolCallCode = (path: readonly string[], args: unknown): string => {
   for (const segment of path) {
-    if (typeof segment !== "string" || segment.length === 0) {
+    if (!TOOL_PATH_SEGMENT.test(segment)) {
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: unreachable by construction (every segment came from a parsed path or a stored binding); a defect here must not become a malformed emission
       throw new Error("Invalid resolved tool path.");
     }

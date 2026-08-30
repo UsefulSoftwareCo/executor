@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { parseToolCallCode } from "@executor-js/host-mcp/tool-call-code";
+import { formatToolCallCode, parseToolCallCode } from "@executor-js/host-mcp/tool-call-code";
 
 import { toolCallCode } from "./proxy";
 
@@ -34,11 +34,6 @@ describe("execute-action tool-call grammar", () => {
       label: "a hyphenated integration slug",
       path: ["cloudflare-bindings", "d1_database_query"],
       args: [{ database_id: "db", sql: "SELECT 1" }],
-    },
-    {
-      label: "a path segment requiring JSON escaping",
-      path: ["inventory", 'items"]; return await tools.evil.run({}); //'],
-      args: [{}],
     },
     {
       label: "an argument with a $ in an identifier-ish key",
@@ -92,9 +87,16 @@ describe("execute-action tool-call grammar", () => {
     });
   }
 
+  it("formats a resolved hyphenated integration safely", () => {
+    expect(formatToolCallCode(["cloudflare-bindings", "org", "default", "query"], {})).toBe(
+      'return await tools["cloudflare-bindings"].org.default.query({})',
+    );
+  });
+
   it("refuses to emit a path that would not parse", () => {
     expect(() => toolCallCode([], [])).toThrow("Invalid tool path.");
-    expect(() => toolCallCode(["github", ""], [])).toThrow("Invalid tool path.");
+    expect(() => toolCallCode(["github", "issues; drop"], [])).toThrow("Invalid tool path.");
+    expect(() => toolCallCode(["github", "1bad"], [])).toThrow("Invalid tool path.");
     expect(() => toolCallCode(["github", "issues"], [], "")).toThrow("Invalid tool role.");
   });
 

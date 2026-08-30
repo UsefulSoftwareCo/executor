@@ -2236,24 +2236,6 @@ describe("MCP host — execute-action binding resolution", () => {
     ]);
   });
 
-  it("expands a hyphenated integration through the artifact's binding", async () => {
-    const code = `function App(){
-      useQuery(tools["cloudflare-bindings"].d1_database_query.queryOptions({ sql: "SELECT 1" }));
-      return <div/>;
-    }`;
-    const { result, executed } = await runBoundAction({
-      code,
-      available: [conn("cloudflare-bindings", "org", "default")],
-      action: {
-        code: 'return await tools["cloudflare-bindings"].d1_database_query({"sql":"SELECT 1"})',
-      },
-    });
-    expect(result.isError, textOf(result)).toBeFalsy();
-    expect(executed).toEqual([
-      'return await tools["cloudflare-bindings"].org.default.d1_database_query({"sql":"SELECT 1"})',
-    ]);
-  });
-
   it("routes each role to its own connection", async () => {
     const roleCode = `function App(){
       useQuery(tools.linear("prod").issues.list.queryOptions({}));

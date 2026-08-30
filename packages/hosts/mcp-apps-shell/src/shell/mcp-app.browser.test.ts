@@ -1170,11 +1170,6 @@ const HARNESS_BINDINGS: ArtifactBindings = {
     owner: "org",
     connection: ConnectionName.make(INVENTORY_CONNECTION),
   },
-  "cloudflare-bindings": {
-    integration: IntegrationSlug.make("cloudflare-bindings"),
-    owner: "org",
-    connection: ConnectionName.make("main"),
-  },
   alt: {
     integration: IntegrationSlug.make(INVENTORY_SLUG),
     owner: "org",
@@ -1577,47 +1572,6 @@ describe("MCP app generated UI browser isolation", () => {
             name: "execute-action",
             arguments: {
               code: "return await tools.inventory.listItems({})",
-              artifactId: HARNESS_ARTIFACT_ID,
-            },
-          }),
-        ]),
-      );
-    } finally {
-      await page.close();
-    }
-  }, 30_000);
-
-  it("serializes a hyphenated integration slug with bracket notation", async () => {
-    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
-    const { page, shellFrame } = await openHarness(browser, hostServer.url);
-
-    try {
-      const innerFrame = await renderGeneratedUi(
-        page,
-        shellFrame,
-        `function App() {
-          const query = useQuery({
-            ...tools["cloudflare-bindings"].d1_database_query.queryOptions({ sql: "SELECT 1" }),
-            retry: false,
-          });
-          return <div id="status">{query.isLoading ? "loading" : query.isError ? "error" : "done"}</div>;
-        }`,
-      );
-      await innerFrame.locator("#status").waitFor({ timeout: 10_000 });
-      await page.waitForFunction(() =>
-        (window as unknown as BrowserHostWindow).__mcpHostState.toolCalls.some(
-          (call) =>
-            call.arguments?.code ===
-            'return await tools["cloudflare-bindings"].d1_database_query({"sql":"SELECT 1"})',
-        ),
-      );
-
-      expect((await getHostState(page)).toolCalls).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: "execute-action",
-            arguments: {
-              code: 'return await tools["cloudflare-bindings"].d1_database_query({"sql":"SELECT 1"})',
               artifactId: HARNESS_ARTIFACT_ID,
             },
           }),

@@ -41,7 +41,6 @@ import {
   type ArtifactBindings,
   type Owner,
 } from "@executor-js/sdk";
-import { Option, Schema } from "effect";
 
 // ---------------------------------------------------------------------------
 // Vocabulary
@@ -93,32 +92,17 @@ const withCommentsBlanked = (code: string): string =>
   code.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (text) => text.replace(/[^\n]/g, " "));
 
 /**
- * A `tools.<root>` or `tools["root"]` reference, with the optional role call
- * that follows it.
+ * A tools root reference, with the optional role call that follows it.
  *
  * The role is captured from either quote flavour. Anything else after the root
  * — property access, a call with an object — is left to the caller's own path
  * handling; extraction only cares which integration slot is being reached.
  */
-const JSON_STRING_LITERAL = String.raw`"(?:[^"\\]|\\.)*"`;
-const TOOL_ROOT = String.raw`(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*(${JSON_STRING_LITERAL})\s*\])`;
+const TOOL_ROOT = String.raw`(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*"([A-Za-z_$][\w$-]*)"\s*\])`;
 const TOOLS_REFERENCE = new RegExp(
   String.raw`(?<![.\w$])tools\s*${TOOL_ROOT}\s*(?:\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\))?`,
   "g",
 );
-const decodeJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
-
-const integrationFromMatch = (match: RegExpMatchArray | RegExpExecArray): string | null => {
-  const identifier = match[1];
-  if (identifier !== undefined) return identifier;
-  const serialized = match[2];
-  if (serialized === undefined) return null;
-  const decoded = decodeJsonString(serialized);
-  return Option.isSome(decoded) && decoded.value.length > 0 ? decoded.value : null;
-};
-
-const formatToolRoot = (integration: string): string =>
-  /^[A-Za-z_$][\w$]*$/.test(integration) ? `.${integration}` : `[${JSON.stringify(integration)}]`;
 
 /**
  * An old-style address: a tier literal in the segment right after the
@@ -130,23 +114,18 @@ const formatToolRoot = (integration: string): string =>
  * surface: the two words are reserved by the address grammar itself, the shape
  * is vanishingly rare, and the error says precisely what to write instead.
  */
-const OLD_STYLE_TIER_SEGMENT = new RegExp(
-  String.raw`(?<![.\w$])tools\s*${TOOL_ROOT}\s*\.\s*(user|org)\s*\.`,
-);
+const OLD_STYLE_TIER_SEGMENT = /(?<![.\w$])tools\s*\.\s*([A-Za-z_$][\w$]*)\s*\.\s*(user|org)\s*\./;
 
 /** The message a five-segment path in artifact code is refused with. */
 export const oldStyleAddressRejection = (code: string): string | null => {
   const match = OLD_STYLE_TIER_SEGMENT.exec(withCommentsBlanked(code));
   if (!match) return null;
-  const integration = integrationFromMatch(match);
-  const tier = match[3];
-  if (integration === null || tier === undefined) return null;
-  const root = formatToolRoot(integration);
+  const [, integration = "", tier = ""] = match;
   return [
-    `Artifact code must not name a connection: \`tools${root}.${tier}.…\` pins this artifact to one account.`,
-    `Address the integration only — \`tools${root}.<tool>(args)\` — and the server binds it to your connection when the artifact runs.`,
-    `Discovery through \`execute\` still uses the full \`tools${root}.${tier}.<connection>.<tool>\` address; only saved artifact code drops the middle segments.`,
-    `If this artifact needs two accounts of the same integration, tag each one with a role — \`tools${root}("prod").<tool>(args)\` — and pass \`connections: { "prod": "${integration}.${tier}.<connection>" }\` to create-artifact.`,
+    `Artifact code must not name a connection: \`tools.${integration}.${tier}.…\` pins this artifact to one account.`,
+    `Address the integration only — \`tools.${integration}.<tool>(args)\` — and the server binds it to your connection when the artifact runs.`,
+    `Discovery through \`execute\` still uses the full \`tools.${integration}.${tier}.<connection>.<tool>\` address; only saved artifact code drops the middle segments.`,
+    `If this artifact needs two accounts of the same integration, tag each one with a role — \`tools.${integration}("prod").<tool>(args)\` — and pass \`connections: { "prod": "${integration}.${tier}.<connection>" }\` to create-artifact.`,
   ].join(" ");
 };
 
@@ -162,8 +141,8 @@ export const extractArtifactRoles = (code: string): readonly ArtifactRole[] => {
   const scannable = withCommentsBlanked(code);
   const found = new Map<string, ArtifactRole>();
   for (const match of scannable.matchAll(TOOLS_REFERENCE)) {
-    const integration = integrationFromMatch(match);
-    if (integration === null || RESERVED_TOOL_ROOTS.has(integration)) continue;
+    const integration = match[1] ?? match[2];
+    if (integration === undefined || RESERVED_TOOL_ROOTS.has(integration)) continue;
     const role = match[3] ?? match[4] ?? integration;
     if (role.length === 0) continue;
     if (!found.has(role)) found.set(role, { role, integration });
