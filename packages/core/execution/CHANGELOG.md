@@ -1,5 +1,13 @@
 # @executor-js/execution
 
+## 1.6.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/codemode-core@1.6.5
+
 ## 1.6.4
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # executor
 
+## 1.6.5
+
+### Patch Changes
+
+- [#1863](https://github.com/UsefulSoftwareCo/executor/pull/1863) [`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Adding a Codex plugin no longer asks for anything. `CODEX_HOME` is a path the
+  scanner already resolved, but it was passed on the channel that makes an
+  environment variable a credential — so the integration declared it as one, and
+  a person who reached the connect step was shown a masked field for a value
+  they should never have to know.
+
+  Stdio integrations can now carry non-secret environment as static
+  configuration, separate from declared secrets. The Codex plugins use it: they
+  declare no auth, and their connection is created for them.
+
+- Updated dependencies []:
+  - @executor-js/local@1.6.5
+  - @executor-js/sdk@1.6.5
+  - @executor-js/runtime-quickjs@1.6.5
+  - @executor-js/api@1.4.68
+
 ## 1.6.4
 
 ### Patch Changes
