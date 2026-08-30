@@ -801,4 +801,52 @@ describe("oauth.start recorded scope fallback", () => {
         }),
       ),
   );
+
+  it.effect("(m) does not report ungranted discovered capabilities as missing requirements", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read", "write", "*"],
+          omitTokenResponseScopes: ["*"],
+        });
+        const plugins = [memoryCredentialsPlugin(), makeMcpScopePlugin({ scopes: null })] as const;
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.mcp.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["read", "write", "*"]);
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.oauthScope).toBe("read write");
+        expect(connection.missingOAuthScopes).toEqual([]);
+      }),
+    ),
+  );
 });
