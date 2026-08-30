@@ -76,6 +76,20 @@ const ApprovalExpiredError = Schema.TaggedStruct("ApprovalExpiredError", {
   });
 
 /**
+ * The execution was interrupted by a daemon restart before it settled.
+ *
+ * Distinct from `ApprovalExpiredError` (the human never answered) and
+ * `ExecutionNotFoundError` (an id that was never ours): an interrupted
+ * execution is one the agent believed was still pending, but the service
+ * restarted and the fiber is unrecoverable. The honest outcome is
+ * "re-trigger the action" — nothing ran, so re-triggering is safe.
+ * See execution-records.ts.
+ */
+const InterruptedExecutionError = Schema.TaggedStruct("InterruptedExecutionError", {
+  executionId: Schema.String,
+}).annotate({ httpApiStatus: 404 });
+
+/**
  * An artifact-originated execution that could not be turned into a call: the
  * code was not the shell proxy's emission, the artifact is not this caller's,
  * or a role in it has no connection bound.
@@ -125,6 +139,11 @@ export const ExecutionsApi = HttpApiGroup.make("executions")
       params: ExecutionParams,
       payload: ResumeRequest,
       success: ResumeResponse,
-      error: [InternalError, ExecutionNotFoundError, ApprovalExpiredError],
+      error: [
+        InternalError,
+        ExecutionNotFoundError,
+        ApprovalExpiredError,
+        InterruptedExecutionError,
+      ],
     }),
   );

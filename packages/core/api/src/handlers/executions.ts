@@ -61,6 +61,29 @@ class ApprovalExpiredError extends Schema.TaggedErrorClass<ApprovalExpiredError>
 }
 
 /**
+ * The execution was interrupted by a daemon restart before it settled.
+ *
+ * Distinct from `ApprovalExpiredError` (the human never answered) and
+ * `ExecutionNotFoundError` (an id that was never ours): an interrupted
+ * execution is one the agent believed was still pending, but the service
+ * restarted and the fiber is unrecoverable. The honest outcome is
+ * "re-trigger the action" — nothing ran, so re-triggering is safe.
+ * 404, because the live execution no longer exists on this host.
+ * See execution-records.ts (tombstones).
+ */
+class InterruptedExecutionError extends Schema.TaggedErrorClass<InterruptedExecutionError>()(
+  "InterruptedExecutionError",
+  {
+    executionId: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {
+  override get message(): string {
+    return "This execution was interrupted by a restart. Re-trigger the action.";
+  }
+}
+
+/**
  * Parse and bind one artifact-originated call, or fail with something the shell
  * can render inside the component that made it.
  *
@@ -157,6 +180,16 @@ const resumeFromPendingApproval = (executionId: string, action: "accept" | "decl
     );
 
     if (outcome.status === "completed") {
+      // Terminal tombstone write — same rationale as the resume handler:
+      // stop the record from being sweep-eligible once the work is done.
+      // Best-effort, like every tombstone write.
+      yield* executor.executionRecords
+        .put({
+          executionId,
+          status: "completed",
+          updatedAt: Date.now(),
+        })
+        .pipe(Effect.catchCause(() => Effect.void));
       const formatted = formatExecuteResult(outcome.result);
       return {
         status: "completed" as const,
@@ -196,6 +229,7 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
       capture(
         Effect.gen(function* () {
           const engine = yield* ExecutionEngineService;
+          const executor = yield* ExecutorService;
           // An artifact-originated request is not arbitrary code. It is parsed
           // against the shell proxy's one grammar and rewritten through the
           // artifact's connection bindings, exactly as `execute-action` does in
@@ -232,6 +266,15 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
               code,
               address: String(outcome.execution.elicitationContext.address),
             });
+            // Tombstone the pause so a restart marks it interrupted rather
+            // than losing it silently. Best-effort, like the approval record.
+            yield* executor.executionRecords
+              .put({
+                executionId: outcome.execution.id,
+                status: "paused",
+                updatedAt: Date.now(),
+              })
+              .pipe(Effect.catchCause(() => Effect.void));
           }
 
           const formatted = formatPausedExecution(outcome.execution);
@@ -247,6 +290,7 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
       capture(
         Effect.gen(function* () {
           const engine = yield* ExecutionEngineService;
+          const executor = yield* ExecutorService;
           const result = yield* captureEngineError(
             engine.resume(path.executionId, {
               action: payload.action,
@@ -260,10 +304,34 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
           if (!result) {
             const honoured = yield* resumeFromPendingApproval(path.executionId, payload.action);
             if (honoured) return honoured;
+
+            // No live pause and no pending-approval record. If a tombstone
+            // exists for this execution, the daemon may have restarted since
+            // it paused — surface that honestly instead of a generic
+            // "approval expired". A running|paused tombstone read at resume
+            // time means the boot sweep missed it (host couldn't enumerate);
+            // treat it as interrupted here — it is not a live execution.
+            const record = yield* executor.executionRecords.get(path.executionId);
+            if (record !== null && record.status !== "completed") {
+              return yield* new InterruptedExecutionError({ executionId: path.executionId });
+            }
+
             return yield* new ApprovalExpiredError({ executionId: path.executionId });
           }
 
           if (result.status === "completed") {
+            // Tombstone the terminal outcome so the record stops being
+            // sweep-eligible: without this write, a resumed-to-completed
+            // execution keeps its pre-restart "paused" tombstone and the
+            // next boot sweep would mark it "interrupted" — factually wrong
+            // for work that finished. Best-effort, like the pause write.
+            yield* executor.executionRecords
+              .put({
+                executionId: path.executionId,
+                status: "completed",
+                updatedAt: Date.now(),
+              })
+              .pipe(Effect.catchCause(() => Effect.void));
             const formatted = formatExecuteResult(result.result);
             return {
               status: "completed" as const,

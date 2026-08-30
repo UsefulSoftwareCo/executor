@@ -31,6 +31,7 @@ import {
 } from "./fuma-runtime";
 import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartitions } from "./blob";
 import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
+import { makeExecutionRecordStore, type ExecutionRecordStore } from "./execution-records";
 import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
@@ -498,6 +499,14 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
    * when a general codemode pause is not.
    */
   readonly pendingApprovals: PendingApprovalStore;
+
+  /**
+   * Durable execution tombstones — ids/statuses only, no args/results/secrets.
+   * Written at execution start/pause/complete; a boot sweep marks every
+   * non-terminal record `interrupted` so a restart surfaces honestly instead
+   * of reading as "not found". See `execution-records.ts`.
+   */
+  readonly executionRecords: ExecutionRecordStore;
 
   readonly execute: (
     address: ToolAddress,
@@ -6158,6 +6167,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       blobPartitions.user ?? blobPartitions.org,
     );
 
+    // Tombstones file under the same narrowest partition — the partition IS
+    // the ownership check, exactly as with pending approvals.
+    const executionRecords = makeExecutionRecordStore(
+      blobs,
+      blobPartitions.user ?? blobPartitions.org,
+    );
+
     for (const plugin of plugins) {
       if (runtimes.has(plugin.id)) {
         return yield* new StorageError({
@@ -6565,6 +6581,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         setPreview: artifactsSetPreview,
       },
       pendingApprovals,
+      executionRecords,
       execute,
       close,
     };
