@@ -18,8 +18,9 @@
 // to resuming the fiber, without requiring the fiber to still exist.
 //
 // Records live in the existing owner-scoped `blob` table (no new table, no
-// migration). They are single-use: consumed on resume, so one approval authorizes
-// exactly one invocation and a replayed resume cannot re-run the call.
+// migration). They are single-use: consumed atomically (compareAndDelete) on
+// resume, so one approval authorizes exactly one invocation and NEITHER a
+// replayed resume NOR two concurrent resumes can re-run the call.
 // ---------------------------------------------------------------------------
 
 import { Effect, Option, Schema } from "effect";
@@ -93,11 +94,24 @@ export const makePendingApprovalStore = (
 
     consume: (executionId) =>
       Effect.gen(function* () {
+        // Read the payload first — compareAndDelete returns only a boolean,
+        // so the winner needs the record's value to validate and return.
+        // Reading before the gate is safe: a concurrent loser may read the
+        // same payload but will fail the compareAndDelete gate below and
+        // never return it. The ordering that matters is the DELETE's
+        // single-winner guarantee, not the read's.
         const raw = yield* blobs.get(namespace, executionId);
         if (raw === null) return null;
-        // Consume before validating: a record we are about to reject is a record
-        // nobody should be able to retry against.
-        yield* blobs.delete(namespace, executionId);
+        // Atomic single-winner delete: exactly one concurrent consumer
+        // observes true (the record existed and was removed); everyone else
+        // observes false. This closes the get→delete race that previously
+        // let two concurrent resumes both read a record before either
+        // deleted it — duplicated side effects.
+        const removed = yield* blobs.compareAndDelete(namespace, executionId);
+        if (!removed) return null;
+        // Consume before validating (preserved): a record we are about to
+        // reject is a record nobody should be able to retry against — the
+        // atomic delete already removed it, so no other consumer can see it.
         const decoded = decodePendingApproval(raw);
         if (Option.isNone(decoded)) return null;
         const approval = decoded.value;
