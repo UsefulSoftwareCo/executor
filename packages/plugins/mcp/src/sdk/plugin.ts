@@ -1391,6 +1391,20 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       // scanner touches node:fs, so it stays behind a dynamic import (the
       // stdio-connector pattern) and behind the stdio gate: with stdio off the
       // presets could not be added anyway.
+      /** How long the probe waits for the plugin to answer. Deliberately
+       *  under the MCP SDK's 60s default: a pending macOS consent prompt
+       *  blocks the call indefinitely, and the person should be told to look
+       *  for the prompt rather than watch "Checking…" for a minute. */
+      const PROBE_ANSWER_TIMEOUT_MS = 25_000;
+      /** The client SDK signals its request timeout as an `SdkError` with
+       *  code `REQUEST_TIMEOUT`. Matched structurally: the SDK is loaded
+       *  dynamically, so its error class is not importable here. */
+      const isMcpRequestTimeout = (cause: unknown): boolean =>
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        (cause as { readonly code: unknown }).code === "REQUEST_TIMEOUT";
+
       /** Ask a Codex plugin whether macOS will actually let it work.
        *
        *  Runs the plugin's own read-only probe tool down the REAL path — the
@@ -1424,15 +1438,26 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             ...(plugin.appServer === undefined ? {} : { appServer: plugin.appServer }),
           });
 
+          // A probe that hangs is a real outcome, not an edge case: an Apple
+          // Event blocks for as long as macOS sits on the consent decision.
+          // Under the SDK's 60s default the card shows "Checking…" for a full
+          // minute and then misreports the hang as a failed start.
+          let timedOut = false;
           return yield* Effect.gen(function* () {
             const connection = yield* connector;
             const result = yield* Effect.tryPromise({
-              try: () => connection.client.callTool({ name: probe.name, arguments: probe.args }),
-              catch: () =>
-                new McpConnectionError({
+              try: () =>
+                connection.client.callTool(
+                  { name: probe.name, arguments: probe.args },
+                  { timeout: PROBE_ANSWER_TIMEOUT_MS },
+                ),
+              catch: (cause) => {
+                timedOut = isMcpRequestTimeout(cause);
+                return new McpConnectionError({
                   transport: "appserver",
                   message: "The plugin did not answer.",
-                }),
+                });
+              },
             }).pipe(Effect.ensuring(Effect.promise(() => connection.close())));
 
             const text = (Array.isArray(result.content) ? result.content : [])
@@ -1454,8 +1479,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               McpConnectionError: () =>
                 Effect.succeed({
                   status: "blocked" as const,
-                  message:
-                    "Could not start the plugin. Check that Codex is installed and signed in.",
+                  message: timedOut
+                    ? "macOS has not answered yet. If a permission prompt is on screen, answer it, then check again."
+                    : "Could not start the plugin. Check that Codex is installed and signed in.",
                 }),
               McpOAuthReauthorizationRequired: () =>
                 Effect.succeed({

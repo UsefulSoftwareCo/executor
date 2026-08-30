@@ -37,6 +37,13 @@ const config: Configuration = {
     entitlements: "build/entitlements.mac.plist",
     entitlementsInherit: "build/entitlements.mac.plist",
     notarize: true,
+    extendInfo: {
+      // Shown in the macOS Automation consent prompt. Required alongside the
+      // apple-events entitlement in entitlements.mac.plist: without the
+      // usage string, tccd declines to prompt and denies silently.
+      NSAppleEventsUsageDescription:
+        "Executor runs local plugins that control apps like Messages on your behalf.",
+    },
   },
   // Same arch rule as mac (see comment above): never pin `arch:` in the
   // target objects. The win/linux pins used to force both archs out of a

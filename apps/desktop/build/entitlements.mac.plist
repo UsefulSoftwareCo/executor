@@ -17,5 +17,14 @@
          of the Electron bundle's signing chain. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <!-- Codex plugins (Messages) drive other apps via Apple Events, and TCC
+         attributes those to the RESPONSIBLE process — this app and the
+         bundled executor daemon, both signed with this file. Under hardened
+         runtime, tccd refuses to even PROMPT without this entitlement
+         ("Policy disallows prompt"): the call is denied silently, no
+         Automation row is created, and there is nothing for the user to
+         enable. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>
