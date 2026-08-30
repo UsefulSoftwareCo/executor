@@ -5816,23 +5816,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // handler at construction), so an abandoned read cannot
         // unhandled-reject; a fiber interrupted before it ever ran issues no
         // read at all.
-        // Launch order is dominant-first by construction, best-effort under
-        // the scheduler. The dominant tool-row read is forked FIRST with
-        // `startImmediately: true`: an immediate fork evaluates the child
-        // INLINE (`forkUnsafe` calls `child.evaluate` on the spot), so the
-        // read is normally issued before the speculative forks below are
-        // even scheduled (a plain fork only queues its child on the
-        // dispatcher for the next tick). The one exception is deliberate: if
-        // the child's own operation budget (`MaxOpsBeforeYield`) expires
-        // inside the launch window, the inline segment parks and a
-        // speculative read may launch first. That reversal is materially
-        // free, so it is NOT suppressed: on a synchronous driver the reads
-        // serialize whichever order they start (same wall time), and on an
-        // asynchronous driver every read suspends at its first await and
-        // they overlap regardless of order. Suppressing the yield (a
-        // fiber-lifetime `PreventSchedulerYield`) is NOT an option here —
-        // the ref is inherited by everything the child runs and provably
-        // keeps effect timeouts from firing across CPU-bound stretches.
+        // Launch order is dominant-first. The dominant tool-row read is
+        // forked FIRST with `startImmediately: true`: an immediate fork
+        // evaluates the child INLINE (`forkUnsafe` calls `child.evaluate` on
+        // the spot), and a forked fiber enters its run loop with a FRESH
+        // operation count (`runLoop` zeroes `currentOpCount`), so the few
+        // dozen operations between fork and the driver-promise suspension
+        // cannot reach the cooperative-yield budget (`MaxOpsBeforeYield`
+        // defaults to 2048) — the read is issued before the speculative
+        // forks below are even scheduled (a plain fork only queues its child
+        // on the dispatcher for the next tick). Dominant-first matters
+        // beyond taste: cloud's postgres pool is `max: 1`, so queries
+        // pipeline through one connection in issue order — a speculative
+        // query issued first would sit ahead of the read every branch needs,
+        // and a slow or lock-blocked speculative query would gate it. Under
+        // a pathologically small budget override (single digits — a test
+        // harness setting; 1-2 deadlocks the effect run loop itself) the
+        // inline launch can park early and a speculative read may issue
+        // first; that bounded case is accepted rather than suppressed,
+        // because the only known suppression (a fiber-lifetime
+        // `PreventSchedulerYield`) is inherited by everything the child runs
+        // and provably keeps effect timeouts from firing across CPU-bound
+        // stretches.
         const toolRowFiber = yield* Effect.forkChild(
           core.findFirst("tool", {
             where: (b: AnyCb) =>
