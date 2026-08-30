@@ -10,6 +10,7 @@ import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { addIntegrationErrorMessage } from "@executor-js/react/lib/integration-add";
 
 import { addMcpServer, checkCodexPluginAccess, codexPluginsAtom } from "./atoms";
+import { accessBlocked, accessPending, type CodexAccessState } from "./codex-access-gate";
 import { CODEX_PERMISSIONS } from "../sdk/codex-permissions";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ export default function CodexPluginAdd(props: {
   const doCheckAccess = useAtomSet(checkCodexPluginAccess, { mode: "promiseExit" });
 
   const [adding, setAdding] = useState(false);
-  const [access, setAccess] = useState<{ status: string; message?: string } | null>(null);
+  const [access, setAccess] = useState<CodexAccessState | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +46,17 @@ export default function CodexPluginAdd(props: {
     plugin !== undefined &&
     AsyncResult.isSuccess(integrationsResult) &&
     integrationsResult.value.some((integration) => String(integration.slug) === plugin.slug);
+
+  // Adding is held back until the probe says the plugin can actually run: an
+  // integration added while macOS is blocking it looks connected and fails on
+  // its first real call, by which point the person has left the one card that
+  // explains the fix.
+  const blocked = accessBlocked(access);
+  const pending = accessPending({
+    checking,
+    declaresPermissions: permissions.length > 0,
+    access,
+  });
 
   const handleAdd = async () => {
     if (plugin === undefined) return;
@@ -101,7 +113,7 @@ export default function CodexPluginAdd(props: {
     const exit = await doCheckAccess({ params: { id: props.presetId }, reactivityKeys: [] });
     setAccess(
       Exit.isSuccess(exit)
-        ? (exit.value as { status: string; message?: string })
+        ? (exit.value as CodexAccessState)
         : { status: "blocked", message: "Could not reach the plugin." },
     );
     setChecking(false);
@@ -200,8 +212,9 @@ export default function CodexPluginAdd(props: {
             macOS access
           </span>
           <p className="text-[12px] text-muted-foreground">
-            macOS asks the first time this runs. If you miss the prompt, it will not ask again —
-            enable it here.
+            {blocked
+              ? "This has to be on before the plugin can be added — turn it on below, then check again."
+              : "macOS asks the first time this runs. If you miss the prompt, it will not ask again — enable it here."}
           </p>
           <div className="flex items-center gap-3">
             <span
@@ -243,6 +256,19 @@ export default function CodexPluginAdd(props: {
         </div>
       )}
 
+      {/* A block on a plugin that declares no macOS access has no panel above
+          to carry it, so state the reason next to the action it is holding. */}
+      {blocked && permissions.length === 0 && (
+        <div className="flex items-center gap-3">
+          <p className="text-[12px] text-destructive">
+            {access?.message ?? "This plugin cannot run yet."}
+          </p>
+          <Button type="button" variant="secondary" onClick={() => void handleCheck()}>
+            Check again
+          </Button>
+        </div>
+      )}
+
       {error !== null && <p className="text-[12px] text-destructive">{error}</p>}
 
       <FloatActions>
@@ -254,8 +280,13 @@ export default function CodexPluginAdd(props: {
             View integration
           </Button>
         ) : plugin.available ? (
-          <Button type="button" onClick={() => void handleAdd()} loading={adding}>
-            Add integration
+          <Button
+            type="button"
+            onClick={() => void handleAdd()}
+            loading={adding}
+            disabled={blocked || pending}
+          >
+            {pending ? "Checking access…" : "Add integration"}
           </Button>
         ) : (
           <Button asChild>
