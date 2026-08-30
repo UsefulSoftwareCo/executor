@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -75,6 +75,21 @@ export default function CodexPluginAdd(props: {
     }
     props.onComplete(exit.value.slug);
   };
+
+  // Checked on open rather than on a button, so the card states where you
+  // stand before you commit to anything. It runs the plugin's read-only probe
+  // once per card: macOS offers no way to READ another app's privacy
+  // decisions, so trying it is the only way to know.
+  const checkedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!plugin?.available) return;
+    if (checkedFor.current === props.presetId) return;
+    checkedFor.current = props.presetId;
+    void handleCheck();
+    // `handleCheck` is stable for a given preset; re-running on its identity
+    // would re-probe on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plugin?.available, props.presetId]);
 
   const handleCheck = async () => {
     setChecking(true);
@@ -189,27 +204,25 @@ export default function CodexPluginAdd(props: {
             enable it here.
           </p>
           <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void handleCheck()}
-              loading={checking}
-              disabled={!plugin.available}
+            <span
+              className={
+                access !== null && access.status !== "ok"
+                  ? "text-[12px] text-destructive"
+                  : "text-[12px] text-muted-foreground"
+              }
             >
-              Check access
-            </Button>
-            {access !== null && (
-              <span
-                className={
-                  access.status === "ok"
-                    ? "text-[12px] text-foreground"
-                    : "text-[12px] text-destructive"
-                }
-              >
-                {access.status === "ok"
-                  ? "Working — macOS is allowing this."
-                  : (access.message ?? "Blocked.")}
-              </span>
+              {checking
+                ? "Checking…"
+                : access === null
+                  ? ""
+                  : access.status === "ok"
+                    ? "Allowed — macOS is letting this through."
+                    : (access.message ?? "Blocked.")}
+            </span>
+            {access !== null && access.status !== "ok" && !checking && (
+              <Button type="button" variant="secondary" onClick={() => void handleCheck()}>
+                Check again
+              </Button>
             )}
           </div>
           <ul className="flex flex-col gap-1.5">
