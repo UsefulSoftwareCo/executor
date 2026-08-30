@@ -4,7 +4,7 @@ import { Data, Effect, Predicate, Result } from "effect";
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
-import type { FumaDb } from "./fuma-runtime";
+import { StorageError, type FumaDb } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -1010,6 +1010,238 @@ describe("execute read concurrency", () => {
       expect(Result.isFailure(result)).toBe(true);
       if (!Result.isFailure(result)) return;
       expect(Predicate.isTagged("ConnectionNotFoundError")(result.failure)).toBe(true);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Speculative read abandonment. The concurrent reads above are forked, and a
+// branch that returns without needing one must interrupt it instead of
+// consuming it — so a read that hangs cannot gate an error that never needed
+// it, and a read that fails cannot mask that error or leak as an unhandled
+// rejection. Reads a branch DOES need keep failing exactly where the
+// sequential code failed.
+// ---------------------------------------------------------------------------
+
+/** Deterministic read faults keyed by `<table>.<method>`: nothing is armed
+ *  until the test says so (setup reads pass through untouched), and the test
+ *  can check that an armed read really started before it was abandoned. */
+const makeReadFaults = () => {
+  let hung: ReadonlySet<string> = new Set();
+  let failed: ReadonlyMap<string, string> = new Map();
+  const started = new Set<string>();
+  return {
+    hangReads: (keys: readonly string[]) => {
+      hung = new Set(keys);
+    },
+    failReads: (byCode: Readonly<Record<string, string>>) => {
+      failed = new Map(Object.entries(byCode));
+    },
+    started,
+    fault: (key: string): Promise<never> | undefined => {
+      if (hung.has(key)) {
+        started.add(key);
+        // Never settles. The driver promise takes no abort signal, so an
+        // interrupted read is abandoned exactly like this in production.
+        return new Promise<never>(() => {});
+      }
+      const code = failed.get(key);
+      if (code === undefined) return undefined;
+      started.add(key);
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: simulate the raw driver-promise rejection that fumaEffect normalizes into a StorageFailure
+      return Promise.reject(Object.assign(new Error(code), { code }));
+    },
+  };
+};
+
+/** Wrap a test `FumaDb` so armed reads hang or reject; every other read is
+ *  untouched. `withContext` re-wraps so context-bound handles stay faulted. */
+const withFaultedReads = (
+  db: FumaDb,
+  fault: (key: string) => Promise<never> | undefined,
+): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "findFirst" || prop === "findMany") {
+          return (table: unknown, query: unknown) =>
+            fault(`${String(table)}.${prop}`) ??
+            (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+              target,
+              table,
+              query,
+            );
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
+/** A credential provider that works during setup and can be armed to fail
+ *  every later read — the site-2 "credential resolution fails" input. */
+const armableFailingProvider = () => {
+  const store = new Map<string, string>();
+  let failWith: string | undefined;
+  const provider: CredentialProvider = {
+    key: ProviderKey.make("memory"),
+    writable: true,
+    get: (id) =>
+      Effect.suspend(() =>
+        failWith === undefined
+          ? Effect.succeed(store.get(String(id)) ?? null)
+          : Effect.fail(new StorageError({ message: failWith, cause: undefined })),
+      ),
+    set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+  };
+  return {
+    provider,
+    failNow: (message: string) => {
+      failWith = message;
+    },
+  };
+};
+
+describe("speculative read abandonment", () => {
+  it.effect("unknown-tool error surfaces while the speculative reads hang forever", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      // From here on the speculative policy and connection reads NEVER
+      // resolve. The unknown-tool branch needs neither, so the call must
+      // fail without waiting on them — the previous all-or-nothing shape
+      // could not fail until every read settled.
+      faults.hangReads(["tool_policy.findMany", "connection.findFirst"]);
+      const result = yield* Effect.result(executor.execute(addr("no-such-tool"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolNotFoundError")(result.failure)).toBe(true);
+      // Both hung reads really started: the branch abandoned in-flight
+      // reads, it did not skip forking them.
+      expect(faults.started.has("tool_policy.findMany")).toBe(true);
+      expect(faults.started.has("connection.findFirst")).toBe(true);
+    }),
+  );
+
+  it.effect("a blocked tool reports ToolBlockedError while the connection read hangs", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "demo.*",
+        action: "block",
+      });
+
+      // The block branch consumes the policy read but never the connection
+      // read; a connection read that never resolves must not gate it.
+      faults.hangReads(["connection.findFirst"]);
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+      expect(faults.started.has("connection.findFirst")).toBe(true);
+    }),
+  );
+
+  it.effect("failing speculative reads neither mask the branch error nor unhandled-reject", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const result = yield* Effect.gen(function* () {
+        faults.failReads({
+          "tool_policy.findMany": "POLICY_READ_FAILED",
+          "connection.findFirst": "CONNECTION_READ_FAILED",
+        });
+        const out = yield* Effect.result(executor.execute(addr("no-such-tool"), {}));
+        // Both rejections fired before the call returned; give an
+        // unobserved one its macrotask turn to reach the process hook.
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        return out;
+      }).pipe(Effect.ensuring(Effect.sync(() => process.off("unhandledRejection", onUnhandled))));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolNotFoundError")(result.failure)).toBe(true);
+      expect(unhandled).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "a policy read failure on the consuming path surfaces, ahead of a connection failure",
+    () =>
+      Effect.gen(function* () {
+        const faults = makeReadFaults();
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: withFaultedReads(config.db, faults.fault),
+        });
+        yield* seedRunConnection(executor);
+
+        faults.failReads({
+          "tool_policy.findMany": "POLICY_READ_FAILED",
+          "connection.findFirst": "CONNECTION_READ_FAILED",
+        });
+        const result = yield* Effect.result(executor.execute(addr("run"), {}));
+        expect(Result.isFailure(result)).toBe(true);
+        if (!Result.isFailure(result)) return;
+        // The policy read is consumed first, exactly as the sequential code
+        // ordered the reads, so its failure is the one reported even though
+        // the connection read failed too.
+        expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+        expect((result.failure as StorageError).message).toContain("POLICY_READ_FAILED");
+      }),
+  );
+
+  it.effect("a credential failure surfaces while the site-2 integration read hangs", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const armable = armableFailingProvider();
+      const config = makeTestConfig({
+        plugins: [invokeConcurrencyPlugin(armable.provider)] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      // After approval, credential resolution and the integration-row read
+      // run concurrently. Resolution fails while the integration read never
+      // resolves: the credential failure must surface without waiting on the
+      // read — the failure path interrupts it instead of joining it.
+      faults.hangReads(["integration.findFirst"]);
+      armable.failNow("CREDENTIAL_READ_FAILED");
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+      expect((result.failure as StorageError).message).toBe("CREDENTIAL_READ_FAILED");
+      expect(faults.started.has("integration.findFirst")).toBe(true);
     }),
   );
 });
