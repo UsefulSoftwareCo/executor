@@ -242,6 +242,9 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  handshake — the right call for spawn-per-call servers, where the auto
    *  probe costs an extra child process per connect. */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Opt out of process reuse — spawn a fresh child for every tool call (see
+   *  `McpStdioIntegrationConfig.spawnPerCall`). */
+  spawnPerCall: Schema.optional(Schema.Boolean),
   /** Reach the server through the Codex app-server bridge: the command spawns
    *  `codex app-server` and `server` names the MCP server inside Codex whose
    *  tools this integration exposes. Set by the Codex plugin add flow. */
@@ -417,6 +420,7 @@ const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType =>
       args: input.args ? [...input.args] : undefined,
       cwd: input.cwd,
       versionNegotiation: input.versionNegotiation,
+      spawnPerCall: input.spawnPerCall,
       appServer: input.appServer,
       authenticationTemplate:
         vars.length > 0
@@ -645,6 +649,7 @@ const buildConnectorInput = (
       env: Object.keys(env).length > 0 ? env : undefined,
       cwd: config.cwd,
       versionNegotiation: config.versionNegotiation,
+      spawnPerCall: config.spawnPerCall,
       appServer: config.appServer,
     } satisfies McpStdioIntegrationConfig);
   }
@@ -714,20 +719,25 @@ const sortedRecord = (
  *  it through pool behaviour alone would not see it. */
 /** The connector inputs the pool accepts.
  *
- *  Remote servers, and app-server bridge connections — NOT stdio generally.
- *  Pooling the bridge is what makes a Codex plugin's "for this conversation"
- *  approval mean anything: that grant lives on the Codex THREAD, and the
- *  bridge starts one thread per connection, so a connection per call re-asked
- *  on every call. Plain stdio stays unpooled on purpose: a spawn-per-call CLI
- *  server is entitled to assume a fresh process each time. */
+ *  Remote servers, app-server bridge connections, and plain stdio servers
+ *  that have not opted out via `spawnPerCall`. Pooling the bridge is what
+ *  makes a Codex plugin's "for this conversation" approval mean anything:
+ *  that grant lives on the Codex THREAD, and the bridge starts one thread per
+ *  connection, so a connection per call re-asked on every call. Plain stdio
+ *  is pooled for latency: a spawn-per-call server pays the child spawn plus a
+ *  full MCP handshake on EVERY tool call (~1s for an `npx`-launched server),
+ *  which is how every other MCP client avoids it — they keep the child alive
+ *  for the whole session. A server that genuinely depends on fresh-process
+ *  semantics sets `spawnPerCall: true` in its stdio config. The bridge
+ *  ignores that flag: its approvals are session state, so it must pool. */
 export type PoolableConnectorInput =
   | Extract<ConnectorInput, { readonly transport: "remote" }>
-  | (McpStdioIntegrationConfig & { readonly appServer: { readonly server: string } });
+  | McpStdioIntegrationConfig;
 
 /** Whether this connection may be retained between calls (see
  *  `PoolableConnectorInput`). */
 export const isPoolableConnectorInput = (input: ConnectorInput): input is PoolableConnectorInput =>
-  input.transport === "remote" || input.appServer !== undefined;
+  input.transport === "remote" || input.appServer !== undefined || input.spawnPerCall !== true;
 
 export const connectionPoolKey = (
   input: PoolableConnectorInput,
@@ -757,14 +767,17 @@ export const connectionPoolKey = (
         : {
             owner: identity.owner,
             connection: identity.connection,
-            transport: "appserver",
+            transport: input.appServer !== undefined ? "appserver" : "stdio",
             command: input.command,
             args: input.args ?? [],
             cwd: input.cwd ?? null,
             env: sortedRecord(input.env),
-            server: input.appServer.server,
-            surface: input.appServer.surface ?? null,
-            modulePath: input.appServer.modulePath ?? null,
+            // Plain stdio negotiates the protocol at connect, so two configs
+            // that handshake differently must never share a parked session.
+            versionNegotiation: input.versionNegotiation ?? null,
+            server: input.appServer?.server ?? null,
+            surface: input.appServer?.surface ?? null,
+            modulePath: input.appServer?.modulePath ?? null,
             template,
             values: sortedRecord(values),
           },

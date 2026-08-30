@@ -41,6 +41,7 @@ const toServerInput = (
       env?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
+      spawnPerCall?: boolean;
       appServer?: { server: string; surface?: "sky" | "browser"; modulePath?: string };
       slug?: string;
     };
@@ -55,6 +56,7 @@ const toServerInput = (
       env: p.env,
       cwd: p.cwd,
       versionNegotiation: p.versionNegotiation,
+      spawnPerCall: p.spawnPerCall,
       appServer: p.appServer,
       slug: p.slug,
     };

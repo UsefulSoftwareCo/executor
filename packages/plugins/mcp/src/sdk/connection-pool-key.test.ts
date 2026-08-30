@@ -24,13 +24,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import { connectionPoolKey } from "./plugin";
+import { connectionPoolKey, isPoolableConnectorInput } from "./plugin";
 import type { ConnectorInput } from "./connection";
 
 const SECRET = "sk-live-poolkey-Zq7!x-SECRET";
 const OTHER_SECRET = "sk-live-poolkey-Zq7!x-ROTATED";
 
 type RemoteInput = Extract<ConnectorInput, { readonly transport: "remote" }>;
+type StdioInput = Extract<ConnectorInput, { readonly transport: "stdio" }>;
 
 const remoteInput = (overrides: Partial<RemoteInput> = {}): RemoteInput => ({
   transport: "remote",
@@ -290,6 +291,148 @@ describe("MCP connection-pool key", () => {
       );
 
       expect(second).not.toBe(first);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Plain stdio joined the poolable inputs (spawn-per-call cost ~1s for an
+// `npx`-launched server). These pin the two properties that make that safe:
+// the opt-out is honored, and stdio identities separate on every field that
+// changes what the child is or what secrets it carries.
+// ---------------------------------------------------------------------------
+
+const stdioInput = (overrides: Partial<StdioInput> = {}): StdioInput => ({
+  transport: "stdio",
+  command: "npx",
+  args: ["-y", "@example/mcp-server"],
+  env: { API_KEY: SECRET },
+  ...overrides,
+});
+
+describe("stdio poolability", () => {
+  it("pools plain stdio by default", () => {
+    expect(isPoolableConnectorInput(stdioInput())).toBe(true);
+  });
+
+  it("honors the spawn-per-call opt-out", () => {
+    expect(isPoolableConnectorInput(stdioInput({ spawnPerCall: true }))).toBe(false);
+  });
+
+  it("always pools the app-server bridge — its approvals are session state", () => {
+    expect(
+      isPoolableConnectorInput(
+        stdioInput({ spawnPerCall: true, appServer: { server: "messages" } }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("stdio pool key", () => {
+  it.effect("is a bare digest that retains neither the secret env nor the command", () =>
+    Effect.gen(function* () {
+      const key = yield* connectionPoolKey(
+        stdioInput(),
+        "stdio_env",
+        { API_KEY: SECRET },
+        IDENTITY,
+      );
+
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+      expect(key).not.toContain(SECRET);
+      expect(key).not.toContain("@example/mcp-server");
+    }),
+  );
+
+  it.effect("the same stdio identity reuses one key", () =>
+    Effect.gen(function* () {
+      const first = yield* connectionPoolKey(
+        stdioInput(),
+        "stdio_env",
+        { API_KEY: SECRET },
+        IDENTITY,
+      );
+      const second = yield* connectionPoolKey(
+        stdioInput(),
+        "stdio_env",
+        { API_KEY: SECRET },
+        IDENTITY,
+      );
+
+      expect(first).toBe(second);
+    }),
+  );
+
+  it.effect("a different secret env value dials a fresh child", () =>
+    Effect.gen(function* () {
+      const mine = yield* connectionPoolKey(
+        stdioInput(),
+        "stdio_env",
+        { API_KEY: SECRET },
+        IDENTITY,
+      );
+      const theirs = yield* connectionPoolKey(
+        stdioInput({ env: { API_KEY: OTHER_SECRET } }),
+        "stdio_env",
+        { API_KEY: OTHER_SECRET },
+        IDENTITY,
+      );
+
+      expect(theirs).not.toBe(mine);
+    }),
+  );
+
+  it.effect("a different command, args, or cwd dials a fresh child", () =>
+    Effect.gen(function* () {
+      const base = yield* connectionPoolKey(stdioInput(), "stdio_env", {}, IDENTITY);
+      const command = yield* connectionPoolKey(
+        stdioInput({ command: "bunx" }),
+        "stdio_env",
+        {},
+        IDENTITY,
+      );
+      const args = yield* connectionPoolKey(
+        stdioInput({ args: ["-y", "@example/mcp-server", "--verbose"] }),
+        "stdio_env",
+        {},
+        IDENTITY,
+      );
+      const cwd = yield* connectionPoolKey(stdioInput({ cwd: "/tmp" }), "stdio_env", {}, IDENTITY);
+
+      expect(new Set([base, command, args, cwd]).size).toBe(4);
+    }),
+  );
+
+  it.effect("plain stdio and the app-server bridge never share a session", () =>
+    Effect.gen(function* () {
+      // Same command and args — the bridge spawns `codex app-server` too, but
+      // its session is a Codex thread, not the server's own MCP session.
+      const plain = yield* connectionPoolKey(stdioInput(), "none", {}, IDENTITY);
+      const bridge = yield* connectionPoolKey(
+        stdioInput({ appServer: { server: "messages" } }),
+        "none",
+        {},
+        IDENTITY,
+      );
+
+      expect(bridge).not.toBe(plain);
+    }),
+  );
+
+  it.effect("two owners never share one child", () =>
+    Effect.gen(function* () {
+      const org = yield* connectionPoolKey(stdioInput(), "none", {}, IDENTITY);
+      const user = yield* connectionPoolKey(
+        stdioInput(),
+        "none",
+        {},
+        {
+          owner: "user",
+          connection: "default",
+        },
+      );
+
+      expect(user).not.toBe(org);
     }),
   );
 });

@@ -63,6 +63,9 @@ const AddStdioServerPayload = Schema.Struct({
    *  2026-07-28) for modern-only servers; default is the legacy `initialize`
    *  handshake. */
   versionNegotiation: Schema.optional(Schema.Literals(["legacy", "auto"])),
+  /** Opt out of process reuse — spawn a fresh child for every tool call.
+   *  Absent means the spawned server is kept alive between calls. */
+  spawnPerCall: Schema.optional(Schema.Boolean),
   /** Reach the server through the Codex app-server bridge: the command spawns
    *  `codex app-server` and `server` names the MCP server inside Codex. */
   appServer: Schema.optional(

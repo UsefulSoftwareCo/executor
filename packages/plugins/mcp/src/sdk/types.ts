@@ -254,6 +254,13 @@ export const McpStdioIntegrationConfig = Schema.Struct({
   /** Protocol negotiation at connect. Absent means `legacy` (see
    *  `McpStdioVersionNegotiation` for why that stays the default). */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Opt out of process reuse: spawn a fresh child for every tool call.
+   *  Absent means pooled — the spawned server is kept alive between calls
+   *  (five-minute idle window), which is how every mainstream MCP client
+   *  drives stdio servers and what the protocol's session model assumes. Set
+   *  this only for a server that genuinely depends on fresh-process
+   *  semantics, e.g. one that re-reads state at boot and never afterwards. */
+  spawnPerCall: Schema.optional(Schema.Boolean),
   /** Present when the spawned command is `codex app-server` rather than an
    *  MCP server itself: the connector then bridges MCP to the Codex
    *  app-server protocol in process, and `server` names the MCP server
