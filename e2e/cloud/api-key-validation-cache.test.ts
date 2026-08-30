@@ -19,15 +19,13 @@
 // Two scenarios because the two bearer surfaces wire the cache differently:
 //
 //  - /api/* resolves `ApiKeyService` from the app's boot layer, built once
-//    per isolate — the cache holds. Green.
-//  - /mcp is served outside the app envelope by the agent handler, whose
-//    `authenticate` provides the auth layer PER REQUEST
-//    (`Effect.provide(cloudMcpAuth)` in apps/cloud/src/mcp/agent-handler.ts).
-//    Each request builds a fresh `ApiKeyService` — a fresh cache map — so
-//    every MCP request still pays the WorkOS round trip the cache exists to
-//    remove. That scenario is registered as an expected failure until the
-//    MCP wiring shares one built auth layer per isolate; the assertions
-//    state the real contract, and the flag must be removed when it lands.
+//    per isolate.
+//  - /mcp is served outside the app envelope by the agent handler, which
+//    builds `cloudMcpAuth` once per isolate on a memoized ManagedRuntime
+//    (apps/cloud/src/mcp/agent-handler.ts). It used to provide that layer
+//    per request — a fresh `ApiKeyService`, a fresh cache map, a WorkOS
+//    round trip on every MCP request — so this scenario pins the shared
+//    wiring, not just the cache.
 //
 // Attribution: the emulator redacts secret-named fields (the response's
 // `api_key` object), but the request body's `value` survives, and every key
@@ -226,13 +224,7 @@ scenario(
 
 scenario(
   "MCP · back-to-back API-key requests validate the key with WorkOS once, and each key validates independently",
-  {
-    expectedFailure:
-      "the MCP agent handler provides its auth layer per request (Effect.provide(cloudMcpAuth) " +
-      "in apps/cloud/src/mcp/agent-handler.ts), so every MCP request builds a fresh " +
-      "ApiKeyService and a fresh validation cache — each request still pays a WorkOS round " +
-      "trip. Remove this flag when the MCP path shares one built auth layer per isolate.",
-  },
+  {},
   Effect.scoped(
     Effect.gen(function* () {
       const { target, keyA, keyB, readValidations } = yield* mintTwoKeys;

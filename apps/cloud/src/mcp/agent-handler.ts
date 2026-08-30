@@ -1,5 +1,5 @@
 import * as OtelTracer from "@effect/opentelemetry/Tracer";
-import { Effect, Predicate } from "effect";
+import { Effect, ManagedRuntime, Predicate } from "effect";
 
 import {
   McpAuthProvider,
@@ -128,7 +128,23 @@ const authenticate = (request: Request) =>
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(cloudMcpAuth));
+  });
+
+// ONE auth layer per isolate. `authenticate` used to end in
+// `Effect.provide(cloudMcpAuth)`, which rebuilt the entire auth stack — the
+// WorkOS client, `ApiKeyService` and with it the api-key validation success
+// cache — on every MCP request, so that cache never survived a request on this
+// plane (the /api/* plane resolves the same service from the app's `boot`
+// layer, built once per isolate). A lazily created ManagedRuntime (the
+// auth/doc-gate.ts pattern) builds `cloudMcpAuth` on the first request and
+// memoizes it for the isolate's lifetime; `runTraced` runs every program on it.
+// Nothing inside the layer is request-scoped: the WorkOS client holds no
+// sockets (just config), the JWKS cache is already module-scope, and
+// `McpOrganizationAuthLive` builds its postgres socket FRESH inside every
+// `authorize` call precisely so the service itself can outlive a request
+// (Cloudflare Workers' I/O isolation — see makeMcpOrganizationAuthServices).
+let mcpAuthRuntime: ManagedRuntime.ManagedRuntime<McpAuthProvider, never> | undefined;
+const getMcpAuthRuntime = () => (mcpAuthRuntime ??= ManagedRuntime.make(cloudMcpAuth));
 
 // The pre-Agents envelope ran the MCP auth path inside the Effect app, whose
 // HttpMiddleware provided the OTEL tracer — that is where the `mcp.request`
@@ -140,12 +156,20 @@ const authenticate = (request: Request) =>
 // forwarded request's traceparent — which also makes `currentPropagationHeaders`
 // (via Effect.currentParentSpan) ferry that same trace into the session DO
 // instead of letting the DO start a fresh root per request.
-const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> => {
+//
+// Runs on the memoized auth runtime above (rather than a bare
+// `Effect.runPromise`) so `authenticate` resolves the once-built
+// `McpAuthProvider` from it; the telemetry layer is still provided per run, so
+// spans keep exporting exactly as before.
+const runTraced = <A>(
+  request: Request,
+  program: Effect.Effect<A, never, McpAuthProvider>,
+): Promise<A> => {
   const parsed = parseTraceparent(
     request.headers.get("traceparent"),
     request.headers.get("tracestate"),
   );
-  return Effect.runPromise(
+  return getMcpAuthRuntime().runPromise(
     (parsed ? OtelTracer.withSpanContext(program, parsed) : program).pipe(
       Effect.provide(WorkerTelemetryLive),
     ),
