@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Predicate } from "effect";
+import { Deferred, Effect, Fiber, Option, Predicate } from "effect";
 import { withQueryContext } from "@executor-js/fumadb/query";
 
 import {
@@ -262,6 +262,93 @@ describe("oauth.start / oauth.complete", () => {
           expect(yield* server.acceptsAccessToken(out.token)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("complete returns after the durable grant while remote tool discovery continues", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const discoveryStarted = yield* Deferred.make<void>();
+        const releaseDiscovery = yield* Deferred.make<void>();
+        const keptAlive: Promise<unknown>[] = [];
+        const slowOAuthPlugin = definePlugin(() => ({
+          id: "acme" as const,
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(discoveryStarted, undefined);
+              yield* Deferred.await(releaseDiscovery);
+              return {
+                tools: [{ name: ToolName.make("whoami"), description: "whoami" }],
+              };
+            }),
+          describeAuthMethods: () => [
+            {
+              id: "oauth",
+              label: "OAuth2",
+              kind: "oauth" as const,
+              template: String(TEMPLATE),
+              oauth: { scopes: ["read"] },
+            },
+          ],
+          invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: INTEG,
+                description: "Slow Acme",
+                config: {},
+              }),
+          }),
+        }))();
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins: [memoryCredentialsPlugin(), slowOAuthPlugin] as const,
+          waitUntil: (promise) => keptAlive.push(promise),
+        });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main-account"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+
+        const completed = yield* executor.oauth
+          .complete({ state: started.state, code: callback.code }, { toolSync: "background" })
+          .pipe(Effect.timeoutOption("1 second"));
+        expect(
+          Option.isSome(completed),
+          "the callback returns while listTools remains deliberately blocked",
+        ).toBe(true);
+        expect(keptAlive).toHaveLength(1);
+        yield* Deferred.await(discoveryStarted);
+
+        const connections = yield* executor.connections.list({ integration: INTEG });
+        expect(connections.map((connection) => String(connection.name))).toEqual(["mainAccount"]);
+
+        yield* Deferred.succeed(releaseDiscovery, undefined);
+        yield* Effect.promise(() => Promise.all(keptAlive));
+        const tools = yield* executor.tools.list({ integration: INTEG });
+        expect(tools.map((tool) => String(tool.name))).toEqual(["whoami"]);
+      }),
+    ),
   );
 
   it.effect("persists HTTP Basic client auth for code exchange and refresh", () =>
