@@ -294,3 +294,24 @@
     opacity: 0.25;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion — WCAG 2.2 (motion-sensitive users).
+ *
+ * Neutralizes transitions/animations/scroll-behavior when the OS requests
+ * reduced motion, per the standard modern-CSS-reset pattern. The spinner
+ * (ios-spinner-fade) is capped to a single 0.01ms iteration — effectively
+ * static — which is the standard behavior: its meaning is preserved by
+ * `role="status"` (announced by assistive tech), and an opacity pulse would
+ * be a non-motion affordance but is not required for reduced-motion users.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
