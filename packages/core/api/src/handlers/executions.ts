@@ -1,5 +1,5 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { Schema } from "effect";
 
 import { ExecutorApi } from "../api";
@@ -8,7 +8,7 @@ import { resolveArtifactAction } from "@executor-js/host-mcp/artifact-action";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "@executor-js/host-mcp/tool-call-code";
 import { PENDING_APPROVAL_TTL_MS } from "@executor-js/sdk";
 import { ExecutionEngineService, ExecutorService } from "../services";
-import { capture, captureEngineError } from "@executor-js/api";
+import { capture, captureEngineError, ErrorCapture } from "@executor-js/api";
 
 class ExecutionNotFoundError extends Schema.TaggedErrorClass<ExecutionNotFoundError>()(
   "ExecutionNotFoundError",
@@ -116,7 +116,26 @@ const recordPendingApproval = (approval: {
     const executor = yield* ExecutorService;
     yield* executor.pendingApprovals
       .put({ ...approval, expiresAt: Date.now() + PENDING_APPROVAL_TTL_MS })
-      .pipe(Effect.catchCause(() => Effect.void));
+      .pipe(
+        Effect.catchCause((cause) =>
+          // Best-effort record (documented above): a storage hiccup must not
+          // turn a working approval into a failed execution. But it must not
+          // be SILENT either — a silently degrading durability fallback is
+          // how paused executions became unrecoverable after restart.
+          // Capture the cause via the host's ErrorCapture seam (Sentry in
+          // cloud, console in local/selfhost). No secret material is logged:
+          // the cause is a StorageError, never the approval payload. The
+          // effect stays total — execution is unaffected.
+          Effect.serviceOption(ErrorCapture).pipe(
+            Effect.flatMap((opt) =>
+              Option.isSome(opt)
+                ? opt.value.captureException(cause).pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+            Effect.catch(() => Effect.void),
+          ),
+        ),
+      );
   });
 
 /**
