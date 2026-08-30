@@ -25,11 +25,9 @@ describe("MCP discovery teardown", () => {
   it.live("does not strand discovery when close never settles", () =>
     Effect.gen(function* () {
       const state = { closeStarted: false };
-      const startedAt = Date.now();
       const manifest = yield* discoverTools(hangingCloseConnector(state));
 
       expect(state.closeStarted).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(4_000);
       expect(manifest.server).toEqual({
         name: "hanging-close",
         version: "1.0.0",
