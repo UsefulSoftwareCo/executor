@@ -15,6 +15,7 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
+import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import {
   addIntegrationErrorMessage,
@@ -42,13 +43,25 @@ export default function AddGraphqlIntegration(props: {
   onComplete: (slug?: string) => void;
   onCancel: () => void;
   initialUrl?: string;
+  initialAuthHeader?: string;
+  initialAuthNote?: string;
 }) {
   const [endpoint, setEndpoint] = useState(props.initialUrl ?? "");
   const [description, setDescription] = useState("");
   const identity = useIntegrationIdentity({
     fallbackName: integrationDisplayNameFromUrl(endpoint, "GraphQL") ?? "",
   });
-  const authMethodList = useAuthMethodList(NO_SEEDS);
+  // GraphQL has no add-time detection, but the registry can declare the
+  // credential placement ("Authorization: {api_key}" — Linear's no-Bearer
+  // personal keys). A declared placement seeds the method list the same way a
+  // spec's security scheme would.
+  const registrySeeds = useMemo<readonly AuthMethodSeed[]>(() => {
+    const placement = props.initialAuthHeader
+      ? placementFromHeaderPattern(props.initialAuthHeader)
+      : null;
+    return placement ? [{ value: { kind: "apikey", placements: [placement] } }] : NO_SEEDS;
+  }, [props.initialAuthHeader]);
+  const authMethodList = useAuthMethodList(registrySeeds);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -144,8 +157,12 @@ export default function AddGraphqlIntegration(props: {
         list={authMethodList}
         allowedKinds={["none", "apikey"]}
         emptyHint="No authentication declared. Add a method, or add the integration without auth and connect an account from the integration page later."
-        footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
+        footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
       />
+
+      {props.initialAuthNote ? (
+        <p className="text-xs leading-relaxed text-muted-foreground">{props.initialAuthNote}</p>
+      ) : null}
 
       {slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSlug} />}
 

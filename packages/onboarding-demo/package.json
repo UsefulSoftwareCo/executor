@@ -1,0 +1,32 @@
+{
+  "name": "@executor-js/onboarding-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@executor-js/plugin-mcp": "workspace:*",
+    "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/react": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "lucide-react": "^1.7.0",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "sonner": "^2.0.7",
+    "tldts": "^7.0.28"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

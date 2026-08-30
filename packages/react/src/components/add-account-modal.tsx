@@ -27,6 +27,7 @@ import {
   checkConnectionHealth,
   connectionsAllAtom,
   createOAuthClientOptimistic,
+  integrationAtom,
   integrationHealthCheckAtom,
   integrationHealthCheckCandidatesAtom,
   oauthClientsOptimisticAtom,
@@ -85,6 +86,7 @@ import {
 } from "./oauth-client-form";
 import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
+import { CredentialGuidancePanel } from "./credential-guidance";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
@@ -624,6 +626,14 @@ export const connectionExistsMessage = (label: string): string =>
 /** The default owner a new connection is saved under when the user makes no
  *  explicit choice. Personal: a connection is most often a personal credential. */
 export const DEFAULT_CONNECTION_OWNER: Owner = "user";
+
+/** The method the modal opens on. OAuth needs a registered app (or a DCR
+ *  round-trip) before "Connect" does anything; a key is one paste. When an
+ *  integration declares both, starting on OAuth greets most users with
+ *  "Register app" — a dead end — while the working method sits one tab over.
+ *  Prefer the first non-OAuth method; OAuth stays one click away. */
+export const preferredMethodId = (methods: readonly AuthMethod[]): string =>
+  (methods.find((method) => method.kind !== "oauth") ?? methods[0])?.id ?? "";
 
 const authMethodKey = (method: AuthMethod): string =>
   method.source === "custom" ? `custom:${String(method.template)}` : `declared:${method.id}`;
@@ -1423,7 +1433,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   );
   const [addingMethod, setAddingMethod] = useState(false);
 
-  const [methodId, setMethodId] = useState<string>(methods[0]?.id ?? "");
+  const [methodId, setMethodId] = useState<string>(preferredMethodId(methods));
   // One value per distinct credential input (`variable → pasted value`). A
   // single-secret method has just `{ token }`; a method with two distinct inputs
   // (e.g. Datadog's two keys) collects one value per variable.
@@ -1501,6 +1511,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // The integration's declared health check + its candidate operations. When a
   // check is configured we probe against it; when not, the user picks one of the
   // candidates inline to test the key (and we save it).
+  // The integration's display URL is how the registry's credential guidance is
+  // located — it names the provider this key belongs to.
+  const integrationRecord = useAtomValue(integrationAtom(integration));
+  const integrationDisplayUrl = AsyncResult.isSuccess(integrationRecord)
+    ? integrationRecord.value?.displayUrl
+    : undefined;
   const healthCheckResult = useAtomValue(integrationHealthCheckAtom(integration));
   const configuredHealthCheck = AsyncResult.isSuccess(healthCheckResult)
     ? healthCheckResult.value
@@ -1605,7 +1621,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
             m.id === initialState.template || String(m.template) === initialState.template,
         )
       : undefined;
-    setMethodId(initialMethod?.id ?? allMethods[0]!.id);
+    setMethodId(initialMethod?.id ?? preferredMethodId(allMethods));
   }, [allMethods, initialState?.template, methodId]);
 
   // Non-secret prefill carried by an `oauth.clients.createHandoff` deep link.
@@ -2893,6 +2909,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                       {!isNoAuth && (
                         <div className="space-y-2">
                           <StepHeader index={1} label={authStepLabel} />
+
+                          {/* What this key is called at the provider, the page
+                              that mints it, and their own setup steps. The
+                              question this dialog used to ask without
+                              answering. */}
+                          <CredentialGuidancePanel
+                            displayUrl={integrationDisplayUrl}
+                            methodKind={method?.kind}
+                          />
 
                           {isOAuth && method ? (
                             cimdActive ? (

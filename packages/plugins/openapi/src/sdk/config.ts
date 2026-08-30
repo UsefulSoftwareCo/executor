@@ -52,6 +52,11 @@ export const OpenApiIntegrationConfigSchema = Schema.Struct({
   specUrl: Schema.optional(Schema.String),
   /** Optional base URL override. */
   baseUrl: Schema.optional(Schema.String),
+  /** The PRODUCT's domain, recorded at add time when the caller knew it (a
+   *  registry row names notion.com). The spec's own host is often a code
+   *  host (raw.githubusercontent.com) that says nothing about the product,
+   *  which sent credential guidance and favicons to the wrong domain. */
+  displayDomain: Schema.optional(Schema.String),
   /** Static headers applied to every request (no secret material). */
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Static query params applied to every request (no secret material). */

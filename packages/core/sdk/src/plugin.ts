@@ -612,6 +612,10 @@ export interface IntegrationPreset {
   readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
+  /** The public registry lists this product: the picker shows the registry's
+   *  card, and the preset's knowledge rides quick add instead. A custom
+   *  deployment preset leaves this unset and keeps its own card. */
+  readonly registryListed?: boolean;
   readonly transport?: "remote" | "stdio";
   readonly command?: string;
   readonly args?: readonly string[];

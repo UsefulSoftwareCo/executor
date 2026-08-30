@@ -41,13 +41,24 @@ export interface SpecFormatAdapter {
   readonly id: string;
   readonly fetch: (input: SpecFetchInput) => Effect.Effect<ConvertedSpec, OpenApiParseError>;
   readonly deriveIdentity?: (doc: unknown) => DerivedIdentity | null;
+  /** Recognizes URLs this adapter can convert. Lets a hand-pasted URL take
+   *  the same path a preset would: without this, a Google Discovery URL only
+   *  worked through a preset carrying `specFormat`, and pasting the identical
+   *  URL failed as "not OpenAPI". */
+  readonly detectsUrl?: (url: string) => boolean;
 }
 
 export const resolveSpecFormatAdapter = (
   adapters: readonly SpecFormatAdapter[],
   id: string | undefined,
+  url?: string,
 ): Effect.Effect<SpecFormatAdapter | null, OpenApiParseError> => {
-  if (!id) return Effect.succeed(null);
+  if (!id) {
+    if (!url) return Effect.succeed(null);
+    return Effect.succeed(
+      adapters.find((candidate) => candidate.detectsUrl?.(url) === true) ?? null,
+    );
+  }
   const adapter = adapters.find((candidate) => candidate.id === id);
   if (adapter) return Effect.succeed(adapter);
   return Effect.fail(new OpenApiParseError({ message: `Unknown OpenAPI spec format: ${id}` }));

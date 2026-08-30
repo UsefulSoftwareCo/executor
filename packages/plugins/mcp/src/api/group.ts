@@ -36,6 +36,11 @@ const AddRemoteServerPayload = Schema.Struct({
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
+  /** Pin legacy protocol negotiation for a server that echoes the modern
+   *  revision but breaks its contract (the probe reports when only legacy
+   *  worked). Omitting this here silently stripped the pin from the stored
+   *  integration, leaving it unusable against exactly that server. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
   slug: Schema.optional(Schema.String),
   queryParams: Schema.optional(StringMap),
   headers: Schema.optional(StringMap),
@@ -101,6 +106,12 @@ const ProbeEndpointResponse = Schema.Struct({
   serverName: Schema.NullOr(Schema.String),
   /** Server `instructions` from initialize — prefills the description field. */
   instructions: Schema.NullOr(Schema.String),
+  /** Which protocol negotiation worked, when discovery succeeded. `legacy`
+   *  means the server echoes the modern revision but breaks its contract, and
+   *  the add must pin `versionNegotiation: "legacy"` on the integration —
+   *  omitting this field here silently stripped it from the HTTP response and
+   *  the pin never happened. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
 });
 
 // ---------------------------------------------------------------------------

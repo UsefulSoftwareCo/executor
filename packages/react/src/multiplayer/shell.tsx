@@ -1,4 +1,4 @@
-import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -23,7 +23,6 @@ import {
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
 import { Wordmark } from "../components/wordmark";
-import { ConnectDialog } from "../pages/integrations";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
@@ -428,7 +427,13 @@ export function Shell(props: ShellProps) {
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [connectIntegrationOpen, setConnectIntegrationOpen] = useState(false);
+  const navigate = useNavigate();
+  // The connect dialog became the full-page picker; the sidebar affordance
+  // navigates instead of opening a modal.
+  const openIntegrationBrowse = () => {
+    trackEvent("integration_browse_opened", { via: "sidebar" });
+    void navigate({ to: "/{-$orgSlug}/integrations/browse" });
+  };
   if (lastPathname.current !== pathname) {
     lastPathname.current = pathname;
     if (mobileSidebarOpen) setMobileSidebarOpen(false);
@@ -446,17 +451,13 @@ export function Shell(props: ShellProps) {
   return (
     <div className="flex h-screen overflow-hidden">
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
-      <ConnectDialog open={connectIntegrationOpen} onOpenChange={setConnectIntegrationOpen} />
       {/* Desktop sidebar */}
       <aside className="hidden w-52 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col lg:w-56">
         <SidebarContent
           {...props}
           pathname={pathname}
           onOpenCommands={() => setCommandPaletteOpen(true)}
-          onOpenIntegrationConnect={() => {
-            setConnectIntegrationOpen(true);
-            trackEvent("integration_connect_dialog_opened");
-          }}
+          onOpenIntegrationConnect={openIntegrationBrowse}
         />
       </aside>
 
@@ -502,8 +503,7 @@ export function Shell(props: ShellProps) {
               }}
               onOpenIntegrationConnect={() => {
                 setMobileSidebarOpen(false);
-                setConnectIntegrationOpen(true);
-                trackEvent("integration_connect_dialog_opened");
+                openIntegrationBrowse();
               }}
             />
           </div>

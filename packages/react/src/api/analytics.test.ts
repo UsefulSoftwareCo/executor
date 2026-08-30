@@ -13,7 +13,7 @@ afterEach(() => {
 
 describe("analytics seam", () => {
   it("is a no-op when no client is mounted", () => {
-    expect(() => trackEvent("integration_connect_dialog_opened")).not.toThrow();
+    expect(() => trackEvent("integration_browse_opened", { via: "header" })).not.toThrow();
   });
 
   it("forwards name and properties to the mounted client", () => {

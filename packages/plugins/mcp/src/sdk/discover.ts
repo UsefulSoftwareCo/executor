@@ -2,10 +2,11 @@
 // MCP tool discovery — connect to an MCP server and list its tools
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Option, Predicate } from "effect";
+import { Duration, Effect, Option, Predicate, Schema } from "effect";
 
 import { hasNestedOAuthReauthorization, type McpConnection, type McpConnector } from "./connection";
 import { McpToolDiscoveryError } from "./errors";
+import { createMcpConnector, type ConnectorInput } from "./connection";
 import { httpStatusFromCause } from "./http-status";
 import {
   decodeListToolsPage,
@@ -33,6 +34,14 @@ const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/** The SDK rejects with an Error subclass carrying a stable `code`; decode
+ *  the boundary instead of stringifying an unknown. */
+const SdkFailure = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
+});
+const decodeSdkFailure = Schema.decodeUnknownOption(SdkFailure);
 
 /**
  * List every tool from an open MCP connection, following `nextCursor`
@@ -68,14 +77,23 @@ const listAllTools = (
               reauthorizationRequired: true,
             });
           }
+          const failure = Option.getOrNull(decodeSdkFailure(cause));
+          // A modern-era connection whose server breaks the modern response
+          // contract means the server echoed our proposed revision without
+          // implementing it; callers can retry with legacy negotiation.
+          const modernContractViolation =
+            connection.client.getProtocolEra?.() === "modern" && failure?.code === "INVALID_RESULT";
           const httpStatus = httpStatusFromCause(cause);
           return new McpToolDiscoveryError({
             stage: "list_tools",
             message:
-              httpStatus === undefined
-                ? "Failed listing MCP tools"
-                : `Failed listing MCP tools (HTTP ${httpStatus})`,
+              failure?.message !== undefined
+                ? `Failed listing MCP tools: ${failure.message.slice(0, 300)}`
+                : httpStatus === undefined
+                  ? "Failed listing MCP tools"
+                  : `Failed listing MCP tools (HTTP ${httpStatus})`,
             ...(httpStatus === undefined ? {} : { httpStatus }),
+            ...(modernContractViolation ? { modernContractViolation: true } : {}),
           });
         },
       });
@@ -102,6 +120,39 @@ const listAllTools = (
       },
     );
   });
+
+/** Discovery that survives version-echoing servers. Some servers answer the
+ *  proposed 2026-07-28 revision affirmatively while emitting 2024-era results
+ *  (Walmart's MCP), which the modern client rightly rejects. On that exact
+ *  signature, retry once with legacy negotiation and report which one worked,
+ *  so an add flow can pin `versionNegotiation: "legacy"` on the integration. */
+export const discoverToolsFromInput = (
+  input: ConnectorInput,
+  timeoutMs?: number,
+): Effect.Effect<
+  { readonly manifest: McpToolManifest; readonly versionNegotiation: "auto" | "legacy" | null },
+  McpToolDiscoveryError
+> =>
+  discoverTools(createMcpConnector(input), timeoutMs).pipe(
+    Effect.map((manifest) => ({
+      manifest,
+      versionNegotiation: input.transport === "stdio" ? null : (input.versionNegotiation ?? "auto"),
+    })),
+    Effect.catch((error) => {
+      const retriable =
+        error.modernContractViolation === true &&
+        input.transport !== "stdio" &&
+        input.versionNegotiation !== "legacy";
+      if (!retriable) return Effect.fail(error);
+      return discoverTools(
+        createMcpConnector({ ...input, versionNegotiation: "legacy" }),
+        timeoutMs,
+      ).pipe(
+        Effect.map((manifest) => ({ manifest, versionNegotiation: "legacy" as const })),
+        Effect.withSpan("mcp.discover.legacy_retry"),
+      );
+    }),
+  );
 
 /**
  * Connect to an MCP server and discover all available tools.

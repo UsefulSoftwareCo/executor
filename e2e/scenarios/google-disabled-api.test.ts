@@ -117,24 +117,21 @@ const createGoogleEmulator = Effect.gen(function* () {
 const addGooglePresetFromCatalog = (
   browser: BrowserSurface,
   identity: Identity,
+  presetId: string,
   presetName: string,
   slug: string,
 ) =>
   browser.session(identity, async ({ page, step }) => {
-    await step(`Open ${presetName} from the connect catalog`, async () => {
-      await page.goto("/integrations", { waitUntil: "networkidle" });
-      await page
-        .getByRole("button", { name: /Connect/ })
-        .first()
-        .click();
-      const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-      await dialog.waitFor();
-      await dialog.getByPlaceholder(/Search or paste a URL/).fill(presetName);
-      await dialog.getByRole("link", { name: new RegExp(`^${presetName}\\b`) }).click();
+    await step(`Open the ${presetName} preset's add flow`, async () => {
+      // The connect dialog became the full-page picker, and registry-listed
+      // provider presets no longer render cards there — the preset deep link
+      // is the stable route to a preset-configured add flow.
+      await page.goto(`/integrations/add/openapi?preset=${presetId}`, {
+        waitUntil: "networkidle",
+      });
     });
 
     await step(`Add the ${presetName} integration`, async () => {
-      await page.waitForURL(/\/integrations\/add\/openapi/);
       await page.getByRole("heading", { name: "Add OpenAPI integration" }).waitFor();
       const button = page.getByRole("button", { name: "Add integration" });
       await button.waitFor({ timeout: 120_000 });
@@ -218,7 +215,7 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        yield* addGooglePresetFromCatalog(browser, identity, "Gmail", String(slug));
+        yield* addGooglePresetFromCatalog(browser, identity, "google-gmail", "Gmail", String(slug));
 
         const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
         expect(stored?.operation, "the Gmail preset declares its labels probe").toBe(

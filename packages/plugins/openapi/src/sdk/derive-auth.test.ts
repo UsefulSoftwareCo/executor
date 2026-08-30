@@ -71,3 +71,45 @@ describe("detectedAuthenticationTemplates", () => {
     ).toEqual(["OAuth2 Authorization Code · oauth_app", "OAuth2 Client Credentials · oauth_app"]);
   });
 });
+
+describe("query-located api keys", () => {
+  it("a query apiKey preset places the secret in the query string", () => {
+    const templates = detectedAuthenticationTemplates(
+      [
+        {
+          label: "Legacy-API-key (query)",
+          headers: {},
+          secretHeaders: [],
+          secretQueryParams: ["apiKey"],
+        },
+      ],
+      [],
+      "https://example.com",
+    );
+    expect(templates).toHaveLength(1);
+    const template = templates[0];
+    expect(template?.kind).toBe("apikey");
+    expect(template?.kind === "apikey" ? template.placements : []).toEqual([
+      { carrier: "query", name: "apiKey" },
+    ]);
+  });
+
+  it("a strategy mixing a header and a query param asks for two inputs", () => {
+    const templates = detectedAuthenticationTemplates(
+      [
+        {
+          label: "exp-api-key + apiKey (query)",
+          headers: { "exp-api-key": null },
+          secretHeaders: ["exp-api-key"],
+          secretQueryParams: ["apiKey"],
+        },
+      ],
+      [],
+      "https://example.com",
+    );
+    const template = templates[0];
+    const placements = template?.kind === "apikey" ? template.placements : [];
+    expect(placements.map((placement) => placement.carrier)).toEqual(["header", "query"]);
+    expect(new Set(placements.map((placement) => placement.variable)).size).toBe(2);
+  });
+});

@@ -1,5 +1,31 @@
 # @executor-js/plugin-mcp
 
+## 1.6.5
+
+### Patch Changes
+
+- [#1863](https://github.com/UsefulSoftwareCo/executor/pull/1863) [`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Adding a Codex plugin no longer asks for anything. `CODEX_HOME` is a path the
+  scanner already resolved, but it was passed on the channel that makes an
+  environment variable a credential — so the integration declared it as one, and
+  a person who reached the connect step was shown a masked field for a value
+  they should never have to know.
+
+  Stdio integrations can now carry non-secret environment as static
+  configuration, separate from declared secrets. The Codex plugins use it: they
+  declare no auth, and their connection is created for them.
+
+- [#1861](https://github.com/UsefulSoftwareCo/executor/pull/1861) [`4d4ad7c`](https://github.com/UsefulSoftwareCo/executor/commit/4d4ad7c1d5690bc13ad37d9cdadf3775e464a3f5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Stdio MCP servers are kept alive between tool calls**
+
+  Every tool call on a stdio MCP integration used to spawn a fresh child process, run the full MCP handshake, call the one tool, and tear the child down — roughly a second of overhead per call for an `npx`-launched server, on every call. Remote and app-server connections already reused sessions through the connection pool; plain stdio now joins them, with the same five-minute idle window, the same hashed identity key (command, args, cwd, secret env, credential values, owner and connection all separate identities), and the same drop-on-transport-failure semantics. This matches how MCP clients drive stdio servers generally: one long-lived child per session, not one per call.
+
+  A server that genuinely depends on fresh-process semantics can opt out with `spawnPerCall: true` in its stdio config (also accepted by the add-server API). The Codex app-server bridge ignores the opt-out — its approvals are session state, so it must pool.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/config@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/react@1.4.68
+
 ## 1.6.4
 
 ### Patch Changes

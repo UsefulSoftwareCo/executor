@@ -9,7 +9,7 @@
 // GraphQL endpoint).
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -28,10 +28,49 @@ export type CatalogKind = (typeof CONNECTABLE_KINDS)[number];
 const isConnectableKind = (kind: string): kind is CatalogKind =>
   (CONNECTABLE_KINDS as readonly string[]).includes(kind);
 
+/** One connectable surface of a domain, as the registry reports it.
+ *
+ *  `slug` is the registry's stable identifier for THIS surface, and it is the
+ *  namespace the add flow seeds — which makes it the honest answer to "have I
+ *  added this already?". The domain is not: a vendor's surfaces can live on
+ *  other hosts entirely (GitHub's MCP server is on api.githubcopilot.com), and
+ *  one domain routinely offers several surfaces that are separate
+ *  integrations. */
+export interface CatalogSurface {
+  readonly kind: CatalogKind;
+  readonly slug: string;
+  /** What to point the add flow at. Absent when the registry has no
+   *  machine-readable locator, in which case the surface document still has to
+   *  be fetched on click. */
+  readonly url?: string;
+  /** A hand-picked product mark (Google Calendar's own logo rather than the
+   *  generic G), present only on curated surfaces. */
+  readonly icon?: string;
+  /** How to authenticate, for surfaces whose connect target cannot describe
+   *  it itself — a GraphQL endpoint has no spec document, so the registry is
+   *  the only carrier of facts like Linear's no-Bearer-prefix header. */
+  readonly auth?: {
+    readonly kind?: string;
+    /** Header pattern, e.g. "Authorization: Bearer {token}". */
+    readonly header?: string;
+    readonly note?: string;
+  };
+  /** RFC 6902 JSON Patch the registry says to apply to the fetched spec —
+   *  how a vendor's published document gets improved without hosting a fork
+   *  (e.g. Neon's console session cookies posing as security schemes). */
+  readonly specOverrides?: readonly unknown[];
+}
+
 export interface CatalogSearchEntry {
   readonly domain: string;
+  /** The product's display name, when the row is a named product rather than
+   *  a bare domain — "Outlook Mail" on graph.microsoft.com. */
+  readonly name?: string;
   readonly description: string;
   readonly kinds: readonly CatalogKind[];
+  /** Present on registries new enough to report it; absent responses fall back
+   *  to resolving the surface document per click. */
+  readonly surfaces?: readonly CatalogSurface[];
 }
 
 export const catalogLogoUrl = (domain: string, size: number): string =>
@@ -44,7 +83,14 @@ class CatalogRequestError extends Data.TaggedError("CatalogRequestError")<{
 const fetchCatalogJson = (url: URL): Effect.Effect<unknown, CatalogRequestError> =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
-      try: () => fetch(url),
+      // ALWAYS REVALIDATE. The catalog is a live service and its corrections
+      // must reach the console immediately, but the browser will honour
+      // whatever max-age the response carried when it was stored — a stale
+      // entry with a long TTL kept showing a domain that had been merged away
+      // and an MCP endpoint that does not exist, hours after the fix shipped.
+      // `no-cache` still sends the conditional request, so a 304 costs nothing
+      // when nothing has changed.
+      try: () => fetch(url, { cache: "no-cache" }),
       catch: () => new CatalogRequestError({ message: `Failed to reach ${url.host}.` }),
     });
     if (!response.ok) {
@@ -66,34 +112,103 @@ const SearchResponse = Schema.Struct({
   results: Schema.Array(
     Schema.Struct({
       domain: Schema.String,
+      name: Schema.optional(Schema.String),
       description: Schema.String,
       kinds: Schema.Array(Schema.String),
+      surfaces: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            kind: Schema.String,
+            slug: Schema.String,
+            url: Schema.optional(Schema.String),
+            icon: Schema.optional(Schema.String),
+            auth: Schema.optional(
+              Schema.Struct({
+                kind: Schema.optional(Schema.String),
+                header: Schema.optional(Schema.String),
+                note: Schema.optional(Schema.String),
+              }),
+            ),
+            specOverrides: Schema.optional(Schema.Array(Schema.Unknown)),
+          }),
+        ),
+      ),
     }),
   ),
 });
 const decodeSearchResponse = Schema.decodeUnknownOption(SearchResponse);
+
+export interface CatalogSearchPage {
+  readonly entries: readonly CatalogSearchEntry[];
+  /** Rows the registry returned BEFORE the connectable-kind filter. Paging
+   *  exhaustion must key on this: a page can be full at the registry and
+   *  shrink here (CLI-only rows are dropped), and judging "no more pages" by
+   *  the filtered length ended the infinite scroll mid-catalog. */
+  readonly rawCount: number;
+}
+
+export const parseCatalogSearchPage = (payload: unknown): CatalogSearchPage => ({
+  entries: parseCatalogSearch(payload),
+  rawCount: Option.match(decodeSearchResponse(payload), {
+    onNone: () => 0,
+    onSome: ({ results }) => results.length,
+  }),
+});
 
 export const parseCatalogSearch = (payload: unknown): readonly CatalogSearchEntry[] =>
   Option.match(decodeSearchResponse(payload), {
     onNone: () => [],
     onSome: ({ results }) =>
       results
-        .map((entry) => ({
-          domain: entry.domain,
-          description: entry.description,
-          kinds: entry.kinds.filter(isConnectableKind),
-        }))
+        .map((entry) => {
+          const surfaces = (entry.surfaces ?? []).flatMap((surface): readonly CatalogSurface[] =>
+            isConnectableKind(surface.kind)
+              ? [
+                  {
+                    kind: surface.kind,
+                    slug: surface.slug,
+                    ...(surface.url ? { url: surface.url } : {}),
+                    ...(surface.icon ? { icon: surface.icon } : {}),
+                    ...(surface.auth ? { auth: surface.auth } : {}),
+                    ...(surface.specOverrides && surface.specOverrides.length > 0
+                      ? { specOverrides: surface.specOverrides }
+                      : {}),
+                  },
+                ]
+              : [],
+          );
+          return {
+            domain: entry.domain,
+            ...(entry.name && entry.name !== entry.domain ? { name: entry.name } : {}),
+            description: entry.description,
+            kinds: entry.kinds.filter(isConnectableKind),
+            ...(surfaces.length > 0 ? { surfaces } : {}),
+          };
+        })
         .filter((entry) => entry.kinds.length > 0),
   });
 
+export interface CatalogQuery {
+  /** Free text. EMPTY IS MEANINGFUL: the registry answers an empty query with
+   *  its popularity-ordered head, which is what a browse view wants. */
+  readonly query: string;
+  /** Restrict to one surface kind. Omitted means every connectable kind. */
+  readonly kind?: CatalogKind;
+  /** The registry caps this at 100. */
+  readonly limit?: number;
+  /** Ranked results to skip — how the picker pages an endless list. */
+  readonly offset?: number;
+}
+
 export const searchCatalog = (
-  query: string,
-  limit = 10,
-): Effect.Effect<readonly CatalogSearchEntry[], CatalogRequestError> => {
+  input: CatalogQuery,
+): Effect.Effect<CatalogSearchPage, CatalogRequestError> => {
   const url = new URL("/api/search", INTEGRATIONS_SH_ORIGIN);
-  url.searchParams.set("q", query);
-  url.searchParams.set("limit", String(limit));
-  return Effect.map(fetchCatalogJson(url), parseCatalogSearch);
+  url.searchParams.set("q", input.query);
+  url.searchParams.set("limit", String(input.limit ?? 10));
+  if (input.kind) url.searchParams.set("kind", input.kind);
+  if (input.offset) url.searchParams.set("offset", String(input.offset));
+  return Effect.map(fetchCatalogJson(url), parseCatalogSearchPage);
 };
 
 // ---------------------------------------------------------------------------
@@ -135,18 +250,35 @@ const connectUrlOf = (surface: SurfaceRecord, kind: CatalogKind): string | undef
         ? surface.url
         : undefined;
 
+const normalizedProductToken = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
 export const pickConnectTarget = (
   payload: unknown,
   kind: CatalogKind,
+  preferredName?: string,
 ): CatalogConnectTarget | undefined =>
   Option.match(decodeSurfaceDocument(payload), {
     onNone: () => undefined,
     onSome: ({ surfaces }) => {
-      for (const surface of surfaces) {
+      // One domain can carry several same-kind products (Google Photos
+      // Library and Picker share photos.google.com). When the caller names
+      // the product, a slug whose normalized form matches wins; first-of-kind
+      // is only the answer when nothing identifies the product.
+      const usable = surfaces.flatMap((surface) => {
         const url = connectUrlOf(surface, kind);
-        if (url) return { kind, url, ...(surface.slug ? { slug: surface.slug } : {}) };
+        return url
+          ? [{ kind, url, ...(surface.slug ? { slug: surface.slug } : {}) } as CatalogConnectTarget]
+          : [];
+      });
+      if (preferredName) {
+        const token = normalizedProductToken(preferredName);
+        const named = usable.find(
+          (target) => target.slug && normalizedProductToken(target.slug) === token,
+        );
+        if (named) return named;
       }
-      return undefined;
+      return usable[0];
     },
   });
 
@@ -155,11 +287,12 @@ export const pickConnectTarget = (
 export const resolveConnectTarget = (
   domain: string,
   kinds: readonly CatalogKind[],
+  preferredName?: string,
 ): Effect.Effect<CatalogConnectTarget | undefined, CatalogRequestError> => {
   const url = new URL(`/api/${encodeURIComponent(domain)}/surface`, INTEGRATIONS_SH_ORIGIN);
   return Effect.map(fetchCatalogJson(url), (payload) => {
     for (const kind of kinds) {
-      const target = pickConnectTarget(payload, kind);
+      const target = pickConnectTarget(payload, kind, preferredName);
       if (target) return target;
     }
     return undefined;
@@ -172,16 +305,27 @@ export const resolveConnectTarget = (
 
 /** Domains already represented by a loaded plugin's presets, so the catalog
  *  section doesn't repeat what the preset list above it already shows. */
+/** The domain a preset represents, read from its integrations.sh logo URL
+ *  first (which names the domain outright) and its spec/endpoint URL second. */
+export const presetDomain = (preset: {
+  readonly icon?: string;
+  readonly url?: string;
+}): string | null => {
+  for (const candidate of [preset.icon, preset.url]) {
+    if (!candidate) continue;
+    const logoMatch = /^https:\/\/integrations\.sh\/logo\/([^/?]+)/.exec(candidate);
+    const domain = logoMatch?.[1] ?? getDomain(candidate);
+    if (domain) return domain;
+  }
+  return null;
+};
+
 export const presetDomains = (plugins: readonly IntegrationPlugin[]): ReadonlySet<string> => {
   const domains = new Set<string>();
   for (const plugin of plugins) {
     for (const preset of plugin.presets ?? []) {
-      for (const candidate of [preset.icon, preset.url]) {
-        if (!candidate) continue;
-        const logoMatch = /^https:\/\/integrations\.sh\/logo\/([^/?]+)/.exec(candidate);
-        const domain = logoMatch?.[1] ?? getDomain(candidate);
-        if (domain) domains.add(domain);
-      }
+      const domain = presetDomain(preset);
+      if (domain) domains.add(domain);
     }
   }
   return domains;
@@ -206,6 +350,9 @@ export const filterCatalogEntries = (
     .map((entry) => ({
       ...entry,
       kinds: entry.kinds.filter((kind) => opts.availableKinds.includes(kind)),
+      ...(entry.surfaces
+        ? { surfaces: entry.surfaces.filter((s) => opts.availableKinds.includes(s.kind)) }
+        : {}),
     }))
     .filter((entry) => entry.kinds.length > 0);
 
@@ -213,43 +360,293 @@ export const filterCatalogEntries = (
 // Hook — debounced search with an in-session response cache
 // ---------------------------------------------------------------------------
 
-const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 150;
+/** Free-text queries wait for a second character; a browse (empty query) does
+ *  not, because there is nothing to narrow. */
 const MIN_QUERY_LENGTH = 2;
-const searchCache = new Map<string, readonly CatalogSearchEntry[]>();
+const BROWSE_LIMIT = 60;
 
 export interface CatalogSearchState {
   readonly entries: readonly CatalogSearchEntry[];
   readonly loading: boolean;
+  /** The entries belong to a previous query, held over while the current one
+   *  loads. Callers must not render them as if they answered the live query. */
+  readonly stale: boolean;
+  /** The registry could not be reached. The rest of the page still works, so
+   *  this is a section-level notice rather than a page error. */
+  readonly failed: boolean;
+  /** The last page came back full, so more rows likely exist. */
+  readonly hasMore: boolean;
+  /** A further page is being fetched and appended. */
+  readonly loadingMore: boolean;
+  /** Fetch the next page. Safe to call repeatedly: no-op while a page is in
+   *  flight or once the catalog is exhausted. */
+  readonly loadMore: () => void;
 }
 
-export function useCatalogSearch(rawQuery: string): CatalogSearchState {
-  const query = rawQuery.trim().toLowerCase();
-  const [state, setState] = useState<CatalogSearchState>({ entries: [], loading: false });
+const cacheKey = (input: CatalogQuery): string =>
+  `${input.kind ?? "all"}:${input.limit ?? 0}:${input.query}`;
+/** Responses are cached for as long as the registry says they are fresh, and
+ *  no longer. The first version of this cache had no expiry at all, so a
+ *  session that searched once kept that answer for its whole life — a registry
+ *  correction could ship and the console would keep showing the old catalog
+ *  until the tab was closed. */
+const SEARCH_TTL_MS = 60_000;
+const searchCache = new Map<
+  string,
+  { readonly at: number; readonly entries: readonly CatalogSearchEntry[] }
+>();
+
+/**
+ * Browse or search the public registry.
+ *
+ * One hook for both because they are the same request with a different `q`:
+ * an empty query returns the popularity-ordered head, a non-empty one filters
+ * it. Search stays server-side and edge-cached, so no view ever downloads the
+ * multi-thousand-entry catalog.
+ */
+export function useCatalogBrowse(input: CatalogQuery): CatalogSearchState {
+  const query = input.query.trim().toLowerCase();
+  const kind = input.kind;
+  const limit = input.limit ?? BROWSE_LIMIT;
+  const requestKeyOf = (forQuery: string) =>
+    cacheKey({ query: forQuery, limit, ...(kind ? { kind } : {}) });
+  const requestKey = requestKeyOf(query);
+  const [state, setState] = useState<{
+    readonly entries: readonly CatalogSearchEntry[];
+    /** The request the entries belong to. Held-over results from a previous
+     *  query are DELIBERATE (no empty flash between keystrokes), but they
+     *  must be knowable as stale — rendering them unmarked is how a
+     *  "calendar" search showed Gmail cards. */
+    readonly forKey: string;
+    readonly loading: boolean;
+    readonly failed: boolean;
+  }>({ entries: [], forKey: requestKey, loading: true, failed: false });
   const generation = useRef(0);
+  // Pages beyond the first, keyed to the request they extend so a keystroke
+  // discards them with the first page rather than leaking into new results.
+  const [more, setMore] = useState<{
+    readonly key: string;
+    readonly entries: readonly CatalogSearchEntry[];
+    /** RAW rows consumed by extra pages — the server pages by raw index, and
+     *  the connectable-kind filter makes filtered counts useless as offsets. */
+    readonly rawConsumed: number;
+    readonly loadingMore: boolean;
+    readonly exhausted: boolean;
+  }>({ key: requestKey, entries: [], rawConsumed: 0, loadingMore: false, exhausted: false });
+
+  useEffect(() => {
+    setMore({ key: requestKey, entries: [], rawConsumed: 0, loadingMore: false, exhausted: false });
+    // requestKey is derived from (query, kind, limit) — same trigger set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, kind, limit]);
 
   useEffect(() => {
     const requestId = ++generation.current;
-    if (query.length < MIN_QUERY_LENGTH) {
-      setState({ entries: [], loading: false });
+    // A partial word is not yet a query; leave the previous results in place
+    // rather than flashing an empty list between keystrokes.
+    if (query.length > 0 && query.length < MIN_QUERY_LENGTH) {
+      // Held entries keep their own forKey, so the hook reports them stale.
+      setState((previous) => ({ ...previous, loading: false }));
       return;
     }
-    const cached = searchCache.get(query);
-    if (cached) {
-      setState({ entries: cached, loading: false });
+    const request: CatalogQuery = { query, limit, ...(kind ? { kind } : {}) };
+    const cached = searchCache.get(cacheKey(request));
+    if (cached && Date.now() - cached.at < SEARCH_TTL_MS) {
+      setState({
+        entries: cached.entries,
+        forKey: cacheKey(request),
+        loading: false,
+        failed: false,
+      });
       return;
     }
     setState((previous) => ({ ...previous, loading: true }));
-    const timer = setTimeout(() => {
-      void Effect.runPromiseExit(searchCatalog(query)).then((exit) => {
-        if (Exit.isSuccess(exit)) searchCache.set(query, exit.value);
-        if (generation.current !== requestId) return;
-        // Reachability is best-effort — the presets and URL detection above
-        // the catalog section keep working without it.
-        setState({ entries: Exit.isSuccess(exit) ? exit.value : [], loading: false });
-      });
-    }, SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(
+      () => {
+        void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
+          if (Exit.isSuccess(exit)) {
+            searchCache.set(cacheKey(request), { at: Date.now(), entries: exit.value.entries });
+          }
+          if (generation.current !== requestId) return;
+          setState({
+            entries: Exit.isSuccess(exit) ? exit.value.entries : [],
+            forKey: cacheKey(request),
+            loading: false,
+            failed: Exit.isFailure(exit),
+          });
+        });
+      },
+      // The first browse should not sit behind a debounce meant for typing.
+      query.length === 0 ? 0 : SEARCH_DEBOUNCE_MS,
+    );
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, kind, limit]);
+
+  const extras = more.key === requestKey ? more : null;
+  const baseCount = state.entries.length;
+  const hasMore =
+    !state.loading &&
+    !state.failed &&
+    baseCount >= limit &&
+    !(extras?.exhausted ?? false) &&
+    !(query.length > 0 && query.length < MIN_QUERY_LENGTH);
+
+  // SYNCHRONOUS in-flight guard. A fast scroll fires the sentinel several
+  // times before React commits `loadingMore`, and every call then saw the
+  // stale false, fetched the SAME offset in parallel, appended the duplicate
+  // page, and pushed the next offset past rows that were never shown. A ref
+  // is settled the instant the first call claims it.
+  const pageInFlight = useRef(false);
+
+  const loadMore = useCallback(() => {
+    if (!hasMore || pageInFlight.current) return;
+    pageInFlight.current = true;
+    setMore((previous) =>
+      previous.key === requestKey
+        ? { ...previous, loadingMore: true }
+        : { key: requestKey, entries: [], rawConsumed: 0, loadingMore: true, exhausted: false },
+    );
+    // The first page consumed `limit` raw rows (were it short, hasMore would
+    // already be false); extra pages report their raw size.
+    const request: CatalogQuery = {
+      query,
+      limit,
+      offset: limit + (extras?.rawConsumed ?? 0),
+      ...(kind ? { kind } : {}),
+    };
+    void Effect.runPromiseExit(searchCatalog(request)).then((exit) => {
+      pageInFlight.current = false;
+      setMore((previous) => {
+        if (previous.key !== requestKey) return previous;
+        const page = Exit.isSuccess(exit) ? exit.value : { entries: [], rawCount: 0 };
+        return {
+          key: requestKey,
+          entries: [...previous.entries, ...page.entries],
+          rawConsumed: previous.rawConsumed + page.rawCount,
+          loadingMore: false,
+          // Exhaustion keys on the RAW page size: the connectable-kind filter
+          // shrinks pages, and a failed fetch is not the end of the catalog —
+          // the sentinel simply tries again next time it scrolls into view.
+          exhausted: Exit.isSuccess(exit) && page.rawCount < limit,
+        };
+      });
+    });
+  }, [hasMore, requestKey, query, kind, limit, extras?.rawConsumed]);
+
+  const entries = useMemo(() => {
+    if (!extras || extras.entries.length === 0) return state.entries;
+    // Ranking can shift between page fetches (the live index moves); a row
+    // that slid across a page boundary must not render twice.
+    const seen = new Set(state.entries.map((entry) => `${entry.domain}|${entry.name ?? ""}`));
+    return [
+      ...state.entries,
+      ...extras.entries.filter((entry) => {
+        const key = `${entry.domain}|${entry.name ?? ""}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }),
+    ];
+  }, [state.entries, extras]);
+
+  return {
+    entries,
+    loading: state.loading,
+    failed: state.failed,
+    /** The rendered entries belong to a PREVIOUS query (held over while the
+     *  current one loads, or while the input is one character). Callers
+     *  decide the treatment; unmarked stale results read as wrong results. */
+    stale: state.forKey !== requestKey,
+    hasMore: hasMore && state.forKey === requestKey,
+    loadingMore: extras?.loadingMore ?? false,
+    loadMore,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Credential guidance
+//
+// The per-domain surface document records, for each way of authenticating,
+// what the credential is called at the provider, the page that mints it, and
+// the provider's own setup steps. The console fetched this document for its
+// connect URL and discarded the rest — which is why the add-connection modal
+// could not answer "what kind of key do I need?" or "where do I get one?"
+// while asking for exactly that.
+// ---------------------------------------------------------------------------
+
+export interface CredentialGuidance {
+  readonly id: string;
+  readonly type: string;
+  /** What the provider calls this credential ("Personal API key"). */
+  readonly label: string;
+  /** The page that mints it. */
+  readonly generateUrl?: string;
+  /** The provider's own instructions, as markdown. */
+  readonly setup?: string;
+}
+
+const CredentialsDocument = Schema.Struct({
+  credentials: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        type: Schema.optional(Schema.String),
+        label: Schema.optional(Schema.String),
+        generateUrl: Schema.optional(Schema.String),
+        setup: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+});
+const decodeCredentials = Schema.decodeUnknownOption(CredentialsDocument);
+
+export const fetchCredentialGuidance = (
+  domain: string,
+): Effect.Effect<readonly CredentialGuidance[], CatalogRequestError> => {
+  const url = new URL(`/api/${encodeURIComponent(domain)}/surface`, INTEGRATIONS_SH_ORIGIN);
+  return Effect.map(fetchCatalogJson(url), (payload) =>
+    Option.match(decodeCredentials(payload), {
+      onNone: () => [],
+      onSome: ({ credentials }) =>
+        Object.entries(credentials ?? {}).map(([id, value]) => ({
+          id,
+          type: value.type ?? "unknown",
+          label: value.label ?? id,
+          ...(value.generateUrl ? { generateUrl: value.generateUrl } : {}),
+          ...(value.setup ? { setup: value.setup } : {}),
+        })),
+    }),
+  );
+};
+
+const guidanceCache = new Map<string, readonly CredentialGuidance[]>();
+
+/** Guidance for a domain, or an empty list when the registry has none. Never
+ *  fails loudly: this is help text, and a connection form must work without it. */
+export function useCredentialGuidance(domain: string | null): readonly CredentialGuidance[] {
+  const [state, setState] = useState<readonly CredentialGuidance[]>([]);
+
+  useEffect(() => {
+    if (!domain) {
+      setState([]);
+      return;
+    }
+    const cached = guidanceCache.get(domain);
+    if (cached) {
+      setState(cached);
+      return;
+    }
+    let live = true;
+    void Effect.runPromiseExit(fetchCredentialGuidance(domain)).then((exit) => {
+      const value = Exit.isSuccess(exit) ? exit.value : [];
+      guidanceCache.set(domain, value);
+      if (live) setState(value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [domain]);
 
   return state;
 }

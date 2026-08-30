@@ -142,10 +142,11 @@ export function AuthMethodListEditor(props: AuthMethodListEditorProps) {
                 <div className="flex items-center justify-between">
                   <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     {detected ? <LockIcon className="size-3 shrink-0" aria-hidden /> : null}
-                    <span>
-                      Method {index + 1}
-                      {row.seedLabel ? ` · ${row.seedLabel}` : ""}
-                    </span>
+                    {/* Named by what it is. "Method 1" told the reader nothing
+                        except that there might be a Method 2, and next to a
+                        masked value it read as a locked credential field —
+                        people tried to paste their key into it. */}
+                    <span>{detected ? detectedMethodTitle(row) : `Method ${index + 1}`}</span>
                   </span>
                   <Button
                     type="button"
@@ -181,6 +182,14 @@ export function AuthMethodListEditor(props: AuthMethodListEditorProps) {
   );
 }
 
+/** What a spec-detected method should be called: the credential it wants, plus
+ *  the spec's own name for it when there is more than one to tell apart. */
+function detectedMethodTitle(row: AuthMethodRow): string {
+  const kind = row.value.kind;
+  const base = kind === "oauth" ? "OAuth" : kind === "apikey" ? "API key" : "No authentication";
+  return row.seedLabel ? `${base} · ${row.seedLabel}` : base;
+}
+
 /** One read-only `label   value` line, mono value, for the detected summary. */
 function SpecField(props: { readonly label: string; readonly value: string }) {
   return (
@@ -204,16 +213,11 @@ function DetectedMethodSummary(props: {
   const { value, oauthMetadata } = props;
   // Name the auth kind explicitly: a detection label like MCP's "Detected"
   // doesn't say whether it's OAuth or an API key, so surface it here.
-  const kindLabel =
-    value.kind === "oauth" ? "OAuth" : value.kind === "apikey" ? "API key" : "No auth";
   return (
     <div className="space-y-2">
-      <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
-        {kindLabel}
-      </p>
       <div
         aria-disabled
-        className="cursor-not-allowed select-none space-y-1 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-muted-foreground"
+        className="select-none space-y-1 rounded-md border border-border/60 bg-muted/40 px-3 py-2.5 text-muted-foreground"
       >
         {value.kind === "none" && (
           <p className="text-xs">No credential — tools are callable without an account.</p>
@@ -221,10 +225,13 @@ function DetectedMethodSummary(props: {
 
         {value.kind === "apikey" &&
           (value.placements.length > 0 ? (
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {value.placements.map((placement, i: number) => (
-                <PlacementLine key={i} placement={placement} />
-              ))}
+            <div className="space-y-1">
+              <p className="text-xs">This API takes a key, sent as:</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {value.placements.map((placement, i: number) => (
+                  <PlacementLine key={i} placement={placement} />
+                ))}
+              </div>
             </div>
           ) : null)}
 
@@ -246,7 +253,18 @@ function DetectedMethodSummary(props: {
           ))}
       </div>
 
-      <p className="text-[11px] text-muted-foreground">Pulled from spec. Remove to override.</p>
+      {/* The question this screen used to leave open. Nothing on the add form
+          takes a credential; the key is entered once the integration exists,
+          from its own page. Saying so is the difference between a confident
+          next click and hunting for a field that is not here. */}
+      <p className="text-[11px] text-muted-foreground">
+        {/* "Declared by this API", not "read from the spec": GraphQL surfaces
+            have no spec — their methods arrive from the registry record — and
+            the claim that matters is the same either way. */}
+        {value.kind === "oauth"
+          ? "Declared by this API. You'll sign in after adding this integration."
+          : "Declared by this API. You'll enter your key after adding this integration."}
+      </p>
     </div>
   );
 }

@@ -1,5 +1,32 @@
 # @executor-js/local
 
+## 1.6.5
+
+### Patch Changes
+
+- Updated dependencies [[`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2), [`4d4ad7c`](https://github.com/UsefulSoftwareCo/executor/commit/4d4ad7c1d5690bc13ad37d9cdadf3775e464a3f5)]:
+  - @executor-js/plugin-mcp@1.6.5
+  - @executor-js/sdk@1.6.5
+  - @executor-js/runtime-quickjs@1.6.5
+  - @executor-js/execution@1.6.5
+  - @executor-js/config@1.6.5
+  - @executor-js/plugin-file-secrets@1.6.5
+  - @executor-js/plugin-graphql@1.6.5
+  - @executor-js/plugin-keychain@1.6.5
+  - @executor-js/plugin-onepassword@1.6.5
+  - @executor-js/plugin-openapi@1.6.5
+  - @executor-js/plugin-example@1.6.5
+  - @executor-js/plugin-desktop-settings@1.6.5
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.12
+  - @executor-js/api@1.4.68
+  - @executor-js/vite-plugin@0.0.65
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.16
+  - @executor-js/plugin-provider-service-split@0.0.19
+  - @executor-js/plugin-toolkits@1.5.40
+  - @executor-js/react@1.4.68
+
 ## 1.6.4
 
 ### Patch Changes

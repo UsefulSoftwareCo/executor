@@ -51,7 +51,7 @@ scenario(
             addUrl.searchParams.set("url", server.endpoint);
             await visit(page, addUrl.toString());
             await page.getByText("How does this server authenticate?").waitFor({ timeout: 30_000 });
-            await page.getByText("Method 1 · Detected").waitFor();
+            await page.getByText("OAuth · Detected").waitFor();
             await page.getByText("OAuth metadata is discovered from this server").waitFor();
           });
 

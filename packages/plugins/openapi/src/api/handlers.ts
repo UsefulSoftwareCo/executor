@@ -63,6 +63,7 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             name: payload.name,
             description: payload.description,
             baseUrl: payload.baseUrl,
+            displayDomain: payload.displayDomain,
             headers: payload.headers ? { ...payload.headers } : undefined,
             queryParams: payload.queryParams ? { ...payload.queryParams } : undefined,
             specFormat: payload.specFormat,

@@ -40,6 +40,22 @@ export interface Placement {
 /** A fresh, empty header placement — the default first row in an editor. */
 export const emptyPlacement = (): Placement => ({ carrier: "header", name: "", prefix: "" });
 
+/** Parses a registry header pattern — `"Authorization: Bearer {token}"` — into
+ *  a placement. The literal text between the colon and the `{variable}` is the
+ *  prefix, and its ABSENCE is load-bearing: `"Authorization: {api_key}"` is how
+ *  the registry says Linear's personal keys take no Bearer prefix. */
+export function placementFromHeaderPattern(pattern: string): Placement | null {
+  const match = /^([A-Za-z0-9-]+):\s*(.*)$/.exec(pattern.trim());
+  if (!match) return null;
+  const rest = match[2] ?? "";
+  const brace = rest.indexOf("{");
+  return {
+    carrier: "header",
+    name: match[1] ?? "",
+    prefix: brace >= 0 ? rest.slice(0, brace) : "",
+  };
+}
+
 /** What an auth method is, presentationally. `kind` drives the credential UI:
  *  `oauth` shows a Connect button, `none` creates a connection with no
  *  credential inputs, and apikey/custom fill secrets across `placements`.

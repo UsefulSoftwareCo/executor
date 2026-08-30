@@ -231,6 +231,12 @@ export const McpRemoteIntegrationConfig = Schema.Struct({
   /** Declared auth methods — how a connection's values are rendered onto
    *  requests. A connection's `template` picks one by slug. */
   authenticationTemplate: Schema.Array(McpAuthMethod),
+  /** Protocol negotiation. Remote defaults to `auto` (2026-07-28 era).
+   *  `legacy` pins servers that ECHO the proposed revision and then violate
+   *  its response contract — Walmart's MCP answers "2026-07-28" to any
+   *  proposal while emitting 2024-era results, which the modern client
+   *  rightly rejects. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
 });
 export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { openOAuthPopup, reserveOAuthPopup } from "./oauth-popup";
+import {
+  OAUTH_POPUP_MESSAGE_TYPE,
+  openOAuthPopup,
+  openOAuthSystemBrowser,
+  reserveOAuthPopup,
+  type OAuthPopupResult,
+} from "./oauth-popup";
 
 type OAuthPopupTestWindow = {
   readonly screenX: number;
@@ -226,5 +232,127 @@ describe("openOAuthPopup", () => {
     });
     expect(intervalStarted).toBe(false);
     expect(closedCalled).toBe(false);
+  });
+});
+
+describe("openOAuthSystemBrowser", () => {
+  const sessionResult = (sessionId: string): OAuthPopupResult<unknown> => ({
+    type: OAUTH_POPUP_MESSAGE_TYPE,
+    ok: false,
+    sessionId,
+    error: "access denied",
+  });
+
+  const waitFor = async (predicate: () => boolean): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (!predicate() && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(predicate()).toBe(true);
+  };
+
+  const withFakeFetch = async (fake: typeof fetch, run: () => Promise<void>): Promise<void> => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fake;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always restore the global fetch
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  };
+
+  it("never stacks overlapping await requests while the server holds one open", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let calls = 0;
+    let received: unknown = null;
+
+    // Simulates a long-polling server: the request is held ~40ms, then
+    // answers with the completed result.
+    const fake: typeof fetch = async () => {
+      calls += 1;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      inFlight -= 1;
+      return new Response(JSON.stringify(sessionResult("s-hold")));
+    };
+
+    await withFakeFetch(fake, async () => {
+      const teardown = openOAuthSystemBrowser({
+        url: "https://auth.example/authorize",
+        sessionId: "s-hold",
+        openExternal: async () => {},
+        onResult: (result) => {
+          received = result;
+        },
+        // Far shorter than the held request: the old setInterval loop would
+        // stack many concurrent requests here.
+        pollMs: 1,
+      });
+      await waitFor(() => received !== null);
+      teardown();
+    });
+
+    expect(calls).toBe(1);
+    expect(maxInFlight).toBe(1);
+    expect(received).toMatchObject({ sessionId: "s-hold" });
+  });
+
+  it("reconnects after a pending (null) answer and delivers the next result", async () => {
+    let calls = 0;
+    let received: unknown = null;
+
+    // First request answers "still pending" (an old server, or a long-poll
+    // deadline); the second delivers the result.
+    const fake: typeof fetch = async () => {
+      calls += 1;
+      const body = calls === 1 ? null : sessionResult("s-retry");
+      return new Response(JSON.stringify(body));
+    };
+
+    await withFakeFetch(fake, async () => {
+      const teardown = openOAuthSystemBrowser({
+        url: "https://auth.example/authorize",
+        sessionId: "s-retry",
+        openExternal: async () => {},
+        onResult: (result) => {
+          received = result;
+        },
+        pollMs: 1,
+      });
+      await waitFor(() => received !== null);
+      teardown();
+    });
+
+    expect(calls).toBe(2);
+    expect(received).toMatchObject({ sessionId: "s-retry" });
+  });
+
+  it("aborts the in-flight await request on teardown", async () => {
+    const captured: { signal: AbortSignal | null } = { signal: null };
+
+    // Held open indefinitely; on abort it answers "still pending" the way a
+    // real aborted fetch stops mattering — the loop is already settled.
+    const fake: typeof fetch = (_input, init) =>
+      new Promise<Response>((resolve) => {
+        captured.signal = init?.signal ?? null;
+        init?.signal?.addEventListener("abort", () => resolve(new Response("null")));
+      });
+
+    await withFakeFetch(fake, async () => {
+      const teardown = openOAuthSystemBrowser({
+        url: "https://auth.example/authorize",
+        sessionId: "s-abort",
+        openExternal: async () => {},
+        onResult: () => {},
+      });
+      await waitFor(() => captured.signal !== null);
+      teardown();
+      await waitFor(() => captured.signal?.aborted === true);
+    });
+
+    expect(captured.signal?.aborted).toBe(true);
   });
 });
