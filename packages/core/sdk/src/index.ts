@@ -257,6 +257,16 @@ export {
   type PendingApprovalStore,
 } from "./pending-approval";
 
+// Egress guard — SSRF protection for integration-spec fetching.
+export {
+  assertFetchable,
+  isBlockedAddress,
+  EgressError,
+  egressErrorMessage,
+  type PinnedTarget,
+  type FetchableOptions,
+} from "./egress";
+
 // Plugin storage.
 export {
   definePluginStorageCollection,

@@ -4,6 +4,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { JSON_SCHEMA, load as parseYamlDocument } from "js-yaml";
 
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
+import { assertFetchable } from "@executor-js/sdk";
 
 export type ParsedDocument = OpenAPIV3.Document | OpenAPIV3_1.Document;
 
@@ -59,6 +60,14 @@ export interface SpecFetchCredentials {
   readonly queryParams?: Record<string, string>;
 }
 
+/** Egress-policy options for spec fetching. `allowLoopback` re-enables
+ *  loopback/private targets for callers that have already decided to trust
+ *  them (a local dev spec server, an e2e-hosted fixture). Default stays
+ *  fail-closed. */
+export interface SpecFetchOptions {
+  readonly allowLoopback?: boolean;
+}
+
 // ExtractionError subclass raised from parse() for non-3.x specs
 class OpenApiExtractionErrorFromParse extends OpenApiExtractionError {}
 
@@ -71,14 +80,44 @@ class OpenApiExtractionErrorFromParse extends OpenApiExtractionError {}
 export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
   url: string,
   credentials?: SpecFetchCredentials,
+  fetchOptions?: SpecFetchOptions,
 ) {
   const client = yield* HttpClient.HttpClient;
+  // Egress guard: reject private/link-local/metadata targets BEFORE any
+  // fetch. Resolves hostnames and pins the resolved address so the connect
+  // cannot rebind. Coarse error — no topology leaked. allowLoopback comes
+  // from the explicit option, the spec-scoped env hook, or the established
+  // local-network knobs (cloud e2e sets ALLOW_LOCAL_NETWORK; selfhost e2e
+  // sets EXECUTOR_ALLOW_LOCAL_NETWORK — the same two names hosts read into
+  // HostConfig.allowLocalNetwork) — the default stays fail-closed in every
+  // production path.
+  const allowLoopback =
+    fetchOptions?.allowLoopback === true ||
+    process.env.EXECUTOR_ALLOW_LOOPBACK_SPECS === "1" ||
+    process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true" ||
+    process.env.ALLOW_LOCAL_NETWORK === "true";
+  const pinned = yield* assertFetchable(url, {
+    allowLoopback,
+  }).pipe(Effect.mapError(() => new OpenApiParseError({ message: "Blocked by egress policy" })));
   const requestUrl = new URL(url);
+  // Pin: connect to the validated address, preserving the original host for
+  // the Host header / SNI. HttpClient has no custom-connect hook, so the URL
+  // rewrite is the effective pin — but ONLY for plain http: rewriting an
+  // https URL to the resolved IP would present the IP as SNI and break TLS
+  // to CDN-fronted hosts. For https the fetch keeps the original hostname
+  // (the guard still gates the decision — any blocked resolved address
+  // fails the whole target before the fetch); the re-resolve window that
+  // reopens is the documented trade-off of fetch-based transports.
+  const originalHost = requestUrl.host;
+  if (requestUrl.protocol === "http:") {
+    requestUrl.hostname = pinned.resolvedAddress;
+  }
   for (const [name, value] of Object.entries(credentials?.queryParams ?? {})) {
     requestUrl.searchParams.set(name, value);
   }
   let request = HttpClientRequest.get(requestUrl.toString()).pipe(
     HttpClientRequest.setHeader("Accept", "application/json, application/yaml, text/yaml, */*"),
+    HttpClientRequest.setHeader("Host", originalHost),
   );
   for (const [name, value] of Object.entries(credentials?.headers ?? {})) {
     request = HttpClientRequest.setHeader(request, name, value);
@@ -122,9 +161,13 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
  * Resolve an input string to spec text — if it's a URL, fetch it via
  * HttpClient; otherwise return it as-is.
  */
-export const resolveSpecText = (input: string, credentials?: SpecFetchCredentials) =>
+export const resolveSpecText = (
+  input: string,
+  credentials?: SpecFetchCredentials,
+  fetchOptions?: SpecFetchOptions,
+) =>
   input.startsWith("http://") || input.startsWith("https://")
-    ? fetchSpecText(input, credentials)
+    ? fetchSpecText(input, credentials, fetchOptions)
     : Effect.succeed(input);
 
 /**
