@@ -264,6 +264,7 @@ const McpStdioServerInputSchema = Schema.Struct({
       server: Schema.String,
       surface: Schema.optional(Schema.Literals(["sky", "browser"])),
       modulePath: Schema.optional(Schema.String),
+      presetId: Schema.optional(Schema.String),
     }),
   ),
   slug: Schema.optional(Schema.String),

@@ -10,6 +10,7 @@ import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { addIntegrationErrorMessage } from "@executor-js/react/lib/integration-add";
 
 import { addMcpServer, codexPluginsAtom } from "./atoms";
+import { CODEX_PERMISSIONS } from "../sdk/codex-permissions";
 
 // ---------------------------------------------------------------------------
 // Focused add screen for one Codex plugin, reached from its catalog preset
@@ -34,6 +35,8 @@ export default function CodexPluginAdd(props: {
   const plugin = AsyncResult.isSuccess(pluginsResult)
     ? pluginsResult.value.plugins.find((entry) => entry.id === props.presetId)
     : undefined;
+
+  const permissions = CODEX_PERMISSIONS[props.presetId] ?? [];
 
   const added =
     plugin !== undefined &&
@@ -152,6 +155,37 @@ export default function CodexPluginAdd(props: {
           </p>
         )}
       </div>
+
+      {/* Stated up front, not discovered on first failure: macOS asks for
+          these ONCE, and a dismissed prompt never returns — after that the
+          plugin fails with an error the user cannot act on. Each row links
+          straight to the pane that holds the switch. */}
+      {permissions.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border px-3 py-2.5">
+          <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+            macOS access
+          </span>
+          <p className="text-[12px] text-muted-foreground">
+            macOS asks the first time this runs. If you miss the prompt, it will not ask again —
+            enable it here.
+          </p>
+          <ul className="flex flex-col gap-1.5">
+            {permissions.map((permission) => (
+              <li key={permission.id} className="flex items-baseline justify-between gap-3">
+                <span className="text-[12px] text-muted-foreground">
+                  <span className="text-foreground">{permission.label}</span> — {permission.why}
+                </span>
+                <a
+                  href={permission.settingsUrl}
+                  className="shrink-0 font-mono text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Open settings
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {error !== null && <p className="text-[12px] text-destructive">{error}</p>}
 

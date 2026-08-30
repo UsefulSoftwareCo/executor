@@ -138,12 +138,19 @@ describe("scanCodexPlugins", () => {
     // Codex: both ship as node-repl content, so they target `node_repl` with a
     // projected surface. Chrome additionally carries the module its surface
     // imports, resolved through the version-proof `latest` symlink.
+    // Each entry also carries its own preset id, so a macOS permission
+    // failure can name the exact grant that plugin needs.
     expect(curated.map((entry) => entry.appServer)).toEqual([
-      { server: "messages" },
-      { server: "node_repl", surface: "sky" },
-      { server: "node_repl", surface: "browser", modulePath: join(home, CHROME_CLIENT_RELATIVE) },
-      { server: "openaiDeveloperDocs" },
-      { server: "computer-history" },
+      { presetId: "codex-messages", server: "messages" },
+      { presetId: "codex-computer-use", server: "node_repl", surface: "sky" },
+      {
+        presetId: "codex-chrome",
+        server: "node_repl",
+        surface: "browser",
+        modulePath: join(home, CHROME_CLIENT_RELATIVE),
+      },
+      { presetId: "codex-openai-docs", server: "openaiDeveloperDocs" },
+      { presetId: "codex-computer-history", server: "computer-history" },
     ]);
   });
 

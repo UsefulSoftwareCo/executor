@@ -40,6 +40,7 @@ import type { JSONRPCMessage, JSONRPCRequest, Transport } from "@modelcontextpro
 import { Option, Schema } from "effect";
 
 import { browserCallProgram, browserToolList, findBrowserTool } from "./codex-browser-tools";
+import { permissionFailure, permissionFailureMessage } from "./codex-permissions";
 import { findSkyTool, skyCallProgram, skyToolList } from "./codex-sky-tools";
 import { stdioSpawnEnv, type StdioTransportConfig } from "./stdio-connector";
 
@@ -79,6 +80,9 @@ export type AppServerTransportConfig = StdioTransportConfig & {
   /** The MCP server name inside Codex whose tools this transport exposes
    *  (e.g. `messages`) — the `server` of every `mcpServer/tool/call`. */
   readonly server: string;
+  /** Which curated plugin this is, so a macOS permission failure can name the
+   *  exact grant to enable. Absent skips that translation. */
+  readonly presetId?: string;
   /** A projected tool surface for a plugin driven through `node_repl` rather
    *  than serving MCP itself: `sky` is Computer Use (`codex-sky-tools.ts`),
    *  `browser` is Chrome (`codex-browser-tools.ts`). Absent exposes the
@@ -472,6 +476,29 @@ class AppServerClientTransport implements Transport {
         message: "Codex app-server returned an unexpected mcpServer/tool/call result",
       });
       return;
+    }
+
+    // A macOS permission denial arrives as a plugin-level error result whose
+    // own text is "Unknown error" — the numeric code is the only signal, and
+    // it is scrubbed to an opaque internal id further up. Replace it here,
+    // while the plugin identity is still known, with the grant to enable.
+    if (result.value.isError === true) {
+      const text = (result.value.content ?? [])
+        .map((block) => (block as { readonly text?: unknown }).text)
+        .filter((value): value is string => typeof value === "string")
+        .join(" ");
+      const permission = permissionFailure(text, this.#config.presetId);
+      if (permission !== null) {
+        this.#emit({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            content: [{ type: "text", text: permissionFailureMessage(permission) }],
+            isError: true,
+          },
+        });
+        return;
+      }
     }
     this.#emit({
       jsonrpc: "2.0",

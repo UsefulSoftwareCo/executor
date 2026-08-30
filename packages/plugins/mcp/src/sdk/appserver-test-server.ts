@@ -62,6 +62,11 @@ const TOOLS = {
     description: "Echo the arguments back",
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
   },
+  permission_denied: {
+    name: "permission_denied",
+    description: "Fails the way macOS refusal presents",
+    inputSchema: { type: "object", properties: {} },
+  },
   announce_restart: {
     name: "announce_restart",
     description: "Emit server status notifications",
@@ -221,6 +226,15 @@ const handleToolCall = (id: number | string, params: unknown): void => {
       content: [{ type: "text", text: JSON.stringify(call.arguments ?? {}) }],
       structuredContent: { codexHome: process.env["CODEX_HOME"] ?? null },
       isError: null,
+    });
+    return;
+  }
+  if (call.tool === "permission_denied") {
+    // Verbatim shape of a macOS TCC refusal: an error result whose only clue
+    // is the numeric code.
+    reply(id, {
+      content: [{ type: "text", text: "Computer Use server error -1743: Unknown error" }],
+      isError: true,
     });
     return;
   }

@@ -47,6 +47,7 @@ export interface CodexPluginEntry {
    *  connector bridges MCP to it in process, calling tools on this named
    *  server inside Codex. See `appserver-connector.ts`. */
   readonly appServer?: {
+    readonly presetId?: string;
     readonly server: string;
     readonly surface?: "sky" | "browser";
     readonly modulePath?: string;
@@ -420,6 +421,7 @@ export const scanCodexPlugins = (options?: {
       args: ["app-server"],
       env: { CODEX_HOME: codexHome },
       appServer: {
+        presetId: entry.id,
         server: entry.server,
         ...(entry.surface === undefined ? {} : { surface: entry.surface }),
         ...(entry.surface === "browser" ? { modulePath: browserClient } : {}),

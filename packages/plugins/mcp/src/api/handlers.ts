@@ -43,7 +43,12 @@ const toServerInput = (
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
       spawnPerCall?: boolean;
-      appServer?: { server: string; surface?: "sky" | "browser"; modulePath?: string };
+      appServer?: {
+        server: string;
+        surface?: "sky" | "browser";
+        modulePath?: string;
+        presetId?: string;
+      };
       slug?: string;
     };
     return {

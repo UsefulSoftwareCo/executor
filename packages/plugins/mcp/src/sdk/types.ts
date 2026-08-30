@@ -283,6 +283,9 @@ export const McpStdioIntegrationConfig = Schema.Struct({
        *  Chrome's `browser-client.mjs`). Machine-specific, so it is resolved
        *  by the scanner rather than hardcoded. */
       modulePath: Schema.optional(Schema.String),
+      /** Which curated Codex plugin this is, so a macOS permission failure can
+       *  name the exact grant to enable. */
+      presetId: Schema.optional(Schema.String),
     }),
   ),
   /** Declared auth methods — a single `stdio_env` method naming the secret env
