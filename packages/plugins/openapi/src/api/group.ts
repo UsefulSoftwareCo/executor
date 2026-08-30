@@ -82,6 +82,9 @@ const AddSpecPayload = Schema.Struct({
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
+  /** The product's domain when the caller knew it (a registry row names
+   *  notion.com) — display identity when the spec lives on a code host. */
+  displayDomain: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   specFormat: Schema.optional(Schema.String),

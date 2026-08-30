@@ -36,6 +36,11 @@ const AddRemoteServerPayload = Schema.Struct({
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
+  /** Pin legacy protocol negotiation for a server that echoes the modern
+   *  revision but breaks its contract (the probe reports when only legacy
+   *  worked). Omitting this here silently stripped the pin from the stored
+   *  integration, leaving it unusable against exactly that server. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
   slug: Schema.optional(Schema.String),
   queryParams: Schema.optional(StringMap),
   headers: Schema.optional(StringMap),
@@ -58,6 +63,9 @@ const AddStdioServerPayload = Schema.Struct({
   envVars: Schema.optional(Schema.Array(Schema.String)),
   /** One-shot secret env values (programmatic). The UI sends `envVars`. */
   env: Schema.optional(StringMap),
+  /** Non-secret environment stored on the integration and injected at spawn.
+   *  Unlike `env`, nothing here becomes a credential the user must type. */
+  staticEnv: Schema.optional(StringMap),
   cwd: Schema.optional(Schema.String),
   /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
    *  2026-07-28) for modern-only servers; default is the legacy `initialize`
@@ -73,6 +81,7 @@ const AddStdioServerPayload = Schema.Struct({
       server: Schema.String,
       surface: Schema.optional(Schema.Literals(["sky", "browser"])),
       modulePath: Schema.optional(Schema.String),
+      presetId: Schema.optional(Schema.String),
     }),
   ),
   slug: Schema.optional(Schema.String),
@@ -97,6 +106,12 @@ const ProbeEndpointResponse = Schema.Struct({
   serverName: Schema.NullOr(Schema.String),
   /** Server `instructions` from initialize — prefills the description field. */
   instructions: Schema.NullOr(Schema.String),
+  /** Which protocol negotiation worked, when discovery succeeded. `legacy`
+   *  means the server echoes the modern revision but breaks its contract, and
+   *  the add must pin `versionNegotiation: "legacy"` on the integration —
+   *  omitting this field here silently stripped it from the HTTP response and
+   *  the pin never happened. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
 });
 
 // ---------------------------------------------------------------------------
@@ -163,6 +178,7 @@ const CodexPluginEntrySchema = Schema.Struct({
       server: Schema.String,
       surface: Schema.optional(Schema.Literals(["sky", "browser"])),
       modulePath: Schema.optional(Schema.String),
+      presetId: Schema.optional(Schema.String),
     }),
   ),
   setupHint: Schema.optional(Schema.String),
@@ -174,6 +190,20 @@ const CodexPluginEntrySchema = Schema.Struct({
   displayName: Schema.optional(Schema.String),
   tagline: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
+});
+
+/** The result of actually trying the plugin, not a reading of any privacy
+ *  database — macOS exposes no way to read another app's decisions. */
+const CodexPluginAccessResponse = Schema.Struct({
+  status: Schema.Literals([
+    "ok",
+    "blocked",
+    "not-installed",
+    "nothing-to-check",
+    "unknown",
+    "unsupported",
+  ]),
+  message: Schema.optional(Schema.String),
 });
 
 const ListCodexPluginsResponse = Schema.Struct({
@@ -249,6 +279,13 @@ export const McpGroup = HttpApiGroup.make("mcp")
   .add(
     HttpApiEndpoint.get("listCodexPlugins", "/mcp/codex-plugins", {
       success: ListCodexPluginsResponse,
+      error: [InternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("checkCodexPluginAccess", "/mcp/codex-plugins/:id/check", {
+      params: { id: Schema.String },
+      success: CodexPluginAccessResponse,
       error: [InternalError],
     }),
   )

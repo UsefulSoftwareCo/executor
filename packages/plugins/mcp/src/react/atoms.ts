@@ -29,6 +29,7 @@ export const codexPluginsAtom = McpClient.query("mcp", "listCodexPlugins", {
   timeToLive: "15 seconds",
 });
 
+export const checkCodexPluginAccess = McpClient.mutation("mcp", "checkCodexPluginAccess");
 export const probeMcpEndpoint = McpClient.mutation("mcp", "probeEndpoint");
 export const addMcpServer = McpClient.mutation("mcp", "addServer");
 export const removeMcpServer = McpClient.mutation("mcp", "removeServer");

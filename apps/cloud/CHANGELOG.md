@@ -1,5 +1,53 @@
 # @executor-js/cloud
 
+## 1.4.67
+
+### Patch Changes
+
+- [#1864](https://github.com/UsefulSoftwareCo/executor/pull/1864) [`fad3650`](https://github.com/UsefulSoftwareCo/executor/commit/fad36504439a07e6080beba243b24b73cd1b9741) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **API key validation is cached per isolate**
+
+  Every MCP request and every API-key-authenticated `/api/*` request used to pay a live WorkOS round trip (~100-150ms) to validate the presented key, on every single request. The JWT bearer path beside it already verified locally against a JWKS cached for an hour; API keys had no cache at all.
+
+  Successful validations are now cached in a bounded per-isolate map for 60 seconds, keyed by the SHA-256 digest of the key value (never the raw credential). The MCP handler used to rebuild its whole auth layer (and with it the cache) on every request; it now builds the layer once per isolate, so the cache holds on both the `/api/*` and `/mcp` planes. Invalid keys and upstream failures are never cached, so probing bad keys cannot pollute the map and a freshly created key works immediately. The tradeoff: a revoked key remains usable for up to 60 seconds within an isolate that validated it before revocation — far tighter than the one-hour rotation window the JWT path already accepts.
+
+- Updated dependencies [[`c695970`](https://github.com/UsefulSoftwareCo/executor/commit/c6959702f6459504463fe0e13fa1a576190460ed), [`21119da`](https://github.com/UsefulSoftwareCo/executor/commit/21119da662d2d225b033b3532e1f17d97311a39d), [`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063)]:
+  - @executor-js/plugin-mcp@1.6.6
+  - @executor-js/execution@1.6.6
+  - @executor-js/react@1.4.69
+  - @executor-js/api@1.4.69
+  - @executor-js/cloudflare@0.0.48
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.17
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-graphql@1.6.6
+  - @executor-js/plugin-openapi@1.6.6
+  - @executor-js/plugin-toolkits@1.5.41
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/sdk@1.6.6
+  - @executor-js/runtime-quickjs@1.6.6
+  - @executor-js/vite-plugin@0.0.66
+
+## 1.4.66
+
+### Patch Changes
+
+- Updated dependencies [[`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2), [`4d4ad7c`](https://github.com/UsefulSoftwareCo/executor/commit/4d4ad7c1d5690bc13ad37d9cdadf3775e464a3f5)]:
+  - @executor-js/plugin-mcp@1.6.5
+  - @executor-js/sdk@1.6.5
+  - @executor-js/runtime-quickjs@1.6.5
+  - @executor-js/execution@1.6.5
+  - @executor-js/plugin-graphql@1.6.5
+  - @executor-js/plugin-openapi@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/vite-plugin@0.0.65
+  - @executor-js/cloudflare@0.0.47
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.16
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-toolkits@1.5.40
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.68
+
 ## 1.4.65
 
 ### Patch Changes

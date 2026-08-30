@@ -58,14 +58,6 @@ const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map(
 
 export const mcpPresets: readonly McpPreset[] = [
   {
-    id: "emulate-mcp",
-    name: "Emulate MCP",
-    summary: "Deterministic MCP fixtures for validating native text and image content.",
-    url: "https://emulators.dev/mcp/query/mcp?token=demo-token",
-    endpoint: "https://emulators.dev/mcp/query/mcp?token=demo-token",
-    icon: "https://integrations.sh/logo/emulators.dev",
-  },
-  {
     id: "deepwiki",
     name: "DeepWiki",
     summary: "Search and read documentation from any GitHub repo.",

@@ -1,5 +1,56 @@
 # @executor-js/plugin-mcp
 
+## 1.6.6
+
+### Patch Changes
+
+- [#1869](https://github.com/UsefulSoftwareCo/executor/pull/1869) [`c695970`](https://github.com/UsefulSoftwareCo/executor/commit/c6959702f6459504463fe0e13fa1a576190460ed) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Explain macOS permissions for Codex plugins instead of failing with an opaque
+  error. A refused grant used to surface as `Internal tool error [id]` — the
+  plugin reports "Unknown error" and only a numeric code says what happened, so
+  neither the user nor the model could tell that macOS was the blocker.
+
+  The bridge now recognises those codes and answers with the grant to enable and
+  where to find it. Each plugin's add screen also states what macOS will ask for
+  before anything runs, with a link straight to the right Privacy pane — macOS
+  asks once, and a dismissed prompt never returns.
+
+  The add screen checks that access when it opens, and holds the Add button
+  until the plugin answers. Adding one that macOS is still blocking produced an
+  integration that looked connected and failed on its first call, by which point
+  the screen explaining the fix was gone.
+
+- Updated dependencies [[`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063)]:
+  - @executor-js/react@1.4.69
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+  - @executor-js/config@1.6.6
+
+## 1.6.5
+
+### Patch Changes
+
+- [#1863](https://github.com/UsefulSoftwareCo/executor/pull/1863) [`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Adding a Codex plugin no longer asks for anything. `CODEX_HOME` is a path the
+  scanner already resolved, but it was passed on the channel that makes an
+  environment variable a credential — so the integration declared it as one, and
+  a person who reached the connect step was shown a masked field for a value
+  they should never have to know.
+
+  Stdio integrations can now carry non-secret environment as static
+  configuration, separate from declared secrets. The Codex plugins use it: they
+  declare no auth, and their connection is created for them.
+
+- [#1861](https://github.com/UsefulSoftwareCo/executor/pull/1861) [`4d4ad7c`](https://github.com/UsefulSoftwareCo/executor/commit/4d4ad7c1d5690bc13ad37d9cdadf3775e464a3f5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Stdio MCP servers are kept alive between tool calls**
+
+  Every tool call on a stdio MCP integration used to spawn a fresh child process, run the full MCP handshake, call the one tool, and tear the child down — roughly a second of overhead per call for an `npx`-launched server, on every call. Remote and app-server connections already reused sessions through the connection pool; plain stdio now joins them, with the same five-minute idle window, the same hashed identity key (command, args, cwd, secret env, credential values, owner and connection all separate identities), and the same drop-on-transport-failure semantics. This matches how MCP clients drive stdio servers generally: one long-lived child per session, not one per call.
+
+  A server that genuinely depends on fresh-process semantics can opt out with `spawnPerCall: true` in its stdio config (also accepted by the add-server API). The Codex app-server bridge ignores the opt-out — its approvals are session state, so it must pool.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/config@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/react@1.4.68
+
 ## 1.6.4
 
 ### Patch Changes

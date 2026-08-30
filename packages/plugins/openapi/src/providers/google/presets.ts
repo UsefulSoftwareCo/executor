@@ -346,6 +346,7 @@ export const googleCatalog: readonly IntegrationPreset[] = googleOpenApiPresets
     ...(preset.featured ? { featured: preset.featured } : {}),
     family: "google",
     specFormat: "google-discovery",
+    registryListed: true,
     defaultSlug: googleServiceSlug(preset.id),
     authTemplate: googleCatalogAuthTemplate(preset.id),
     ...(GOOGLE_HEALTH_CHECKS[preset.id] ? { healthCheck: GOOGLE_HEALTH_CHECKS[preset.id] } : {}),

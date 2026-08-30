@@ -23,7 +23,7 @@ const appServerInput = (
   command: "bun",
   args: ["run", fixture],
   env: { CODEX_HOME: "/tmp/fixture-codex-home" },
-  appServer: { server, ...appServer },
+  appServer: { server, presetId: "codex-messages", ...appServer },
 });
 
 const withConnection = (input: StdioConnectorInput) =>
@@ -42,6 +42,7 @@ describe("codex app-server bridge", () => {
           "announce_restart",
           "echo",
           "needs_approval",
+          "permission_denied",
         ]);
         const echo = tools.tools.find(({ name }) => name === "echo");
         expect(echo?.description).toBe("Echo the arguments back");
@@ -144,6 +145,27 @@ describe("codex app-server bridge", () => {
         // Give the notifications a turn to land after the call's response.
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
         expect(changed, "only this server's ready transition counts").toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("turns a macOS refusal into the grant the user has to enable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The plugin says "Unknown error" and the code is scrubbed to an
+        // opaque id further up, so the one place this can be made actionable
+        // is here, while the plugin identity is still known.
+        const connection = yield* withConnection(appServerInput("messages"));
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({ name: "permission_denied", arguments: {} }),
+        );
+        const text = (result.content as readonly { readonly text: string }[])[0]!.text;
+
+        expect(result.isError).toBe(true);
+        expect(text, "names the block").toContain("macOS blocked this");
+        expect(text, "and the exact switch").toContain('"Executor → Messages"');
+        expect(text, "not the plugin's own wording").not.toContain("Unknown error");
       }),
     ),
   );

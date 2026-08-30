@@ -73,7 +73,9 @@ scenario(
 
       await step("Open the integrations console", async () => {
         await visit(page, "/integrations");
-        await page.getByRole("button", { name: "Connect" }).first().waitFor();
+        // The connect dialog became the full-page picker; the header's Add
+        // link is the page's stable loaded-signal now.
+        await page.getByRole("link", { name: "Add integration" }).first().waitFor();
       });
 
       let faulted = 0;

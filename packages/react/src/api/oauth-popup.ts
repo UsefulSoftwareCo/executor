@@ -238,7 +238,13 @@ export type OpenOAuthSystemBrowserInput<TAuth> = {
   readonly onResult: (data: OAuthPopupResult<TAuth>) => void;
   /** Called once if the external open itself fails (URL rejected, IPC error). */
   readonly onOpenFailed?: (cause: unknown) => void;
-  /** Poll cadence. Default 1000ms. */
+  /**
+   * Delay between poll attempts, applied only after the previous request
+   * settles (requests never overlap). New local servers long-poll the await
+   * route and answer the moment the flow completes, so this is a reconnect
+   * cadence; old servers answer immediately, making this a plain poll
+   * interval as before. Default 1000ms.
+   */
   readonly pollMs?: number;
   /** Stop polling after this many ms with no result. Default 10 minutes. */
   readonly timeoutMs?: number;
@@ -252,14 +258,14 @@ export const openOAuthSystemBrowser = <TAuth>(
   input: OpenOAuthSystemBrowserInput<TAuth>,
 ): (() => void) => {
   let settled = false;
-  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const controller = new AbortController();
 
   const settle = () => {
     if (settled) return;
     settled = true;
-    if (pollHandle !== null) clearInterval(pollHandle);
+    if (pollTimer !== null) clearTimeout(pollTimer);
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
     controller.abort();
   };
@@ -299,8 +305,23 @@ export const openOAuthSystemBrowser = <TAuth>(
     }
   })();
 
-  pollHandle = setInterval(() => void poll(), input.pollMs ?? OAUTH_AWAIT_DEFAULT_POLL_MS);
-  void poll();
+  // Sequential poll loop: one request at a time, reconnecting `pollMs` after
+  // the previous one settles. A long-polling server may hold each request for
+  // many seconds, so a fixed interval would stack overlapping requests.
+  const scheduleReconnect = () => {
+    if (settled) return;
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      void runPoll();
+    }, input.pollMs ?? OAUTH_AWAIT_DEFAULT_POLL_MS);
+  };
+  const runPoll = async () => {
+    if (settled) return;
+    await poll();
+    scheduleReconnect();
+  };
+
+  void runPoll();
   timeoutHandle = setTimeout(() => {
     if (settled) return;
     settle();

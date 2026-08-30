@@ -104,20 +104,33 @@ const apiKeyTemplateFromHeaderPreset = (
   preset: HeaderPreset,
   slug: AuthTemplateSlug,
 ): APIKeyAuthentication => {
-  const variables = variablesForHeaders(preset.secretHeaders);
+  const secretQueryParams = preset.secretQueryParams ?? [];
+  // One variable namespace across carriers, so a strategy sending two secrets
+  // (a header and a query param) asks for two distinct inputs.
+  const variables = variablesForHeaders([...preset.secretHeaders, ...secretQueryParams]);
   return {
     slug,
     kind: "apikey",
-    placements: preset.secretHeaders.map((headerName) => {
-      const prefix = headerPrefix(preset, headerName);
-      const variable = variables.get(headerName);
-      return {
-        carrier: "header" as const,
-        name: headerName,
-        ...(prefix ? { prefix } : {}),
-        ...(variable ? { variable } : {}),
-      };
-    }),
+    placements: [
+      ...preset.secretHeaders.map((headerName) => {
+        const prefix = headerPrefix(preset, headerName);
+        const variable = variables.get(headerName);
+        return {
+          carrier: "header" as const,
+          name: headerName,
+          ...(prefix ? { prefix } : {}),
+          ...(variable ? { variable } : {}),
+        };
+      }),
+      ...secretQueryParams.map((paramName) => {
+        const variable = variables.get(paramName);
+        return {
+          carrier: "query" as const,
+          name: paramName,
+          ...(variable ? { variable } : {}),
+        };
+      }),
+    ],
   };
 };
 

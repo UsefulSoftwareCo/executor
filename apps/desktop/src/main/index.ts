@@ -78,7 +78,13 @@ import {
 // executor.jsonc plugin manifest) is pinned separately to ~/.executor in
 // main/sidecar.ts — that path matches the CLI's default.
 app.setName("Executor");
-app.setPath("userData", join(app.getPath("appData"), "Executor"));
+// A dev run must not collide with an installed Executor: userData also holds
+// Electron's single-instance lock, so sharing it makes the second process quit
+// silently at startup. `EXECUTOR_DESKTOP_USER_DATA` gives a dev run its own.
+app.setPath(
+  "userData",
+  process.env.EXECUTOR_DESKTOP_USER_DATA ?? join(app.getPath("appData"), "Executor"),
+);
 
 log.initialize({ preload: true });
 log.transports.file.level = "info";

@@ -145,7 +145,9 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     id: "axiom",
     name: "Axiom",
     summary: "Log ingestion, querying, datasets, and monitors.",
-    url: "https://axiom.co/docs/restapi/versions/v2.json",
+    // axiom.co/docs/restapi/versions/v2.json now 404s; the docs repo is where
+    // Axiom actually publishes the spec.
+    url: "https://raw.githubusercontent.com/axiomhq/docs/main/content/docs/%28api-reference%29/restapi/versions/v2.json",
     icon: "https://integrations.sh/logo/axiom.co",
   },
   {
@@ -168,13 +170,6 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     summary: "Droplets, Kubernetes, databases, and networking.",
     url: "https://raw.githubusercontent.com/digitalocean/openapi/main/specification/DigitalOcean-public.v2.yaml",
     icon: "https://integrations.sh/logo/digitalocean.com",
-  },
-  {
-    id: "petstore",
-    name: "Petstore",
-    summary: "Classic OpenAPI demo, no auth required.",
-    url: "https://petstore3.swagger.io/api/v3/openapi.json",
-    icon: "https://integrations.sh/logo/petstore3.swagger.io",
   },
   {
     id: "val-town",

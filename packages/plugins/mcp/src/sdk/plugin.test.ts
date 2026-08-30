@@ -24,7 +24,7 @@ import {
 } from "@executor-js/sdk/testing";
 
 import { createMcpConnector } from "./connection";
-import { mcpPlugin, userFacingProbeMessage } from "./plugin";
+import { mcpPlugin, userFacingProbeMessage, toIntegrationConfig } from "./plugin";
 import { McpInvocationError } from "./errors";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
 import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
@@ -1535,4 +1535,41 @@ describe("mcpPlugin endpoint telemetry", () => {
       expect(serialized).not.toContain(QUERY_TOKEN);
     }),
   );
+});
+
+describe("stdio static env", () => {
+  it("keeps non-secret env off the credential surface", () => {
+    // `env` declares a credential the user must type; `staticEnv` is machine
+    // knowledge stored on the integration. A path the scanner already resolved
+    // belongs in the second, or adding the integration asks for it.
+    const config = toIntegrationConfig({
+      transport: "stdio",
+      name: "Computer Use",
+      command: "/usr/local/bin/codex",
+      args: ["app-server"],
+      staticEnv: { CODEX_HOME: "/home/a/.codex" },
+    });
+
+    expect(config).toMatchObject({
+      env: { CODEX_HOME: "/home/a/.codex" },
+      authenticationTemplate: [{ slug: "none", kind: "none" }],
+    });
+  });
+
+  it("still treats declared env values as credentials", () => {
+    const config = toIntegrationConfig({
+      transport: "stdio",
+      name: "Secret server",
+      command: "run",
+      env: { API_KEY: "sk-live" },
+    });
+
+    expect(config).toMatchObject({
+      authenticationTemplate: [{ slug: "env", kind: "stdio_env", vars: ["API_KEY"] }],
+    });
+    expect(
+      (config as { env?: unknown }).env,
+      "the secret never lands in the config",
+    ).toBeUndefined();
+  });
 });

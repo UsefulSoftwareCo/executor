@@ -25,6 +25,7 @@ import {
   type AuthMethodRow,
   type AuthMethodSeed,
 } from "@executor-js/react/components/auth-method-list-editor";
+import { placementFromHeaderPattern } from "@executor-js/react/lib/auth-placements";
 import { CardStack, CardStackContent } from "@executor-js/react/components/card-stack";
 import { FieldLabel } from "@executor-js/react/components/field";
 import { FloatActions } from "@executor-js/react/components/float-actions";
@@ -170,18 +171,40 @@ export default function AddOpenApiIntegration(props: {
   initialUrl?: string;
   initialPreset?: string;
   initialNamespace?: string;
+  initialAuthHeader?: string;
+  initialAuthNote?: string;
+  initialSpecOverrides?: string;
 }) {
   const integrationPlugins = useIntegrationPlugins();
   const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
   const openApiPresets = openApiPlugin?.presets;
-  const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
+  // A `?preset=` deep link is self-sufficient: the preset's own URL seeds the
+  // field. The connect dialog used to pass `&url=` alongside, which hid that
+  // this never worked on its own — preset links from agents and docs carry
+  // only the id.
+  const [specUrl, setSpecUrl] = useState(
+    () =>
+      props.initialUrl ??
+      openApiPresets?.find((preset) => preset.id === props.initialPreset)?.url ??
+      "",
+  );
   const [specOverridesDraft, setSpecOverridesDraft] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
   const activePreset = resolveOpenApiPreset(openApiPresets, props.initialPreset, specUrl);
   const presetSpecOverrides = decodeOpenApiSpecOverrides(activePreset?.specOverrides);
-  const specOverridesText = specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides);
+  // Registry-declared overrides — how a vendor's published document gets
+  // improved without hosting a fork (Neon's console session cookies posing as
+  // security schemes). A preset's own overrides win; the user's draft wins
+  // over both, and the editor shows exactly what will apply.
+  const registrySpecOverrides = useMemo(() => {
+    if (!props.initialSpecOverrides) return undefined;
+    const parsed = parseSpecOverridesText(props.initialSpecOverrides);
+    return parsed.ok ? parsed.value : undefined;
+  }, [props.initialSpecOverrides]);
+  const specOverridesText =
+    specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides ?? registrySpecOverrides);
 
   // After analysis
   const [preview, setPreview] = useState<SpecPreviewSummary | null>(null);
@@ -297,14 +320,26 @@ export default function AddOpenApiIntegration(props: {
       ...(preview?.headerPresets ?? []).map((preset) => preset.label),
       ...(preview?.oauth2Presets ?? []).map((preset) => preset.label),
     ];
-    return authenticationTemplate.map(
+    const detected = authenticationTemplate.map(
       (template: Authentication, index: number): AuthMethodSeed => ({
         value: editorValueFromAuthentication(template),
         slug: String(template.slug),
         ...(labels[index] !== undefined ? { label: labels[index] } : {}),
       }),
     );
-  }, [preview, authenticationTemplate]);
+    if (preview === null) return detected;
+    // The registry's declared credential placement fills what the document
+    // leaves out. GitHub's official description famously declares no
+    // securitySchemes at all, and even with the OAuth preset template a PAT
+    // bearer header is how most calls actually authenticate — so the key
+    // method is offered alongside OAuth. A spec-declared key method wins over
+    // the registry's version of the same fact.
+    const placement = props.initialAuthHeader
+      ? placementFromHeaderPattern(props.initialAuthHeader)
+      : null;
+    if (!placement || detected.some((seed) => seed.value.kind === "apikey")) return detected;
+    return [...detected, { value: { kind: "apikey", placements: [placement] } }];
+  }, [preview, authenticationTemplate, props.initialAuthHeader]);
   const authMethodList = useAuthMethodList(authMethodSeeds);
 
   // The methods to register, mapped back to stored `Authentication[]`. Drops
@@ -597,9 +632,13 @@ export default function AddOpenApiIntegration(props: {
         <AuthMethodListEditor
           list={authMethodList}
           emptyHint="No authentication detected. Add a method, or add the integration without auth and connect an account from the integration page later."
-          footerHint="Every method here is registered with the integration. Connect an account from the integration page after adding."
+          footerHint="Nothing here takes your credential. Add the integration first, then connect an account on its page."
         />
       )}
+
+      {preview && props.initialAuthNote ? (
+        <p className="text-xs leading-relaxed text-muted-foreground">{props.initialAuthNote}</p>
+      ) : null}
 
       {preview ? (
         <AddOpenApiHealthCheckSection

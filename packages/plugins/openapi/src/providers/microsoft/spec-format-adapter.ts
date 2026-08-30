@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import type { SpecFormatAdapter } from "../../sdk/spec-format";
 
 import { buildMicrosoftGraphOpenApiSpec, microsoftGraphKeepPathItem } from "./graph";
+import { MICROSOFT_GRAPH_OPENAPI_URL } from "./presets";
 import { microsoftGraphPresetIdsForSliceAsset, microsoftGraphSliceAssetFromUrl } from "./slices";
 
 const fragmentPresetIds = (hash: string): readonly string[] =>
@@ -40,8 +41,28 @@ const graphCatalogSelection = (
   };
 };
 
+/** Recognizes the Graph sources this adapter exists to handle: Microsoft's
+ *  published monolith and executor's slice assets, with or without a
+ *  `#preset=` selector. Without this, pasting one of those URLs by hand falls
+ *  to the plain OpenAPI path, which then chokes on the 43 MB monolith — the
+ *  adapter only ever engaged when a preset supplied `specFormat`. */
+const detectsGraphUrl = (url: string): boolean => {
+  if (!URL.canParse(url)) return false;
+  const parsed = new URL(url);
+  parsed.hash = "";
+  const bare = parsed.toString();
+  return (
+    bare === MICROSOFT_GRAPH_OPENAPI_URL ||
+    microsoftGraphSliceAssetFromUrl(bare) !== null ||
+    /^https:\/\/raw\.githubusercontent\.com\/microsoftgraph\/msgraph-metadata\/.*\/openapi\.ya?ml$/.test(
+      bare,
+    )
+  );
+};
+
 export const microsoftGraphAdapter: SpecFormatAdapter = {
   id: "microsoft-graph",
+  detectsUrl: detectsGraphUrl,
   fetch: (input) =>
     buildMicrosoftGraphOpenApiSpec(
       graphCatalogSelection(input.urls[0]),

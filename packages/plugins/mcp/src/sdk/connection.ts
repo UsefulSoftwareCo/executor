@@ -566,7 +566,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
     // bridge answers the MCP handshake itself, so `versionNegotiation` does
     // not apply on this path.
     if (input.appServer !== undefined) {
-      const { server, surface, modulePath } = input.appServer;
+      const { server, surface, modulePath, presetId } = input.appServer;
       return Effect.gen(function* () {
         const { createAppServerTransport } = yield* Effect.tryPromise({
           try: () => import("./appserver-connector"),
@@ -588,6 +588,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
               server,
               ...(surface === undefined ? {} : { surface }),
               ...(modulePath === undefined ? {} : { modulePath }),
+              ...(presetId === undefined ? {} : { presetId }),
             }),
         });
       });
@@ -634,13 +635,14 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   const endpoint = buildEndpointUrl(input.endpoint, input.queryParams ?? {});
 
-  // Auto-negotiate the 2026-07-28 era unconditionally only on Streamable
-  // HTTP. SSE is a legacy-only transport; stdio negotiates per the
-  // integration's `versionNegotiation` (default legacy — see the stdio
-  // branch above).
+  // Auto-negotiate the 2026-07-28 era on Streamable HTTP unless the config
+  // pins `legacy` (for servers that echo the proposed revision and then
+  // violate its contract). SSE is a legacy-only transport; stdio negotiates
+  // per the integration's `versionNegotiation` (default legacy — see the
+  // stdio branch above).
   const connectStreamableHttp = connectClient({
     transport: "streamable-http",
-    versionNegotiation: { mode: "auto" },
+    ...(input.versionNegotiation === "legacy" ? {} : { versionNegotiation: { mode: "auto" } }),
     createTransport: (sdk) =>
       new sdk.client.StreamableHTTPClientTransport(endpoint, {
         requestInit,

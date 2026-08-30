@@ -31,11 +31,21 @@ type Owner = "org" | "user";
 
 export interface AnalyticsEvents {
   // ── Integrations ─────────────────────────────────────────────────────────
-  integration_connect_dialog_opened: {};
+  /** The full-page picker was opened. Replaces the connect dialog, whose
+   *  `integration_connect_dialog_opened` this supersedes — keep both readable
+   *  in dashboards spanning the change. */
+  integration_browse_opened: { via: "header" | "empty-state" | "sidebar" };
   integration_detect_submitted: {
     success: boolean;
     detected_kind?: string;
     confidence?: string;
+  };
+  /** Thumbs on the AI-generated credential guidance panel — the accuracy
+   *  signal for the registry's machine-written setup text. */
+  credential_guidance_rated: {
+    domain: string;
+    credential_label: string;
+    vote: "up" | "down";
   };
   integration_add_started: {
     plugin_key: string;

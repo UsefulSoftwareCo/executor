@@ -231,6 +231,12 @@ export const McpRemoteIntegrationConfig = Schema.Struct({
   /** Declared auth methods — how a connection's values are rendered onto
    *  requests. A connection's `template` picks one by slug. */
   authenticationTemplate: Schema.Array(McpAuthMethod),
+  /** Protocol negotiation. Remote defaults to `auto` (2026-07-28 era).
+   *  `legacy` pins servers that ECHO the proposed revision and then violate
+   *  its response contract — Walmart's MCP answers "2026-07-28" to any
+   *  proposal while emitting 2024-era results, which the modern client
+   *  rightly rejects. */
+  versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
 });
 export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
@@ -283,6 +289,9 @@ export const McpStdioIntegrationConfig = Schema.Struct({
        *  Chrome's `browser-client.mjs`). Machine-specific, so it is resolved
        *  by the scanner rather than hardcoded. */
       modulePath: Schema.optional(Schema.String),
+      /** Which curated Codex plugin this is, so a macOS permission failure can
+       *  name the exact grant to enable. */
+      presetId: Schema.optional(Schema.String),
     }),
   ),
   /** Declared auth methods — a single `stdio_env` method naming the secret env

@@ -1973,3 +1973,64 @@ describe("MCP host server — hang-visibility tracing", () => {
     );
   });
 });
+
+// Pins that formatting a completed execution for MCP walks the result value
+// exactly once (`formatExecuteResult`'s pretty print), with or without emit()
+// output — the with-output and without-output branches are alternatives, never
+// stacked. A `toJSON` probe counts full `JSON.stringify` walks of the value.
+describe("formatMcpExecutionOutcome serialization cost", () => {
+  const instrumented = () => {
+    let walks = 0;
+    const probe = {
+      toJSON: () => {
+        walks += 1;
+        return "probe";
+      },
+    };
+    return { value: { data: [1, 2, 3], probe }, walks: () => walks };
+  };
+
+  it("stringifies the result value once for a plain completed outcome", () => {
+    const fixture = instrumented();
+    const outcome: ExecutionResult = {
+      status: "completed",
+      result: { result: fixture.value, logs: [] },
+    };
+
+    const result = formatMcpExecutionOutcome(outcome);
+
+    expect(fixture.walks()).toBe(1);
+    const first = result.content[0];
+    expectDefined(first);
+    expect(first).toEqual({
+      type: "text",
+      text: JSON.stringify(fixture.value, null, 2),
+    });
+    expectDefined(result.structuredContent);
+    expect(result.structuredContent["result"]).toBe(fixture.value);
+    // The identity probe above walked the value once more; discount it.
+    expect(fixture.walks()).toBe(2);
+  });
+
+  it("stringifies the result value once when emit() output is present", () => {
+    const fixture = instrumented();
+    const outcome: ExecutionResult = {
+      status: "completed",
+      result: {
+        result: fixture.value,
+        logs: [],
+        output: [{ type: "content", content: { type: "text", text: "emitted" } }],
+      },
+    };
+
+    const result = formatMcpExecutionOutcome(outcome);
+
+    expect(fixture.walks()).toBe(1);
+    expect(result.content[0]).toEqual({ type: "text", text: "emitted" });
+    const returned = result.content[1];
+    expectDefined(returned);
+    expect(returned.type).toBe("text");
+    if (returned.type !== "text") return;
+    expect(returned.text).toContain('"data"');
+  });
+});

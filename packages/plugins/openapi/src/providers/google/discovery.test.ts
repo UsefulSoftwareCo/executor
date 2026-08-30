@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { buildToolTypeScriptPreview } from "@executor-js/sdk/core";
 
 import {
@@ -7,6 +8,7 @@ import {
   convertGoogleDiscoveryToOpenApi,
   isGoogleDiscoveryUrl,
   normalizeGoogleDiscoveryUrl,
+  fetchGoogleDiscoveryDocument,
 } from "./discovery";
 import { googleOAuthConsentScopesForPreset } from "./service-policy";
 import { extract, parse } from "@executor-js/plugin-openapi";
@@ -1669,3 +1671,29 @@ it.effect("marks People API semantic inputs as required", () =>
     });
   }),
 );
+
+it("falls back to the service-hosted Discovery URL when the central directory has no entry", async () => {
+  // Google Ads is not listed in the central directory: normalization maps it
+  // onto www.googleapis.com for identity, and that URL 404s. The fetch must
+  // still succeed by falling back to the host the caller named.
+  const seen: string[] = [];
+  const stub = HttpClient.make((request) => {
+    seen.push(request.url);
+    return Effect.succeed(
+      request.url.includes("www.googleapis.com")
+        ? HttpClientResponse.fromWeb(request, new Response("nope", { status: 404 }))
+        : HttpClientResponse.fromWeb(
+            request,
+            new Response('{"name":"googleads"}', { status: 200 }),
+          ),
+    );
+  });
+  const text = await Effect.runPromise(
+    fetchGoogleDiscoveryDocument(
+      "https://googleads.googleapis.com/$discovery/rest?version=v24",
+    ).pipe(Effect.provideService(HttpClient.HttpClient, stub)),
+  );
+  expect(text).toBe('{"name":"googleads"}');
+  expect(seen[0]).toContain("www.googleapis.com");
+  expect(seen[1]).toBe("https://googleads.googleapis.com/$discovery/rest?version=v24");
+});

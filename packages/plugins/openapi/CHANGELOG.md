@@ -1,5 +1,25 @@
 # @executor-js/plugin-openapi
 
+## 1.6.6
+
+### Patch Changes
+
+- Updated dependencies [[`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063)]:
+  - @executor-js/react@1.4.69
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+  - @executor-js/config@1.6.6
+
+## 1.6.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/config@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/react@1.4.68
+
 ## 1.6.4
 
 ### Patch Changes

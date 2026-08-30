@@ -215,6 +215,18 @@ const resolveClientDir = (): string => {
 const delay = (ms: number): Promise<void> =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
+/**
+ * Where this app keeps `data.db`, `auth.json`, and the server manifest.
+ *
+ * A dev run overrides it: that SQLite has ONE owner, so a dev build started
+ * beside an installed Executor otherwise dies on the installed app's lock.
+ * Redirecting HOME is not an alternative — the machine-local tools a plugin
+ * drives resolve their own paths from it, and Codex Computer Use fails at
+ * "native pipe startup" under a synthetic home.
+ */
+const executorScopeDir = (): string =>
+  process.env.EXECUTOR_DESKTOP_SCOPE_DIR ?? join(homedir(), ".executor");
+
 export async function startSidecar(options: StartOptions = {}): Promise<SidecarConnection> {
   const hostname = options.hostname ?? "127.0.0.1";
   const settings = getServerSettings();
@@ -226,7 +238,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   // userData (set in main/index.ts) is still used for electron-store,
   // electron-log, and window-state — those stay app-scoped to avoid colliding
   // with anything else under HOME.
-  const scopeDir = join(homedir(), ".executor");
+  const scopeDir = executorScopeDir();
   const dataDir = scopeDir;
   mkdirSync(dataDir, { recursive: true });
 
@@ -429,7 +441,7 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
  * is handled by the existing single-instance / ownership logic.
  */
 export async function attachToSupervisedDaemon(): Promise<SidecarConnection | null> {
-  const dataDir = join(homedir(), ".executor");
+  const dataDir = executorScopeDir();
   const manifest = readManifest(dataDir);
   const decision = await resolveSupervisedDaemonAttach(manifest, {
     isReachable: isDaemonReachable,
