@@ -5813,17 +5813,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // below interrupts whatever was not consumed. Interrupting a read
         // mid-flight merely abandons the driver promise (`fumaEffect` takes
         // no abort signal and installs its rejection handler at
-        // construction), so an abandoned read cannot unhandled-reject.
-        const policyRulesFiber = yield* Effect.forkChild(listActivePolicyRuleSet(), {
-          startImmediately: true,
-        });
+        // construction), so an abandoned read cannot unhandled-reject; a
+        // fiber interrupted before it ever ran issues no read at all.
+        // The forks deliberately omit `startImmediately`: an immediate fork
+        // evaluates the child INLINE up to its first suspension, so on a
+        // storage backend that answers without suspending the speculative
+        // reads would run to completion before the dominant tool-row read
+        // below was even launched — reversing the sequential code's launch
+        // order. A plain fork only schedules the child on the fiber's
+        // dispatcher; this fiber proceeds straight to the tool-row read
+        // (dominant read launches first, exactly as the sequential code
+        // ordered it) and the children start one scheduler tick later,
+        // overlapping the dominant read wherever it performs real I/O. The
+        // dispatcher runs scheduled children whether or not this fiber ever
+        // suspends, so a synchronous parent path delays them by one tick but
+        // cannot starve them.
+        const policyRulesFiber = yield* Effect.forkChild(listActivePolicyRuleSet());
         const connectionRowFiber = yield* Effect.forkChild(
           findConnectionRow({
             owner: parsed.owner,
             integration: parsed.integration,
             name: parsed.connection,
           }),
-          { startImmediately: true },
         );
         const invokeDynamicTool = Effect.gen(function* () {
           const row = yield* core.findFirst("tool", {
@@ -5931,6 +5942,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // it is forked and the two run concurrently. Both start only after
           // `enforceApproval` above completes — a declined call must never
           // trigger the token refresh credential resolution can perform. The
+          // fork is plain (no `startImmediately`) for the same launch-order
+          // reason as the pre-approval forks above: credential resolution is
+          // the dominant work here and must launch first; the scheduled
+          // child then overlaps it from the next scheduler tick. The
           // fork is joined after `values`, so a credential resolution failure
           // keeps dominating a storage failure exactly as it did when the
           // reads were sequential; on that failure path the fork is
@@ -5939,9 +5954,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // abandoned, never silently dropped as an unobserved value.
           const integrationRowFiber = yield* Effect.forkChild(
             findIntegrationRow(parsed.integration),
-            {
-              startImmediately: true,
-            },
           );
           const values = yield* resolveConnectionValues(connectionRow).pipe(
             Effect.onError(() => Fiber.interrupt(integrationRowFiber)),

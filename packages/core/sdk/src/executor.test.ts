@@ -791,57 +791,60 @@ describe("muscle memory (observed output shapes)", () => {
 // Dynamic tool-call read concurrency. The invoke path runs its independent
 // storage reads concurrently: tool row + policy rules + connection row before
 // approval, then credential resolution + integration row after approval.
-// These tests pin the overlap itself AND the invariants the overlap must not
-// disturb — most importantly that a declined approval never starts credential
-// resolution (which can trigger an upstream token refresh).
+// These tests pin BOTH halves of that contract — the dominant read (tool row;
+// credential resolution) launches first, exactly as the sequential code
+// ordered it, and the speculative reads launch before the dominant one
+// completes on an asynchronous backend — AND the invariants the overlap must
+// not disturb, most importantly that a declined approval never starts
+// credential resolution (which can trigger an upstream token refresh).
 // ---------------------------------------------------------------------------
 
-/** Records which armed reads are simultaneously in flight. Each armed read
- *  registers on entry, then HOLDS its result until every other armed read has
- *  also started — so genuinely concurrent reads all overlap and the probe
- *  observes it. A sequential ordering would deadlock on that barrier, so a
- *  fallback timer releases each held read; the run then completes with
- *  `sawAllInFlight() === false` and the assertion (not a hang) reports the
- *  regression. */
-const makeReadOverlapProbe = () => {
+/** Records the lifecycle of every armed read as an ordered event log:
+ *  `start:<key>` is pushed SYNCHRONOUSLY at the instant the real read is
+ *  invoked — never after an artificial pre-read suspension, which would
+ *  itself manufacture the overlap the probe claims to observe — and
+ *  `end:<key>` is pushed when the read settles. An armed read's COMPLETION
+ *  is deferred by one `setImmediate` tick (its launch is never delayed), so
+ *  the log shows the code's own launch order against a backend that, like
+ *  any real one, does not answer synchronously. The tick is `setImmediate`
+ *  on purpose: the effect scheduler starts plainly-forked children from a
+ *  `setImmediate` queued at fork time, so a completion deferred to the SAME
+ *  FIFO queue is guaranteed to land after those children have launched —
+ *  a timer would race them across event-loop phases. */
+const makeReadOrderRecorder = () => {
   let targets: ReadonlySet<string> = new Set();
-  let sawAll = false;
-  const started = new Set<string>();
-  const inFlight = new Set<string>();
-  let release: (() => void) | undefined;
-  let barrier: Promise<void> | undefined;
-  const observe = async (key: string): Promise<void> => {
-    if (barrier === undefined || !targets.has(key) || started.has(key)) return;
-    started.add(key);
-    inFlight.add(key);
-    if (started.size === targets.size) {
-      if (inFlight.size === targets.size) sawAll = true;
-      release?.();
-    }
-    await Promise.race([
-      barrier,
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, 250);
-      }),
-    ]);
-    inFlight.delete(key);
+  const events: string[] = [];
+  const record = <A>(key: string, run: () => Promise<A>): Promise<A> => {
+    if (!targets.has(key)) return run();
+    events.push(`start:${key}`);
+    return run()
+      .then(
+        (result) =>
+          new Promise<A>((resolve) => {
+            setImmediate(() => resolve(result));
+          }),
+      )
+      .finally(() => {
+        events.push(`end:${key}`);
+      });
   };
   return {
     arm: (keys: readonly string[]) => {
       targets = new Set(keys);
-      barrier = new Promise<void>((resolve) => {
-        release = resolve;
-      });
     },
-    observe,
-    sawAllInFlight: () => sawAll,
+    record,
+    /** First occurrence — repeat reads of the same key log later entries. */
+    at: (event: string) => events.indexOf(event),
   };
 };
 
-/** Wrap a test `FumaDb` so every read reports to the probe as
- *  `<table>.<method>` before it executes. `withContext` re-wraps so the
- *  executor's context-bound handles stay observed. */
-const withObservedReads = (db: FumaDb, observe: (key: string) => Promise<void>): FumaDb => {
+/** Wrap a test `FumaDb` so every read runs through the recorder as
+ *  `<table>.<method>`. `withContext` re-wraps so the executor's
+ *  context-bound handles stay recorded. */
+const withRecordedReads = (
+  db: FumaDb,
+  record: <A>(key: string, run: () => Promise<A>) => Promise<A>,
+): FumaDb => {
   const wrap = (inner: FumaDb): FumaDb =>
     new Proxy(inner, {
       get(target, prop) {
@@ -850,14 +853,14 @@ const withObservedReads = (db: FumaDb, observe: (key: string) => Promise<void>):
             wrap((target.withContext as (c: unknown) => FumaDb)(context));
         }
         if (prop === "findFirst" || prop === "findMany") {
-          return async (table: unknown, query: unknown) => {
-            await observe(`${String(table)}.${prop}`);
-            return (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
-              target,
-              table,
-              query,
+          return (table: unknown, query: unknown) =>
+            record(`${String(table)}.${prop}`, () =>
+              (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+                target,
+                table,
+                query,
+              ),
             );
-          };
         }
         return Reflect.get(target, prop);
       },
@@ -865,16 +868,19 @@ const withObservedReads = (db: FumaDb, observe: (key: string) => Promise<void>):
   return wrap(db);
 };
 
-const countingProvider = (calls: { count: number }, onGet?: () => Promise<void>) => {
+const countingProvider = (
+  calls: { count: number },
+  wrapGet?: <A>(run: () => Promise<A>) => Promise<A>,
+) => {
   const store = new Map<string, string>();
   const provider: CredentialProvider = {
     key: ProviderKey.make("memory"),
     writable: true,
     get: (id) =>
-      Effect.promise(async () => {
+      Effect.promise(() => {
         calls.count++;
-        await onGet?.();
-        return store.get(String(id)) ?? null;
+        const run = async () => store.get(String(id)) ?? null;
+        return wrapGet ? wrapGet(run) : run();
       }),
     set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
   };
@@ -925,43 +931,76 @@ const seedRunConnection = <
   });
 
 describe("execute read concurrency", () => {
-  it.effect("overlaps the tool, policy, and connection reads on the invoke path", () =>
-    Effect.gen(function* () {
-      const probe = makeReadOverlapProbe();
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
-      const executor = yield* createExecutor({
-        ...config,
-        db: withObservedReads(config.db, probe.observe),
-      });
-      yield* seedRunConnection(executor);
+  it.effect(
+    "launches the tool-row read first, with the policy and connection reads overlapping it",
+    () =>
+      Effect.gen(function* () {
+        const recorder = makeReadOrderRecorder();
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: withRecordedReads(config.db, recorder.record),
+        });
+        yield* seedRunConnection(executor);
 
-      probe.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
-      const out = yield* executor.execute(addr("run"), {});
-      expect(out).toEqual({ ran: "run" });
-      // All three pre-approval reads were in flight at the same instant.
-      expect(probe.sawAllInFlight()).toBe(true);
-    }),
+        recorder.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
+        const out = yield* executor.execute(addr("run"), {});
+        expect(out).toEqual({ ran: "run" });
+        // The dominant tool-row read launches BEFORE either speculative read
+        // starts — the launch order the sequential code had. An immediate
+        // fork regresses this by running a speculative read inline, ahead of
+        // the tool row, on any backend that answers without suspending.
+        expect(recorder.at("start:tool.findFirst")).toBeGreaterThanOrEqual(0);
+        expect(recorder.at("start:tool.findFirst")).toBeLessThan(
+          recorder.at("start:tool_policy.findMany"),
+        );
+        expect(recorder.at("start:tool.findFirst")).toBeLessThan(
+          recorder.at("start:connection.findFirst"),
+        );
+        // And both speculative reads are in flight before the tool row
+        // completes — genuine overlap, not a serial chain: on this deferred
+        // (asynchronous) backend a sequential ordering would log the tool
+        // row's `end` before either speculative `start`.
+        expect(recorder.at("start:tool_policy.findMany")).toBeLessThan(
+          recorder.at("end:tool.findFirst"),
+        );
+        expect(recorder.at("start:connection.findFirst")).toBeLessThan(
+          recorder.at("end:tool.findFirst"),
+        );
+      }),
   );
 
-  it.effect("overlaps credential resolution with the integration-row read after approval", () =>
-    Effect.gen(function* () {
-      const probe = makeReadOverlapProbe();
-      const calls = { count: 0 };
-      const provider = countingProvider(calls, () => probe.observe("credential.get"));
-      const config = makeTestConfig({
-        plugins: [invokeConcurrencyPlugin(provider)] as const,
-      });
-      const executor = yield* createExecutor({
-        ...config,
-        db: withObservedReads(config.db, probe.observe),
-      });
-      yield* seedRunConnection(executor);
+  it.effect(
+    "starts credential resolution first, with the integration-row read overlapping it",
+    () =>
+      Effect.gen(function* () {
+        const recorder = makeReadOrderRecorder();
+        const calls = { count: 0 };
+        const provider = countingProvider(calls, (run) => recorder.record("credential.get", run));
+        const config = makeTestConfig({
+          plugins: [invokeConcurrencyPlugin(provider)] as const,
+        });
+        const executor = yield* createExecutor({
+          ...config,
+          db: withRecordedReads(config.db, recorder.record),
+        });
+        yield* seedRunConnection(executor);
 
-      probe.arm(["credential.get", "integration.findFirst"]);
-      const out = yield* executor.execute(addr("run"), {});
-      expect(out).toEqual({ ran: "run" });
-      expect(probe.sawAllInFlight()).toBe(true);
-    }),
+        recorder.arm(["credential.get", "integration.findFirst"]);
+        const out = yield* executor.execute(addr("run"), {});
+        expect(out).toEqual({ ran: "run" });
+        // Credential resolution — the dominant work, and the read whose
+        // failure must keep dominating — launches before the speculative
+        // integration-row read starts, which in turn starts before the
+        // credential read completes on this deferred (asynchronous) backend.
+        expect(recorder.at("start:credential.get")).toBeGreaterThanOrEqual(0);
+        expect(recorder.at("start:credential.get")).toBeLessThan(
+          recorder.at("start:integration.findFirst"),
+        );
+        expect(recorder.at("start:integration.findFirst")).toBeLessThan(
+          recorder.at("end:credential.get"),
+        );
+      }),
   );
 
   it.effect("a declined approval never resolves credentials", () =>
@@ -1054,8 +1093,14 @@ const makeReadFaults = () => {
   };
 };
 
-/** Wrap a test `FumaDb` so armed reads hang or reject; every other read is
- *  untouched. `withContext` re-wraps so context-bound handles stay faulted. */
+/** Wrap a test `FumaDb` so armed reads hang or reject. Every other read
+ *  passes through, deferred by one `setImmediate` tick — the wrapper is an
+ *  ASYNCHRONOUS backend, because that is where these invariants bite: on a
+ *  backend that answers in microtasks an early-exit branch can finish before
+ *  the plainly-forked speculative reads' scheduler tick, abandoning them
+ *  before they ever issue a read, and the hang the test armed would go
+ *  unexercised. `withContext` re-wraps so context-bound handles stay
+ *  faulted. */
 const withFaultedReads = (
   db: FumaDb,
   fault: (key: string) => Promise<never> | undefined,
@@ -1070,10 +1115,14 @@ const withFaultedReads = (
         if (prop === "findFirst" || prop === "findMany") {
           return (table: unknown, query: unknown) =>
             fault(`${String(table)}.${prop}`) ??
-            (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
-              target,
-              table,
-              query,
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }).then(() =>
+              (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+                target,
+                table,
+                query,
+              ),
             );
         }
         return Reflect.get(target, prop);
@@ -1083,7 +1132,11 @@ const withFaultedReads = (
 };
 
 /** A credential provider that works during setup and can be armed to fail
- *  every later read — the site-2 "credential resolution fails" input. */
+ *  every later read — the site-2 "credential resolution fails" input. The
+ *  armed failure lands one `setImmediate` tick later, like the I/O failure a
+ *  real provider produces: an inline failure would exit the call before the
+ *  plainly-forked integration read's scheduler tick, so the read this test
+ *  wants hanging would never start at all. */
 const armableFailingProvider = () => {
   const store = new Map<string, string>();
   let failWith: string | undefined;
@@ -1091,11 +1144,16 @@ const armableFailingProvider = () => {
     key: ProviderKey.make("memory"),
     writable: true,
     get: (id) =>
-      Effect.suspend(() =>
-        failWith === undefined
-          ? Effect.succeed(store.get(String(id)) ?? null)
-          : Effect.fail(new StorageError({ message: failWith, cause: undefined })),
-      ),
+      Effect.suspend(() => {
+        if (failWith === undefined) return Effect.succeed(store.get(String(id)) ?? null);
+        const message = failWith;
+        return Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }),
+        ).pipe(Effect.andThen(Effect.fail(new StorageError({ message, cause: undefined }))));
+      }),
     set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
   };
   return {
