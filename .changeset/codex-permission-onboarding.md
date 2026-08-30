@@ -12,3 +12,8 @@ The bridge now recognises those codes and answers with the grant to enable and
 where to find it. Each plugin's add screen also states what macOS will ask for
 before anything runs, with a link straight to the right Privacy pane — macOS
 asks once, and a dismissed prompt never returns.
+
+The add screen checks that access when it opens, and holds the Add button
+until the plugin answers. Adding one that macOS is still blocking produced an
+integration that looked connected and failed on its first call, by which point
+the screen explaining the fix was gone.
