@@ -236,6 +236,17 @@ const McpStdioServerInputSchema = Schema.Struct({
    *  add then auto-creates the connection holding them. The UI uses `envVars`
    *  instead and leaves the values to the connect step. */
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Non-secret environment the server needs, stored on the integration and
+   *  injected verbatim at spawn.
+   *
+   *  Separate from `env` because that channel makes every variable a
+   *  CREDENTIAL: it is declared as a `stdio_env` method and the user is asked
+   *  to type its value on a masked form. That is right for an API key and
+   *  wrong for a machine-derived path — a Codex plugin's `CODEX_HOME` is
+   *  already known to the scanner, is not a secret, and must never become a
+   *  field a person has to fill in. Nothing here is a credential, so it does
+   *  not appear in `authenticationTemplate`. */
+  staticEnv: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   cwd: Schema.optional(Schema.String),
   /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
    *  2026-07-28) for modern-only servers. Defaults to the legacy `initialize`
@@ -406,18 +417,23 @@ const stdioEnvVarNames = (input: McpStdioServerInput): readonly string[] => {
   return [...names];
 };
 
-const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType => {
+/** Exported for tests: the credential/non-credential split is a security
+ *  boundary (a value in `env` becomes something the user is asked to type),
+ *  and asserting it through the whole add flow would not show it. */
+export const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfigType => {
   if (input.transport === "stdio") {
     // The config only DECLARES the secret env vars by NAME (a `stdio_env`
     // method); their values are credentials and live on the connection, never
     // in this blob. Names come from the explicit `envVars` declaration and/or
     // the keys of any one-shot `env` values.
     const vars = stdioEnvVarNames(input);
+    const staticEnv = input.staticEnv;
     return {
       transport: "stdio",
       family: input.family?.trim() || undefined,
       command: input.command,
       args: input.args ? [...input.args] : undefined,
+      env: staticEnv !== undefined && Object.keys(staticEnv).length > 0 ? staticEnv : undefined,
       cwd: input.cwd,
       versionNegotiation: input.versionNegotiation,
       spawnPerCall: input.spawnPerCall,

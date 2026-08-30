@@ -178,7 +178,9 @@ scenario(
                 command: plugin.command,
                 args: [...plugin.args],
                 ...(plugin.cwd === undefined ? {} : { cwd: plugin.cwd }),
-                ...(plugin.env === undefined ? {} : { env: { ...plugin.env } }),
+                // Static, not `env`: CODEX_HOME is a machine path the scanner
+                // resolved, so it must not become a credential to type.
+                ...(plugin.env === undefined ? {} : { staticEnv: { ...plugin.env } }),
                 ...(plugin.appServer === undefined
                   ? {}
                   : { appServer: { server: plugin.appServer.server } }),
@@ -200,6 +202,12 @@ scenario(
               connections.map((connection) => String(connection.name)),
               `${slug} auto-connected`,
             ).toContain("default");
+            // Nothing to configure: the connection carries no credential, so
+            // the person is never shown a field for a path we already know.
+            expect(
+              connections.map((connection) => String(connection.template)),
+              `${slug} needs no credential`,
+            ).toEqual(["none"]);
 
             const tools = yield* client.tools.list({ query: { integration: slug } });
             const names = tools.map((tool) => tool.name);

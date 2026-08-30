@@ -53,7 +53,11 @@ export default function CodexPluginAdd(props: {
         command: plugin.command,
         args: [...plugin.args],
         ...(plugin.cwd !== undefined ? { cwd: plugin.cwd } : {}),
-        ...(plugin.env !== undefined ? { env: { ...plugin.env } } : {}),
+        // As STATIC env, not `env`: these are machine-derived paths the
+        // scanner already resolved, so they must not become credentials the
+        // person is asked to type. Sent this way the integration declares no
+        // auth, and its connection is created for them.
+        ...(plugin.env !== undefined ? { staticEnv: { ...plugin.env } } : {}),
         ...(plugin.appServer !== undefined ? { appServer: { ...plugin.appServer } } : {}),
       },
       reactivityKeys: integrationWriteKeys,

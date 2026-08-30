@@ -39,6 +39,7 @@ const toServerInput = (
       args?: readonly string[];
       envVars?: readonly string[];
       env?: Record<string, string>;
+      staticEnv?: Record<string, string>;
       cwd?: string;
       versionNegotiation?: "legacy" | "auto";
       spawnPerCall?: boolean;
@@ -54,6 +55,7 @@ const toServerInput = (
       args: p.args ? [...p.args] : undefined,
       envVars: p.envVars ? [...p.envVars] : undefined,
       env: p.env,
+      staticEnv: p.staticEnv,
       cwd: p.cwd,
       versionNegotiation: p.versionNegotiation,
       spawnPerCall: p.spawnPerCall,

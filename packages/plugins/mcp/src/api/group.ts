@@ -58,6 +58,9 @@ const AddStdioServerPayload = Schema.Struct({
   envVars: Schema.optional(Schema.Array(Schema.String)),
   /** One-shot secret env values (programmatic). The UI sends `envVars`. */
   env: Schema.optional(StringMap),
+  /** Non-secret environment stored on the integration and injected at spawn.
+   *  Unlike `env`, nothing here becomes a credential the user must type. */
+  staticEnv: Schema.optional(StringMap),
   cwd: Schema.optional(Schema.String),
   /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
    *  2026-07-28) for modern-only servers; default is the legacy `initialize`
