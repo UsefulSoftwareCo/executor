@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Predicate, Result } from "effect";
+import { Data, Effect, Predicate, Result, Scheduler } from "effect";
 
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
@@ -835,6 +835,8 @@ const makeReadOrderRecorder = () => {
     record,
     /** First occurrence — repeat reads of the same key log later entries. */
     at: (event: string) => events.indexOf(event),
+    /** Snapshot of the full event log, for failure diagnostics. */
+    log: () => events.slice(),
   };
 };
 
@@ -930,22 +932,87 @@ const seedRunConnection = <
     });
   });
 
+/** Run the recorded tool-row invoke once and return the recorder. When
+ *  `maxOps` is set, the execute call runs under that `MaxOpsBeforeYield`
+ *  budget so the run loop's cooperative yield lands at an adversarial
+ *  position instead of the default one. */
+const recordToolRowLaunch = (maxOps?: number) =>
+  Effect.gen(function* () {
+    const recorder = makeReadOrderRecorder();
+    const config = makeTestConfig({ plugins: [demoPlugin] as const });
+    const executor = yield* createExecutor({
+      ...config,
+      db: withRecordedReads(config.db, recorder.record),
+    });
+    yield* seedRunConnection(executor);
+
+    recorder.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
+    const execute = executor.execute(addr("run"), {});
+    const out = yield* maxOps === undefined
+      ? execute
+      : execute.pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, maxOps));
+    expect(out).toEqual({ ran: "run" });
+    return recorder;
+  });
+
+/** Same, for the post-approval half: credential resolution vs the
+ *  integration-row read. */
+const recordCredentialLaunch = (maxOps?: number) =>
+  Effect.gen(function* () {
+    const recorder = makeReadOrderRecorder();
+    const calls = { count: 0 };
+    const provider = countingProvider(calls, (run) => recorder.record("credential.get", run));
+    const config = makeTestConfig({
+      plugins: [invokeConcurrencyPlugin(provider)] as const,
+    });
+    const executor = yield* createExecutor({
+      ...config,
+      db: withRecordedReads(config.db, recorder.record),
+    });
+    yield* seedRunConnection(executor);
+
+    recorder.arm(["credential.get", "integration.findFirst"]);
+    const execute = executor.execute(addr("run"), {});
+    const out = yield* maxOps === undefined
+      ? execute
+      : execute.pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, maxOps));
+    expect(out).toEqual({ ran: "run" });
+    return recorder;
+  });
+
+/** Assert `start:<dominant>` is present and precedes every `start:<key>` in
+ *  `speculative`, carrying the budget and full event log into any failure. */
+const expectDominantFirst = (
+  recorder: ReturnType<typeof makeReadOrderRecorder>,
+  budget: number | undefined,
+  dominant: string,
+  speculative: readonly string[],
+) => {
+  const dominantStart = recorder.at(`start:${dominant}`);
+  const launchedFirst =
+    dominantStart >= 0 && speculative.every((key) => dominantStart < recorder.at(`start:${key}`));
+  expect({ budget, launchedFirst, log: recorder.log() }).toMatchObject({
+    budget,
+    launchedFirst: true,
+  });
+};
+
+// The reproduced defect landed the run loop's op-budget yield between the
+// speculative forks and the dominant read's launch, which parked the parent's
+// continuation BEHIND the already-scheduled children and reversed the launch
+// order. Sweeping low budgets lands that yield at every position in the
+// window; 6 and 8 are the two positions where runtime probes reproduced the
+// reversal against the pre-fix code. Budgets 1 and 2 are excluded because
+// they deadlock the effect run loop itself (a resumed fiber re-yields before
+// evaluating a single operation), independent of this code.
+const ADVERSARIAL_BUDGETS: readonly number[] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
 describe("execute read concurrency", () => {
   it.effect(
     "launches the tool-row read first, with the policy and connection reads overlapping it",
     () =>
       Effect.gen(function* () {
-        const recorder = makeReadOrderRecorder();
-        const config = makeTestConfig({ plugins: [demoPlugin] as const });
-        const executor = yield* createExecutor({
-          ...config,
-          db: withRecordedReads(config.db, recorder.record),
-        });
-        yield* seedRunConnection(executor);
-
-        recorder.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
-        const out = yield* executor.execute(addr("run"), {});
-        expect(out).toEqual({ ran: "run" });
+        const recorder = yield* recordToolRowLaunch();
         // The dominant tool-row read launches BEFORE either speculative read
         // starts — the launch order the sequential code had. An immediate
         // fork regresses this by running a speculative read inline, ahead of
@@ -974,21 +1041,7 @@ describe("execute read concurrency", () => {
     "starts credential resolution first, with the integration-row read overlapping it",
     () =>
       Effect.gen(function* () {
-        const recorder = makeReadOrderRecorder();
-        const calls = { count: 0 };
-        const provider = countingProvider(calls, (run) => recorder.record("credential.get", run));
-        const config = makeTestConfig({
-          plugins: [invokeConcurrencyPlugin(provider)] as const,
-        });
-        const executor = yield* createExecutor({
-          ...config,
-          db: withRecordedReads(config.db, recorder.record),
-        });
-        yield* seedRunConnection(executor);
-
-        recorder.arm(["credential.get", "integration.findFirst"]);
-        const out = yield* executor.execute(addr("run"), {});
-        expect(out).toEqual({ ran: "run" });
+        const recorder = yield* recordCredentialLaunch();
         // Credential resolution — the dominant work, and the read whose
         // failure must keep dominating — launches before the speculative
         // integration-row read starts, which in turn starts before the
@@ -1001,6 +1054,38 @@ describe("execute read concurrency", () => {
           recorder.at("end:credential.get"),
         );
       }),
+  );
+
+  it.effect(
+    "launches the tool-row read first at every adversarial scheduler budget",
+    () =>
+      Effect.gen(function* () {
+        // Only the launch-order half of the contract holds under an
+        // adversarial budget: with a handful of ops per tick the speculative
+        // children legitimately cannot reach their reads within the one
+        // deferred tick the recorder grants the dominant read, so the
+        // overlap assertions belong to the default-budget test above.
+        for (const budget of ADVERSARIAL_BUDGETS) {
+          const recorder = yield* recordToolRowLaunch(budget);
+          expectDominantFirst(recorder, budget, "tool.findFirst", [
+            "tool_policy.findMany",
+            "connection.findFirst",
+          ]);
+        }
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "starts credential resolution first at every adversarial scheduler budget",
+    () =>
+      Effect.gen(function* () {
+        for (const budget of ADVERSARIAL_BUDGETS) {
+          const recorder = yield* recordCredentialLaunch(budget);
+          expectDominantFirst(recorder, budget, "credential.get", ["integration.findFirst"]);
+        }
+      }),
+    { timeout: 60_000 },
   );
 
   it.effect("a declined approval never resolves credentials", () =>
@@ -1147,10 +1232,17 @@ const armableFailingProvider = () => {
       Effect.suspend(() => {
         if (failWith === undefined) return Effect.succeed(store.get(String(id)) ?? null);
         const message = failWith;
+        // Two chained ticks, not one: the credential read launches BEFORE
+        // the speculative integration fork is even scheduled (dominant-first
+        // is structural), so a failure delivered on the very next tick would
+        // interrupt that fork before it ever issued its read. The extra tick
+        // lets the speculative read genuinely start — and hang — first, so
+        // the test exercises "failure surfaces while the read hangs" rather
+        // than "failure surfaces before the read exists".
         return Effect.promise(
           () =>
             new Promise<void>((resolve) => {
-              setImmediate(resolve);
+              setImmediate(() => setImmediate(resolve));
             }),
         ).pipe(Effect.andThen(Effect.fail(new StorageError({ message, cause: undefined }))));
       }),
