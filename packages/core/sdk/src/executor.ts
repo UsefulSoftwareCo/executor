@@ -136,6 +136,7 @@ import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
   isValidPattern,
+  isValidPositionForPattern,
   matchPattern,
   positionForNewPattern,
   resolveEffectivePolicy,
@@ -5403,6 +5404,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // rule), not top-of-list: a client that omits position — the UI when
         // its policy list is stale, the API, an agent tool — must not have its
         // broad rule silently shadow an existing narrow one.
+        // An EXPLICIT position is judged by the same invariant rather than
+        // trusted: precedence within an owner is match authority, so a client
+        // key that sorts a broad rule above a narrower one is refused.
+        if (
+          input.position !== undefined &&
+          !isValidPositionForPattern(input.pattern, input.position, existing)
+        ) {
+          return yield* new StorageError({
+            message: `Tool policy position ${input.position} would place ${input.pattern} above a more-specific rule`,
+            cause: undefined,
+          });
+        }
         const position = input.position ?? positionForNewPattern(input.pattern, existing);
         const id = PolicyId.make(
           `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
@@ -5440,9 +5453,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             cause: undefined,
           });
         }
+        const action = input.action ?? existing.action;
+        if (!isToolPolicyAction(action)) {
+          return yield* new StorageError({
+            message: `Invalid tool policy action: ${String(action)}`,
+            cause: undefined,
+          });
+        }
+        // Same invariant as create, judged against the owner's OTHER rules and
+        // the rule's (possibly updated) pattern: an explicit position may not
+        // hoist a broad rule above a narrower one.
+        const pattern = input.pattern ?? existing.pattern;
+        if (input.position !== undefined) {
+          const ownerRows = yield* core.findMany("tool_policy", { where: byOwner(input.owner) });
+          if (!isValidPositionForPattern(pattern, input.position, ownerRows, input.id)) {
+            return yield* new StorageError({
+              message: `Tool policy position ${input.position} would place ${pattern} above a more-specific rule`,
+              cause: undefined,
+            });
+          }
+        }
         const set: Record<string, unknown> = { updated_at: new Date() };
         if (input.pattern !== undefined) set.pattern = input.pattern;
-        if (input.action !== undefined) set.action = input.action;
+        if (input.action !== undefined) set.action = action;
         if (input.position !== undefined) set.position = input.position;
         yield* core.updateMany("tool_policy", { where, set });
         const updated = yield* core.findFirst("tool_policy", { where });
