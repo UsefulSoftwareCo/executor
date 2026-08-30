@@ -6,7 +6,6 @@ import { PlusIcon } from "lucide-react";
 import { trackEvent } from "../api/analytics";
 import type { Integration } from "@executor-js/sdk/shared";
 import { IntegrationFavicon, integrationPresetIconUrl } from "./integration-favicon";
-import { PresetIcon } from "./preset-icon";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import {
@@ -196,16 +195,10 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
                 value={`preset ${e.presetName} ${e.presetSummary ?? ""} ${e.pluginLabel}`}
                 onSelect={() => goToPreset(e.pluginKey, e.presetId, e.presetUrl)}
               >
-                <PresetIcon
-                  {...(e.presetIcon ? { icon: e.presetIcon } : {})}
-                  {...(e.presetFallbackIcon ? { fallbackSrc: e.presetFallbackIcon } : {})}
-                  className="size-4 shrink-0 object-contain"
-                  fallback={
-                    <span
-                      aria-hidden
-                      className="size-4 shrink-0 rounded-sm bg-muted-foreground/20"
-                    />
-                  }
+                <IntegrationFavicon
+                  icon={e.presetIcon}
+                  fallbackSrc={e.presetFallbackIcon}
+                  size={16}
                 />
                 <span className="flex-1 truncate">{e.presetName}</span>
                 <CommandShortcut>{e.pluginLabel}</CommandShortcut>
