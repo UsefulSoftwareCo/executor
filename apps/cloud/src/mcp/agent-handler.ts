@@ -133,25 +133,26 @@ const authenticate = (request: Request) =>
 
 // ONE auth layer per isolate. `authenticate` used to end in
 // `Effect.provide(cloudMcpAuth)`, which rebuilt the entire auth stack — the
-// WorkOS client, `ApiKeyService` and with it the api-key validation success
-// cache — on every MCP request, so that cache never survived a request on this
-// plane (the /api/* plane resolves the same service from the app's `boot`
-// layer, built once per isolate). A lazily created ManagedRuntime builds
-// `cloudMcpAuth` on the first request and memoizes it; `runTraced` runs every
-// program on it. Nothing inside the layer is request-scoped: the WorkOS client
-// holds no sockets (just config), the JWKS cache is already module-scope, and
-// `McpOrganizationAuthLive` builds its postgres socket FRESH inside every
-// `authorize` call precisely so the service itself can outlive a request
-// (Cloudflare Workers' I/O isolation — see makeMcpOrganizationAuthServices).
+// WorkOS client and `ApiKeyService` — on every MCP request. A lazily created
+// ManagedRuntime builds `cloudMcpAuth` on the first request and memoizes it;
+// `runTraced` runs every program on it. Nothing inside the layer is
+// request-scoped: the WorkOS client holds no sockets (just config), the JWKS
+// cache is already module-scope, and `McpOrganizationAuthLive` builds its
+// postgres socket FRESH inside every `authorize` call precisely so the
+// service itself can outlive a request (Cloudflare Workers' I/O isolation —
+// see makeMcpOrganizationAuthServices).
 //
 // The memo is keyed on the WorkOS binding values the layer captures at build,
 // NOT held forever: Cloudflare reuses warm isolates across binding-only
 // deployments, so a bare `??=` would keep authenticating with a rotated-out
 // WORKOS_API_KEY until isolate eviction. `runTraced` fingerprints the
 // request's own `env` (a string compare per request) and the cache swaps in a
-// fresh runtime — fresh ApiKeyService validation cache included, as a rotated
-// key must not serve cached validations — when the bindings changed. See
-// auth-runtime.ts for the drop-vs-dispose reasoning.
+// fresh runtime when the bindings changed. The api-key validation success
+// cache is NOT swapped with it — it is module-scope in api-keys.ts (shared
+// with the /api/* plane so revocation can invalidate it everywhere), so after
+// a WORKOS_API_KEY rotation its remaining entries age out within the 60s TTL
+// rather than dropping instantly. See auth-runtime.ts for the drop-vs-dispose
+// reasoning.
 const mcpAuthRuntimeFor: (
   fingerprint: string,
 ) => ManagedRuntime.ManagedRuntime<McpAuthProvider, never> = makeBindingKeyedRuntime(() =>

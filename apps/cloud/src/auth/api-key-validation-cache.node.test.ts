@@ -171,10 +171,46 @@ describe("makeCachedApiKeyValidate", () => {
       expect(cached.cacheKeys()).not.toContain(rawKey);
     }),
   );
+
+  it.effect("invalidating a key id drops its entries and forces revalidation", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const cached = makeCachedApiKeyValidate(() =>
+        Effect.sync(() => {
+          calls += 1;
+          return userOwner("api_key_1");
+        }),
+      );
+
+      yield* cached.validate("sk_test_abc");
+      cached.invalidateKeyId("api_key_1");
+      expect(cached.cacheKeys()).toHaveLength(0);
+
+      yield* cached.validate("sk_test_abc");
+      expect(calls).toBe(2);
+    }),
+  );
+
+  it.effect("invalidating one key id leaves other keys' entries cached", () =>
+    Effect.gen(function* () {
+      const cached = makeCachedApiKeyValidate((value) =>
+        Effect.succeed(userOwner(`key_for_${value}`)),
+      );
+
+      yield* cached.validate("sk_1");
+      yield* cached.validate("sk_2");
+      cached.invalidateKeyId("key_for_sk_1");
+
+      expect(cached.cacheKeys()).toHaveLength(1);
+    }),
+  );
 });
 
+// These tests build the REAL WorkOS layer, whose cache map is module-scope —
+// entries written by one test are visible to the next within this file. Each
+// test therefore uses key values of its own; none may reuse another's.
 describe("ApiKeyService.WorkOS validation cache", () => {
-  it.effect("validates a repeated key through one upstream call per layer build", () =>
+  it.effect("serves a key cached by one layer build from a second build", () =>
     Effect.gen(function* () {
       let calls = 0;
       const layer = ApiKeyService.WorkOS.pipe(
@@ -185,7 +221,7 @@ describe("ApiKeyService.WorkOS validation cache", () => {
                 calls += 1;
                 return {
                   apiKey: {
-                    id: "api_key_123",
+                    id: "api_key_shared",
                     owner: { type: "user", id: "user_123", organizationId: "org_123" },
                   },
                 };
@@ -194,17 +230,74 @@ describe("ApiKeyService.WorkOS validation cache", () => {
         ),
       );
 
-      const { first, second } = yield* Effect.gen(function* () {
+      // Two separate `Effect.provide(layer)` runs are two separate layer
+      // builds — the account middleware rebuilds this layer per request, so
+      // cross-build reuse is exactly what production needs the cache to do.
+      const first = yield* Effect.gen(function* () {
         const apiKeys = yield* ApiKeyService;
-        return {
-          first: yield* apiKeys.validate("sk_test_abc"),
-          second: yield* apiKeys.validate("sk_test_abc"),
-        };
+        return yield* apiKeys.validate("sk_test_cross_build");
+      }).pipe(Effect.provide(layer));
+      const second = yield* Effect.gen(function* () {
+        const apiKeys = yield* ApiKeyService;
+        return yield* apiKeys.validate("sk_test_cross_build");
       }).pipe(Effect.provide(layer));
 
       expect(calls).toBe(1);
-      expect(first?.keyId).toBe("api_key_123");
+      expect(first?.keyId).toBe("api_key_shared");
       expect(second).toEqual(first);
+    }),
+  );
+
+  it.effect("a revoke in one layer build refuses the cached value in every build", () =>
+    Effect.gen(function* () {
+      // Live until revoked: the stub answers with the key while `revoked` is
+      // false and with a null apiKey afterwards, the same flip the WorkOS
+      // backend performs. The revoke runs in its OWN layer build — the shape
+      // of the real console flow, where the account middleware rebuilds the
+      // layer per request — and must still drop the entry the validating
+      // plane cached.
+      let revoked = false;
+      let calls = 0;
+      const layer = ApiKeyService.WorkOS.pipe(
+        Layer.provide(
+          stubWorkOS({
+            validateApiKey: () =>
+              Effect.sync(() => {
+                calls += 1;
+                return {
+                  apiKey: revoked
+                    ? null
+                    : {
+                        id: "api_key_revoked",
+                        owner: { type: "user", id: "user_123", organizationId: "org_123" },
+                      },
+                };
+              }),
+            deleteApiKey: () =>
+              Effect.sync(() => {
+                revoked = true;
+                return {};
+              }),
+          }),
+        ),
+      );
+
+      const before = yield* Effect.gen(function* () {
+        const apiKeys = yield* ApiKeyService;
+        return yield* apiKeys.validate("sk_test_revocable");
+      }).pipe(Effect.provide(layer));
+      yield* Effect.gen(function* () {
+        const apiKeys = yield* ApiKeyService;
+        return yield* apiKeys.revokeUserKey({ keyId: "api_key_revoked" });
+      }).pipe(Effect.provide(layer));
+      const after = yield* Effect.gen(function* () {
+        const apiKeys = yield* ApiKeyService;
+        return yield* apiKeys.validate("sk_test_revocable");
+      }).pipe(Effect.provide(layer));
+
+      expect(before?.keyId).toBe("api_key_revoked");
+      expect(after, "the revoke dropped the cached entry, not just the upstream key").toBeNull();
+      expect(calls).toBe(2);
     }),
   );
 });
