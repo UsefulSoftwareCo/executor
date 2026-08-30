@@ -32,6 +32,10 @@ const optionalCloudEnv = (): Record<string, string> => {
   const env: Record<string, string> = {
     SENTRY_OTEL_VERIFY: "true",
     SENTRY_OTEL_LOG_PAYLOAD: "true",
+    // The e2e cloud stack serves integration specs from a loopback fixture
+    // server — the egress guard's loopback block must be explicitly trusted
+    // here. Production never sets this.
+    EXECUTOR_ALLOW_LOOPBACK_SPECS: "1",
     // Boot the BROWSER crash reporter too, so what the frontend actually
     // reports is observable to a scenario. Production always has this set;
     // without it the reporter the app wires into ExecutorProvider is a no-op
