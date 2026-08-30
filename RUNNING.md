@@ -44,8 +44,8 @@ A desktop dev run collides with an INSTALLED Executor in three places, all of
 which look like something else. Give the dev run its own of each:
 
 ```
-HOME=/tmp/executor-dev-home \
 EXECUTOR_DESKTOP_USER_DATA=/tmp/executor-desktop-dev-userdata \
+EXECUTOR_DESKTOP_SCOPE_DIR=/tmp/executor-desktop-dev-scope \
 EXECUTOR_DESKTOP_SETTINGS_DIR=/tmp/executor-desktop-dev-settings \
 bun run dev
 ```
@@ -53,12 +53,16 @@ bun run dev
 - **userData** holds Electron's single-instance lock, so the second process
   quits at startup with **exit code 0 and no message** — the log simply stops
   after "starting electron app".
-- **`~/.executor`** holds the sidecar's SQLite, taken by whoever opened it
-  first; the app reports "Failed to open local SQLite data". `HOME` moves it,
-  so symlink `.codex`, `.config` and friends into the fake home or anything
-  reading them (Codex plugins included) loses its state.
+- **The scope dir** (`~/.executor`) holds the sidecar's SQLite, owned by
+  whoever opened it first; the app reports "Failed to open local SQLite data".
 - **The port** comes from `settings.json` in the settings dir; write
   `{"server":{"port":<free>}}` there before the first launch.
+
+Do NOT move these by pointing `HOME` at a scratch directory. The plugins a
+local run drives resolve their own paths from the real home, and a synthetic
+one breaks them in ways that read as product bugs: Codex Computer Use fails
+every call with "Sky Computer Use native pipe startup failed", even with
+`.codex` symlinked back.
 
 Renderer edits inside a workspace package can be served from vite's dep
 cache rather than the source the package exports. If a change does not appear
