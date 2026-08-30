@@ -81,6 +81,32 @@ const measureResultChars = (value: unknown): number => {
 };
 
 /**
+ * Outcome attributes are a pure function of an immutable `ExecuteResult`, but
+ * the same result object is annotated more than once: the `autoApprove` path
+ * stamps both the inner inline span and the outer pausable span, and resume
+ * retries replay the settled result cached per execution id. The size probe
+ * walks the whole result value (`JSON.stringify`), so its cost grows with the
+ * payload — memoize the record per result object so each result is walked
+ * once, no matter how many spans it is stamped onto.
+ */
+const executeOutcomeAttributesCache = new WeakMap<ExecuteResult, Record<string, unknown>>();
+
+const executeOutcomeAttributes = (result: ExecuteResult): Record<string, unknown> => {
+  const cached = executeOutcomeAttributesCache.get(result);
+  if (cached) return cached;
+  const attributes = {
+    "mcp.execute.result_chars": measureResultChars(result.result),
+    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
+    "mcp.execute.emitted": result.output?.length ?? 0,
+    ...(result.error
+      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
+      : { "mcp.execute.outcome": "ok" }),
+  };
+  executeOutcomeAttributesCache.set(result, attributes);
+  return attributes;
+};
+
+/**
  * Stamp the current `mcp.execute` / `mcp.execute.resume` span with how the
  * execution ended and how much data it sent back toward model context.
  * Sandbox failures ride the success channel as `ExecuteResult.error`, so
@@ -89,14 +115,7 @@ const measureResultChars = (value: unknown): number => {
  * or result content itself.
  */
 const annotateExecuteOutcome = (result: ExecuteResult) =>
-  Effect.annotateCurrentSpan({
-    "mcp.execute.result_chars": measureResultChars(result.result),
-    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
-    "mcp.execute.emitted": result.output?.length ?? 0,
-    ...(result.error
-      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
-      : { "mcp.execute.outcome": "ok" }),
-  });
+  Effect.annotateCurrentSpan(executeOutcomeAttributes(result));
 
 const annotateExecutionOutcome = (execution: ExecutionResult) =>
   execution.status === "paused"
