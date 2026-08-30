@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/mcp-apps-shell",
-  "version": "1.4.16",
+  "version": "1.4.17",
   "private": true,
   "type": "module",
   "exports": {

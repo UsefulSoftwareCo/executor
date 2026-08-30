@@ -1,5 +1,19 @@
 # @executor-js/react
 
+## 1.4.69
+
+### Patch Changes
+
+- [#1865](https://github.com/UsefulSoftwareCo/executor/pull/1865) [`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Desktop OAuth connects finish the moment the provider redirects**
+
+  When the desktop app runs an OAuth flow in the system browser, the app learned about completion by polling the local server once a second. The completed result sat in memory while the user watched the "Connecting…" spinner for up to a second more — about half a second wasted on average, on every connect.
+
+  The await endpoint now long-polls: the server holds the request open (up to 25 seconds per hold) and answers the instant the flow completes. The client polls one request at a time and reconnects after each answer, so requests never stack. Mixed versions stay compatible in both directions: an old client still gets its answer within one poll of a new server, and a new client against an old server behaves exactly as before.
+
+- Updated dependencies []:
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+
 ## 1.4.68
 
 ### Patch Changes
