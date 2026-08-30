@@ -151,6 +151,16 @@ scenario(
       // of them run any work, so every one is immediately eviction-eligible —
       // crossing the cap must pick at least one and tear it down through its
       // own stub.
+      //
+      // Concurrency stays at MAX_CONCURRENT_BUILDS (session-build-semaphore.ts,
+      // currently 4), not higher. A wider burst parks the surplus cold inits in
+      // the build-slot queue INSIDE the DO's `blockConcurrencyWhile` window;
+      // on a CI runner where four concurrent builds already saturate the CPU,
+      // queue wait plus build time crosses workerd's budget and the platform
+      // cancels the init and resets the DO ("blockConcurrencyWhile() ...
+      // waited for too long"), failing `initialize` with no session id. The
+      // burst width is incidental here — what this scenario pins is cap
+      // eviction, which only needs the TOTAL session count to cross the cap.
       const sessionIds = yield* Effect.forEach(
         Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
         (index) =>
@@ -159,7 +169,7 @@ scenario(
               openedSessionIds.push(sessionId);
             }),
           ),
-        { concurrency: 8 },
+        { concurrency: 4 },
       );
 
       expect(sessionIds.length, "every session opened").toBe(SESSIONS_TO_OPEN);
