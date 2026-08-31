@@ -43,6 +43,15 @@ const CHROME_CLIENT_RELATIVE = join(
   "scripts",
   "browser-client.mjs",
 );
+const COMPUTER_USE_CLIENT_RELATIVE = join(
+  "plugins",
+  "cache",
+  "openai-bundled",
+  "computer-use",
+  "1.0.0",
+  "scripts",
+  "computer-use-client.mjs",
+);
 const APP_SERVER_FIXTURE = fileURLToPath(
   new URL("./fixtures/codex-app-server.mjs", import.meta.url),
 );
@@ -76,7 +85,12 @@ const makeCodexHome = (): string => {
     mode: 0o755,
   });
 
-  // Chrome's bundled browser client, behind the `latest` symlink Codex keeps.
+  // Plugin-owned runtime clients: Computer Use's versioned trusted-runtime
+  // wrapper and Chrome's browser client behind the `latest` symlink Codex keeps.
+  const computerUseClient = join(home, COMPUTER_USE_CLIENT_RELATIVE);
+  mkdirSync(join(computerUseClient, ".."), { recursive: true });
+  writeFileSync(computerUseClient, "export const setupComputerUseRuntime = async () => ({});\n");
+
   const chromeClient = join(home, CHROME_CLIENT_RELATIVE);
   mkdirSync(join(chromeClient, ".."), { recursive: true });
   writeFileSync(chromeClient, "export const setupBrowserRuntime = async () => ({});\n");
@@ -156,12 +170,13 @@ scenario(
             server: "messages",
           });
           // Computer Use and Chrome have no server of their own: both are
-          // projected onto `node_repl`, and Chrome carries the client module
-          // its surface imports, resolved through the `latest` symlink.
+          // projected onto `node_repl` and carry the plugin-owned client module
+          // their surface imports.
           expect(byId.get("codex-computer-use")?.appServer).toEqual({
             presetId: "codex-computer-use",
             server: "node_repl",
             surface: "sky",
+            modulePath: join(codexHome, COMPUTER_USE_CLIENT_RELATIVE),
           });
           expect(byId.get("codex-chrome")?.appServer).toEqual({
             presetId: "codex-chrome",
