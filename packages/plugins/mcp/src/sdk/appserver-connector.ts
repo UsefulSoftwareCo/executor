@@ -88,8 +88,8 @@ export type AppServerTransportConfig = StdioTransportConfig & {
    *  `browser` is Chrome (`codex-browser-tools.ts`). Absent exposes the
    *  server's own tools verbatim. */
   readonly surface?: "sky" | "browser";
-  /** Absolute path to the module a projected surface imports (Chrome's
-   *  `browser-client.mjs`); resolved per machine by the scanner. */
+  /** Absolute path to the plugin-owned module a projected surface imports;
+   *  resolved per machine by the scanner. */
   readonly modulePath?: string;
 };
 
@@ -565,7 +565,10 @@ class AppServerClientTransport implements Transport {
     if (this.#config.surface === "sky") {
       const tool = findSkyTool(name);
       if (tool === undefined) return "unknown-tool";
-      return { code: skyCallProgram(tool, args), title: `Computer Use: ${tool.name}` };
+      return {
+        code: skyCallProgram(tool, args, this.#config.modulePath ?? ""),
+        title: `Computer Use: ${tool.name}`,
+      };
     }
     if (this.#config.surface === "browser") {
       const tool = findBrowserTool(name);

@@ -249,6 +249,31 @@ const readIconDataUri = (file: string): string | undefined =>
     return `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
   }, undefined);
 
+/** A plugin-owned file from the newest installed cache version, regardless of
+ *  which catalog source supplied it. */
+const latestCachedPluginFile = (
+  codexHome: string,
+  pluginName: string,
+  ...relativeParts: readonly string[]
+): string | undefined => {
+  const cacheDir = path.join(codexHome, "plugins", "cache");
+  const versions = listDirs(cacheDir).flatMap((sourceName) => {
+    const pluginDir = path.join(cacheDir, sourceName, pluginName);
+    return listDirs(pluginDir).map((version) => ({
+      version,
+      file: path.join(pluginDir, version, ...relativeParts),
+    }));
+  });
+  const latest = versions.sort((a, b) => compareVersionsDesc(a.version, b.version))[0]?.file;
+  return latest !== undefined && isReadableFile(latest) ? latest : undefined;
+};
+
+/** Computer Use's trusted runtime bootstrap. The plugin owns this wrapper and
+ *  updates it alongside its bundled runtime; importing `@oai/sky` directly
+ *  bypasses the trusted node_repl module boundary. */
+const computerUseClientPath = (codexHome: string): string | undefined =>
+  latestCachedPluginFile(codexHome, "computer-use", "scripts", "computer-use-client.mjs");
+
 interface CodexPluginDisplay {
   readonly icon?: string;
   readonly displayName?: string;
@@ -396,6 +421,7 @@ export const scanCodexPlugins = (options?: {
 
   const codexCli = resolveCodexCli(options?.codexCli);
   const computerUseApp = isExecutableFile(clientBinaryPath(codexHome));
+  const computerUseClient = computerUseClientPath(codexHome);
   const browserClient = browserClientPath(codexHome);
   const chromePlugin = isReadableFile(browserClient);
 
@@ -409,7 +435,10 @@ export const scanCodexPlugins = (options?: {
 
   const curated: readonly CodexPluginEntry[] = CURATED_CODEX_PLUGINS.map((entry) => {
     const display = curatedDisplayMetadata(codexHome, entry.pluginName);
-    const available = codexCli !== undefined && requirementMet[entry.requires];
+    const available =
+      codexCli !== undefined &&
+      requirementMet[entry.requires] &&
+      (entry.surface !== "sky" || computerUseClient !== undefined);
     return {
       id: entry.id,
       name: entry.name,
@@ -424,6 +453,9 @@ export const scanCodexPlugins = (options?: {
         presetId: entry.id,
         server: entry.server,
         ...(entry.surface === undefined ? {} : { surface: entry.surface }),
+        ...(entry.surface === "sky" && computerUseClient !== undefined
+          ? { modulePath: computerUseClient }
+          : {}),
         ...(entry.surface === "browser" ? { modulePath: browserClient } : {}),
       },
       ...(available

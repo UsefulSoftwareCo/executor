@@ -4,13 +4,13 @@
 // Computer Use is NOT a plain MCP server in current Codex: its plugin ships as
 // a `node-repl` content variant, so Codex never starts the `computer-use`
 // server (asking for it answers "unknown MCP server"). What actually drives a
-// Mac is the `node_repl` server's `js` tool running the plugin's bundled
-// `@oai/sky` package — that is what ChatGPT itself does, and Codex tags those
+// Mac is the `node_repl` server's `js` tool running the plugin's trusted
+// runtime wrapper — that is what ChatGPT itself does, and Codex tags those
 // calls `toolSurface: { kind: "computerUse" }`.
 //
 // Handing an agent a raw JavaScript REPL would be a poor tool catalog: it
 // moves the whole API contract into prose and makes every call a code-writing
-// exercise. So the bridge projects `@oai/sky` as ordinary, typed MCP tools —
+// exercise. So the bridge projects the Sky API as ordinary, typed MCP tools —
 // one per method, with real input schemas — and compiles each call back into
 // the one `node_repl.js` execution that performs it. Callers see
 // `list_apps` / `click` / `type_text`; the REPL stays an implementation
@@ -20,9 +20,6 @@
 // ---------------------------------------------------------------------------
 
 import { jsLiteral, writeJsonResult } from "./codex-repl";
-
-/** Bundled package the REPL imports; `sky` is its single exported entry. */
-const SKY_PACKAGE = "@oai/sky";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -239,20 +236,27 @@ export const findSkyTool = (name: string): SkyToolDefinition | undefined =>
 /**
  * The `node_repl` program that performs one sky call.
  *
- * `??=` rather than a separate bootstrap step because the REPL's state is
+ * The guarded bootstrap stays in every call because the REPL's state is
  * persistent but its LIFETIME is not ours to assume: the thread may be new,
  * reused, or reset between calls, and a call that assumed a warm global would
- * fail exactly when the pool handed back a fresh one. Importing is cheap once
- * warm, so this is idempotent rather than conditional on bookkeeping.
+ * fail exactly when the pool handed back a fresh one. The plugin wrapper is
+ * idempotent, so a warm session skips it without separate bookkeeping.
  *
  * The result is written as JSON through `nodeRepl.write`, which is how the
  * REPL returns anything at all; `undefined` (the action methods) becomes
  * `null` so a caller always gets a well-formed body.
  */
-export const skyCallProgram = (tool: SkyToolDefinition, args: unknown): string => {
+export const skyCallProgram = (
+  tool: SkyToolDefinition,
+  args: unknown,
+  modulePath: string,
+): string => {
   const call = tool.takesArgs ? `sky.${tool.method}(${jsLiteral(args)})` : `sky.${tool.method}()`;
   return [
-    `globalThis.sky ??= (await import(${JSON.stringify(SKY_PACKAGE)})).sky;`,
+    "if (!globalThis.sky) {",
+    `  const { setupComputerUseRuntime } = await import(${JSON.stringify(modulePath)});`,
+    "  await setupComputerUseRuntime({ globals: globalThis });",
+    "}",
     writeJsonResult([], `await ${call}`),
   ].join("\n");
 };

@@ -14,6 +14,8 @@ import { createMcpConnector, type StdioConnectorInput } from "./connection";
 // ---------------------------------------------------------------------------
 
 const fixture = fileURLToPath(new URL("./appserver-test-server.ts", import.meta.url));
+const COMPUTER_USE_MODULE =
+  "/codex/plugins/cache/openai-bundled/computer-use/1.0.0/scripts/computer-use-client.mjs";
 
 const appServerInput = (
   server: string,
@@ -30,6 +32,9 @@ const withConnection = (input: StdioConnectorInput) =>
   Effect.acquireRelease(createMcpConnector(input).pipe(Effect.orDie), (connection) =>
     Effect.promise(connection.close),
   );
+
+const computerUseInput = (): StdioConnectorInput =>
+  appServerInput("node_repl", { surface: "sky", modulePath: COMPUTER_USE_MODULE });
 
 describe("codex app-server bridge", () => {
   it.effect("handshakes, follows status pagination, and lists the server's tools", () =>
@@ -177,7 +182,7 @@ describe("codex app-server bridge", () => {
   it.effect("the sky surface lists typed Computer Use tools, not the raw REPL", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
+        const connection = yield* withConnection(computerUseInput());
 
         const tools = yield* Effect.promise(() => connection.client.listTools());
         const names = tools.tools.map(({ name }) => name);
@@ -195,7 +200,7 @@ describe("codex app-server bridge", () => {
   it.effect("a sky tool call compiles to one node_repl program carrying its arguments", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
+        const connection = yield* withConnection(computerUseInput());
 
         // Quotes in the arguments matter: they are embedded into a JS source
         // text, so the encoding has to survive them exactly.
@@ -205,9 +210,16 @@ describe("codex app-server bridge", () => {
         );
         // The fixture echoes the program the bridge compiled.
         const program = (result.content as readonly { readonly text: string }[])[0]!.text;
-        expect(program, "imports the bundled sky package idempotently").toContain(
-          'globalThis.sky ??= (await import("@oai/sky")).sky;',
+        expect(program, "loads the plugin-owned trusted runtime wrapper").toContain(
+          `await import(${JSON.stringify(COMPUTER_USE_MODULE)})`,
         );
+        expect(program, "uses the wrapper's supported bootstrap contract").toContain(
+          "await setupComputerUseRuntime({ globals: globalThis });",
+        );
+        expect(
+          program,
+          'does not trigger "Sky Computer Use requires the trusted nodeRepl runtime"',
+        ).not.toContain('import("@oai/sky")');
         expect(program, "calls the mapped method with the arguments verbatim").toContain(
           `await sky.type_text(JSON.parse(${JSON.stringify(JSON.stringify(args))}))`,
         );
@@ -224,7 +236,7 @@ describe("codex app-server bridge", () => {
   it.effect("an argument-less sky tool calls its method with no argument object", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
+        const connection = yield* withConnection(computerUseInput());
 
         const result = yield* Effect.promise(() =>
           connection.client.callTool({ name: "list_apps", arguments: {} }),
@@ -238,7 +250,7 @@ describe("codex app-server bridge", () => {
   it.effect("a tool outside the sky surface is refused rather than sent to the REPL", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
+        const connection = yield* withConnection(computerUseInput());
 
         const outcome = yield* Effect.promise(() =>
           connection.client.callTool({ name: "js", arguments: { code: "process.exit(0)" } }).then(

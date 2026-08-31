@@ -11,11 +11,11 @@ import { scanCodexPlugins } from "./codex-plugins";
 //   <home>/computer-use/Codex Computer Use.app/…/SkyComputerUseClient   (curated)
 //   <home>/plugins/cache/<source>/<name>/<version>/.codex-plugin/plugin.json
 //
-// The three curated plugins must always be reported — available when the
-// client binary exists, with a setup hint when it does not — and the cache
+// The curated plugins must always be reported — available when their required
+// client content exists, with a setup hint when it does not — and the cache
 // scan must pick each plugin's newest version, resolve its relative command
-// and cwd against that version dir, skip remote (http) servers, and never
-// fail the whole scan on a malformed entry.
+// and cwd against that version dir, skip remote (http) servers, and never fail
+// the whole scan on a malformed entry.
 // ---------------------------------------------------------------------------
 
 const CLIENT_RELATIVE = join(
@@ -99,6 +99,26 @@ const writeChromePlugin = (home: string): void => {
   writeFileSync(file, "export const setupBrowserRuntime = async () => ({});\n");
 };
 
+const writeComputerUsePlugin = (
+  home: string,
+  version = "1.0.0",
+  source = "openai-bundled",
+): string => {
+  const file = join(
+    home,
+    "plugins",
+    "cache",
+    source,
+    "computer-use",
+    version,
+    "scripts",
+    "computer-use-client.mjs",
+  );
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, "export const setupComputerUseRuntime = async () => ({});\n");
+  return file;
+};
+
 /** A fake `codex` CLI inside the temp home, passed explicitly so the scan
  *  never resolves the machine's real install through PATH. */
 const writeCodexCli = (home: string): string => {
@@ -111,6 +131,7 @@ describe("scanCodexPlugins", () => {
   it("reports the curated plugins as app-server recipes when Codex is fully installed", () => {
     const home = makeHome();
     writeExecutable(join(home, CLIENT_RELATIVE));
+    const computerUseClient = writeComputerUsePlugin(home);
     writeChromePlugin(home);
     const cli = writeCodexCli(home);
 
@@ -136,13 +157,18 @@ describe("scanCodexPlugins", () => {
     }
     // Computer Use and Chrome have no MCP server of their own in current
     // Codex: both ship as node-repl content, so they target `node_repl` with a
-    // projected surface. Chrome additionally carries the module its surface
-    // imports, resolved through the version-proof `latest` symlink.
+    // projected surface. Each carries the plugin-owned module its surface
+    // imports; Chrome's is resolved through the version-proof `latest` symlink.
     // Each entry also carries its own preset id, so a macOS permission
     // failure can name the exact grant that plugin needs.
     expect(curated.map((entry) => entry.appServer)).toEqual([
       { presetId: "codex-messages", server: "messages" },
-      { presetId: "codex-computer-use", server: "node_repl", surface: "sky" },
+      {
+        presetId: "codex-computer-use",
+        server: "node_repl",
+        surface: "sky",
+        modulePath: computerUseClient,
+      },
       {
         presetId: "codex-chrome",
         server: "node_repl",
@@ -212,6 +238,39 @@ describe("scanCodexPlugins", () => {
 
     expect(byId.get("codex-messages")?.available).toBe(true);
     expect(byId.get("codex-chrome")?.available).toBe(false);
+  });
+
+  it("resolves the trusted Computer Use wrapper from the newest installed cache version", () => {
+    const home = makeHome();
+    writeExecutable(join(home, CLIENT_RELATIVE));
+    const older = writeComputerUsePlugin(home, "1.0.9", "openai-bundled");
+    const newest = writeComputerUsePlugin(home, "1.0.10", "openai-curated-remote");
+    const cli = writeCodexCli(home);
+
+    const computerUse = scanCodexPlugins({ codexHome: home, codexCli: cli }).find(
+      (entry) => entry.id === "codex-computer-use",
+    );
+
+    expect(computerUse?.available).toBe(true);
+    expect(computerUse?.appServer?.modulePath).toBe(newest);
+    expect(computerUse?.appServer?.modulePath).not.toBe(older);
+  });
+
+  it("does not fall back to a stale wrapper when the newest plugin lacks one", () => {
+    const home = makeHome();
+    writeExecutable(join(home, CLIENT_RELATIVE));
+    writeComputerUsePlugin(home, "1.0.9");
+    mkdirSync(join(home, "plugins", "cache", "openai-bundled", "computer-use", "1.0.10"), {
+      recursive: true,
+    });
+    const cli = writeCodexCli(home);
+
+    const computerUse = scanCodexPlugins({ codexHome: home, codexCli: cli }).find(
+      (entry) => entry.id === "codex-computer-use",
+    );
+
+    expect(computerUse?.available).toBe(false);
+    expect(computerUse?.appServer?.modulePath).toBeUndefined();
   });
 
   it("scans cached plugins, resolving command and cwd against the newest version", () => {
