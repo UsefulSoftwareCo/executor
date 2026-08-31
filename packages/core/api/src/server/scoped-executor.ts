@@ -116,6 +116,14 @@ export interface HostConfigShape {
    */
   readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
   /**
+   * Forwarded to `ExecutorConfig.oauthDisableClientIdMetadataDocuments`:
+   * suppress CIMD support in `oauth.probe` results so automatic connect flows
+   * use dynamic client registration or manual setup instead. Declared here,
+   * not per-request, because it describes the deployment. Omitted, CIMD is
+   * offered as discovered.
+   */
+  readonly oauthDisableClientIdMetadataDocuments?: boolean;
+  /**
    * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
    * connection's persisted remote tool catalog stays fresh. Omit to take the
    * SDK default (15 minutes); `null` disables time-based re-sync. Declared
@@ -320,6 +328,7 @@ export const makeScopedExecutor = <
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
       enterpriseManagedRollout: config.enterpriseManagedRollout,
+      oauthDisableClientIdMetadataDocuments: config.oauthDisableClientIdMetadataDocuments,
       coreTools: {
         webBaseUrl,
         orgSlug,

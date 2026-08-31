@@ -706,6 +706,13 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   readonly oauthCallbackStateOrgSlug?: string;
   readonly oauthEndpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
+   * Forwarded to `OAuthServiceDeps.disableClientIdMetadataDocuments`: suppress
+   * Client ID Metadata Document support in `oauth.probe` results, so automatic
+   * connect flows use dynamic client registration or manual setup instead.
+   * See that field for why a private-network deployment needs this.
+   */
+  readonly oauthDisableClientIdMetadataDocuments?: boolean;
+  /**
    * Host-owned rollout gate for enterprise-managed authorization (the MCP EMA
    * profile). Core declares the port and depends on no feature-flag or
    * analytics vendor; a host that operates one supplies an implementation.
@@ -6140,6 +6147,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
+      disableClientIdMetadataDocuments: config.oauthDisableClientIdMetadataDocuments,
       // Connect-time only. The refresh path above (`performEnterpriseManagedRefresh`)
       // deliberately never sees this — it follows the enterprise state persisted
       // on the connection.

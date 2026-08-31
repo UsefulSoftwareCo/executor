@@ -134,6 +134,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
   readonly firstPartyOAuthClients?: ExecutorConfig<TPlugins>["firstPartyOAuthClients"];
   readonly enterpriseManagedRollout?: ExecutorConfig<TPlugins>["enterpriseManagedRollout"];
+  readonly oauthDisableClientIdMetadataDocuments?: ExecutorConfig<TPlugins>["oauthDisableClientIdMetadataDocuments"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -176,6 +177,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
     firstPartyOAuthClients: options?.firstPartyOAuthClients,
     enterpriseManagedRollout: options?.enterpriseManagedRollout,
+    oauthDisableClientIdMetadataDocuments: options?.oauthDisableClientIdMetadataDocuments,
   };
 };
 

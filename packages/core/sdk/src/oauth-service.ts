@@ -226,6 +226,16 @@ export interface OAuthServiceDeps {
   readonly fetch?: typeof globalThis.fetch;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   /**
+   * Suppress Client ID Metadata Document support in `probe` results. A CIMD
+   * `client_id` is a URL on this deployment that the provider's authorization
+   * server must fetch; a host whose web origin is not publicly reachable (a
+   * private-network self-host) can never serve that fetch, so it sets this
+   * flag and automatic connect flows fall through to dynamic client
+   * registration or manual setup instead of starting a CIMD authorization the
+   * provider rejects as `invalid_client`. Discovery is otherwise untouched.
+   */
+  readonly disableClientIdMetadataDocuments?: boolean;
+  /**
    * Host-owned rollout gate for enterprise-managed authorization (see
    * {@link EnterpriseManagedRollout}). Consulted ONCE per `id_jag` connect,
    * before discovery, and never again — not after the IdP has ruled, and not on
@@ -2258,6 +2268,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         registrationEndpoint: as.metadata.registration_endpoint ?? null,
         tokenEndpointAuthMethodsSupported: as.metadata.token_endpoint_auth_methods_supported,
         clientIdMetadataDocumentSupported:
+          deps.disableClientIdMetadataDocuments !== true &&
           as.metadata.client_id_metadata_document_supported === true,
       } satisfies OAuthProbeResult;
     }).pipe(Effect.provide(httpClientLayer));

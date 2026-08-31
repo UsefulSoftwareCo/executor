@@ -28,6 +28,11 @@ export interface SelfhostBootOptions {
    *  the eviction scenario proves in seconds what otherwise takes 30 minutes.
    *  Omit for production; the app then uses the store's own default. */
   readonly mcpSessionIdleTtlMs?: number;
+  /** Set EXECUTOR_OAUTH_DISABLE_CIMD, the private-network operator opt-out:
+   *  automatic OAuth connects skip Client ID Metadata Documents and use
+   *  dynamic client registration. Omit for the production default (CIMD
+   *  honored as discovered). */
+  readonly oauthDisableCimd?: boolean;
 }
 
 export const bootSelfhost = async (options: SelfhostBootOptions): Promise<BootedProcesses> => {
@@ -64,6 +69,7 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
           ...(options.mcpSessionIdleTtlMs !== undefined
             ? { EXECUTOR_MCP_SESSION_IDLE_TTL_MS: String(options.mcpSessionIdleTtlMs) }
             : {}),
+          ...(options.oauthDisableCimd === true ? { EXECUTOR_OAUTH_DISABLE_CIMD: "true" } : {}),
         },
         logFile: options.logFile,
       },

@@ -384,7 +384,9 @@ export interface OAuthProbeResult {
    *  a public ("none") client when the server allows it. */
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   /** Draft OAuth Client ID Metadata Document support, advertised by providers
-   *  such as PostHog as `client_id_metadata_document_supported`. */
+   *  such as PostHog as `client_id_metadata_document_supported`. False when the
+   *  host suppresses CIMD (`OAuthServiceDeps.disableClientIdMetadataDocuments`)
+   *  even if the server advertises it. */
   readonly clientIdMetadataDocumentSupported?: boolean;
 }
 
