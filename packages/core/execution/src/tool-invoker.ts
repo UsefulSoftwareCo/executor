@@ -106,7 +106,7 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
         "{ items: ToolDiscoveryResult[]; total: number; hasMore: boolean; nextOffset: number | null; }",
       typeScriptDefinitions: {
         ToolDiscoveryResult:
-          "{ path: string; name: string; description?: string; integration: string; score: number; }",
+          '{ kind: "tool"; path: string; name: string; description?: string; integration: string; score: number; } | { kind: "integration"; id: string; name: string; description?: string; integration: string; integrationKind: string; toolCount: number; score: number; }',
       },
     },
   ],
@@ -394,13 +394,27 @@ const isElicitationDeclinedError = (
   "action" in value &&
   (value.action === "cancel" || value.action === "decline");
 
-export type ToolDiscoveryResult = {
+export type ToolDiscoveryToolResult = {
+  readonly kind: "tool";
   readonly path: string;
   readonly name: string;
   readonly description?: string;
   readonly integration: string;
   readonly score: number;
 };
+
+export type IntegrationDiscoveryResult = {
+  readonly kind: "integration";
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly integration: string;
+  readonly integrationKind: string;
+  readonly toolCount: number;
+  readonly score: number;
+};
+
+export type ToolDiscoveryResult = ToolDiscoveryToolResult | IntegrationDiscoveryResult;
 
 export type ExecutorIntegrationListItem = {
   readonly id: string;
@@ -585,7 +599,7 @@ const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => 
   return isPrefixMatch(integrationTokens) || isPrefixMatch(pathTokens);
 };
 
-const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResult | null => {
+const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryToolResult | null => {
   const normalizedQuery = normalizeSearchText(query);
   const queryTokens = tokenizeSearchText(query);
 
@@ -646,11 +660,40 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
   }
 
   return {
+    kind: "tool",
     path: tool.path,
     name: tool.name,
     description: tool.description,
     integration: tool.integration,
     score,
+  };
+};
+
+const scoreIntegrationMatch = (
+  integration: Integration,
+  toolCount: number,
+  query: string,
+): IntegrationDiscoveryResult | null => {
+  const id = String(integration.slug);
+  const match = scoreToolMatch(
+    {
+      path: id,
+      integration: id,
+      name: integration.name,
+      description: integration.description,
+    },
+    query,
+  );
+  if (match === null) return null;
+  return {
+    kind: "integration",
+    id,
+    name: integration.name,
+    description: integration.description,
+    integration: id,
+    integrationKind: integration.kind,
+    toolCount,
+    score: match.score,
   };
 };
 
@@ -685,16 +728,32 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
-  const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ExecutionToolError({
-          message: "Failed to list tools for search",
-          cause,
-        }),
+  const [all, integrations] = yield* Effect.all([
+    executor.tools.list({ includeAnnotations: false }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionToolError({
+            message: "Failed to list tools for search",
+            cause,
+          }),
+      ),
     ),
-  );
+    executor.integrations.list().pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionToolError({
+            message: "Failed to list integrations for search",
+            cause,
+          }),
+      ),
+    ),
+  ]);
   const searchable = all.map(toSearchableTool);
+  const toolCountByIntegration = new Map<string, number>();
+  for (const tool of all) {
+    const key = String(tool.integration);
+    toolCountByIntegration.set(key, (toolCountByIntegration.get(key) ?? 0) + 1);
+  }
 
   // An empty query WITH a namespace is enumeration, not search: there is no
   // ranking signal, so the namespace's whole catalog comes back sorted by
@@ -704,11 +763,12 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   // google_gmail and google_sheets), which would silently break the census
   // guarantee: `total` here must reconcile against
   // `executor.integrations.list`'s per-integration toolCount.
-  const ranked: readonly ToolDiscoveryResult[] = emptyQuery
+  const rankedTools: readonly ToolDiscoveryToolResult[] = emptyQuery
     ? searchable
         .filter((tool) => tool.integration === options?.namespace?.trim())
         .sort((left, right) => left.path.localeCompare(right.path))
         .map((tool) => ({
+          kind: "tool" as const,
           path: tool.path,
           name: tool.name,
           integration: tool.integration,
@@ -721,10 +781,41 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
         .filter(Predicate.isNotNull)
         .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
+  const rankedIntegrations = emptyQuery
+    ? []
+    : integrations
+        .filter((integration) =>
+          matchesNamespace(
+            {
+              path: String(integration.slug),
+              integration: String(integration.slug),
+              name: integration.name,
+              description: integration.description,
+            },
+            options?.namespace,
+          ),
+        )
+        .map((integration) =>
+          scoreIntegrationMatch(
+            integration,
+            toolCountByIntegration.get(String(integration.slug)) ?? 0,
+            query,
+          ),
+        )
+        .filter(Predicate.isNotNull);
+
+  const ranked: readonly ToolDiscoveryResult[] = [...rankedTools, ...rankedIntegrations].sort(
+    (left, right) =>
+      right.score - left.score ||
+      (left.kind === "tool" ? left.path : left.id).localeCompare(
+        right.kind === "tool" ? right.path : right.id,
+      ),
+  );
+
   const page = paginate(ranked, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
-    "executor.search.candidate_count": all.length,
+    "executor.search.candidate_count": all.length + integrations.length,
     "executor.search.match_count": ranked.length,
     "executor.search.result_count": page.items.length,
     "executor.search.has_more": page.hasMore,
@@ -850,7 +941,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
       scoped.items.length > 0
         ? scoped.items
         : (yield* searchTools(executor, leaf, TOOL_DESCRIBE_SUGGESTION_LIMIT)).items;
-    const suggestions = matches.map((item) => item.path);
+    const suggestions = matches.flatMap((item) => (item.kind === "tool" ? [item.path] : []));
     const notFound: DescribedTool = {
       path,
       name: path,

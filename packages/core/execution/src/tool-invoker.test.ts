@@ -36,6 +36,8 @@ import {
   makeExecutorToolInvoker,
   searchTools,
   type ToolDiscoveryProvider,
+  type ToolDiscoveryResult,
+  type ToolDiscoveryToolResult,
 } from "./tool-invoker";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +52,9 @@ import {
 // ---------------------------------------------------------------------------
 
 const codeExecutor = makeQuickJsExecutor();
+
+const toolMatches = (items: readonly ToolDiscoveryResult[]): readonly ToolDiscoveryToolResult[] =>
+  items.filter((item) => item.kind === "tool");
 
 // Standard-schema validators — used by `invokeTool` to validate args and emit
 // the `Missing key` issues that surface as `invalid_tool_arguments`.
@@ -477,7 +482,7 @@ describe("tool discovery", () => {
       const executor = yield* makeSearchExecutor();
 
       const githubMatches = yield* searchTools(executor, "github issues", 5);
-      expect(githubMatches.items.map((match) => match.path)).toEqual([
+      expect(toolMatches(githubMatches.items).map((match) => match.path)).toEqual([
         "github.org.main.listRepositoryIssues",
       ]);
       expect(githubMatches.items[0]?.score ?? 0).toBeGreaterThan(0);
@@ -485,11 +490,29 @@ describe("tool discovery", () => {
       expect(githubMatches.nextOffset).toBeNull();
 
       const repoMatches = yield* searchTools(executor, "repo details", 5);
-      expect(repoMatches.items[0]?.path).toBe("github.org.main.getRepositoryDetails");
+      expect(toolMatches(repoMatches.items)[0]?.path).toBe("github.org.main.getRepositoryDetails");
 
       const crmMatches = yield* searchTools(executor, "crm create contact", 5);
-      expect(crmMatches.items[0]?.path).toBe("crm.org.main.createContact");
+      expect(toolMatches(crmMatches.items)[0]?.path).toBe("crm.org.main.createContact");
       expect(crmMatches.items[0]?.score ?? 0).toBeGreaterThan(crmMatches.items[1]?.score ?? 0);
+    }),
+  );
+
+  it.effect("returns integrations that do not have a connection", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([githubPlugin] as const);
+      yield* executor["github-test"]!.seed();
+
+      const matches = yield* searchTools(executor, "github", 5);
+      expect(matches.items).toContainEqual(
+        expect.objectContaining({
+          kind: "integration",
+          id: "github",
+          integration: "github",
+          toolCount: 0,
+        }),
+      );
+      expect(matches.items.some((item) => item.kind === "tool")).toBe(false);
     }),
   );
 
@@ -514,8 +537,10 @@ describe("tool discovery", () => {
       const enumerated = yield* searchTools(executor, "", 100, { namespace: "github" });
       expect(enumerated.items.length).toBeGreaterThan(0);
       expect(enumerated.total).toBe(enumerated.items.length);
-      expect(enumerated.items.map((item) => item.path)).toEqual(
-        [...enumerated.items.map((item) => item.path)].sort((a, b) => a.localeCompare(b)),
+      expect(toolMatches(enumerated.items).map((item) => item.path)).toEqual(
+        [...toolMatches(enumerated.items).map((item) => item.path)].sort((a, b) =>
+          a.localeCompare(b),
+        ),
       );
       expect(enumerated.items.every((item) => item.integration === "github")).toBe(true);
       expect(enumerated.items.every((item) => item.score === 0)).toBe(true);
@@ -649,14 +674,16 @@ describe("tool discovery", () => {
       const githubOnly = yield* searchTools(executor, "list", 5, {
         namespace: "github",
       });
-      expect(githubOnly.items.map((match) => match.path)).toEqual([
+      expect(toolMatches(githubOnly.items).map((match) => match.path)).toEqual([
         "github.org.main.listRepositoryIssues",
       ]);
 
       const crmOnly = yield* searchTools(executor, "list", 5, {
         namespace: "crm",
       });
-      expect(crmOnly.items.map((match) => match.path)).toEqual(["crm.org.main.listContacts"]);
+      expect(toolMatches(crmOnly.items).map((match) => match.path)).toEqual([
+        "crm.org.main.listContacts",
+      ]);
 
       const sandboxResult = yield* createExecutionEngine({ executor, codeExecutor }).execute(
         'return await tools.search({ namespace: "crm", query: "create contact", limit: 5 });',
@@ -690,6 +717,7 @@ describe("tool discovery", () => {
             return {
               items: [
                 {
+                  kind: "tool",
                   path: "custom.org.main.searchResult",
                   name: "searchResult",
                   description: "Provided by the host",
@@ -725,6 +753,7 @@ describe("tool discovery", () => {
       expect(result.result).toEqual({
         items: [
           {
+            kind: "tool",
             path: "custom.org.main.searchResult",
             name: "searchResult",
             description: "Provided by the host",
