@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomMount, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { ClientOnly, useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
@@ -8,7 +8,12 @@ import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { trackEvent } from "../api/analytics";
 import { useArtifactRenderer, usePreloadArtifactRenderer } from "../api/artifact-renderer";
-import { artifactAtom, removeArtifactOptimistic, renameArtifactOptimistic } from "../api/atoms";
+import {
+  artifactAtom,
+  artifactsOptimisticAtom,
+  removeArtifactOptimistic,
+  renameArtifactOptimistic,
+} from "../api/atoms";
 import { artifactWriteKeys } from "../api/reactivity-keys";
 import { createHttpShellHost } from "../api/shell-host";
 import {
@@ -38,6 +43,12 @@ import { RenameArtifactDialog } from "./artifact-rename-dialog";
 export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
   const artifact = useAtomValue(artifactAtom(props.artifactId));
   const refresh = useAtomRefresh(artifactAtom(props.artifactId));
+
+  // Detail-page writes reduce over the gallery's optimistic surface. Keep that
+  // surface mounted here so its rename/delete transition survives the route
+  // handoff back to the gallery instead of exposing the list query's cached
+  // pre-mutation value while its authoritative refresh is still in flight.
+  useAtomMount(artifactsOptimisticAtom);
   const doRename = useAtomSet(renameArtifactOptimistic, { mode: "promiseExit" });
   const doRemove = useAtomSet(removeArtifactOptimistic, { mode: "promiseExit" });
   const navigate = useNavigate();

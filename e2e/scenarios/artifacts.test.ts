@@ -634,25 +634,56 @@ scenario(
       );
 
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Delete the artifact from the list", async () => {
-          await visit(page, "/artifacts");
-          const card = page.locator('[data-slot="artifact-card"]').filter({
-            hasText: renamedTitle,
-          });
-          await card.waitFor({ timeout: 20_000 });
-          await card.hover();
-          await card.getByRole("button", { name: "Delete" }).click();
+        let releaseListRefresh = () => {};
+        let markListRefreshStarted = () => {};
+        const listRefreshGate = new Promise<void>((resolve) => {
+          releaseListRefresh = resolve;
+        });
+        const listRefreshStarted = new Promise<void>((resolve) => {
+          markListRefreshStarted = resolve;
+        });
 
+        await step("Open the artifact and delete it from its detail page", async () => {
+          await visit(page, "/artifacts");
+          await page.getByRole("link", { name: `Open artifact ${renamedTitle}` }).click();
+          await page.getByRole("heading", { name: renamedTitle }).waitFor({ timeout: 20_000 });
+
+          // Hold the post-delete list refresh open. The redirected gallery must
+          // carry the optimistic removal across the route handoff rather than
+          // relying on a fast canonical response to hide a stale-cache flash.
+          await page.route("**/artifacts", async (route) => {
+            if (route.request().method() !== "GET") {
+              await route.continue();
+              return;
+            }
+            markListRefreshStarted();
+            await listRefreshGate;
+            await route.continue();
+          });
+
+          await page.getByRole("button", { name: "Delete" }).click();
           const confirm = page.getByRole("alertdialog");
           await confirm.getByRole("heading", { name: `Delete ${renamedTitle}?` }).waitFor();
           await confirm.getByRole("button", { name: "Delete Artifact" }).click();
-          await confirm.waitFor({ state: "hidden", timeout: 20_000 });
         });
 
-        await step("The artifact is gone from the list", async () => {
-          await page
+        await step("The redirected gallery already omits the deleted artifact", async () => {
+          await page.waitForURL((url) => /\/artifacts\/?$/.test(url.pathname), {
+            timeout: 20_000,
+          });
+          await page.getByRole("heading", { name: "Saved artifacts" }).waitFor();
+          await listRefreshStarted;
+
+          const deletedCardCount = await page
             .getByRole("link", { name: `Open artifact ${renamedTitle}` })
-            .waitFor({ state: "detached", timeout: 20_000 });
+            .count();
+          releaseListRefresh();
+          await page.unrouteAll({ behavior: "wait" });
+
+          expect(
+            deletedCardCount,
+            "the optimistic delete survives navigation while the list refresh is pending",
+          ).toBe(0);
         });
       });
 
