@@ -5,8 +5,11 @@ export default defineConfig({
     client: "src/client.ts",
   },
   format: ["esm"],
-  dts: false,
+  dts: {
+    resolve: true,
+  },
   sourcemap: true,
   clean: true,
   external: [/^@executor-js\//, /^effect/, /^@effect\//],
+  noExternal: ["@executor-js/sdk/shared"],
 });

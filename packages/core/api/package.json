@@ -32,14 +32,12 @@
     }
   },
   "scripts": {
-    "build": "tsup && tsc --project tsconfig.build.json",
+    "build": "tsup",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@executor-js/execution": "workspace:*",
-    "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*"
   },
   "devDependencies": {

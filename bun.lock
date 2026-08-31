@@ -481,8 +481,6 @@
       "name": "@executor-js/api",
       "version": "1.4.70",
       "dependencies": {
-        "@executor-js/execution": "workspace:*",
-        "@executor-js/host-mcp": "workspace:*",
         "@executor-js/sdk": "workspace:*",
       },
       "devDependencies": {

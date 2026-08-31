@@ -47,29 +47,36 @@ describe("makeExecutorApiClient", () => {
     }),
   );
 
-  it.effect("declares only the typed client as its public packed surface", () =>
+  it.effect("declares a public client boundary with no private workspace dependencies", () =>
     Effect.gen(function* () {
-      const source = yield* Effect.promise(() =>
-        readFile(new URL("../package.json", import.meta.url), "utf8"),
-      );
+      const [source, changesetsSource] = yield* Effect.all([
+        Effect.promise(() => readFile(new URL("../package.json", import.meta.url), "utf8")),
+        Effect.promise(() =>
+          readFile(new URL("../../../../.changeset/config.json", import.meta.url), "utf8"),
+        ),
+      ]);
       const manifest = decodeJson(source) as {
         readonly private?: boolean;
         readonly license?: string;
         readonly files?: ReadonlyArray<string>;
         readonly scripts?: Readonly<Record<string, string>>;
         readonly dependencies?: Readonly<Record<string, string>>;
+        readonly devDependencies?: Readonly<Record<string, string>>;
+        readonly optionalDependencies?: Readonly<Record<string, string>>;
         readonly peerDependencies?: Readonly<Record<string, string>>;
         readonly publishConfig?: {
           readonly access?: string;
           readonly exports?: Readonly<Record<string, unknown>>;
         };
       };
+      const changesets = decodeJson(changesetsSource) as {
+        readonly ignore?: ReadonlyArray<string>;
+      };
 
       expect(manifest).toMatchObject({
         license: "MIT",
         files: ["dist"],
-        scripts: { build: "tsup && tsc --project tsconfig.build.json" },
-        dependencies: { "@executor-js/host-mcp": "workspace:*" },
+        scripts: { build: "tsup" },
         peerDependencies: { effect: "catalog:" },
         publishConfig: {
           access: "public",
@@ -83,6 +90,14 @@ describe("makeExecutorApiClient", () => {
           },
         },
       });
+      expect(manifest.dependencies).toEqual({ "@executor-js/sdk": "workspace:*" });
+      const declaredDependencies = [
+        ...Object.keys(manifest.dependencies ?? {}),
+        ...Object.keys(manifest.devDependencies ?? {}),
+        ...Object.keys(manifest.optionalDependencies ?? {}),
+        ...Object.keys(manifest.peerDependencies ?? {}),
+      ];
+      expect(declaredDependencies.filter((name) => changesets.ignore?.includes(name))).toEqual([]);
       expect(manifest.private).not.toBe(true);
     }),
   );
