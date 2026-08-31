@@ -69,16 +69,6 @@ export interface PruneToolCallsInput {
   readonly before: Date;
 }
 
-/**
- * The longest a tool call may wait on its own audit row.
- *
- * The write is awaited (see `executor.ts`) so a per-request host cannot tear
- * the executor down mid-insert and lose the row. This is the cap on what that
- * choice can cost when the database is unwell: past it the row is dropped with
- * a warning and the call returns.
- */
-export const TOOL_CALL_LOG_WRITE_TIMEOUT = "2 seconds";
-
 export const TOOL_CALL_LIST_DEFAULT_LIMIT = 100;
 export const TOOL_CALL_LIST_MAX_LIMIT = 1000;
 

@@ -36,7 +36,6 @@ import {
   rowToToolCall,
   toolCallArgKeys,
   toolCallOutcome,
-  TOOL_CALL_LOG_WRITE_TIMEOUT,
   type ListToolCallsInput,
   type PruneToolCallsInput,
   type ToolCall,
@@ -5537,13 +5536,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             exit,
             durationMs: Date.now() - startedAt,
           }).pipe(
-            // A sick database must not become a sick gateway. The insert is
-            // awaited — a forked write would be interrupted when a per-request
-            // host tears the executor down, and a silently missing row is the
-            // one thing an audit log may not do — but it is awaited under a
-            // hard cap, so the worst a stalled write can cost a tool call is
-            // this timeout rather than the driver's own.
-            Effect.timeout(TOOL_CALL_LOG_WRITE_TIMEOUT),
+            // The insert is awaited, deliberately unbounded. It used to carry
+            // an Effect.timeout, but an onExit finalizer runs uninterruptible,
+            // so the timeout's interrupt could never land — the cap was
+            // decorative in exactly the sick-database case it was written for,
+            // and its timer deadlocked the run loop under an adversarial
+            // scheduler budget (caught by the execute-read-concurrency
+            // tests). Bounding a stalled driver is the driver's job; what
+            // this wrapper owes the caller is that a row exists before the
+            // call returns, and that a failed write never changes the call.
             // Never let the audit write decide the call's fate — including a
             // defect. The row is the record OF the call, not part of it; a
             // gap in the log beats taking the gateway down with it.
