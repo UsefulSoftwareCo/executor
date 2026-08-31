@@ -26,6 +26,7 @@ import {
   plugin_storage,
   subject,
   tool,
+  tool_call_log,
   tool_policy,
 } from "./executor-schema";
 
@@ -52,6 +53,8 @@ export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Pr
     await tx.delete(plugin_storage).where(eq(plugin_storage.tenant, organizationId));
     await tx.delete(subject).where(eq(subject.tenant, organizationId));
     await tx.delete(artifact).where(eq(artifact.tenant, organizationId));
+    // The audit trail is org data like any other: a deleted org keeps no rows.
+    await tx.delete(tool_call_log).where(eq(tool_call_log.tenant, organizationId));
 
     // Secrets, OAuth tokens, and cached specs live in `blob`, namespaced by
     // owner: `o:<org>/<plugin>` (org scope) and `u:<org>:<subject>/<plugin>`
