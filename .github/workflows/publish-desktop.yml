@@ -18,6 +18,14 @@ on:
         required: false
         default: false
         type: boolean
+      executor_run_id:
+        description: >-
+          Publish Executor run id for this tag. Set by the automatic trigger;
+          the promote gate waits for exactly this run. Leave empty for manual
+          dispatches.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -282,25 +290,30 @@ jobs:
 
       # A published release must imply the npm packages for this tag exist.
       # Publish Executor triggers this workflow before its npm publishes (to
-      # overlap them with the desktop build), so wait for its most recent run
-      # for this tag to conclude successfully before going public. Runs are
-      # matched by run-name so workflow_dispatch repair runs count too. No run
-      # at all means a manually staged release; the operator owns the
-      # invariant then, so proceed.
+      # overlap them with the desktop build) and hands over its own run id,
+      # so wait for exactly that run to conclude successfully before going
+      # public. A run-name search would fail open whenever the run fell
+      # outside the listing window, so only an explicitly empty run id (a
+      # manual dispatch) skips the gate — the operator owns the invariant
+      # then.
       - name: Wait for executor package publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXECUTOR_RUN_ID: ${{ inputs.executor_run_id }}
         run: |
           set -euo pipefail
+          if [ -z "$EXECUTOR_RUN_ID" ]; then
+            echo "No executor_run_id given (manual dispatch); skipping the publish gate."
+            exit 0
+          fi
           deadline=$((SECONDS + 1200))
           while :; do
-            run=$(gh run list --repo "$GITHUB_REPOSITORY" \
-              --workflow publish-executor-package.yml \
-              --limit 20 --json displayTitle,status,conclusion,url \
-              --jq "[.[] | select(.displayTitle == \"publish executor $RELEASE_TAG\")] | first // empty")
-            if [ -z "$run" ]; then
-              echo "No Publish Executor run found for $RELEASE_TAG; assuming a manually staged release."
-              break
+            run=$(gh run view "$EXECUTOR_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --json status,conclusion,url,displayTitle)
+            title=$(echo "$run" | jq -r .displayTitle)
+            if [ "$title" != "publish executor $RELEASE_TAG" ]; then
+              echo "Run $EXECUTOR_RUN_ID is '$title', not 'publish executor $RELEASE_TAG' — refusing to promote."
+              exit 1
             fi
             status=$(echo "$run" | jq -r .status)
             if [ "$status" = "completed" ]; then

@@ -285,7 +285,10 @@ const locateBuiltArtifacts = async (version: string): Promise<string> => {
     throw new Error(`No built wrapper package at ${wrapperPkgPath}; run without --skip-build.`);
   }
 
-  const wrapperPkg = (await Bun.file(wrapperPkgPath).json()) as { version?: string };
+  const wrapperPkg = (await Bun.file(wrapperPkgPath).json()) as {
+    version?: string;
+    optionalDependencies?: Record<string, string>;
+  };
   if (wrapperPkg.version !== version) {
     throw new Error(
       `Built wrapper version ${wrapperPkg.version} does not match ${version}; run without --skip-build.`,
@@ -297,18 +300,50 @@ const locateBuiltArtifacts = async (version: string): Promise<string> => {
     throw new Error(`Missing packed wrapper ${expectedArchive}; run without --skip-build.`);
   }
 
-  // `build.ts publish` globs dist/executor-*/ and publishes whatever it
-  // finds, so a partial dist would ship a wrapper with missing platform
-  // variants. Require every variant dir to carry this exact base version.
-  const variantEntries = [...new Bun.Glob("executor-*/package.json").scanSync({ cwd: distDir })];
-  if (variantEntries.length === 0) {
-    throw new Error(`No platform variant packages under ${distDir}; run without --skip-build.`);
+  // The wrapper's optionalDependencies are the source of truth for which
+  // platform variants this release ships. `build.ts publish` globs the
+  // dist/executor-*/ directories and publishes whatever it finds, so a
+  // missing dir would ship a wrapper referencing a variant that never
+  // reached npm, and an extra stale dir (say a leftover beta variant)
+  // would be published alongside. Require the exact set, each at the exact
+  // aliased version, each with its release archive present.
+  const optional = wrapperPkg.optionalDependencies ?? {};
+  const expectedVariants = Object.keys(optional).sort();
+  if (expectedVariants.length === 0) {
+    throw new Error(`Built wrapper has no optionalDependencies; run without --skip-build.`);
   }
-  for (const entry of variantEntries) {
-    const variantPkg = (await Bun.file(join(distDir, entry)).json()) as { version?: string };
-    if (!variantPkg.version?.startsWith(`${version}-`)) {
+
+  const variantDirs = [...new Bun.Glob("executor-*/package.json").scanSync({ cwd: distDir })]
+    .map((entry) => dirname(entry))
+    .sort();
+  if (variantDirs.join(",") !== expectedVariants.join(",")) {
+    throw new Error(
+      `Platform variant dirs [${variantDirs.join(", ")}] do not match the wrapper's ` +
+        `optionalDependencies [${expectedVariants.join(", ")}]; run without --skip-build.`,
+    );
+  }
+
+  for (const name of expectedVariants) {
+    const spec = optional[name]!;
+    const aliasPrefix = "npm:executor@";
+    if (!spec.startsWith(aliasPrefix)) {
+      throw new Error(`Unexpected optionalDependency spec for ${name}: ${spec}`);
+    }
+    const aliasVersion = spec.slice(aliasPrefix.length);
+
+    const variantPkg = (await Bun.file(join(distDir, name, "package.json")).json()) as {
+      version?: string;
+    };
+    if (variantPkg.version !== aliasVersion) {
       throw new Error(
-        `${entry} version ${variantPkg.version} does not match ${version}; run without --skip-build.`,
+        `${name} version ${variantPkg.version} does not match the wrapper's ` +
+          `${aliasVersion}; run without --skip-build.`,
+      );
+    }
+
+    if (!existsSync(join(distDir, `${name}.tar.gz`)) && !existsSync(join(distDir, `${name}.zip`))) {
+      throw new Error(
+        `Missing release archive for ${name} in ${distDir}; run without --skip-build.`,
       );
     }
   }
