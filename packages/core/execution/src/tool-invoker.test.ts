@@ -486,6 +486,7 @@ describe("tool discovery", () => {
         "github.org.main.listRepositoryIssues",
       ]);
       expect(githubMatches.items[0]?.score ?? 0).toBeGreaterThan(0);
+      expect(githubMatches.items.some((match) => match.kind === "integration")).toBe(false);
       expect(githubMatches.hasMore).toBe(false);
       expect(githubMatches.nextOffset).toBeNull();
 

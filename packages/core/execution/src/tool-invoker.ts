@@ -784,6 +784,7 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   const rankedIntegrations = emptyQuery
     ? []
     : integrations
+        .filter((integration) => (toolCountByIntegration.get(String(integration.slug)) ?? 0) === 0)
         .filter((integration) =>
           matchesNamespace(
             {
