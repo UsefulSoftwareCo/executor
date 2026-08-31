@@ -37,6 +37,7 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/kernel/core",
   "packages/kernel/runtime-quickjs",
   "packages/core/sdk",
+  "packages/core/api",
   "packages/core/config",
   "packages/core/execution",
   "packages/core/cli",
@@ -52,7 +53,10 @@ const PUBLIC_PACKAGE_DIRS = [
 type PackageJson = {
   name: string;
   version: string;
+  catalog?: Record<string, string>;
+  dependencies?: Record<string, string>;
   exports?: Record<string, unknown>;
+  peerDependencies?: Record<string, string>;
 };
 
 const readPackageJson = async (pkgDir: string): Promise<PackageJson> => {
@@ -109,6 +113,7 @@ type Tarballs = ReadonlyMap<string, string>;
 const smokeTestPackage = async (
   pkgDir: string,
   tarballs: Tarballs,
+  catalog: Readonly<Record<string, string>>,
   failures: SmokeFailure[],
 ): Promise<void> => {
   const pkg = await readPackageJson(pkgDir);
@@ -135,7 +140,17 @@ const smokeTestPackage = async (
       version: "0.0.0",
       private: true,
       type: "module",
-      dependencies: { [pkg.name]: `file:${tarballPath}` },
+      dependencies: {
+        [pkg.name]: `file:${tarballPath}`,
+        ...(pkg.name === "@executor-js/api" && pkg.peerDependencies?.effect
+          ? {
+              effect:
+                pkg.peerDependencies.effect === "catalog:"
+                  ? catalog.effect
+                  : pkg.peerDependencies.effect,
+            }
+          : {}),
+      },
       overrides,
     };
     await writeFile(join(tmp, "package.json"), `${JSON.stringify(fixture, null, 2)}\n`);
@@ -156,6 +171,25 @@ const smokeTestPackage = async (
     // Read the installed manifest — that's the real published view
     // (publishConfig.exports applied, workspace specifiers resolved).
     const installedPkg = await readPackageJson(join(tmp, "node_modules", ...pkg.name.split("/")));
+    if (pkg.name === "@executor-js/api") {
+      if (installedPkg.dependencies?.["@executor-js/host-mcp"] !== undefined) {
+        failures.push({
+          pkg: pkg.name,
+          subpath: "<install>",
+          reason: "published client manifest retains private @executor-js/host-mcp",
+        });
+        return;
+      }
+      const publishedSubpaths = Object.keys(installedPkg.exports ?? {});
+      if (publishedSubpaths.length !== 1 || publishedSubpaths[0] !== "./client") {
+        failures.push({
+          pkg: pkg.name,
+          subpath: "<install>",
+          reason: `published API surface is ${publishedSubpaths.join(", ") || "empty"}`,
+        });
+        return;
+      }
+    }
     const subpaths = subpathsToTest(installedPkg);
     if (subpaths.length === 0) {
       failures.push({
@@ -212,6 +246,7 @@ const smokeTestPackage = async (
 };
 
 const main = async () => {
+  const rootPackage = await readPackageJson(repoRoot);
   console.log("[smoke] packing public packages via publish-packages.ts --dry-run");
   await $`bun run scripts/publish-packages.ts --dry-run`.cwd(repoRoot);
 
@@ -233,7 +268,7 @@ const main = async () => {
     }
     const pkg = await readPackageJson(pkgDir);
     console.log(`[smoke] ${pkg.name}`);
-    await smokeTestPackage(pkgDir, tarballs, failures);
+    await smokeTestPackage(pkgDir, tarballs, rootPackage.catalog ?? {}, failures);
   }
 
   if (failures.length === 0) {
