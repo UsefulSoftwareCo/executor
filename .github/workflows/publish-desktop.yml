@@ -231,6 +231,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
+      # Read Publish Executor run state for the promote gate below.
+      actions: read
 
     steps:
       - name: Checkout validation script
@@ -277,6 +279,47 @@ jobs:
             -o -name "latest*.yml" \) -print0 \
             | xargs -0 -n1 -P8 -I{} sh -c \
               'echo "Uploading: $1"; exec gh release upload "$RELEASE_TAG" "$1" --repo "$GITHUB_REPOSITORY" --clobber' _ {}
+
+      # A published release must imply the npm packages for this tag exist.
+      # Publish Executor triggers this workflow before its npm publishes (to
+      # overlap them with the desktop build), so wait for its most recent run
+      # for this tag to conclude successfully before going public. Runs are
+      # matched by run-name so workflow_dispatch repair runs count too. No run
+      # at all means a manually staged release; the operator owns the
+      # invariant then, so proceed.
+      - name: Wait for executor package publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1200))
+          while :; do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow publish-executor-package.yml \
+              --limit 20 --json displayTitle,status,conclusion,url \
+              --jq "[.[] | select(.displayTitle == \"publish executor $RELEASE_TAG\")] | first // empty")
+            if [ -z "$run" ]; then
+              echo "No Publish Executor run found for $RELEASE_TAG; assuming a manually staged release."
+              break
+            fi
+            status=$(echo "$run" | jq -r .status)
+            if [ "$status" = "completed" ]; then
+              conclusion=$(echo "$run" | jq -r .conclusion)
+              if [ "$conclusion" = "success" ]; then
+                echo "Publish Executor succeeded."
+                break
+              fi
+              echo "Publish Executor concluded '$conclusion' — leaving the release in draft."
+              echo "$run" | jq -r .url
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Timed out waiting for Publish Executor — leaving the release in draft."
+              exit 1
+            fi
+            echo "Publish Executor status: $status; waiting..."
+            sleep 15
+          done
 
       # Flip draft → published only after every desktop asset is uploaded —
       # this is the atomic point where the new tag becomes "latest".

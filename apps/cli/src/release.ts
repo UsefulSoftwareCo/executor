@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 
 type ReleaseChannel = "latest" | "beta";
 
+type ReleaseMode = "full" | "dry-run" | "stage-only" | "publish-only";
+
 type ReleaseCliOptions = {
-  readonly dryRun: boolean;
+  readonly mode: ReleaseMode;
+  readonly skipBuild: boolean;
 };
 
 type CommandInput = {
@@ -31,18 +34,40 @@ const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 const parseArgs = (argv: ReadonlyArray<string>): ReleaseCliOptions => {
-  let dryRun = false;
+  let mode: ReleaseMode = "full";
+  let skipBuild = false;
 
   for (const arg of argv) {
-    if (arg === "--dry-run") {
-      dryRun = true;
+    if (arg === "--skip-build") {
+      skipBuild = true;
       continue;
     }
 
-    throw new Error(`Unknown argument: ${arg}`);
+    const next: ReleaseMode | null =
+      arg === "--dry-run"
+        ? "dry-run"
+        : arg === "--stage-only"
+          ? "stage-only"
+          : arg === "--publish-only"
+            ? "publish-only"
+            : null;
+    if (next === null) {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+    if (mode !== "full") {
+      throw new Error(`--${next} conflicts with --${mode}; pass at most one mode flag`);
+    }
+    mode = next;
   }
 
-  return { dryRun };
+  if (mode === "publish-only" && skipBuild) {
+    throw new Error("--skip-build is implied by --publish-only; drop it");
+  }
+  if (mode === "dry-run" && skipBuild) {
+    throw new Error("--skip-build with --dry-run would validate artifacts and do nothing else");
+  }
+
+  return { mode, skipBuild };
 };
 
 const runCommand = async (input: CommandInput): Promise<CommandOutput> => {
@@ -223,7 +248,7 @@ const syncGitHubRelease = async (input: {
 
   // Draft until publish-desktop.yml finishes uploading installers and flips
   // it; otherwise /releases/latest/download/<desktop-asset> 404s during the
-  // ~15-20 min desktop build window.
+  // desktop build window.
   const args = [
     "release",
     "create",
@@ -249,6 +274,48 @@ const syncGitHubRelease = async (input: {
   });
 };
 
+/** Locate the wrapper archive a previous build of this exact version left in
+ *  dist/release. Used by --skip-build and --publish-only so a run that just
+ *  built (release:check's dry-run, or a --stage-only step) is not repeated.
+ *  Fails hard on any mismatch — reusing stale artifacts must never be a
+ *  silent fallback. */
+const locateBuiltArtifacts = async (version: string): Promise<string> => {
+  const wrapperPkgPath = join(wrapperDir, "package.json");
+  if (!existsSync(wrapperPkgPath)) {
+    throw new Error(`No built wrapper package at ${wrapperPkgPath}; run without --skip-build.`);
+  }
+
+  const wrapperPkg = (await Bun.file(wrapperPkgPath).json()) as { version?: string };
+  if (wrapperPkg.version !== version) {
+    throw new Error(
+      `Built wrapper version ${wrapperPkg.version} does not match ${version}; run without --skip-build.`,
+    );
+  }
+
+  const expectedArchive = join(releaseDir, `executor-${version}.tgz`);
+  if (!existsSync(expectedArchive)) {
+    throw new Error(`Missing packed wrapper ${expectedArchive}; run without --skip-build.`);
+  }
+
+  // `build.ts publish` globs dist/executor-*/ and publishes whatever it
+  // finds, so a partial dist would ship a wrapper with missing platform
+  // variants. Require every variant dir to carry this exact base version.
+  const variantEntries = [...new Bun.Glob("executor-*/package.json").scanSync({ cwd: distDir })];
+  if (variantEntries.length === 0) {
+    throw new Error(`No platform variant packages under ${distDir}; run without --skip-build.`);
+  }
+  for (const entry of variantEntries) {
+    const variantPkg = (await Bun.file(join(distDir, entry)).json()) as { version?: string };
+    if (!variantPkg.version?.startsWith(`${version}-`)) {
+      throw new Error(
+        `${entry} version ${variantPkg.version} does not match ${version}; run without --skip-build.`,
+      );
+    }
+  }
+
+  return expectedArchive;
+};
+
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   const version = await readVersion();
@@ -262,22 +329,38 @@ const main = async () => {
     throw new Error(`GitHub tag ${refTag} does not match ${versionPackagePath} version ${version}`);
   }
 
-  await rm(releaseDir, { recursive: true, force: true });
-  await mkdir(releaseDir, { recursive: true });
+  if (options.mode === "publish-only") {
+    await locateBuiltArtifacts(version);
+    await runCommand({
+      command: "bun",
+      args: ["run", "src/build.ts", "publish", channel],
+      cwd: cliRoot,
+    });
+    return;
+  }
 
-  await runCommand({
-    command: "bun",
-    args: ["run", "src/build.ts", "binary"],
-    cwd: cliRoot,
-  });
+  let wrapperArchivePath: string;
+  if (options.skipBuild) {
+    wrapperArchivePath = await locateBuiltArtifacts(version);
+  } else {
+    await rm(releaseDir, { recursive: true, force: true });
+    await mkdir(releaseDir, { recursive: true });
 
-  await runCommand({
-    command: "bun",
-    args: ["run", "src/build.ts", "release-assets"],
-    cwd: cliRoot,
-  });
+    await runCommand({
+      command: "bun",
+      args: ["run", "src/build.ts", "binary"],
+      cwd: cliRoot,
+    });
 
-  const wrapperArchivePath = await packWrapperPackage();
+    await runCommand({
+      command: "bun",
+      args: ["run", "src/build.ts", "release-assets"],
+      cwd: cliRoot,
+    });
+
+    wrapperArchivePath = await packWrapperPackage();
+  }
+
   const assetPaths = await collectReleaseAssetPaths(wrapperArchivePath);
 
   console.log(`Prepared executor@${version} for ${channel}`);
@@ -285,7 +368,7 @@ const main = async () => {
     console.log(`- ${assetPath}`);
   }
 
-  if (options.dryRun) {
+  if (options.mode === "dry-run") {
     return;
   }
 
@@ -294,6 +377,10 @@ const main = async () => {
     channel,
     assetPaths,
   });
+
+  if (options.mode === "stage-only") {
+    return;
+  }
 
   await runCommand({
     command: "bun",
