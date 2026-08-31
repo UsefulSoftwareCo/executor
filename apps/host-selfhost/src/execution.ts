@@ -30,8 +30,9 @@ import { loadConfig } from "./config";
 //   - PluginsProvider      -> fresh `executor.config.ts#plugins()` per call,
 //                            matching per-request plugin instances (avoids
 //                            cross-request plugin state).
-//   - HostConfig           -> `{ allowLocalNetwork, webBaseUrl }` from
-//                            `loadConfig()`.
+//   - HostConfig           -> deployment knobs from `loadConfig()` plus the
+//                            selfhost callback path and analytics hooks (see
+//                            `SelfHostHostConfig` below).
 //   - CodeExecutorProvider -> `makeQuickJsExecutor()`.
 //   - EngineDecorator      -> execution analytics (anonymous per-install
 //                             counters; see ./analytics.ts).
@@ -55,6 +56,7 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    oauthDisableClientIdMetadataDocuments: config.oauthDisableClientIdMetadataDocuments,
     toolsSyncTtlMs: config.toolsSyncTtlMs,
     onIntegrationChange: (event) =>
       selfHostAnalytics.record(

@@ -34,6 +34,12 @@ export interface SelfHostConfig {
    * internal network unless an operator opts in.
    */
   readonly allowLocalNetwork: boolean;
+  /**
+   * Forwarded to `HostConfigShape.oauthDisableClientIdMetadataDocuments`: skip
+   * CIMD in automatic OAuth connects, for deployments whose web origin
+   * providers cannot fetch (private LAN, VPN, or tailnet).
+   */
+  readonly oauthDisableClientIdMetadataDocuments: boolean;
   // Better Auth session secret. Always resolved (env, else generated + persisted
   // under the data dir) so a single-container deploy boots with no env; the auth
   // layer still validates an explicitly-set env secret is long enough.
@@ -165,6 +171,7 @@ export const loadConfig = (): SelfHostConfig => {
     webBaseUrl,
     trustedOrigins: resolveTrustedOrigins(webBaseUrl),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+    oauthDisableClientIdMetadataDocuments: process.env.EXECUTOR_OAUTH_DISABLE_CIMD === "true",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
