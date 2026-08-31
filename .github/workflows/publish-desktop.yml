@@ -287,14 +287,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          while IFS= read -r file; do
-            echo "Uploading: $file"
-            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
-          done < <(find artifacts -type f \
+          # Parallel uploads; xargs exits non-zero if any single upload fails,
+          # which keeps the promote step below from running on a partial set.
+          find artifacts -type f \
             \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.blockmap" \
-            -o -name "latest*.yml" \))
+            -o -name "latest*.yml" \) -print0 \
+            | xargs -0 -n1 -P8 -I{} sh -c \
+              'echo "Uploading: $1"; exec gh release upload "$RELEASE_TAG" "$1" --repo "$GITHUB_REPOSITORY" --clobber' _ {}
 
       # Flip draft → published only after every desktop asset is uploaded —
       # this is the atomic point where the new tag becomes "latest".
