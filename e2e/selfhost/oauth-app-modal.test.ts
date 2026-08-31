@@ -96,7 +96,7 @@ scenario(
             await page.locator("#oauth-app-name").fill(appName);
             await page.locator("#oauth-client-id").fill("client-one");
             await page.locator("#oauth-client-secret").fill("secret-one");
-            await page.getByRole("radio", { name: /HTTP Basic/ }).check();
+            await page.getByRole("radio", { name: /^HTTP Basic client_secret_basic$/ }).check();
             await page.getByRole("button", { name: "Register app", exact: true }).click();
             // Back on the picker, the new app is selectable AND manageable —
             // the per-app actions menu is what replaced the old apps page.
@@ -112,7 +112,9 @@ scenario(
               "the edit form prefills the stored client id",
             ).toBe("client-one");
             await expect
-              .poll(() => page.getByRole("radio", { name: /HTTP Basic/ }).isChecked())
+              .poll(() =>
+                page.getByRole("radio", { name: /^HTTP Basic client_secret_basic$/ }).isChecked(),
+              )
               .toBe(true);
           });
 
