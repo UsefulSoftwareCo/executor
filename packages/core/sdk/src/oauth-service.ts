@@ -55,6 +55,7 @@ import {
   type OAuthStartInput,
   type RegisterDynamicClientInput,
   type SubjectTokenType,
+  type TokenEndpointAuthMethod,
 } from "./oauth-client";
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
@@ -517,7 +518,7 @@ interface LoadedOAuthClient {
   /** Resolved literal secret (read from the provider via the stored item id). */
   readonly clientSecret: string;
   readonly resource: string | null;
-  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly tokenRequestFormat?: "form" | "json";
 }
 
@@ -621,7 +622,7 @@ export const loadedFirstPartyClient = (
   readonly clientId: string;
   readonly clientSecret: string;
   readonly resource: string | null;
-  readonly tokenEndpointAuthMethod?: "body" | "basic";
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly tokenRequestFormat?: "form" | "json";
 } => ({
   slug: String(firstPartyOAuthClientSlug(config.name)),
@@ -858,7 +859,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
-      if (input.tokenEndpointAuthMethod === "basic" && input.clientSecret.length === 0) {
+      if (
+        input.tokenEndpointAuthMethod !== undefined &&
+        input.tokenEndpointAuthMethod !== "body" &&
+        input.clientSecret.length === 0
+      ) {
         return yield* new StorageError({
           message: "HTTP Basic token endpoint authentication requires a client secret.",
           cause: undefined,

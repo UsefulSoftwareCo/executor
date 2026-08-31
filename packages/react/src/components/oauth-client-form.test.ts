@@ -124,6 +124,17 @@ describe("canSubmitOAuthClientForm", () => {
       }),
     ).toBe(false);
   });
+
+  it("requires a secret when raw HTTP Basic is selected", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "authorization_code",
+        clientSecret: "",
+        tokenEndpointAuthMethod: "basic_raw",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("preferredManualTokenEndpointAuthMethod", () => {

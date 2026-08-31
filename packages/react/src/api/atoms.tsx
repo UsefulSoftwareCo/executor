@@ -12,6 +12,7 @@ import {
   type OAuthGrant,
   type Owner,
   type ProviderItemId,
+  type TokenEndpointAuthMethod,
   type ToolAddress,
 } from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
@@ -571,7 +572,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly tokenUrl: string;
           readonly grant: OAuthGrant;
           readonly clientId: string;
-          readonly tokenEndpointAuthMethod?: "body" | "basic";
+          readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
           readonly resource?: string | null;
           readonly originIntegration?: IntegrationSlug | null;
         };

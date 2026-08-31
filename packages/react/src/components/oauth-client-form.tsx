@@ -116,7 +116,9 @@ export const canSubmitOAuthClientForm = (input: {
   input.name.trim().length > 0 &&
   input.clientId.trim().length > 0 &&
   (input.grant === "authorization_code" || input.clientSecret.trim().length > 0) &&
-  (input.tokenEndpointAuthMethod !== "basic" || input.clientSecret.trim().length > 0) &&
+  (input.tokenEndpointAuthMethod === undefined ||
+    input.tokenEndpointAuthMethod === "body" ||
+    input.clientSecret.trim().length > 0) &&
   input.tokenUrl.trim().length > 0 &&
   (input.grant === "client_credentials" || input.authorizationUrl.trim().length > 0);
 
@@ -578,7 +580,7 @@ export function OAuthClientForm(props: {
           onValueChange={(next: string) => {
             if (isTokenEndpointAuthMethod(next)) setTokenEndpointAuthMethod(next);
           }}
-          className="grid gap-2 sm:grid-cols-2"
+          className="grid gap-2 sm:grid-cols-3"
         >
           {(
             [
@@ -591,6 +593,11 @@ export function OAuthClientForm(props: {
                 value: "basic",
                 label: "HTTP Basic",
                 hint: "client_secret_basic",
+              },
+              {
+                value: "basic_raw",
+                label: "HTTP Basic (raw)",
+                hint: "provider compatibility",
               },
             ] as const
           ).map((option) => (
@@ -611,7 +618,7 @@ export function OAuthClientForm(props: {
             </Label>
           ))}
         </RadioGroup>
-        {tokenEndpointAuthMethod === "basic" && clientSecret.trim().length === 0 ? (
+        {tokenEndpointAuthMethod !== "body" && clientSecret.trim().length === 0 ? (
           <p className="text-xs text-destructive">HTTP Basic requires a client secret.</p>
         ) : null}
       </div>

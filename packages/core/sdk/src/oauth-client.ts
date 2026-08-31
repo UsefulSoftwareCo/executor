@@ -39,15 +39,19 @@ export const DEFAULT_SUBJECT_TOKEN_TYPE: SubjectTokenType =
   "urn:ietf:params:oauth:token-type:id_token";
 
 /** How a confidential OAuth client authenticates to its token endpoint. */
-export const TokenEndpointAuthMethodSchema = Schema.Literals(["body", "basic"]).annotate({
+export const TokenEndpointAuthMethodSchema = Schema.Literals([
+  "body",
+  "basic",
+  "basic_raw",
+]).annotate({
   identifier: "TokenEndpointAuthMethod",
   description:
-    "Transport for a confidential OAuth client secret: request body (client_secret_post) or HTTP Basic (client_secret_basic).",
+    "Transport for a confidential OAuth client secret: request body (client_secret_post), standards-based HTTP Basic (client_secret_basic), or raw HTTP Basic for providers that reject form-encoded credentials.",
 });
 export type TokenEndpointAuthMethod = typeof TokenEndpointAuthMethodSchema.Type;
 
 export const isTokenEndpointAuthMethod = (value: unknown): value is TokenEndpointAuthMethod =>
-  value === "body" || value === "basic";
+  value === "body" || value === "basic" || value === "basic_raw";
 
 /** Decode a nullable stored value. `undefined` is the legacy/default body
  *  method; `null` means the row contains an invalid non-null value. */
@@ -221,7 +225,9 @@ export interface FirstPartyOAuthClientConfig {
    *  them. */
   readonly authorizationExtraParams?: Readonly<Record<string, string>>;
   /** Token endpoint client-auth transport. Omitted means
-   *  `client_secret_post`; `basic` sends the secret only in HTTP Basic auth. */
+   *  `client_secret_post`; `basic` uses the RFC form-encoded HTTP Basic form;
+   *  `basic_raw` is an explicit compatibility mode for providers that require
+   *  the literal client id and secret before Base64 encoding. */
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   /** Token endpoint request encoding. OAuth defaults to URL-encoded form;
    *  providers such as Atlassian, ClickUp, and Notion require JSON. */

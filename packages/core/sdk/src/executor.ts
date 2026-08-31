@@ -135,6 +135,7 @@ import {
   isFirstPartyOAuthClientSlug,
   parseStoredTokenEndpointAuthMethod,
   type OAuthService,
+  type TokenEndpointAuthMethod,
 } from "./oauth-client";
 import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
@@ -2146,7 +2147,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenUrl: string;
       readonly grant: string;
       readonly resource: string | null;
-      readonly tokenEndpointAuthMethod?: "body" | "basic";
+      readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
       readonly tokenRequestFormat?: "form" | "json";
     }
 
