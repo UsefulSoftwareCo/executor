@@ -69,6 +69,7 @@ type HostState = {
   readonly initialized: boolean;
   readonly toolCalls: HostToolCall[];
   readonly resumeCalls: HostToolCall[];
+  readonly openLinks: string[];
 };
 
 type BrowserHostWindow = Window & {
@@ -388,6 +389,23 @@ function App() {
     <Card>
       <CardContent>
         <div id="ready">ready</div>
+      </CardContent>
+    </Card>
+  );
+}
+`;
+
+const generatedExternalLinkCode = `
+function App() {
+  return (
+    <Card>
+      <CardContent>
+        <a id="pr-link" href="https://example.com/pulls/123" target="_blank" rel="noreferrer">
+          <span>Open pull request</span>
+        </a>
+        <a id="unsafe-link" href="javascript:document.body.dataset.unsafe='ran'" target="_blank">
+          Unsafe link
+        </a>
       </CardContent>
     </Card>
   );
@@ -764,6 +782,7 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
         initialized: false,
         toolCalls: [],
         resumeCalls: [],
+        openLinks: [],
       };
       window.__mcpHostState = state;
 
@@ -824,6 +843,12 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
 
         if (message.method === "ui/notifications/initialized") {
           state.initialized = true;
+          return;
+        }
+
+        if (message.method === "ui/open-link" && message.id !== undefined) {
+          state.openLinks.push(message.params?.url);
+          respond(event.source, message.id, {});
           return;
         }
 
@@ -1577,6 +1602,45 @@ describe("MCP app generated UI browser isolation", () => {
           }),
         ]),
       );
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("routes pull request links through the host without granting popup access", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      const innerFrame = await renderGeneratedUi(page, shellFrame, generatedExternalLinkCode);
+      await innerFrame.locator("#pr-link").waitFor({ timeout: 10_000 });
+
+      // Click the nested label, not the anchor itself: real links commonly wrap
+      // text and icons, and the renderer must recover the owning anchor.
+      await innerFrame.locator("#pr-link span").click();
+      await page.waitForFunction(
+        () => (window as unknown as BrowserHostWindow).__mcpHostState.openLinks.length === 1,
+      );
+
+      const hostState = await getHostState(page);
+      expect(hostState.openLinks).toEqual(["https://example.com/pulls/123"]);
+
+      // The frame can ask only for web URLs. Carrying `javascript:` into the
+      // host would move model-written code from the opaque sandbox origin into
+      // the console's origin, so it is neither opened nor executed.
+      await innerFrame.locator("#unsafe-link").click();
+      await page.waitForTimeout(100);
+      expect((await getHostState(page)).openLinks).toEqual(["https://example.com/pulls/123"]);
+      expect(await innerFrame.locator("body").getAttribute("data-unsafe")).toBeNull();
+
+      expect(
+        await innerFrame.locator("#pr-link").count(),
+        "the generated frame was not navigated away",
+      ).toBe(1);
+      expect(
+        await shellFrame.locator('iframe[title="Generated UI"]').getAttribute("sandbox"),
+        "model-written code still has no direct popup permission",
+      ).toBe("allow-scripts");
     } finally {
       await page.close();
     }
