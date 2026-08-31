@@ -63,18 +63,59 @@ export type ResumeResponse = {
 const acceptAllHandler: ElicitationHandler = () => Effect.succeed({ action: "accept" });
 
 /**
+ * Approximate size of the value a script returned, before any preview
+ * truncation. This is the "did the model narrow in code or dump the raw
+ * payload" metric: a compact JSON length, not the pretty-printed preview the
+ * model receives, so treat it as magnitude. -1 means unmeasurable (a value
+ * `JSON.stringify` rejects, e.g. a BigInt) — unknown size, not zero.
+ */
+const measureResultChars = (value: unknown): number => {
+  if (value == null) return 0;
+  if (typeof value === "string") return value.length;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort size probe over an arbitrary sandbox value; a stringify rejection must not fail the execution path
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return -1;
+  }
+};
+
+/**
+ * Outcome attributes are a pure function of an immutable `ExecuteResult`, but
+ * the same result object is annotated more than once: the `autoApprove` path
+ * stamps both the inner inline span and the outer pausable span, and resume
+ * retries replay the settled result cached per execution id. The size probe
+ * walks the whole result value (`JSON.stringify`), so its cost grows with the
+ * payload — memoize the record per result object so each result is walked
+ * once, no matter how many spans it is stamped onto.
+ */
+const executeOutcomeAttributesCache = new WeakMap<ExecuteResult, Record<string, unknown>>();
+
+const executeOutcomeAttributes = (result: ExecuteResult): Record<string, unknown> => {
+  const cached = executeOutcomeAttributesCache.get(result);
+  if (cached) return cached;
+  const attributes = {
+    "mcp.execute.result_chars": measureResultChars(result.result),
+    "mcp.execute.log_chars": result.logs?.reduce((total, line) => total + line.length, 0) ?? 0,
+    "mcp.execute.emitted": result.output?.length ?? 0,
+    ...(result.error
+      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
+      : { "mcp.execute.outcome": "ok" }),
+  };
+  executeOutcomeAttributesCache.set(result, attributes);
+  return attributes;
+};
+
+/**
  * Stamp the current `mcp.execute` / `mcp.execute.resume` span with how the
- * execution ended. Sandbox failures ride the success channel as
- * `ExecuteResult.error`, so without this the span reads OK and the failure
- * class is unqueryable. Attributes stay enumerable identifiers — never the
- * error message itself.
+ * execution ended and how much data it sent back toward model context.
+ * Sandbox failures ride the success channel as `ExecuteResult.error`, so
+ * without this the span reads OK and the failure class is unqueryable.
+ * Attributes stay enumerable identifiers and sizes — never the error message
+ * or result content itself.
  */
 const annotateExecuteOutcome = (result: ExecuteResult) =>
-  Effect.annotateCurrentSpan(
-    result.error
-      ? { "mcp.execute.outcome": "fail", "mcp.execute.error_kind": result.errorKind ?? "unknown" }
-      : { "mcp.execute.outcome": "ok" },
-  );
+  Effect.annotateCurrentSpan(executeOutcomeAttributes(result));
 
 const annotateExecutionOutcome = (execution: ExecutionResult) =>
   execution.status === "paused"
@@ -188,6 +229,14 @@ export const formatPausedExecution = (
     );
   }
 
+  // Terms the upstream attached to the approval. Stated plainly, because a
+  // prompt whose schema is empty ("Allow X to access Y?") can still be
+  // asking for a PERSISTENT grant, and the answer differs.
+  const meta = req.meta;
+  if (meta !== undefined && Object.keys(meta).length > 0) {
+    lines.push(`\nApproval terms:\n${JSON.stringify(meta, null, 2)}`);
+  }
+
   lines.push(`\nexecutionId: ${paused.id}`);
   if (deadline) {
     lines.push(
@@ -210,6 +259,7 @@ export const formatPausedExecution = (
         args: paused.elicitationContext.args,
         ...(isUrlElicitation ? { url: req.url } : {}),
         ...(isFormElicitation ? { requestedSchema: req.requestedSchema } : {}),
+        ...(meta === undefined ? {} : { meta }),
       },
     },
   };
@@ -462,6 +512,21 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    * Get the dynamic tool description (workflow + namespaces).
    */
   readonly getDescription: Effect.Effect<string>;
+
+  /**
+   * End this engine's in-flight sandbox fibers and wait for them to unwind.
+   *
+   * `executeWithPause` forks the sandbox as a daemon so a pause can outlive the
+   * caller that observed it. That fiber holds the executor, and so the DB handle
+   * belonging to whichever scope built this engine. A host that builds an engine
+   * per request MUST call this before that scope's connection is closed, or the
+   * fiber outlives the pool it queries.
+   *
+   * Required, not optional: a decorator that wrapped the engine and quietly
+   * dropped this member would silently reopen that race, so the type makes
+   * forwarding it a compile error.
+   */
+  readonly shutdown: Effect.Effect<void>;
 };
 
 export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
@@ -469,6 +534,17 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 ): ExecutionEngine<E> => {
   const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
+  // Every sandbox fiber `startPausableExecution` still has in flight.
+  //
+  // Those fibers are daemons (`Effect.forkDetach`) so a pause can outlive the
+  // caller that observed it. But they close over `executor`, and the executor
+  // closes over the FumaDB handle the host opened for whatever scope built THIS
+  // engine — `makeFumaClient` captures `db` at construction, not per operation.
+  // A host that builds one engine per HTTP request therefore needs a way to end
+  // that fiber's life with the request; otherwise it wakes up after the
+  // request's postgres pool has been closed and every query it makes lands on a
+  // dead pool. `shutdown` below is that seam.
+  const liveSandboxFibers = new Set<Fiber.Fiber<ExecuteResult, E>>();
   // Outcomes of executions that already settled (resumed to completion, hit a
   // new pause, or died while paused). MCP clients retry `resume` when a
   // response gets lost in transit; without this cache the retry of an
@@ -591,6 +667,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     fiber = yield* Effect.forkDetach(
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
+    liveSandboxFibers.add(fiber);
 
     // When the fiber settles on its own (sandbox timeout, failure) while
     // pauses are still outstanding, drop them: getPausedExecution must not
@@ -602,6 +679,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       Fiber.await(sandboxFiber).pipe(
         Effect.flatMap((exit) =>
           Effect.sync(() => {
+            // Settled on its own — it can no longer touch the host's DB handle,
+            // so it is not `shutdown`'s problem any more.
+            liveSandboxFibers.delete(sandboxFiber);
             const outcome = Exit.map(
               exit,
               (result): ExecutionResult => ({ status: "completed", result }),
@@ -705,10 +785,33 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     return result;
   });
 
+  /**
+   * End this engine's sandbox fibers, and WAIT for them to finish unwinding.
+   *
+   * A host calls this when the scope that owns the engine's DB handle is about
+   * to close. Interruption is awaited rather than fired and forgotten: the point
+   * is that no sandbox fiber is still able to issue a query by the time the
+   * host's connection finalizer runs, so returning early would reopen the very
+   * race this closes.
+   *
+   * Paused executions are dropped with the fibers — a pause whose fiber has been
+   * interrupted can never consume a response, so leaving the entry behind would
+   * only let a later `resume` hand back a pause that cannot progress.
+   */
+  const shutdown: Effect.Effect<void> = Effect.suspend(() => {
+    const fibers = Array.from(liveSandboxFibers);
+    liveSandboxFibers.clear();
+    for (const [id, paused] of pausedExecutions) {
+      if (fibers.includes(paused.fiber)) pausedExecutions.delete(id);
+    }
+    return Fiber.interruptAll(fibers);
+  });
+
   return {
     execute: runInlineExecution,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
+    shutdown,
     isExecutionSettled: (executionId) => Effect.sync(() => settledExecutionIds.has(executionId)),
     getPausedExecution: (executionId) =>
       Effect.sync(() => pausedExecutions.get(executionId) ?? null),

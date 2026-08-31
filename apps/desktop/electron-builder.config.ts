@@ -37,6 +37,13 @@ const config: Configuration = {
     entitlements: "build/entitlements.mac.plist",
     entitlementsInherit: "build/entitlements.mac.plist",
     notarize: true,
+    extendInfo: {
+      // Shown in the macOS Automation consent prompt. Required alongside the
+      // apple-events entitlement in entitlements.mac.plist: without the
+      // usage string, tccd declines to prompt and denies silently.
+      NSAppleEventsUsageDescription:
+        "Executor runs local plugins that control apps like Messages on your behalf.",
+    },
   },
   // Same arch rule as mac (see comment above): never pin `arch:` in the
   // target objects. The win/linux pins used to force both archs out of a
@@ -46,6 +53,27 @@ const config: Configuration = {
   // artifact only exists once a leg stages an arm64 executor for it.
   win: {
     target: ["nsis"],
+    // There is no Windows code-signing certificate yet, so these installers
+    // ship unsigned, and this flag records that fact for the updater.
+    //
+    // Left at its `true` default, electron-builder writes a `publisherName`
+    // into app-update.yml derived from the signing certificate's subject CN
+    // (PublishManager.getAppUpdatePublishConfiguration, gated on
+    // WinPackager.isForceCodeSigningVerification). electron-updater then
+    // requires every downloaded installer to carry an Authenticode signature
+    // matching that name and refuses the update otherwise
+    // (NsisUpdater.verifySignature). An unsigned build that still claims a
+    // publisher can therefore never update itself.
+    //
+    // With this false no `publisherName` is emitted, `verifySignature`
+    // returns null early, and unsigned installers update as intended. It does
+    // not disable signing: `isForceCodeSigningVerification` is only ever read
+    // when computing the updater manifest.
+    //
+    // Delete this line when a real Windows certificate lands (signtoolOptions
+    // or azureSignOptions); leaving it would keep verification off for a
+    // signed build.
+    verifyUpdateCodeSignature: false,
   },
   nsis: {
     oneClick: true,

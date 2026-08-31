@@ -15,6 +15,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
+import postgres from "postgres";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Port + data dir default to the dev values but are env-overridable so a second
@@ -118,27 +119,32 @@ await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 //      transaction or pipeline affinity they can no longer release.
 // src/db/dev-db-socket-concurrency.node.test.ts is the regression test for
 // all of the above.
-const server = new PGLiteSocketServer({
-  db,
-  port: PORT,
-  host: "127.0.0.1",
-  maxConnections: Number(process.env.DEV_DB_MAX_CONNECTIONS ?? 1000),
-  // Backstop for pipeline affinity: a client that stalls mid-pipeline (Parse
-  // sent, no Sync) with its socket still OPEN would hold the queue's handler
-  // affinity forever and starve every other connection, since affinity only
-  // releases on detach and detach needs close/error/idle-timeout. In ms; the
-  // timer resets on every data event. The patch scopes the reap to connections
-  // actually HOLDING affinity (open pipeline or transaction): an idle-at-rest
-  // connection is the normal state of a healthy postgres.js pool held by a
-  // long-lived scope (SSE), and reaping those raced live queries into
-  // sporadic `write CONNECTION_ENDED` 500s.
-  idleTimeout: Number(process.env.DEV_DB_IDLE_TIMEOUT_MS ?? 30_000),
-});
+const makeServer = () =>
+  new PGLiteSocketServer({
+    db,
+    port: PORT,
+    host: "127.0.0.1",
+    maxConnections: Number(process.env.DEV_DB_MAX_CONNECTIONS ?? 1000),
+    // Backstop for pipeline affinity: a client that stalls mid-pipeline (Parse
+    // sent, no Sync) with its socket still OPEN would hold the queue's handler
+    // affinity forever and starve every other connection, since affinity only
+    // releases on detach and detach needs close/error/idle-timeout. In ms; the
+    // timer resets on every data event. The patch scopes the reap to connections
+    // actually HOLDING affinity (open pipeline or transaction): an idle-at-rest
+    // connection is the normal state of a healthy postgres.js pool held by a
+    // long-lived scope (SSE), and reaping those raced live queries into
+    // sporadic `write CONNECTION_ENDED` 500s.
+    idleTimeout: Number(process.env.DEV_DB_IDLE_TIMEOUT_MS ?? 30_000),
+  });
 
+let server = makeServer();
 await server.start();
 console.log(`[dev-db] Listening on postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres`);
 
+let stopping = false;
+
 const shutdown = async () => {
+  stopping = true;
   console.log("\n[dev-db] Shutting down");
   await server.stop();
   await db.close();
@@ -147,3 +153,129 @@ const shutdown = async () => {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// ---------------------------------------------------------------------------
+// Wedge watchdog
+// ---------------------------------------------------------------------------
+//
+// Twice the socket server has shipped a state machine that could stop
+// answering NEW connections while the process, the port, and PGlite all stayed
+// up (the CI e2e "cloud signIn: callback set no session (500)" cascades: every
+// in-flight query dies once, then every fresh connection's startup packet
+// times out — CONNECT_TIMEOUT — for the rest of the shard). The known paths
+// are patched with regression tests, but each recurrence so far has found a
+// new path, and a wedged front-end turns ONE infra hiccup into a failure of
+// every remaining test in the shard.
+//
+// So: probe the server the way the app does — a fresh TCP connection, real
+// startup handshake, `select 1` — and when several consecutive probes fail,
+// dump the server's internals to the boot log and swap in a fresh socket
+// server on the same PGlite instance (all state is in PGlite; the front-end is
+// stateless, so this drops only already-doomed connections). If a restart
+// doesn't restore service, exit non-zero: the boot supervisor logs the exit
+// loudly and the run fails fast with an attributable cause instead of minutes
+// of anonymous CONNECT_TIMEOUTs. The wedge itself stays visible in the
+// server-logs artifact via the [dev-db][watchdog] lines.
+const WATCHDOG_INTERVAL_MS = Number(process.env.DEV_DB_WATCHDOG_INTERVAL_MS ?? 5_000);
+// 3 consecutive failures ≈ 15s+ of hard unavailability. PGlite serves queries
+// in milliseconds; even a deep queue clears in well under one probe interval,
+// so consecutive startup failures this sustained only happen wedged.
+const WATCHDOG_FAILURES_TO_RESTART = 3;
+const WATCHDOG_MAX_RESTARTS = 3;
+
+const probe = async (): Promise<void> => {
+  const sql = postgres(`postgres://postgres:postgres@127.0.0.1:${PORT}/postgres`, {
+    max: 1,
+    idle_timeout: 0,
+    connect_timeout: 5,
+    fetch_types: false,
+    prepare: false,
+    onnotice: () => undefined,
+  });
+  try {
+    // connect_timeout only bounds the handshake; race the query too so a
+    // post-startup wedge cannot hang the watchdog itself.
+    await Promise.race([
+      sql.unsafe("select 1"),
+      sleep(10_000).then(() => {
+        throw new Error("probe query timed out after 10s");
+      }),
+    ]);
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => {});
+  }
+};
+
+const watchdog = async () => {
+  let consecutiveFailures = 0;
+  let restarts = 0;
+  // Heartbeat: the CI e2e cascade of 2026-08-28 (run 33129376530) showed the
+  // app starving on CONNECT_TIMEOUT for 100+ seconds while every watchdog
+  // probe silently PASSED — the stall was on the app's side of the socket,
+  // not this server's. A silent-when-healthy watchdog cannot distinguish
+  // "healthy" from "not running", and it discards the one signal that would
+  // test the leading theory (workerd leaking dev-db connections until its
+  // socket layer starves): the active connection count over time. Log stats
+  // periodically and whenever the count jumps a bucket.
+  let lastHeartbeatAt = Date.now();
+  let lastLoggedBucket = 0;
+  for (;;) {
+    await sleep(WATCHDOG_INTERVAL_MS);
+    if (stopping) return;
+    try {
+      await probe();
+      consecutiveFailures = 0;
+      const stats = server.getStats();
+      const bucket = Math.floor(stats.activeConnections / 50);
+      if (bucket !== lastLoggedBucket || Date.now() - lastHeartbeatAt >= 60_000) {
+        lastLoggedBucket = bucket;
+        lastHeartbeatAt = Date.now();
+        console.log(`[dev-db][watchdog] healthy; stats: ${JSON.stringify(stats)}`);
+      }
+    } catch (cause) {
+      consecutiveFailures += 1;
+      console.error(
+        `[dev-db][watchdog] probe failed (${consecutiveFailures}/${WATCHDOG_FAILURES_TO_RESTART}): ${String(cause)}`,
+      );
+      if (consecutiveFailures < WATCHDOG_FAILURES_TO_RESTART) continue;
+      console.error(
+        `[dev-db][watchdog] socket server wedged; stats: ${JSON.stringify(server.getStats())}`,
+      );
+      if (restarts >= WATCHDOG_MAX_RESTARTS) {
+        console.error(
+          `[dev-db][watchdog] still wedged after ${restarts} restarts — giving up so the boot supervisor reports it`,
+        );
+        process.exit(1);
+      }
+      restarts += 1;
+      consecutiveFailures = 0;
+      console.error(
+        `[dev-db][watchdog] restarting socket server (${restarts}/${WATCHDOG_MAX_RESTARTS})`,
+      );
+      // stop() itself goes through the query queue (detach rolls back open
+      // transactions), so a wedge deep enough can hang the restart too —
+      // bound it and treat that as fatal rather than hanging the watchdog.
+      const restart = async () => {
+        await server.stop();
+        server = makeServer();
+        await server.start();
+      };
+      try {
+        await Promise.race([
+          restart(),
+          sleep(15_000).then(() => {
+            throw new Error("restart timed out after 15s");
+          }),
+        ]);
+        console.error(`[dev-db][watchdog] socket server restarted`);
+      } catch (restartCause) {
+        console.error(
+          `[dev-db][watchdog] restart failed (${String(restartCause)}) — exiting so the boot supervisor reports it`,
+        );
+        process.exit(1);
+      }
+    }
+  }
+};
+
+void watchdog();

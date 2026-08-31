@@ -1,0 +1,5 @@
+/* The console's real stylesheet — same tokens, same primitives. The extra
+   @source is this package's own sources, which the react package's globs
+   (rooted at packages/react/src) do not cover. */
+@import "@executor-js/react/globals.css";
+@source "./**/*.{ts,tsx}";

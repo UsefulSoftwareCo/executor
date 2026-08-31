@@ -10,6 +10,9 @@ import {
   __resetDistTagsCache,
   checkForUpdate,
   compareVersions,
+  isUnstampedVersion,
+  isUpdateAvailable,
+  resolveComparisonChannel,
   resolveDistTags,
   resolveUpdateChannel,
 } from "./update-check";
@@ -50,6 +53,73 @@ describe("resolveUpdateChannel", () => {
     expect(resolveUpdateChannel("1.6.0-beta.3")).toBe("beta");
     expect(resolveUpdateChannel("1.5.22")).toBe("latest");
     expect(resolveUpdateChannel("0.0.0-dev")).toBe("latest");
+  });
+});
+
+describe("isUnstampedVersion", () => {
+  it("flags 0.0.0, with or without a prerelease suffix", () => {
+    expect(isUnstampedVersion("0.0.0")).toBe(true);
+    expect(isUnstampedVersion("0.0.0-dev")).toBe(true);
+  });
+
+  it("leaves any published version alone", () => {
+    expect(isUnstampedVersion("1.5.22")).toBe(false);
+    expect(isUnstampedVersion("0.0.1")).toBe(false);
+  });
+
+  it("is false for unparseable input", () => {
+    expect(isUnstampedVersion("not-a-version")).toBe(false);
+  });
+});
+
+describe("resolveComparisonChannel", () => {
+  it("suppresses unstamped build-time fallback versions", () => {
+    expect(resolveComparisonChannel("0.0.0")).toBeNull();
+    expect(resolveComparisonChannel("0.0.0-dev")).toBeNull();
+  });
+
+  it("suppresses unparseable input", () => {
+    expect(resolveComparisonChannel("not-a-version")).toBeNull();
+  });
+
+  it("routes a release version to the latest tag", () => {
+    expect(resolveComparisonChannel("1.6.0")).toBe("latest");
+  });
+
+  it("routes a beta prerelease to the beta tag", () => {
+    expect(resolveComparisonChannel("1.6.0-beta.1")).toBe("beta");
+  });
+
+  it("suppresses prereleases with no matching dist-tag", () => {
+    // rc, alpha, next, dev, ... — none of these publish a dist-tag, so
+    // comparing against `latest` would nag forever.
+    expect(resolveComparisonChannel("1.6.0-rc.1")).toBeNull();
+    expect(resolveComparisonChannel("1.6.0-alpha.1")).toBeNull();
+    expect(resolveComparisonChannel("1.6.0-next.1")).toBeNull();
+  });
+});
+
+describe("isUpdateAvailable", () => {
+  it("is false with no current version", () => {
+    expect(isUpdateAvailable(undefined, "1.6.0")).toBe(false);
+  });
+
+  it("is false with no comparison channel", () => {
+    expect(isUpdateAvailable("0.0.0-dev", "1.6.0")).toBe(false);
+    expect(isUpdateAvailable("1.6.0-rc.1", "1.6.0")).toBe(false);
+  });
+
+  it("is false with no published tag", () => {
+    expect(isUpdateAvailable("1.5.22", null)).toBe(false);
+  });
+
+  it("is false when already current", () => {
+    expect(isUpdateAvailable("1.6.0", "1.6.0")).toBe(false);
+  });
+
+  it("is true when a newer version is published on the matching channel", () => {
+    expect(isUpdateAvailable("1.6.0", "1.6.1")).toBe(true);
+    expect(isUpdateAvailable("1.6.0-beta.1", "1.6.0-beta.2")).toBe(true);
   });
 });
 
@@ -126,6 +196,14 @@ describe("checkForUpdate", () => {
     expect(status.updateAvailable).toBe(false);
   });
 
+  it("flags a patch release on the latest channel", async () => {
+    const status = await checkForUpdate("1.6.0", {
+      env: { EXECUTOR_NPM_DIST_TAGS: JSON.stringify({ latest: "1.6.1" }) },
+    });
+    expect(status.updateAvailable).toBe(true);
+    expect(status.latestVersion).toBe("1.6.1");
+  });
+
   it("compares a beta build against the beta tag", async () => {
     const status = await checkForUpdate("1.6.0-beta.1", {
       env: { EXECUTOR_NPM_DIST_TAGS: JSON.stringify({ latest: "1.5.22", beta: "1.6.0-beta.2" }) },
@@ -136,10 +214,33 @@ describe("checkForUpdate", () => {
     expect(status.command).toBe("npm i -g executor@beta");
   });
 
-  it("treats the dev build as upgradeable to any release", async () => {
+  it("stays quiet on an unstamped dev build", async () => {
+    // 0.0.0-dev is the build-time fallback, not a real release. It must never
+    // claim an update is available, and — because there is no dist-tag it
+    // could legitimately compare against — must not even hit the registry.
     const status = await checkForUpdate("0.0.0-dev", {
       env: { EXECUTOR_FORCE_LATEST_VERSION: "1.5.22" },
+      fetchImpl: fetchThatFails(),
     });
-    expect(status.updateAvailable).toBe(true);
+    expect(status.updateAvailable).toBe(false);
+    expect(status.latestVersion).toBeNull();
+  });
+
+  it("stays quiet on the desktop's unstamped fallback (plain 0.0.0)", async () => {
+    const status = await checkForUpdate("0.0.0", {
+      env: { EXECUTOR_FORCE_LATEST_VERSION: "1.5.22" },
+      fetchImpl: fetchThatFails(),
+    });
+    expect(status.updateAvailable).toBe(false);
+    expect(status.latestVersion).toBeNull();
+  });
+
+  it("stays quiet on a prerelease channel with no matching dist-tag", async () => {
+    const status = await checkForUpdate("1.6.0-rc.1", {
+      env: { EXECUTOR_NPM_DIST_TAGS: JSON.stringify({ latest: "1.6.0" }) },
+      fetchImpl: fetchThatFails(),
+    });
+    expect(status.updateAvailable).toBe(false);
+    expect(status.latestVersion).toBeNull();
   });
 });

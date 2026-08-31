@@ -3,7 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { OAUTH_POPUP_MESSAGE_TYPE, type OAuthPopupResult } from "@executor-js/sdk";
+
 import { acquireDataDirOwnership } from "./db/data-dir-ownership";
+import {
+  __oauthAwaitHeldWaiterTotalForTests,
+  __oauthAwaitWaiterCountForTests,
+  __resetOAuthResultStoreForTests,
+  consumeOAuthResult,
+  publishOAuthResult,
+} from "./oauth-result-store";
 import { startServer, type ServerInstance } from "./serve";
 
 let clientDir: string;
@@ -216,6 +225,121 @@ describe("startServer bearer auth", () => {
       handlers: testHandlers(),
     });
     expect(server.authToken.length).toBeGreaterThan(0);
+  });
+});
+
+describe("startServer OAuth await long-poll", () => {
+  afterEach(() => {
+    __resetOAuthResultStoreForTests();
+  });
+
+  const untilWaiterCount = async (sessionId: string, count: number): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (__oauthAwaitWaiterCountForTests(sessionId) !== count && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(__oauthAwaitWaiterCountForTests(sessionId)).toBe(count);
+  };
+
+  const awaitResult = (sessionId: string): OAuthPopupResult<unknown> => ({
+    type: OAUTH_POPUP_MESSAGE_TYPE,
+    ok: false,
+    sessionId,
+    error: "access denied",
+  });
+
+  it("holds the await request open and answers the moment the result publishes", async () => {
+    const baseUrl = await startTestServer();
+
+    const pending = fetch(`${baseUrl}/api/oauth/await/session-hold`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    // The request is being held, not answered null immediately.
+    await untilWaiterCount("session-hold", 1);
+
+    const publishedAt = Date.now();
+    publishOAuthResult(awaitResult("session-hold"));
+    const response = await pending;
+    const body = (await response.json()) as unknown;
+
+    // Resolved by the publish, not a poll tick or the 25s deadline.
+    expect(Date.now() - publishedAt).toBeLessThan(1000);
+    expect(body).toMatchObject({ sessionId: "session-hold", ok: false });
+    expect(__oauthAwaitWaiterCountForTests("session-hold")).toBe(0);
+  });
+
+  it("answers a pre-published result without waiting", async () => {
+    const baseUrl = await startTestServer();
+    publishOAuthResult(awaitResult("session-ready"));
+
+    const response = await fetch(`${baseUrl}/api/oauth/await/session-ready`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const body = (await response.json()) as unknown;
+
+    expect(body).toMatchObject({ sessionId: "session-ready" });
+    // One-shot: a second poll for the same session finds nothing.
+    expect(consumeOAuthResult("session-ready")).toBeNull();
+  });
+
+  it("drops the waiter when the client disconnects", async () => {
+    const baseUrl = await startTestServer();
+
+    const controller = new AbortController();
+    const pending = fetch(`${baseUrl}/api/oauth/await/session-gone`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+      signal: controller.signal,
+    });
+    await untilWaiterCount("session-gone", 1);
+
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await untilWaiterCount("session-gone", 0);
+
+    // The dead waiter must not consume a result published afterwards.
+    publishOAuthResult(awaitResult("session-gone"));
+    expect(consumeOAuthResult("session-gone")).toMatchObject({ sessionId: "session-gone" });
+  });
+
+  it("holds one request per session; stacked requests answer null instantly and one consumer wins", async () => {
+    // The mixed-version rollout hazard: an unpatched desktop client polls
+    // every second and would stack ~25 concurrent requests per flow against
+    // a holding server. Only the first request may hold — the rest must get
+    // the pre-long-poll instant "still pending" answer.
+    const baseUrl = await startTestServer();
+
+    const held = fetch(`${baseUrl}/api/oauth/await/session-stacked`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    // Deterministic ordering: the first request is registered before any
+    // stacked request is issued.
+    await untilWaiterCount("session-stacked", 1);
+
+    const stacked = await Promise.all(
+      [1, 2, 3].map(() =>
+        fetch(`${baseUrl}/api/oauth/await/session-stacked`, {
+          headers: { authorization: `Bearer ${TOKEN}` },
+        }),
+      ),
+    );
+    // The stacked requests settled BEFORE any publish — instant null answers,
+    // not held connections.
+    for (const response of stacked) {
+      expect(response.status).toBe(200);
+      expect(await response.json()).toBeNull();
+    }
+    expect(__oauthAwaitWaiterCountForTests("session-stacked")).toBe(1);
+    expect(__oauthAwaitHeldWaiterTotalForTests()).toBe(1);
+
+    publishOAuthResult(awaitResult("session-stacked"));
+    const response = await held;
+    // Exactly one consumer overall receives the one-shot result: the held
+    // request. Nothing is left behind for a later poll.
+    expect(await response.json()).toMatchObject({ sessionId: "session-stacked" });
+    expect(consumeOAuthResult("session-stacked")).toBeNull();
+    // The registry drains completely — no leaked waiters.
+    expect(__oauthAwaitWaiterCountForTests("session-stacked")).toBe(0);
+    expect(__oauthAwaitHeldWaiterTotalForTests()).toBe(0);
   });
 });
 

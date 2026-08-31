@@ -26,7 +26,7 @@ import {
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
-import { clickToReveal, visit } from "../src/surfaces/browser";
+import { visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -169,7 +169,7 @@ scenario(
 );
 
 scenario(
-  "First-party OAuth · Google offers the reviewed consumer bundle and refuses admin scopes",
+  "First-party OAuth · unlisted Google still authorizes its bundle and refuses admin scopes",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -181,107 +181,24 @@ scenario(
       const client = yield* makeApiClient(api, identity);
 
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Open the Google integration catalog", async () => {
-          await visit(page, "/integrations");
-          const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-          await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
+        await step("Open the integrations registry browser", async () => {
+          await visit(page, "/integrations/browse");
+          await page.getByPlaceholder(/Search integrations, or paste a URL/).waitFor();
         });
-
-        const services = [
-          "Google Calendar",
-          "Google Meet",
-          "Gmail",
-          "Google Sheets",
-          "Google Drive",
-          "Google Docs",
-          "Google Slides",
-          "Google Forms",
-          "Google Tasks",
-          "Google People",
-          "Google Photos Library",
-          "Google Photos Picker",
-          "Google Search Console",
-        ] as const;
-        const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-        const search = dialog.getByPlaceholder(/Search or paste a URL/);
-        for (const service of services) {
-          await step(`${service} is available to connect`, async () => {
-            await search.fill(service);
-            await dialog.getByRole("link", { name: new RegExp(`^${service}\\b`) }).waitFor();
-          });
-        }
       });
 
+      // The Executor-owned Google app is withheld from every listing: it is no
+      // longer offered for new connections, so connecting Google means bringing
+      // your own OAuth app. It stays fully resolvable by slug, which the
+      // `oauth.start` cases below exercise — that is the guarantee for everyone
+      // already connected through it. Its reviewed consumer scope bundle, no
+      // longer introspectable from here, is asserted on the config it is built
+      // from, in apps/cloud/src/engine/first-party-oauth-clients.test.ts.
       const clients = yield* client.oauth.listClients();
-      const google = clients.find((candidate) => String(candidate.slug) === "first-party:google");
-      expect(google, "the env-declared first-party Google app is listed").toBeDefined();
-      expect(google?.origin.kind).toBe("first_party");
-      if (google?.origin.kind !== "first_party") return;
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/calendar");
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/meetings.space.readonly",
-      );
-      // `gmail.modify` stays in the host-enforced allowlist on purpose: a
-      // connection created before the full-Gmail review still declares it, and
-      // `resolveFirstPartyScopes` filters discovered scopes through this list,
-      // so dropping it would break those reconnects — as the legacy-spec case
-      // further down this file asserts. The invariant that new Gmail presets
-      // request `mail.google.com` instead lives in the preset unit tests
-      // (packages/plugins/openapi/.../presets.test.ts), which is where the
-      // request-side scope choice is actually decided.
-      expect(google.origin.allowedScopes).toContain("https://mail.google.com/");
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/gmail.settings.basic",
-      );
-      expect(google.origin.allowedScopes).not.toContain(
-        "https://www.googleapis.com/auth/gmail.settings.sharing",
-      );
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/spreadsheets");
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/drive.file");
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/drive");
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/documents");
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/presentations",
-      );
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/forms.body");
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/forms.responses.readonly",
-      );
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/tasks");
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/contacts");
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/contacts.other.readonly",
-      );
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/directory.readonly",
-      );
-      for (const scope of [
-        "user.addresses.read",
-        "user.birthday.read",
-        "user.emails.read",
-        "user.gender.read",
-        "user.organization.read",
-        "user.phonenumbers.read",
-      ]) {
-        expect(google.origin.allowedScopes).toContain(`https://www.googleapis.com/auth/${scope}`);
-      }
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/photoslibrary.appendonly",
-      );
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
-      );
-      expect(google.origin.allowedScopes).toContain(
-        "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
-      );
-      expect(google.origin.allowedScopes).toContain("https://www.googleapis.com/auth/webmasters");
-      expect(google.origin.allowedScopes).not.toContain(
-        "https://www.googleapis.com/auth/admin.directory.user",
-      );
-      expect(google.origin.allowedScopes).not.toContain("https://www.googleapis.com/auth/youtube");
-      expect(google.origin.allowedScopes).not.toContain(
-        "https://www.googleapis.com/auth/cloud-platform",
-      );
+      expect(
+        clients.find((candidate) => String(candidate.slug) === "first-party:google"),
+        "the first-party Google app is not offered in listings",
+      ).toBeUndefined();
 
       const calendar = IntegrationSlug.make(unique("google_calendar"));
       yield* client.openapi.addSpec({

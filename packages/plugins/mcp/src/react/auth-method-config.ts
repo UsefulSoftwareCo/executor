@@ -2,12 +2,14 @@
 // MCP ↔ generic auth-method converters — a thin oauth adapter over the shared
 // codec (`@executor-js/react/lib/shared-auth-method-codec`). The apikey/none
 // paths (multi-placement, multi-variable) live in the shared codec; MCP only
-// contributes its oauth flavor: endpoint-less methods whose metadata is
-// discovered at connect time (`discoveryUrl` = the MCP endpoint).
+// contributes its oauth flavor: endpoint-less methods whose provider metadata
+// is discovered at connect time (`discoveryUrl` = the MCP endpoint), with an
+// optional declared scope override for servers whose metadata omits scopes.
 // ---------------------------------------------------------------------------
 
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 import type { AuthTemplateEditorValue } from "@executor-js/react/components/auth-template-editor";
+import type { AuthMethodSeed } from "@executor-js/react/components/auth-method-list-editor";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
   authMethodFromSharedTemplate,
@@ -48,14 +50,22 @@ export const mcpWireAuthInput = (
   method: McpAuthMethod | McpCanonicalAuthMethodInput,
 ): McpAuthMethodInput => wireAuthInputFromShared(method) as McpAuthMethodInput;
 
-const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
+const oauthAuthMethod = (
+  slug: string,
+  endpoint: string,
+  scopes: readonly string[] | undefined,
+): AuthMethod => ({
   id: slug,
   label: "OAuth",
   kind: "oauth",
   source: slug.startsWith("custom_") ? "custom" : "spec",
   template: AuthTemplateSlug.make(slug),
   placements: [],
-  oauth: { discoveryUrl: endpoint, supportsDynamicRegistration: true },
+  oauth: {
+    discoveryUrl: endpoint,
+    ...(scopes !== undefined ? { scopes } : {}),
+    supportsDynamicRegistration: true,
+  },
 });
 
 /** Convert a generic editor value into one MCP auth-method input (no slug —
@@ -65,7 +75,13 @@ const oauthAuthMethod = (slug: string, endpoint: string): AuthMethod => ({
 export function mcpAuthMethodInputFromEditorValue(
   value: AuthTemplateEditorValue,
 ): McpCanonicalAuthMethodInput {
-  if (value.kind === "oauth") return { kind: "oauth2" };
+  if (value.kind === "oauth") {
+    const [firstScope, ...remainingScopes] = value.scopes;
+    return {
+      kind: "oauth2",
+      ...(firstScope !== undefined ? { scopes: [firstScope, ...remainingScopes] } : {}),
+    };
+  }
   return (sharedMethodInputFromEditorValue(value) ?? {
     kind: "none",
   }) as McpCanonicalAuthMethodInput;
@@ -74,7 +90,12 @@ export function mcpAuthMethodInputFromEditorValue(
 /** Convert one stored MCP method into the generic editor value. */
 export function editorValueFromMcpAuthMethod(method: McpAuthMethod): AuthTemplateEditorValue {
   if (method.kind === "oauth2") {
-    return { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] };
+    return {
+      kind: "oauth",
+      authorizationUrl: "",
+      tokenUrl: "",
+      scopes: method.scopes ?? [],
+    };
   }
   if (method.kind === "stdio_env") return stdioEnvEditorValue(method);
   return editorValueFromSharedMethod(method);
@@ -89,7 +110,7 @@ export function authMethodsFromConfig(
   endpoint: string,
 ): AuthMethod[] {
   return methods.map((method: McpAuthMethod): AuthMethod => {
-    if (method.kind === "oauth2") return oauthAuthMethod(method.slug, endpoint);
+    if (method.kind === "oauth2") return oauthAuthMethod(method.slug, endpoint, method.scopes);
     if (method.kind === "stdio_env") return stdioEnvAuthMethod(method);
     return authMethodFromSharedTemplate(method);
   });
@@ -105,4 +126,56 @@ export function mcpAuthMethodInputsFromPlacements(
   const wire = wirePlacementsFromEditor(placements);
   if (wire.length === 0) return [];
   return [{ kind: "apikey", placements: wire }];
+}
+
+/** The auth methods a registry-driven MCP add declares before any editing:
+ *  the probe's detection plus the registry's declared facts. ONE policy for
+ *  both the add page (as editor seeds) and the one-click quick add (mapped
+ *  straight to wire inputs) — two copies drifted is how the picker and the
+ *  add page end up declaring different methods for the same server. */
+export function mcpDetectedAuthSeeds(
+  probe: {
+    readonly requiresOAuth: boolean;
+    readonly requiresAuthentication: boolean;
+  } | null,
+  registry: {
+    readonly placement?: Placement | null;
+    readonly kind?: string | undefined;
+  },
+): readonly AuthMethodSeed[] {
+  const registryPlacement = registry.placement ?? null;
+  if (!probe) {
+    // No probe result (pending, or the server was unreachable from here).
+    // The registry's declared facts still stand: an authless server or a
+    // known header pattern seeds the list the probe would have produced.
+    if (registryPlacement) return [{ value: { kind: "apikey", placements: [registryPlacement] } }];
+    if (registry.kind === "none") return [{ value: { kind: "none" } }];
+    return [];
+  }
+  if (probe.requiresOAuth) {
+    const oauth: AuthMethodSeed = {
+      value: { kind: "oauth", authorizationUrl: "", tokenUrl: "", scopes: [] },
+      label: "Detected",
+    };
+    // GitHub's MCP server takes a PAT bearer header in clients without
+    // OAuth; when the registry declared that placement, offer it alongside.
+    return registryPlacement
+      ? [oauth, { value: { kind: "apikey", placements: [registryPlacement] } }]
+      : [oauth];
+  }
+  if (probe.requiresAuthentication) {
+    // The registry's exact placement beats the generic Bearer guess.
+    return [
+      {
+        value: {
+          kind: "apikey",
+          placements: [
+            registryPlacement ?? { carrier: "header", name: "Authorization", prefix: "Bearer " },
+          ],
+        },
+        label: "Detected",
+      },
+    ];
+  }
+  return [{ value: { kind: "none" }, label: "Detected" }];
 }

@@ -30,6 +30,8 @@ const failingExtension: McpPluginExtension = {
   getServer: () => Effect.succeed(null),
   configureServer: () => unused,
   configureAuth: () => unused,
+  listCodexPlugins: () => Effect.succeed([]),
+  checkCodexPluginAccess: () => Effect.succeed({ status: "unknown" as const }),
 };
 
 const Api = addGroup(McpGroup);
@@ -117,6 +119,39 @@ describe("McpHandlers", () => {
         yield* Effect.promise(() => response.json()),
       );
       expect(body.message).toContain("Do you need to provide an API key");
+    }),
+  );
+
+  it.effect("the remote add carries versionNegotiation through to the extension", () =>
+    Effect.gen(function* () {
+      // The probe's legacy retry is pointless if the pin dies at the HTTP
+      // boundary: this exact field was silently stripped by the payload
+      // schema and the handler's explicit field map.
+      let received: unknown;
+      const web = yield* webHandlerFor({
+        ...failingExtension,
+        addServer: (input) => {
+          received = input;
+          return Effect.succeed({ slug: "pinned", tools: [] } as never);
+        },
+      });
+      const response = yield* Effect.promise(() =>
+        (web.handler as (request: Request) => Promise<Response>)(
+          new Request("http://localhost/mcp/servers", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              transport: "remote",
+              name: "Echoing server",
+              endpoint: "https://example.com/mcp",
+              versionNegotiation: "legacy",
+              authenticationTemplate: [{ kind: "none" }],
+            }),
+          }),
+        ),
+      );
+      expect(response.status).toBeLessThan(500);
+      expect((received as { versionNegotiation?: string }).versionNegotiation).toBe("legacy");
     }),
   );
 });

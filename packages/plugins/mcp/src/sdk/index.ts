@@ -1,3 +1,5 @@
+export type { CodexPluginEntry } from "./codex-plugins";
+
 export {
   mcpPlugin,
   userFacingProbeMessage,
@@ -22,6 +24,7 @@ export {
   McpTransport,
   McpToolAnnotations,
   McpToolBinding,
+  McpToolMeta,
   parseMcpIntegrationConfig,
 } from "./types";
 

@@ -132,7 +132,10 @@ export const providersAtom = ExecutorApiClient.query("providers", "list", {
 export const providerItemsAtom = (key: ProviderKey) =>
   ExecutorApiClient.query("providers", "items", {
     params: { key },
-    timeToLive: "30 seconds",
+    // Long retention on purpose: external-provider listings (1Password) are
+    // slow, so pickers render the last-known list instantly and revalidate in
+    // the background on mount instead of flashing a loading state each open.
+    timeToLive: "10 minutes",
     reactivityKeys: [ReactivityKey.providers],
   });
 

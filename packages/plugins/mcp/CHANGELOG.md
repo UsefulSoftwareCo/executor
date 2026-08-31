@@ -1,5 +1,202 @@
 # @executor-js/plugin-mcp
 
+## 1.6.7
+
+### Patch Changes
+
+- [#1876](https://github.com/UsefulSoftwareCo/executor/pull/1876) [`75b3674`](https://github.com/UsefulSoftwareCo/executor/commit/75b3674136b44a2e43fb23eb7a058e7e51528527) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Let macOS ask before denying Codex plugins Automation access. The desktop app
+  and its bundled daemon are hardened-runtime signed without the Apple Events
+  entitlement, so tccd refused to even show the consent prompt: every Messages
+  call was denied silently, no Automation row was ever created in System
+  Settings, and the access check sat on "Checking…" for a full minute before
+  misreporting the hang as a failed start. The app and daemon are now signed
+  with `com.apple.security.automation.apple-events` and carry a usage
+  description, so the first call raises the real consent prompt and the grant
+  becomes visible in Privacy & Security → Automation.
+
+  The access check also stops waiting after 25 seconds and says what a hang
+  means — answer the permission prompt on screen, then check again — instead of
+  blaming the Codex install.
+
+- Updated dependencies [[`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322)]:
+  - @executor-js/sdk@1.6.7
+  - @executor-js/api@1.4.70
+  - @executor-js/config@1.6.7
+  - @executor-js/react@1.4.70
+
+## 1.6.6
+
+### Patch Changes
+
+- [#1869](https://github.com/UsefulSoftwareCo/executor/pull/1869) [`c695970`](https://github.com/UsefulSoftwareCo/executor/commit/c6959702f6459504463fe0e13fa1a576190460ed) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Explain macOS permissions for Codex plugins instead of failing with an opaque
+  error. A refused grant used to surface as `Internal tool error [id]` — the
+  plugin reports "Unknown error" and only a numeric code says what happened, so
+  neither the user nor the model could tell that macOS was the blocker.
+
+  The bridge now recognises those codes and answers with the grant to enable and
+  where to find it. Each plugin's add screen also states what macOS will ask for
+  before anything runs, with a link straight to the right Privacy pane — macOS
+  asks once, and a dismissed prompt never returns.
+
+  The add screen checks that access when it opens, and holds the Add button
+  until the plugin answers. Adding one that macOS is still blocking produced an
+  integration that looked connected and failed on its first call, by which point
+  the screen explaining the fix was gone.
+
+- Updated dependencies [[`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063)]:
+  - @executor-js/react@1.4.69
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+  - @executor-js/config@1.6.6
+
+## 1.6.5
+
+### Patch Changes
+
+- [#1863](https://github.com/UsefulSoftwareCo/executor/pull/1863) [`00c2ab7`](https://github.com/UsefulSoftwareCo/executor/commit/00c2ab789eef94efd9c05d389870566bba7111c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Adding a Codex plugin no longer asks for anything. `CODEX_HOME` is a path the
+  scanner already resolved, but it was passed on the channel that makes an
+  environment variable a credential — so the integration declared it as one, and
+  a person who reached the connect step was shown a masked field for a value
+  they should never have to know.
+
+  Stdio integrations can now carry non-secret environment as static
+  configuration, separate from declared secrets. The Codex plugins use it: they
+  declare no auth, and their connection is created for them.
+
+- [#1861](https://github.com/UsefulSoftwareCo/executor/pull/1861) [`4d4ad7c`](https://github.com/UsefulSoftwareCo/executor/commit/4d4ad7c1d5690bc13ad37d9cdadf3775e464a3f5) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Stdio MCP servers are kept alive between tool calls**
+
+  Every tool call on a stdio MCP integration used to spawn a fresh child process, run the full MCP handshake, call the one tool, and tear the child down — roughly a second of overhead per call for an `npx`-launched server, on every call. Remote and app-server connections already reused sessions through the connection pool; plain stdio now joins them, with the same five-minute idle window, the same hashed identity key (command, args, cwd, secret env, credential values, owner and connection all separate identities), and the same drop-on-transport-failure semantics. This matches how MCP clients drive stdio servers generally: one long-lived child per session, not one per call.
+
+  A server that genuinely depends on fresh-process semantics can opt out with `spawnPerCall: true` in its stdio config (also accepted by the add-server API). The Codex app-server bridge ignores the opt-out — its approvals are session state, so it must pool.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/config@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/react@1.4.68
+
+## 1.6.4
+
+### Patch Changes
+
+- [#1858](https://github.com/UsefulSoftwareCo/executor/pull/1858) [`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add locally installed OpenAI Codex plugins as one-click integrations: Messages
+  (iMessage/SMS), Chrome, Computer Use, Computer History, and OpenAI Developer
+  Docs. They appear in the connect dialog with their own icons, and a card that
+  cannot run yet says what to install and links to it.
+
+  Tool calls reach the plugins through `codex app-server` rather than a plugin's
+  own MCP server, because their services only honour calls from a Codex host
+  session. Computer Use and Chrome ship no MCP server at all, so their APIs are
+  projected as typed tools — `list_apps`, `click`, `read_page`, `navigate` — that
+  compile to a single call each. No model turn is involved; nothing is bundled or
+  downloaded, and a machine without Codex simply sees the setup steps.
+
+  A plugin's own approval prompt now reaches the caller, and states the terms it
+  carries: a browser prompt that persists for a site says so. Approvals are asked
+  once per session rather than per call.
+
+  Elicitation requests can carry implementation-defined metadata through
+  `FormElicitation` / `UrlElicitation`, and a paused execution reports it. Both
+  fields are optional and additive.
+
+- [#1818](https://github.com/UsefulSoftwareCo/executor/pull/1818) [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84) Thanks [@ramarivera](https://github.com/ramarivera)! - **Rejected MCP OAuth grants now request reconnect without registering a disposable client**
+
+  Remote MCP catalog discovery used the MCP SDK's interactive OAuth fallback when an upstream rejected Executor's stored bearer with `401`. A background refresh cannot finish that browser authorization, but the SDK first fetched OAuth metadata and dynamically registered another client. Executor then preserved the old catalog under a generic degraded health verdict, so clients saw zero or stale tools without a reliable reconnect signal.
+
+  Executor now stops at the authenticated HTTP boundary for OAuth-backed MCP transports. A rejected stored bearer becomes a structured reauthorization result before OAuth discovery or Dynamic Client Registration runs. Catalog refresh still preserves the last authoritative tools, but records the connection as expired with a reconnect-required detail so the UI and API can direct the user through authorization again.
+
+  API-key and unauthenticated MCP transports keep their existing `401` behavior, and ordinary incomplete discovery results remain degraded.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`9dcfaa5`](https://github.com/UsefulSoftwareCo/executor/commit/9dcfaa5ee8ad2ebc17407caf94d8d4dcf55e3562), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/react@1.4.67
+  - @executor-js/api@1.4.67
+  - @executor-js/config@1.6.4
+
+## 1.6.3
+
+### Patch Changes
+
+- [#1815](https://github.com/UsefulSoftwareCo/executor/pull/1815) [`4b0fbf6`](https://github.com/UsefulSoftwareCo/executor/commit/4b0fbf68550516af9235c9267f91a962da993946) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **The add-MCP form stops dialling the server URL while it is still being typed**
+
+  The Server URL field auto-probes the endpoint after a 400ms pause. The only condition on that probe was that the trimmed value was non-empty, so every pause in typing dialled whatever was in the field: "h", "http://", the "a" in "http://a". Each of those probes failed, and the field dropped into a loading state and then an error with a retry button, for a value the user never meant to submit.
+
+  The probe now runs only when the value looks like a finished endpoint: it parses as a URL, its scheme is http or https, and its hostname is either a local development host or has a dot with a label on each side. The debounce is unchanged, so a completed URL is still probed without the user having to submit.
+
+  A probe that is superseded is also no longer allowed to answer. The field could previously report the outcome of a request for a URL that had since been edited, because each probe dispatched its result unconditionally. Editing the URL now invalidates any probe already in flight, and its reply is discarded rather than applied to the current value.
+
+- [#1702](https://github.com/UsefulSoftwareCo/executor/pull/1702) [`ba62f1a`](https://github.com/UsefulSoftwareCo/executor/commit/ba62f1a5d14b7002ba0a4686a9e1ae43bd77f54f) Thanks [@altaywtf](https://github.com/altaywtf)! - Allow MCP integrations to declare a catalog family and group any family with multiple services in the integrations UI.
+
+- [#1595](https://github.com/UsefulSoftwareCo/executor/pull/1595) [`8324e1e`](https://github.com/UsefulSoftwareCo/executor/commit/8324e1eb8b03965050147309f049bdb52be6fcad) Thanks [@GeiserX](https://github.com/GeiserX)! - **Stdio MCP servers no longer inherit executor's full environment**
+
+  A stdio MCP server that declared any `env` at all was spawned with every environment variable this process holds. The MCP SDK already guards against that: it spawns with `{ ...getDefaultEnvironment(), ...serverParams.env }`, where `getDefaultEnvironment()` is a sudo-style safe-list of `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`. Passing `{ ...process.env, ...config.env }` did not add to that safe-list, it overwrote it. In practice, adding one third-party `npx` server went from "this server can see the API key I gave it" to "this server also holds `EXECUTOR_SECRET_KEY`, the key that decrypts every other stored credential, plus `EXECUTOR_AUTH_TOKEN` and `DATABASE_URL`". The leak sat on the `config.env` branch — the branch a credential-bearing integration takes.
+
+  A stdio server now receives the SDK's safe-list, the variables declared on the source config, and one short allowlist of infrastructure variables read from the host: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (both spellings), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `SSL_CERT_DIR`. Those carry no credential, no source config declares them, and a server behind a corporate proxy or an intercepting CA cannot reach anything without them — the same reasoning and the same list `service install` already uses when it bakes a supervised unit's minimal environment. The declared `env` wins on a key collision. On Windows that collision is resolved case-insensitively, because the OS treats `Path` and `PATH` as one variable while a JavaScript spread does not: a declared `http_proxy` now replaces an inherited `HTTP_PROXY` instead of travelling beside it, which would have left the child reading whichever spelling Windows resolved first.
+
+  If a stdio server relied on some other variable arriving from the host, set it explicitly on the source's `env`. That is now the only way anything beyond the lists above reaches a server, and it is the mechanism that already existed for it.
+
+- [#1813](https://github.com/UsefulSoftwareCo/executor/pull/1813) [`6305b6d`](https://github.com/UsefulSoftwareCo/executor/commit/6305b6d11505358fa73ec2b3e768ec4256c36435) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **An MCP tool's reserved `_meta` map survives `tools/list` decoding and reaches the persisted catalog**
+
+  The MCP spec reserves `_meta` on `Tool` for implementation-defined data, and servers use it for host-only routing and policy hints that do not belong in the closed `annotations` set. The plugin decoded each listed tool with a closed struct that did not declare the field, so `_meta` was discarded before the manifest entry was built. A host that embeds the plugin as its MCP client had no way to recover it: no hook exposes the raw `tools/list` result, and `connections.refresh()` answers with already-built tools.
+
+  The listed-tool decode now declares `_meta`, and the manifest entry carries it through. Executor's own `Tool` has no `_meta` field, so `toToolDef` stamps the map into the `mcp` envelope the plugin already persists in each tool row's annotations, next to the real MCP tool name. The stamp schema declares it too, so it is not stripped a second time when a row is read back at invoke time. A host reads it from `annotations.mcp._meta`.
+
+  The map stays opaque. Nothing in the plugin interprets its contents, and it is never merged into anything the model sees. Because it is entirely server-controlled, it is decoded permissively: a `_meta` that is not the spec's map shape is ignored for that tool rather than failing the whole-list decode, which would otherwise drop every tool the server advertises.
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+  - @executor-js/config@1.6.3
+
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/config@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/react@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- [#1747](https://github.com/UsefulSoftwareCo/executor/pull/1747) [`91062c2`](https://github.com/UsefulSoftwareCo/executor/commit/91062c2b1d7b8edbc8470ca5eaa544045652afaa) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Load the MCP client SDK lazily on first outbound connection instead of at module evaluation. Runtimes that bundle the plugin (notably Cloudflare Workers) no longer pay the client package's module-eval memory and CPU on startup or on code paths that never dial an MCP server.
+
+- [#1716](https://github.com/UsefulSoftwareCo/executor/pull/1716) [`9c35f26`](https://github.com/UsefulSoftwareCo/executor/commit/9c35f269dd5de3548111fe5c83cf1e877f23c80d) Thanks [@xav-ie](https://github.com/xav-ie)! - **Closing a remote MCP connection now ends its streamable-http SSE request**
+
+  On a supplied `httpClientLayer`, the fetch adapter wired the caller's `AbortSignal` only to the pending response promise, never to the response body, so closing a connection left the long-lived `GET` channel in flight forever — one abandoned request per dial. Under Bun each holds one of the 256 concurrent-request slots, so a long-running process eventually exhausts the pool and every connection starts failing with `MCP discovery timed out after 15000ms`. The response stream is now interrupted when the signal aborts.
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+  - @executor-js/config@1.6.1
+
+## 1.6.0
+
+### Minor Changes
+
+- [#1733](https://github.com/UsefulSoftwareCo/executor/pull/1733) [`0b0b74f`](https://github.com/UsefulSoftwareCo/executor/commit/0b0b74f673b8098c5248159be36c648097f3c87b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Restore MCP spec 2026-07-28 negotiation for outbound MCP connections. Remote Streamable HTTP connections auto-negotiate the modern protocol era again, stdio servers can opt in per integration, and the negotiated era is recorded on connection handshake traces.
+
+### Patch Changes
+
+- [#1660](https://github.com/UsefulSoftwareCo/executor/pull/1660) [`c11bef2`](https://github.com/UsefulSoftwareCo/executor/commit/c11bef2cd049db7bbf51b15e18761b14acccb534) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Cloudflare ships as MCP-only, with code mode opted out**
+
+  The Cloudflare OpenAPI preset is gone from the default catalog; the MCP preset is the one Cloudflare entry. Its endpoint now pins `?codemode=false` because Cloudflare's MCP server otherwise hides the tool catalog behind a single code-execution tool, and executor already provides the code-execution surface. Hand-entered `mcp.cloudflare.com` URLs missing the opt-out get an inline warning in the add flow telling the user to append `?codemode=false`.
+
+- [#1654](https://github.com/UsefulSoftwareCo/executor/pull/1654) [`256e25e`](https://github.com/UsefulSoftwareCo/executor/commit/256e25e7b291b0c023bc7547d092004b66781bba) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Interrupted stdio dials no longer strand the spawned child process**
+
+  Cancelling an in-flight health check or tool discovery (a UI refresh aborting the request, or the 15s discovery timeout) abandoned the MCP connect handshake without closing the transport, leaving the spawned stdio child running indefinitely: for `docker run -i --rm` integrations, one stranded container per interrupted dial. The connect handshake now aborts on interruption (the SDK closes the transport, ending stdin and escalating to SIGTERM/SIGKILL), and tool discovery closes the connection even when the interrupt lands between the handshake completing and discovery starting.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+  - @executor-js/config@1.6.0
+
 ## 1.5.42
 
 ### Patch Changes

@@ -106,6 +106,32 @@ export interface HostConfigShape {
    * ship none simply omit it.
    */
   readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
+  /**
+   * Forwarded to `ExecutorConfig.enterpriseManagedRollout`: the host's rollout
+   * gate for enterprise-managed authorization (the MCP EMA profile). Declared
+   * here — not per-request — because it is a deployment-wide capability; the
+   * per-connect identity it needs is supplied by the SDK at the call site.
+   * Hosts that operate no feature-flag service omit it, and the profile is
+   * attempted as it was before the gate existed.
+   */
+  readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
+  /**
+   * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
+   * connection's persisted remote tool catalog stays fresh. Omit to take the
+   * SDK default (15 minutes); `null` disables time-based re-sync. Declared
+   * here — not per-request — because catalog freshness is a deployment-wide
+   * operator knob.
+   */
+  readonly toolsSyncTtlMs?: number | null;
+  /**
+   * Forwarded verbatim to `ExecutorConfig.waitUntil`: the host's keep-alive
+   * for background work that outlives a request (stale tool-catalog rebuilds
+   * that keep running after a read stops waiting). Cloud supplies the
+   * platform `waitUntil` from `cloudflare:workers`, which binds to the
+   * in-flight invocation ambiently; long-lived hosts (self-host, local,
+   * tests) omit it and detached fibers simply run to completion in-process.
+   */
+  readonly waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export class HostConfig extends Context.Service<HostConfig, HostConfigShape>()(
@@ -287,10 +313,13 @@ export const makeScopedExecutor = <
       httpClientLayer,
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
+      ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
+      ...(config.waitUntil !== undefined ? { waitUntil: config.waitUntil } : {}),
       onElicitation: "accept-all",
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
+      enterpriseManagedRollout: config.enterpriseManagedRollout,
       coreTools: {
         webBaseUrl,
         orgSlug,

@@ -5,7 +5,8 @@ import { createExecutor, definePlugin } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
-import { createExecutionEngine } from "./engine";
+import { createExecutionEngine, formatExecuteResult, formatPausedExecution } from "./engine";
+import { FormElicitation } from "@executor-js/sdk/core";
 
 // Regression for the hang reported as the executor-MCP "180s timeout" against
 // Cowork (Claude web). Cowork goes down the `executeWithPause` branch because
@@ -97,6 +98,181 @@ describe("pausedExecutionCount", () => {
 
       expect(yield* engine.pausedExecutionCount()).toBe(0);
       expect(yield* engine.hasPausedExecutions()).toBe(false);
+    }),
+  );
+});
+
+describe("formatPausedExecution approval terms", () => {
+  const paused = (request: FormElicitation) =>
+    ({
+      id: "exec_1",
+      elicitationContext: { address: "tools.x.org.default.y", args: {}, request },
+    }) as Parameters<typeof formatPausedExecution>[0];
+
+  it("states the terms an upstream attached to the approval", () => {
+    // An empty schema makes this look like a plain yes/no, but the metadata
+    // says accepting persists for the origin — so the answer differs, and the
+    // caller has to be able to see it.
+    const result = formatPausedExecution(
+      paused(
+        FormElicitation.make({
+          message: "Allow Browser use to access https://example.com?",
+          requestedSchema: {},
+          meta: { persist: "always", origin: "https://example.com" },
+        }),
+      ),
+    );
+
+    expect(result.text).toContain("Approval terms:");
+    expect(result.text).toContain('"persist": "always"');
+    expect((result.structured["interaction"] as { readonly meta?: unknown }).meta).toEqual({
+      persist: "always",
+      origin: "https://example.com",
+    });
+  });
+
+  it("says nothing about terms when the upstream attached none", () => {
+    const result = formatPausedExecution(
+      paused(FormElicitation.make({ message: "Proceed?", requestedSchema: {} })),
+    );
+
+    expect(result.text).not.toContain("Approval terms:");
+    expect((result.structured["interaction"] as Record<string, unknown>)["meta"]).toBeUndefined();
+  });
+});
+
+// Pins the exact preview and structured shapes so the serialization dedupe in
+// the engine cannot drift them: the preview stays pretty-printed (indent 2),
+// truncation keeps its exact suffix, and structured carries the raw value.
+describe("formatExecuteResult output identity", () => {
+  const MAX_PREVIEW_CHARS = 30_000;
+
+  it("renders an object result as pretty-printed JSON and keeps the raw value in structured", () => {
+    const value = { café: "naïve — ✓", emoji: "🎉", nested: { π: 3.14159 } };
+    const formatted = formatExecuteResult({ result: value, logs: [] });
+
+    expect(formatted.text).toBe(JSON.stringify(value, null, 2));
+    expect(formatted.structured).toEqual({ status: "completed", result: value, logs: [] });
+    expect(formatted.structured["result"]).toBe(value);
+    expect(formatted.isError).toBe(false);
+  });
+
+  it("truncates a long preview with the exact suffix and untouched structured value", () => {
+    const value = { data: "é🎉".repeat(12_000) };
+    const pretty = JSON.stringify(value, null, 2);
+    expect(pretty.length).toBeGreaterThan(MAX_PREVIEW_CHARS);
+
+    const formatted = formatExecuteResult({ result: value });
+
+    expect(formatted.text).toBe(
+      `${pretty.slice(0, MAX_PREVIEW_CHARS)}\n... [truncated ${pretty.length - MAX_PREVIEW_CHARS} chars]`,
+    );
+    expect(formatted.structured["result"]).toBe(value);
+  });
+
+  it("returns a string result verbatim", () => {
+    const formatted = formatExecuteResult({ result: "plain — ✓", logs: ["l1", "l2"] });
+
+    expect(formatted.text).toBe("plain — ✓\n\nLogs:\nl1\nl2");
+    expect(formatted.structured).toEqual({
+      status: "completed",
+      result: "plain — ✓",
+      logs: ["l1", "l2"],
+    });
+  });
+
+  it("renders an error result with logs and truncation", () => {
+    const formatted = formatExecuteResult({
+      result: null,
+      error: "boom",
+      errorKind: "tool_error",
+      logs: ["x".repeat(MAX_PREVIEW_CHARS)],
+    });
+
+    const untruncated = `Error: boom\n\nLogs:\n${"x".repeat(MAX_PREVIEW_CHARS)}`;
+    expect(formatted.text).toBe(
+      `${untruncated.slice(0, MAX_PREVIEW_CHARS)}\n... [truncated ${untruncated.length - MAX_PREVIEW_CHARS} chars]`,
+    );
+    expect(formatted.isError).toBe(true);
+    expect(formatted.structured).toEqual({
+      status: "error",
+      error: "boom",
+      logs: ["x".repeat(MAX_PREVIEW_CHARS)],
+    });
+  });
+});
+
+// The result-size span metric walks the whole result value with
+// `JSON.stringify`. A `toJSON` probe inside the fixture counts full walks:
+// every complete stringify of the value visits the probe exactly once.
+describe("execute outcome measurement cost", () => {
+  const instrumented = () => {
+    let walks = 0;
+    const probe = {
+      toJSON: () => {
+        walks += 1;
+        return "probe";
+      },
+    };
+    return { value: { data: [1, 2, 3], probe }, walks: () => walks };
+  };
+
+  const executorFor = (result: ExecuteResult): CodeExecutor<FakeRuntimeError> => ({
+    execute: () => Effect.succeed(result),
+  });
+
+  it.effect("walks the result value once on the pausable path", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const fixture = instrumented();
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: executorFor({ result: fixture.value, logs: [] }),
+      });
+
+      const outcome = yield* engine.executeWithPause("noop");
+
+      expect(outcome.status).toBe("completed");
+      expect(fixture.walks()).toBe(1);
+    }),
+  );
+
+  it.effect("walks the result value once even when autoApprove stamps two spans", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const fixture = instrumented();
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: executorFor({ result: fixture.value, logs: [] }),
+      });
+
+      // autoApprove runs the inline path (inner span annotation) and then
+      // annotates the outer pausable span with the same result.
+      const outcome = yield* engine.executeWithPause("noop", { autoApprove: true });
+
+      expect(outcome.status).toBe("completed");
+      expect(fixture.walks()).toBe(1);
+    }),
+  );
+
+  it.effect("a completed execution plus its preview pays two walks total", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const fixture = instrumented();
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: executorFor({ result: fixture.value, logs: [] }),
+      });
+
+      const outcome = yield* engine.executeWithPause("noop");
+      expect(outcome.status).toBe("completed");
+      if (outcome.status !== "completed") return;
+
+      // One compact walk for the span size metric, one pretty walk for the
+      // preview. They produce different strings (compact vs indent 2), so
+      // neither can be derived from the other.
+      formatExecuteResult(outcome.result);
+      expect(fixture.walks()).toBe(2);
     }),
   );
 });

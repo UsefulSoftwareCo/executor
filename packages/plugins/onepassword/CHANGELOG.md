@@ -1,5 +1,86 @@
 # @executor-js/plugin-onepassword
 
+## 1.6.7
+
+### Patch Changes
+
+- Updated dependencies [[`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322)]:
+  - @executor-js/sdk@1.6.7
+  - @executor-js/api@1.4.70
+  - @executor-js/react@1.4.70
+
+## 1.6.6
+
+### Patch Changes
+
+- Updated dependencies [[`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063)]:
+  - @executor-js/react@1.4.69
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+
+## 1.6.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/api@1.4.68
+  - @executor-js/react@1.4.68
+
+## 1.6.4
+
+### Patch Changes
+
+- [#1860](https://github.com/UsefulSoftwareCo/executor/pull/1860) [`2cad774`](https://github.com/UsefulSoftwareCo/executor/commit/2cad7745dea1afb9282c3888f4e9c59ce6fe4332) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **1Password-backed connections no longer pay a 1Password read on every tool call**
+
+  Each tool call resolves its connection's credential, and for 1Password-backed connections every resolution shelled out to the `op` CLI — roughly a second per call under desktop-app auth, multiplying the latency of every call several times over. The spawn was also synchronous, so one slow resolution (for example `op` waiting on a 1Password approval prompt) blocked the whole local server for every other request, with no timeout on that path.
+
+  Three changes:
+  - Successful resolutions are now served from memory for a short TTL (default 60s, `secretCacheTtlMs`). The cache keys by a fingerprint of the provider config, so editing or removing an account drops all cached secrets at once; not-found, ambiguity, and failure outcomes are never retained. Concurrent resolutions of the same ref share one backend read even with the TTL set to `0`.
+  - The `op` CLI now runs as an asynchronous spawn with a hard deadline (the plugin's existing `timeoutMs`), so a stuck `op` fails with the troubleshooting message instead of freezing the server. Auth reaches the child per spawn (service-account token via the environment, desktop account via `--account`) instead of through the previous backend's process-global token state.
+  - Services are memoized per auth identity, so the SDK fallback reuses one authenticated client instead of re-authenticating per resolution.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`9dcfaa5`](https://github.com/UsefulSoftwareCo/executor/commit/9dcfaa5ee8ad2ebc17407caf94d8d4dcf55e3562), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/react@1.4.67
+  - @executor-js/api@1.4.67
+
+## 1.6.3
+
+### Patch Changes
+
+- Updated dependencies [[`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce), [`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/react@1.4.66
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+
+## 1.6.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/api@1.4.65
+  - @executor-js/react@1.4.65
+
+## 1.6.1
+
+### Patch Changes
+
+- Updated dependencies [[`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb), [`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/react@1.4.64
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+
+## 1.6.0
+
+### Patch Changes
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49), [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/react@1.4.63
+  - @executor-js/api@1.4.63
+
 ## 1.5.42
 
 ### Patch Changes

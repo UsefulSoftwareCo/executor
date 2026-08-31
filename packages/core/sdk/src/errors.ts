@@ -32,7 +32,8 @@ export const isUserActionableError = (value: unknown): value is UserActionableEr
 /* The failure set the SDK surfaces. `execute`'s invoke failures are ported from
  * v1 but re-keyed by `address` (the full `tools.<integration>.<owner>.<connection>.<tool>`
  * handle) instead of an opaque tool id. Storage failures reuse fuma-runtime's
- * `StorageError`/`UniqueViolationError` (`StorageFailure`) — not redefined here. */
+ * `StorageError`/`StorageConnectionError`/`UniqueViolationError`
+ * (`StorageFailure`) — not redefined here. */
 
 // ---------------------------------------------------------------------------
 // Tool lifecycle
@@ -50,10 +51,16 @@ export class ToolNotFoundError extends Schema.TaggedErrorClass<ToolNotFoundError
   {
     address: ToolAddress,
     suggestions: Schema.optional(Schema.Array(ToolAddress)),
+    /** Why the address did not resolve, when something more useful than the
+     *  address is known — a connection that produced no tools, say. Optional:
+     *  an ordinary unknown tool name has nothing to add. */
+    reason: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
-    return `Tool not found: ${this.address}`;
+    return this.reason === undefined
+      ? `Tool not found: ${this.address}`
+      : `Tool not found: ${this.address} — ${this.reason}`;
   }
 }
 
@@ -155,6 +162,26 @@ export class ConnectionNotFoundError extends Schema.TaggedErrorClass<ConnectionN
   }
 }
 
+/** `connections.create` targeted a (owner, integration, name) that already has
+ *  a saved connection. Creating is never a replace: a silent upsert would
+ *  clobber the existing credential reference (and, for pasted values, the
+ *  stored secret itself). Rotate a credential by removing and re-adding the
+ *  connection, or pick a different name. OAuth re-connects go through
+ *  `mintOAuthConnection`, which intentionally re-stamps the same row. */
+export class ConnectionAlreadyExistsError extends Schema.TaggedErrorClass<ConnectionAlreadyExistsError>()(
+  "ConnectionAlreadyExistsError",
+  {
+    owner: Owner,
+    integration: IntegrationSlug,
+    name: ConnectionName,
+  },
+  { httpApiStatus: 409 },
+) {
+  override get message(): string {
+    return `A connection named "${this.name}" already exists for ${this.integration} (${this.owner}). Choose a different name, or remove the existing connection first.`;
+  }
+}
+
 /** A connection create request was rejected before anything was written: the
  *  input is structurally invalid (no credential inputs for a credentialed
  *  template, mixed pasted/external origins, …) or targets owner `user` in a
@@ -195,6 +222,19 @@ export class CredentialResolutionError extends Schema.TaggedErrorClass<Credentia
      *  `invalid_client` (rotated app secret, fleet-wide) surfaced as a vague
      *  "degraded" was only findable by grepping persisted message strings. */
     oauthErrorCode: Schema.optional(Schema.String),
+    /** True when an enterprise identity provider declined to authorize this
+     *  connection under administrator policy. Distinct from `reauthRequired`
+     *  because signing in again cannot help, and — critically — the client must
+     *  NOT offer the ordinary per-server OAuth flow as an alternative route:
+     *  that would let the user walk around the policy the IdP just enforced. */
+    blockedByAdmin: Schema.optional(Schema.Boolean),
+    /** True when the failure is that no usable credential material EXISTS on
+     *  our side (no stored refresh token, an unresolvable provider item, a
+     *  deregistered OAuth client) — nothing was sent upstream and no
+     *  authorization server refused anything. Structural, so health telemetry
+     *  can separate "missing material" from "refresh rejected" without
+     *  reading the message. */
+    credentialMissing: Schema.optional(Schema.Boolean),
   },
 ) {}
 

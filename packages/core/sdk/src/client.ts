@@ -111,6 +111,10 @@ export interface IntegrationPreset {
   readonly endpoint?: string;
   /** Optional icon URL (favicon, logo). */
   readonly icon?: string;
+  /** Image to show when `icon` cannot be resolved on this machine — a preset
+   *  whose icon is read from a local install has none until that install
+   *  exists, which is exactly when the card most needs to identify itself. */
+  readonly fallbackIcon?: string;
   /** Shown in the top-level grid on the integrations page when true. */
   readonly featured?: boolean;
   readonly family?: string;
@@ -120,12 +124,19 @@ export interface IntegrationPreset {
   readonly specOverrides?: readonly unknown[];
   readonly authTemplate?: readonly IntegrationPresetAuthentication[];
   readonly healthCheck?: HealthCheckSpec;
+  /** The public registry lists this product, so the picker shows the
+   *  registry's card instead of a preset card (the preset's knowledge still
+   *  rides quick add). Built-in presets set this; a deployment's custom
+   *  preset does not, and keeps its own card — hiding it would make a
+   *  private API undiscoverable. */
+  readonly registryListed?: boolean;
 }
 
 export type IntegrationPresetAuthentication =
   | {
       readonly slug: string;
       readonly kind: "oauth2";
+      readonly label?: string;
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
       readonly resource?: string | null;
@@ -167,7 +178,18 @@ export interface IntegrationAccountHandoff {
     readonly clientId?: string;
     readonly authorizationUrl?: string;
     readonly tokenUrl?: string;
-    readonly resource?: string;
+    /** RFC 8707 resource indicator. On a reconnect handoff this is the STORED
+     *  client's value, and an EXPLICIT null means the stored client was
+     *  registered WITHOUT a resource indicator — that absence must survive a
+     *  re-registration (some servers reject any `resource` parameter).
+     *  Undefined means no stored value was carried. */
+    readonly resource?: string | null;
+    /** Reconnect only: the stored client binding is an auto-minted DCR client
+     *  (or its row is gone), so the modal may re-run the automatic
+     *  probe/registration flow. Absent or false pins the reconnect to the
+     *  stored client — a static/BYO or first-party binding must never be
+     *  silently rebound to an automatic client. */
+    readonly dynamicRegistration?: boolean;
   };
 }
 
@@ -183,6 +205,34 @@ export interface EditSheetSectionProps {
   readonly onPendingChange?: (apply: (() => Promise<EditSheetApplyResult>) | null) => void;
 }
 
+/** What a registry row already knows about a connect target — enough, for
+ *  some plugins, to register without showing the configuration screen. */
+export interface IntegrationQuickAddInput {
+  /** The connect target: MCP endpoint, OpenAPI spec URL, or GraphQL endpoint. */
+  readonly url: string;
+  /** Display name for the integration ("Stripe MCP", "Outlook Mail API"). */
+  readonly name: string;
+  /** Registry surface slug, used as the namespace seed when present. */
+  readonly slug?: string;
+  /** The registry PRODUCT's domain (notion.com) — the identity credential
+   *  guidance and favicons key on. Often differs from the connect URL's
+   *  host: specs live on code hosts. */
+  readonly domain?: string;
+  /** Registry-declared credential placement, e.g. "Authorization: {api_key}". */
+  readonly authHeader?: string;
+  /** Registry-declared credential kind ("none", "oauth", "api_key", …). */
+  readonly authKind?: string;
+  /** RFC 6902 patch the registry says to apply to the fetched spec. */
+  readonly specOverrides?: readonly unknown[];
+}
+
+export type IntegrationQuickAddResult =
+  /** Registered; `slug` is the created integration's namespace. */
+  | { readonly ok: true; readonly slug: string }
+  /** Could not add headlessly — the host falls back to the configuration
+   *  screen, which renders the failure with full context. */
+  | { readonly ok: false; readonly reason: string };
+
 export interface IntegrationPlugin {
   /** Unique key matching the SDK plugin id (e.g. "openapi"). */
   readonly key: string;
@@ -197,6 +247,21 @@ export interface IntegrationPlugin {
     readonly initialUrl?: string;
     readonly initialPreset?: string;
     readonly initialNamespace?: string;
+    /** Registry-declared credential placement for the surface, e.g.
+     *  "Authorization: {api_key}" — the pattern Linear's no-Bearer personal
+     *  keys need. Plugins whose surfaces can't self-describe auth (GraphQL)
+     *  seed their auth-method editor from it. */
+    readonly initialAuthHeader?: string;
+    readonly initialAuthNote?: string;
+    /** Registry-declared credential kind ("none", "oauth", "api_key", …).
+     *  Lets a flow whose live probe fails, or whose surface can't be probed,
+     *  still declare the right method — an authless MCP server is a fact the
+     *  registry already knows. */
+    readonly initialAuthKind?: string;
+    /** JSON-encoded RFC 6902 patch the registry says to apply to the fetched
+     *  spec — the registry's mechanism for improving a vendor's published
+     *  document over time without hosting a fork. */
+    readonly initialSpecOverrides?: string;
   }>;
   /** Legacy full-page edit surface. No host renders this anymore — plugin
    *  configuration lives in the integration Edit sheet via `editSheet`. */
@@ -229,6 +294,17 @@ export interface IntegrationPlugin {
    *  Call from the host on intent (hover/focus) so the chunks land before the
    *  user navigates into the add page. Idempotent. */
   readonly preload?: () => void;
+  /** Headless one-click add for a registry row whose facts are already known
+   *  (URL + auth indicators). A HOOK, not a plain function, because each
+   *  plugin binds its own mutation atoms — the host mounts one bridge
+   *  component per plugin to collect the bound callbacks. Absent means the
+   *  plugin always needs its configuration screen. A `{ok: false}` result is
+   *  an expected outcome (unreachable server, slug collision), not an error:
+   *  the host falls back to the configuration screen prefilled with the same
+   *  facts. */
+  readonly useQuickAdd?: () => (
+    input: IntegrationQuickAddInput,
+  ) => Promise<IntegrationQuickAddResult>;
 }
 
 // ---------------------------------------------------------------------------

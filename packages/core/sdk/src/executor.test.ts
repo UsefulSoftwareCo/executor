@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Predicate, Result } from "effect";
+import { Data, Effect, Predicate, Result, Scheduler } from "effect";
 
+import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
+import { createExecutor } from "./executor";
+import { StorageError, type FumaDb } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -15,7 +18,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
-import { makeTestExecutor, memoryCredentialsPlugin } from "./testing";
+import { makeTestConfig, makeTestExecutor, memoryCredentialsPlugin } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
@@ -125,17 +128,32 @@ const demoPlugin = definePlugin(() => ({
 const diagnosticsPlugin = definePlugin(() => ({
   id: "diagnostics" as const,
   storage: () => ({}),
-  resolveTools: () =>
+  resolveTools: ({ connection }) =>
     Effect.succeed({
       tools: [],
       incomplete: true,
       incompleteReason: "Schema introspection was rejected",
+      ...(String(connection.integration) === "diagnostics_expired"
+        ? {
+            health: {
+              status: "expired" as const,
+              checkedAt: Date.now(),
+              detail: "Reconnect the upstream OAuth grant",
+            },
+          }
+        : {}),
     }),
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
         slug: IntegrationSlug.make("diagnostics"),
         description: "Diagnostics",
+        config: {},
+      }),
+    seedExpired: () =>
+      ctx.core.integrations.register({
+        slug: IntegrationSlug.make("diagnostics_expired"),
+        description: "Expired diagnostics",
         config: {},
       }),
   }),
@@ -438,7 +456,7 @@ describe("createExecutor", () => {
 
       const listed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.list"),
-        { integration: "diagnostics" },
+        { integration: "diagnostics", verbose: true },
       );
       expect(listed).toMatchObject({
         connections: [
@@ -465,6 +483,44 @@ describe("createExecutor", () => {
         lastHealth: {
           status: "degraded",
           detail: "Tool sync failing: Schema introspection was rejected",
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves actionable health from an incomplete tool catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.diagnostics.seedExpired();
+
+      yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics_expired",
+          template: "none",
+        },
+        { onElicitation: "accept-all" },
+      );
+
+      const refreshed = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.refresh"),
+        {
+          owner: "org",
+          name: "main",
+          integration: "diagnostics_expired",
+        },
+        { onElicitation: "accept-all" },
+      );
+      expect(refreshed).toMatchObject({
+        tools: [],
+        lastHealth: {
+          status: "expired",
+          detail: "Reconnect the upstream OAuth grant",
         },
       });
     }),
@@ -670,6 +726,669 @@ describe("createExecutor", () => {
           String(suggestion).startsWith(`tools.${INTEG}.org.${CONN}.`),
         ),
       ).toBe(true);
+    }),
+  );
+});
+
+describe("muscle memory (observed output shapes)", () => {
+  const provisioned = Effect.fn(function* () {
+    const executor = yield* makeTestExecutor({
+      plugins: [demoPlugin] as const,
+      coreTools: { webBaseUrl: "http://localhost:3000" },
+    });
+    yield* executor.demo.seed();
+    yield* executor.execute(ToolAddress.make("executor.coreTools.connections.create"), {
+      owner: "org",
+      name: String(CONN),
+      integration: String(INTEG),
+      template: String(TEMPLATE),
+      identityLabel: "Demo",
+      from: { provider: "memory", id: "secret-token" },
+    });
+    return executor;
+  });
+
+  it.effect("serves an observed output shape once a schemaless tool has run", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // Cold: `run` declares no output schema, nothing observed yet.
+      const cold = yield* executor.tools.schema(addr("run"));
+      expect(cold?.outputSchema).toBeUndefined();
+      expect(cold?.outputTypeScript).toBeUndefined();
+
+      yield* executor.execute(addr("run"), {});
+
+      // Warm: the live payload `{ ran: "run" }` becomes the served shape,
+      // with provenance marked on the schema.
+      const warm = yield* executor.tools.schema(addr("run"));
+      expect(warm?.outputSchema).toMatchObject({
+        type: "object",
+        properties: { ran: { type: "string" } },
+        required: ["ran"],
+        description: "Observed from 1 live response; fields may be incomplete.",
+      });
+      expect(warm?.outputTypeScript).toContain("ran");
+      expect(warm?.outputTypeScript).not.toBe("unknown");
+    }),
+  );
+
+  it.effect("never overrides a declared output schema with observations", () =>
+    Effect.gen(function* () {
+      const executor = yield* provisioned();
+
+      // `inspect` declares `outputSchema: { $ref: "#/$defs/Owner" }`; running
+      // it observes `{ ran: "inspect" }`, which must not displace the
+      // declared schema.
+      yield* executor.execute(addr("inspect"), { pet: { lives: 9 } });
+      const schema = yield* executor.tools.schema(addr("inspect"));
+      expect(schema?.outputSchema).toEqual({ $ref: "#/$defs/Owner" });
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic tool-call read concurrency. The invoke path runs its independent
+// storage reads concurrently: tool row + policy rules + connection row before
+// approval, then credential resolution + integration row after approval.
+// These tests pin BOTH halves of that contract — the dominant read (tool row;
+// credential resolution) launches first, exactly as the sequential code
+// ordered it, and the speculative reads launch before the dominant one
+// completes on an asynchronous backend — AND the invariants the overlap must
+// not disturb, most importantly that a declined approval never starts
+// credential resolution (which can trigger an upstream token refresh).
+// ---------------------------------------------------------------------------
+
+/** Records the lifecycle of every armed read as an ordered event log:
+ *  `start:<key>` is pushed SYNCHRONOUSLY at the instant the real read is
+ *  invoked — never after an artificial pre-read suspension, which would
+ *  itself manufacture the overlap the probe claims to observe — and
+ *  `end:<key>` is pushed when the read settles. An armed read's COMPLETION
+ *  is deferred by one `setImmediate` tick (its launch is never delayed), so
+ *  the log shows the code's own launch order against a backend that, like
+ *  any real one, does not answer synchronously. The tick is `setImmediate`
+ *  on purpose: the effect scheduler starts plainly-forked children from a
+ *  `setImmediate` queued at fork time, so a completion deferred to the SAME
+ *  FIFO queue is guaranteed to land after those children have launched —
+ *  a timer would race them across event-loop phases. */
+const makeReadOrderRecorder = () => {
+  let targets: ReadonlySet<string> = new Set();
+  const events: string[] = [];
+  const record = <A>(key: string, run: () => Promise<A>): Promise<A> => {
+    if (!targets.has(key)) return run();
+    events.push(`start:${key}`);
+    return run()
+      .then(
+        (result) =>
+          new Promise<A>((resolve) => {
+            setImmediate(() => resolve(result));
+          }),
+      )
+      .finally(() => {
+        events.push(`end:${key}`);
+      });
+  };
+  return {
+    arm: (keys: readonly string[]) => {
+      targets = new Set(keys);
+    },
+    record,
+    /** First occurrence — repeat reads of the same key log later entries. */
+    at: (event: string) => events.indexOf(event),
+    /** Snapshot of the full event log, for failure diagnostics. */
+    log: () => events.slice(),
+  };
+};
+
+/** Wrap a test `FumaDb` so every read runs through the recorder as
+ *  `<table>.<method>`. `withContext` re-wraps so the executor's
+ *  context-bound handles stay recorded. */
+const withRecordedReads = (
+  db: FumaDb,
+  record: <A>(key: string, run: () => Promise<A>) => Promise<A>,
+): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "findFirst" || prop === "findMany") {
+          return (table: unknown, query: unknown) =>
+            record(`${String(table)}.${prop}`, () =>
+              (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+                target,
+                table,
+                query,
+              ),
+            );
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
+const countingProvider = (
+  calls: { count: number },
+  wrapGet?: <A>(run: () => Promise<A>) => Promise<A>,
+) => {
+  const store = new Map<string, string>();
+  const provider: CredentialProvider = {
+    key: ProviderKey.make("memory"),
+    writable: true,
+    get: (id) =>
+      Effect.promise(() => {
+        calls.count++;
+        const run = async () => store.get(String(id)) ?? null;
+        return wrapGet ? wrapGet(run) : run();
+      }),
+    set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+  };
+  return provider;
+};
+
+const invokeConcurrencyPlugin = (provider: CredentialProvider) =>
+  definePlugin(() => ({
+    id: "demo" as const,
+    credentialProviders: [provider],
+    storage: () => ({}),
+    resolveTools: () =>
+      Effect.succeed({ tools: [{ name: ToolName.make("run"), description: "run" }] }),
+    invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+    extension: (ctx) => ({
+      seed: () => ctx.core.integrations.register({ slug: INTEG, description: "Demo", config: {} }),
+    }),
+  }))();
+
+const seedRunConnection = <
+  E extends {
+    readonly demo: { readonly seed: () => Effect.Effect<unknown, unknown> };
+    readonly connections: {
+      readonly create: (input: {
+        owner: "org";
+        name: ConnectionName;
+        integration: IntegrationSlug;
+        template: AuthTemplateSlug;
+        from: { provider: ProviderKey; id: ProviderItemId };
+      }) => Effect.Effect<unknown, unknown>;
+    };
+  },
+>(
+  executor: E,
+) =>
+  Effect.gen(function* () {
+    yield* executor.demo.seed();
+    yield* executor.connections.create({
+      owner: "org",
+      name: CONN,
+      integration: INTEG,
+      template: TEMPLATE,
+      from: {
+        provider: ProviderKey.make("memory"),
+        id: ProviderItemId.make("v"),
+      },
+    });
+  });
+
+/** Run the recorded tool-row invoke once and return the recorder. When
+ *  `maxOps` is set, the execute call runs under that `MaxOpsBeforeYield`
+ *  budget so the run loop's cooperative yield lands at an adversarial
+ *  position instead of the default one. */
+const recordToolRowLaunch = (maxOps?: number) =>
+  Effect.gen(function* () {
+    const recorder = makeReadOrderRecorder();
+    const config = makeTestConfig({ plugins: [demoPlugin] as const });
+    const executor = yield* createExecutor({
+      ...config,
+      db: withRecordedReads(config.db, recorder.record),
+    });
+    yield* seedRunConnection(executor);
+
+    recorder.arm(["tool.findFirst", "tool_policy.findMany", "connection.findFirst"]);
+    const execute = executor.execute(addr("run"), {});
+    const out = yield* maxOps === undefined
+      ? execute
+      : execute.pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, maxOps));
+    expect(out).toEqual({ ran: "run" });
+    return recorder;
+  });
+
+/** Same, for the post-approval half: credential resolution vs the
+ *  integration-row read. */
+const recordCredentialLaunch = (maxOps?: number) =>
+  Effect.gen(function* () {
+    const recorder = makeReadOrderRecorder();
+    const calls = { count: 0 };
+    const provider = countingProvider(calls, (run) => recorder.record("credential.get", run));
+    const config = makeTestConfig({
+      plugins: [invokeConcurrencyPlugin(provider)] as const,
+    });
+    const executor = yield* createExecutor({
+      ...config,
+      db: withRecordedReads(config.db, recorder.record),
+    });
+    yield* seedRunConnection(executor);
+
+    recorder.arm(["credential.get", "integration.findFirst"]);
+    const execute = executor.execute(addr("run"), {});
+    const out = yield* maxOps === undefined
+      ? execute
+      : execute.pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, maxOps));
+    expect(out).toEqual({ ran: "run" });
+    return recorder;
+  });
+
+/** Assert every armed read genuinely ran to completion — `start:` and
+ *  `end:` present for each key — carrying the budget and full event log into
+ *  any failure. Launch ORDER is deliberately not asserted here: under an
+ *  adversarial op budget the child's own cooperative yield can park the
+ *  dominant read's inline launch, letting a speculative read start first.
+ *  That reversal is accepted (see the launch-order comment in executor.ts —
+ *  it costs no wall time on any backend, and the only way to suppress it,
+ *  a fiber-lifetime `PreventSchedulerYield`, provably disables effect
+ *  timeouts across provider code). What must hold at EVERY budget is that
+ *  the call completes correctly and no read is lost or stranded. */
+const expectAllReadsRan = (
+  recorder: ReturnType<typeof makeReadOrderRecorder>,
+  budget: number | undefined,
+  keys: readonly string[],
+) => {
+  const ran = keys.every(
+    (key) => recorder.at(`start:${key}`) >= 0 && recorder.at(`end:${key}`) >= 0,
+  );
+  expect({ budget, ran, log: recorder.log() }).toMatchObject({ budget, ran: true });
+};
+
+// Sweeping low budgets lands the run loop's cooperative yield at every
+// position in the launch window (6 and 8 are where runtime probes reproduced
+// launch-order reversals). Budgets 1 and 2 are excluded because they deadlock
+// the effect run loop itself (a resumed fiber re-yields before evaluating a
+// single operation), independent of this code.
+const ADVERSARIAL_BUDGETS: readonly number[] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
+describe("execute read concurrency", () => {
+  it.effect(
+    "launches the tool-row read first, with the policy and connection reads overlapping it",
+    () =>
+      Effect.gen(function* () {
+        const recorder = yield* recordToolRowLaunch();
+        // The dominant tool-row read launches BEFORE either speculative read
+        // starts — the launch order the sequential code had. An immediate
+        // fork regresses this by running a speculative read inline, ahead of
+        // the tool row, on any backend that answers without suspending.
+        expect(recorder.at("start:tool.findFirst")).toBeGreaterThanOrEqual(0);
+        expect(recorder.at("start:tool.findFirst")).toBeLessThan(
+          recorder.at("start:tool_policy.findMany"),
+        );
+        expect(recorder.at("start:tool.findFirst")).toBeLessThan(
+          recorder.at("start:connection.findFirst"),
+        );
+        // And both speculative reads are in flight before the tool row
+        // completes — genuine overlap, not a serial chain: on this deferred
+        // (asynchronous) backend a sequential ordering would log the tool
+        // row's `end` before either speculative `start`.
+        expect(recorder.at("start:tool_policy.findMany")).toBeLessThan(
+          recorder.at("end:tool.findFirst"),
+        );
+        expect(recorder.at("start:connection.findFirst")).toBeLessThan(
+          recorder.at("end:tool.findFirst"),
+        );
+      }),
+  );
+
+  it.effect(
+    "starts credential resolution first, with the integration-row read overlapping it",
+    () =>
+      Effect.gen(function* () {
+        const recorder = yield* recordCredentialLaunch();
+        // Credential resolution — the dominant work, and the read whose
+        // failure must keep dominating — launches before the speculative
+        // integration-row read starts, which in turn starts before the
+        // credential read completes on this deferred (asynchronous) backend.
+        expect(recorder.at("start:credential.get")).toBeGreaterThanOrEqual(0);
+        expect(recorder.at("start:credential.get")).toBeLessThan(
+          recorder.at("start:integration.findFirst"),
+        );
+        expect(recorder.at("start:integration.findFirst")).toBeLessThan(
+          recorder.at("end:credential.get"),
+        );
+      }),
+  );
+
+  it.effect(
+    "completes with every pre-approval read run at every adversarial scheduler budget",
+    () =>
+      Effect.gen(function* () {
+        for (const budget of ADVERSARIAL_BUDGETS) {
+          const recorder = yield* recordToolRowLaunch(budget);
+          expectAllReadsRan(recorder, budget, [
+            "tool.findFirst",
+            "tool_policy.findMany",
+            "connection.findFirst",
+          ]);
+        }
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "completes with the credential and integration reads run at every adversarial budget",
+    () =>
+      Effect.gen(function* () {
+        for (const budget of ADVERSARIAL_BUDGETS) {
+          const recorder = yield* recordCredentialLaunch(budget);
+          expectAllReadsRan(recorder, budget, ["credential.get", "integration.findFirst"]);
+        }
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect("a declined approval never resolves credentials", () =>
+    Effect.gen(function* () {
+      const calls = { count: 0 };
+      const executor = yield* makeTestExecutor({
+        plugins: [invokeConcurrencyPlugin(countingProvider(calls))] as const,
+      });
+      yield* seedRunConnection(executor);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "demo.*",
+        action: "require_approval",
+      });
+
+      // Setup (connection create / tool sync) may read the credential; only
+      // reads issued by the declined call itself are the regression signal.
+      calls.count = 0;
+      const decliningHandler: ElicitationHandler = () =>
+        Effect.succeed(ElicitationResponse.make({ action: "decline" }));
+      const result = yield* Effect.result(
+        executor.execute(addr("run"), {}, { onElicitation: decliningHandler }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ElicitationDeclinedError")(result.failure)).toBe(true);
+      // The decline happened BEFORE credential resolution started: a token
+      // refresh (a network side effect) must never fire for a declined call.
+      expect(calls.count).toBe(0);
+    }),
+  );
+
+  it.effect("fails with ConnectionNotFoundError when the tool row outlives its connection", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor(config);
+      yield* seedRunConnection(executor);
+
+      // Remove ONLY the connection row, leaving the tool rows behind — the
+      // inconsistent state the ConnectionNotFoundError branch reports. The
+      // concurrent connection read must still surface this error, not a
+      // policy or tool-row failure.
+      yield* Effect.promise(() => config.db.deleteMany("connection", {}));
+
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ConnectionNotFoundError")(result.failure)).toBe(true);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Speculative read abandonment. The concurrent reads above are forked, and a
+// branch that returns without needing one must interrupt it instead of
+// consuming it — so a read that hangs cannot gate an error that never needed
+// it, and a read that fails cannot mask that error or leak as an unhandled
+// rejection. Reads a branch DOES need keep failing exactly where the
+// sequential code failed.
+// ---------------------------------------------------------------------------
+
+/** Deterministic read faults keyed by `<table>.<method>`: nothing is armed
+ *  until the test says so (setup reads pass through untouched), and the test
+ *  can check that an armed read really started before it was abandoned. */
+const makeReadFaults = () => {
+  let hung: ReadonlySet<string> = new Set();
+  let failed: ReadonlyMap<string, string> = new Map();
+  const started = new Set<string>();
+  return {
+    hangReads: (keys: readonly string[]) => {
+      hung = new Set(keys);
+    },
+    failReads: (byCode: Readonly<Record<string, string>>) => {
+      failed = new Map(Object.entries(byCode));
+    },
+    started,
+    fault: (key: string): Promise<never> | undefined => {
+      if (hung.has(key)) {
+        started.add(key);
+        // Never settles. The driver promise takes no abort signal, so an
+        // interrupted read is abandoned exactly like this in production.
+        return new Promise<never>(() => {});
+      }
+      const code = failed.get(key);
+      if (code === undefined) return undefined;
+      started.add(key);
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- boundary: simulate the raw driver-promise rejection that fumaEffect normalizes into a StorageFailure
+      return Promise.reject(Object.assign(new Error(code), { code }));
+    },
+  };
+};
+
+/** Wrap a test `FumaDb` so armed reads hang or reject. Every other read
+ *  passes through, deferred by one `setImmediate` tick — the wrapper is an
+ *  ASYNCHRONOUS backend, because that is where these invariants bite: on a
+ *  backend that answers in microtasks an early-exit branch can finish before
+ *  the plainly-forked speculative reads' scheduler tick, abandoning them
+ *  before they ever issue a read, and the hang the test armed would go
+ *  unexercised. `withContext` re-wraps so context-bound handles stay
+ *  faulted. */
+const withFaultedReads = (
+  db: FumaDb,
+  fault: (key: string) => Promise<never> | undefined,
+): FumaDb => {
+  const wrap = (inner: FumaDb): FumaDb =>
+    new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "withContext") {
+          return (context: unknown) =>
+            wrap((target.withContext as (c: unknown) => FumaDb)(context));
+        }
+        if (prop === "findFirst" || prop === "findMany") {
+          return (table: unknown, query: unknown) =>
+            fault(`${String(table)}.${prop}`) ??
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }).then(() =>
+              (Reflect.get(target, prop) as (t: unknown, q: unknown) => Promise<unknown>).call(
+                target,
+                table,
+                query,
+              ),
+            );
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  return wrap(db);
+};
+
+/** A credential provider that works during setup and can be armed to fail
+ *  every later read — the site-2 "credential resolution fails" input. The
+ *  armed failure lands one `setImmediate` tick later, like the I/O failure a
+ *  real provider produces: an inline failure would exit the call before the
+ *  plainly-forked integration read's scheduler tick, so the read this test
+ *  wants hanging would never start at all. */
+const armableFailingProvider = () => {
+  const store = new Map<string, string>();
+  let failWith: string | undefined;
+  const provider: CredentialProvider = {
+    key: ProviderKey.make("memory"),
+    writable: true,
+    get: (id) =>
+      Effect.suspend(() => {
+        if (failWith === undefined) return Effect.succeed(store.get(String(id)) ?? null);
+        const message = failWith;
+        // Two chained ticks, not one: the credential read launches BEFORE
+        // the speculative integration fork is even scheduled (dominant-first
+        // is structural), so a failure delivered on the very next tick would
+        // interrupt that fork before it ever issued its read. The extra tick
+        // lets the speculative read genuinely start — and hang — first, so
+        // the test exercises "failure surfaces while the read hangs" rather
+        // than "failure surfaces before the read exists".
+        return Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(() => setImmediate(resolve));
+            }),
+        ).pipe(Effect.andThen(Effect.fail(new StorageError({ message, cause: undefined }))));
+      }),
+    set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+  };
+  return {
+    provider,
+    failNow: (message: string) => {
+      failWith = message;
+    },
+  };
+};
+
+describe("speculative read abandonment", () => {
+  it.effect("unknown-tool error surfaces while the speculative reads hang forever", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      // From here on the speculative policy and connection reads NEVER
+      // resolve. The unknown-tool branch needs neither, so the call must
+      // fail without waiting on them — the previous all-or-nothing shape
+      // could not fail until every read settled.
+      faults.hangReads(["tool_policy.findMany", "connection.findFirst"]);
+      const result = yield* Effect.result(executor.execute(addr("no-such-tool"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolNotFoundError")(result.failure)).toBe(true);
+      // Both hung reads really started: the branch abandoned in-flight
+      // reads, it did not skip forking them.
+      expect(faults.started.has("tool_policy.findMany")).toBe(true);
+      expect(faults.started.has("connection.findFirst")).toBe(true);
+    }),
+  );
+
+  it.effect("a blocked tool reports ToolBlockedError while the connection read hangs", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "demo.*",
+        action: "block",
+      });
+
+      // The block branch consumes the policy read but never the connection
+      // read; a connection read that never resolves must not gate it.
+      faults.hangReads(["connection.findFirst"]);
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+      expect(faults.started.has("connection.findFirst")).toBe(true);
+    }),
+  );
+
+  it.effect("failing speculative reads neither mask the branch error nor unhandled-reject", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const result = yield* Effect.gen(function* () {
+        faults.failReads({
+          "tool_policy.findMany": "POLICY_READ_FAILED",
+          "connection.findFirst": "CONNECTION_READ_FAILED",
+        });
+        const out = yield* Effect.result(executor.execute(addr("no-such-tool"), {}));
+        // Both rejections fired before the call returned; give an
+        // unobserved one its macrotask turn to reach the process hook.
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        return out;
+      }).pipe(Effect.ensuring(Effect.sync(() => process.off("unhandledRejection", onUnhandled))));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolNotFoundError")(result.failure)).toBe(true);
+      expect(unhandled).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "a policy read failure on the consuming path surfaces, ahead of a connection failure",
+    () =>
+      Effect.gen(function* () {
+        const faults = makeReadFaults();
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          db: withFaultedReads(config.db, faults.fault),
+        });
+        yield* seedRunConnection(executor);
+
+        faults.failReads({
+          "tool_policy.findMany": "POLICY_READ_FAILED",
+          "connection.findFirst": "CONNECTION_READ_FAILED",
+        });
+        const result = yield* Effect.result(executor.execute(addr("run"), {}));
+        expect(Result.isFailure(result)).toBe(true);
+        if (!Result.isFailure(result)) return;
+        // The policy read is consumed first, exactly as the sequential code
+        // ordered the reads, so its failure is the one reported even though
+        // the connection read failed too.
+        expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+        expect((result.failure as StorageError).message).toContain("POLICY_READ_FAILED");
+      }),
+  );
+
+  it.effect("a credential failure surfaces while the site-2 integration read hangs", () =>
+    Effect.gen(function* () {
+      const faults = makeReadFaults();
+      const armable = armableFailingProvider();
+      const config = makeTestConfig({
+        plugins: [invokeConcurrencyPlugin(armable.provider)] as const,
+      });
+      const executor = yield* createExecutor({
+        ...config,
+        db: withFaultedReads(config.db, faults.fault),
+      });
+      yield* seedRunConnection(executor);
+
+      // After approval, credential resolution and the integration-row read
+      // run concurrently. Resolution fails while the integration read never
+      // resolves: the credential failure must surface without waiting on the
+      // read — the failure path interrupts it instead of joining it.
+      faults.hangReads(["integration.findFirst"]);
+      armable.failNow("CREDENTIAL_READ_FAILED");
+      const result = yield* Effect.result(executor.execute(addr("run"), {}));
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("StorageError")(result.failure)).toBe(true);
+      expect((result.failure as StorageError).message).toBe("CREDENTIAL_READ_FAILED");
+      expect(faults.started.has("integration.findFirst")).toBe(true);
     }),
   );
 });

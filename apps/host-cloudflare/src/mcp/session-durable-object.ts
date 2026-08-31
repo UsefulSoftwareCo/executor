@@ -80,6 +80,18 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     return mcpExecutionOwnerDirectoryFromNamespace(this.cfEnv.MCP_EXECUTION_OWNER);
   }
 
+  protected override supportsCapEviction(): boolean {
+    return true;
+  }
+
+  protected override requestSelfEviction(): Promise<void> {
+    // Routed through this session's OWN stub (never a direct in-process call)
+    // so `requestCapEviction`'s teardown runs under an IoContext scoped to
+    // this request, not whatever request happened to trigger the eviction
+    // check — see the base class's `requestSelfEviction` doc comment.
+    return mcpSessionStub(this.cfEnv.MCP_SESSION, this.sessionId).requestCapEviction();
+  }
+
   protected override forwardModelResumeToOwner(
     owner: McpExecutionOwnerRoute,
     identity: McpApprovalOwner,
@@ -102,9 +114,14 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     return { ...handle, end: () => handle.close() };
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    _storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
     // Single-tenant: every Access principal belongs to the one configured org,
-    // so there is nothing to resolve — stamp the configured org name.
+    // so there is nothing to resolve — stamp the configured org name. Nothing
+    // to reuse from the stored meta either; config is already the cheapest and
+    // freshest source there is.
     return Effect.succeed({
       organizationId: token.organizationId,
       organizationName: this.cfConfig.organizationName,
@@ -113,6 +130,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       resource: token.resource,
       elicitationMode: token.elicitationMode,
       artifactsEnabled: token.artifactsEnabled,
+      searchToolsEnabled: token.searchToolsEnabled,
     } satisfies SessionMeta);
   }
 
@@ -149,6 +167,9 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         // persisted without a value restores to the default, same as a fresh
         // connection whose URL says nothing about `?artifacts=`.
         artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Per-integration search tools are off by default, opt-in per
+        // connection (`?search_tools=true`). Same restore rule as artifacts.
+        searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,

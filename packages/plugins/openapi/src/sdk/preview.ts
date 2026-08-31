@@ -8,10 +8,22 @@ import {
 } from "@executor-js/sdk/core";
 
 import { parse, resolveSpecText, type ParsedDocument } from "./parse";
-import { extract } from "./extract";
+import {
+  extract,
+  streamOutputSchemas,
+  streamPreviewOperations,
+  type StreamedPreviewOperation,
+} from "./extract";
 import { compileToolDefinitions } from "./definitions";
 import { normalizeOpenApiRefs } from "./backing";
+import { OpenApiExtractionError } from "./errors";
 import { DocResolver } from "./openapi-utils";
+import {
+  collectReferencedSchemas,
+  indexSchemas,
+  structuralSplit,
+  type KeepPathItem,
+} from "./split";
 import { HttpMethod, ServerInfo, type ExtractedOperation, type ExtractionResult } from "./types";
 
 // Mutating HTTP methods: mirrors `REQUIRE_APPROVAL` in `./invoke` but kept
@@ -110,6 +122,9 @@ export const HeaderPreset = Schema.Struct({
   headers: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
   /** Which headers should be stored as secrets */
   secretHeaders: Schema.Array(Schema.String),
+  /** Query parameters the strategy sends the secret in (apiKey in=query,
+   *  e.g. Viator's legacy `?apiKey=`). Absent on older stored previews. */
+  secretQueryParams: Schema.optional(Schema.Array(Schema.String)),
 });
 export type HeaderPreset = typeof HeaderPreset.Type;
 
@@ -335,6 +350,7 @@ const buildHeaderPresets = (
 
     const headers: Record<string, string | null> = {};
     const secretHeaders: string[] = [];
+    const secretQueryParams: string[] = [];
     const labelParts: string[] = [];
 
     for (const scheme of resolved) {
@@ -351,8 +367,16 @@ const buildHeaderPresets = (
         headers[headerName] = null;
         secretHeaders.push(headerName);
         labelParts.push(scheme.name);
+      } else if (scheme.type === "apiKey" && Option.getOrElse(scheme.in, () => "") === "query") {
+        secretQueryParams.push(Option.getOrElse(scheme.headerName, () => scheme.name));
+        labelParts.push(`${scheme.name} (query)`);
       } else if (scheme.type === "apiKey") {
-        labelParts.push(`${scheme.name} (${Option.getOrElse(scheme.in, () => "unknown")})`);
+        // Cookie (and unknown) locations are not renderable as a stored
+        // method — auth placements carry header|query — and a cookie scheme
+        // is usually the vendor console's own session, not a mintable
+        // credential. Contributing a label here used to produce a method
+        // with zero placements: an empty, unfillable card in the add flow.
+        continue;
       } else if (scheme.type === "oauth2" || scheme.type === "openIdConnect") {
         return [];
       } else {
@@ -360,21 +384,16 @@ const buildHeaderPresets = (
       }
     }
 
-    if (Object.keys(headers).length === 0 && resolved.length > 0) {
-      return [
-        HeaderPreset.make({
-          label: labelParts.join(" + "),
-          headers: {},
-          secretHeaders: [],
-        }),
-      ];
-    }
+    // A strategy in which nothing is renderable (cookie-only, or an exotic
+    // scheme type) yields no preset rather than an empty one.
+    if (secretHeaders.length === 0 && secretQueryParams.length === 0) return [];
 
     return [
       HeaderPreset.make({
         label: labelParts.join(" + "),
         headers,
         secretHeaders,
+        ...(secretQueryParams.length > 0 ? { secretQueryParams } : {}),
       }),
     ];
   });
@@ -562,6 +581,140 @@ export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (s
     headerPresets: buildHeaderPresets(securitySchemes, authStrategies),
     oauth2Presets: buildOAuth2Presets(securitySchemes),
     healthCheckCandidates: buildPreviewHealthCheckCandidates(doc, result.operations),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming preview (spec-format selections over Graph-sized specs)
+// ---------------------------------------------------------------------------
+
+const streamedCandidate = (op: StreamedPreviewOperation): HealthCheckCandidate => {
+  const method = op.method.toLowerCase();
+  return {
+    operation: op.toolPath,
+    method,
+    requiredArgCount: op.parameters.filter((parameter) => parameter.required).length,
+    destructive: DESTRUCTIVE_METHODS.has(method),
+    summary: op.summary ?? op.description ?? `${method.toUpperCase()} ${op.pathTemplate}`,
+    ...(op.parameters.length > 0 ? { parameters: op.parameters } : {}),
+  };
+};
+
+/**
+ * Streaming twin of `previewSpecText` for spec-format selections (Microsoft
+ * Graph): never parses the document whole. The whole-document parse of the 43MB
+ * Graph source builds a ~300MB tree that kills a 128MB Workers isolate — the
+ * add/update path already streams via `structuralSplit`, and this brings the
+ * preview path onto the same primitive: head + schema-free components parse
+ * small; path-items parse one at a time (through `keepPathItem`, so the preview
+ * matches what registration persists); and only the top-ranked candidates get
+ * their response schema walked, against the transitive `$ref` closure rather
+ * than the full schema map.
+ */
+export const previewSpecTextStreaming = Effect.fn("OpenApi.previewSpecTextStreaming")(function* (
+  specText: string,
+  keepPathItem?: KeepPathItem,
+) {
+  const structure = structuralSplit(specText);
+  if (!structure) {
+    return yield* new OpenApiExtractionError({
+      message:
+        "OpenAPI spec is not in the streamable block-YAML profile (no top-level `paths:` block); cannot stream-preview a spec this large in-band.",
+    });
+  }
+
+  const { head, components, servers, operations } = streamPreviewOperations(
+    structure,
+    keepPathItem,
+  );
+
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: schema-free resolver doc (head + small components, empty paths), read only for `$ref` resolution into components.
+  const resolverDoc = { ...head, paths: {}, components } as unknown as ParsedDocument;
+  const resolver = new DocResolver(resolverDoc);
+  const rawSchemes =
+    components.securitySchemes && typeof components.securitySchemes === "object"
+      ? (components.securitySchemes as Record<string, unknown>)
+      : {};
+  const securitySchemes = extractSecuritySchemes(rawSchemes, resolver);
+
+  const rawSecurity = (Array.isArray(head.security) ? head.security : []) as Array<
+    Record<string, unknown>
+  >;
+  const declaredStrategies = rawSecurity.map((entry) =>
+    AuthStrategy.make({ schemes: Object.keys(entry) }),
+  );
+  const authStrategies =
+    declaredStrategies.length > 0
+      ? declaredStrategies
+      : securitySchemes.map((scheme) => AuthStrategy.make({ schemes: [scheme.name] }));
+
+  // Rank all kept operations, keep candidate metadata for the top slice, and
+  // walk response schemas only for the top survivors — same caps and ranking as
+  // the whole-document path.
+  const ranked = operations
+    .map((op) => ({ operationIndex: op.operationIndex, candidate: streamedCandidate(op) }))
+    .sort((a, b) => compareHealthCheckCandidates(a.candidate, b.candidate))
+    .slice(0, MAX_PREVIEW_CANDIDATES);
+
+  const fieldCandidates = ranked.slice(0, MAX_PREVIEW_RESPONSE_FIELD_CANDIDATES);
+  const outputSchemas = streamOutputSchemas(
+    structure,
+    new Set(fieldCandidates.map((entry) => entry.operationIndex)),
+    keepPathItem,
+  );
+  // Hoisted `$defs` restricted to the transitive `$ref` closure of the walked
+  // output schemas — `projectResponseFields` resolves within this map, and the
+  // closure guarantees every reachable ref is present.
+  const hoistedDefs: Record<string, unknown> = {};
+  for (const [name, schema] of Object.entries(
+    collectReferencedSchemas(structure, indexSchemas(structure), [...outputSchemas.values()]),
+  )) {
+    hoistedDefs[name] = normalizeOpenApiRefs(schema);
+  }
+  const healthCheckCandidates = ranked.map(({ operationIndex, candidate }, index) => {
+    if (index >= MAX_PREVIEW_RESPONSE_FIELD_CANDIDATES) return candidate;
+    const outputSchema = outputSchemas.get(operationIndex);
+    if (outputSchema === undefined) return candidate;
+    const responseFields = projectResponseFields(normalizeOpenApiRefs(outputSchema), hoistedDefs);
+    return responseFields.length > 0 ? { ...candidate, responseFields } : candidate;
+  });
+
+  const info =
+    head.info && typeof head.info === "object" && !Array.isArray(head.info)
+      ? (head.info as Record<string, unknown>)
+      : {};
+  const infoString = (key: string): string | undefined => {
+    const value = info[key];
+    return typeof value === "string" ? value : undefined;
+  };
+
+  const tagSet = new Set<string>();
+  for (const op of operations) {
+    for (const tag of op.tags) tagSet.add(tag);
+  }
+
+  return SpecPreview.make({
+    title: Option.fromNullishOr(infoString("title")),
+    description: Option.fromNullishOr(infoString("description")),
+    version: Option.fromNullishOr(infoString("version")),
+    servers,
+    operationCount: operations.length,
+    operations: operations.map((op) =>
+      PreviewOperation.make({
+        operationId: op.operationId,
+        method: op.method,
+        path: op.pathTemplate,
+        summary: Option.fromNullishOr(op.summary),
+        tags: op.tags,
+        deprecated: op.deprecated,
+      }),
+    ),
+    tags: [...tagSet].sort(),
+    securitySchemes,
+    authStrategies,
+    headerPresets: buildHeaderPresets(securitySchemes, authStrategies),
+    oauth2Presets: buildOAuth2Presets(securitySchemes),
+    healthCheckCandidates,
   });
 });
 

@@ -26,14 +26,24 @@ import { Api, Target } from "../src/services";
 
 const coreApi = composePluginApi([] as const);
 
+/** The deterministic value the gated script returns once approved. Asserting
+ *  the completed response against it byte-for-byte (non-ASCII included) pins
+ *  output fidelity on the autoApprove path — the panel must render exactly
+ *  what the script returned. */
+const approvedPayload = {
+  note: "auto-approved — résultat 完了 ✅",
+  values: [1, 2, 3],
+};
+
 /** Sandbox code that creates a policy through the approval-gated core tool. The
  *  pattern is unique-per-run and matches no real tool, so the rule is inert. */
 const createPolicyCode = (pattern: string) => `
-return await tools.executor.coreTools.policies.create({
+await tools.executor.coreTools.policies.create({
   owner: "user",
   pattern: ${JSON.stringify(pattern)},
   action: "block",
 });
+return ${JSON.stringify(approvedPayload)};
 `;
 
 // Why this was long skipped: `autoApprove: true` came back `"paused"` instead of
@@ -97,6 +107,12 @@ scenario(
       expect(approved.status, "autoApprove runs the gated tool to completion").toBe("completed");
       if (approved.status !== "completed") return; // narrowing only
       expect(approved.isError, "the auto-approved run is not an error").toBe(false);
+      expect(approved.text, "the returned value reaches the panel byte-identical").toBe(
+        JSON.stringify(approvedPayload, null, 2),
+      );
+      expect(approved.structured, "the structured result mirrors the exact returned value").toEqual(
+        { status: "completed", result: approvedPayload, logs: [] },
+      );
 
       const afterApproval = yield* client.policies.list();
       expect(

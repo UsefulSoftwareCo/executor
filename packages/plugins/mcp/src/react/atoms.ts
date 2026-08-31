@@ -22,6 +22,14 @@ export const mcpServerAtom = (slug: IntegrationSlug) =>
 // Mutation atoms
 // ---------------------------------------------------------------------------
 
+/** Locally installed Codex plugins with stdio MCP servers (one-click stdio
+ *  presets). Availability is a filesystem fact that can change while the add
+ *  form is open (e.g. the user installs Codex mid-flow), hence the short TTL. */
+export const codexPluginsAtom = McpClient.query("mcp", "listCodexPlugins", {
+  timeToLive: "15 seconds",
+});
+
+export const checkCodexPluginAccess = McpClient.mutation("mcp", "checkCodexPluginAccess");
 export const probeMcpEndpoint = McpClient.mutation("mcp", "probeEndpoint");
 export const addMcpServer = McpClient.mutation("mcp", "addServer");
 export const removeMcpServer = McpClient.mutation("mcp", "removeServer");

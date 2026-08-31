@@ -1,4 +1,5 @@
-import type { Connection } from "@executor-js/sdk/shared";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import type { Connection, OAuthClientSummary } from "@executor-js/sdk/shared";
 
 import type { OAuthStartPayload } from "./oauth-sign-in";
 
@@ -41,6 +42,108 @@ export function oauthReconnectPayload(connection: Connection): OAuthStartPayload
     template: connection.template,
     identityLabel: connection.identityLabel ?? undefined,
   };
+}
+
+/** The stored OAuth app backing a connection, resolved from the loaded client
+ *  summaries. First-party apps are config-declared and deployment-scoped, so
+ *  they match on slug alone; stored rows are owner-scoped, matched against the
+ *  app's stored owner (a Personal connection may be backed by a shared
+ *  Workspace app). Undefined when the connection is not OAuth or its client
+ *  row is gone (e.g. removed by hand). */
+export function reconnectStoredClient(
+  clients: readonly OAuthClientSummary[],
+  connection: Connection,
+): OAuthClientSummary | undefined {
+  if (connection.oauthClient == null) return undefined;
+  const slug = String(connection.oauthClient);
+  const owner = connection.oauthClientOwner ?? connection.owner;
+  return clients.find(
+    (client) =>
+      String(client.slug) === slug &&
+      (client.origin.kind === "first_party" || client.owner === owner),
+  );
+}
+
+/** Where an OAuth connection's Reconnect goes. */
+export type ReconnectRoute =
+  /** The client summaries have not loaded, so the stored binding is unknown.
+   *  NO route may be chosen yet: guessing "direct" dead-ends an origin-drifted
+   *  DCR client (#1542), and guessing "automatic" would rebind a manual app.
+   *  The caller keeps the action unavailable until the summaries resolve. */
+  | { readonly kind: "unknown" }
+  /** Re-run the automatic probe/CIMD/DCR flow. `stored` is the binding's
+   *  summary — undefined when its row is gone — so the handoff can carry its
+   *  resource. */
+  | { readonly kind: "automatic"; readonly stored: OAuthClientSummary | undefined }
+  /** Start the OAuth flow directly against the stored client. */
+  | { readonly kind: "direct" };
+
+/** Decide the Reconnect route from the STORED client binding.
+ *
+ *  The binding's ORIGIN is what routes, not the method's capability flags:
+ *  - An auto-minted DCR binding re-registers (its whole lifecycle is
+ *    automatic, and the automatic flow can probe the token URL even when the
+ *    method declares no discovery/DCR support). Reusing it directly dead-ends
+ *    once the callback origin drifts (#1542).
+ *  - A manual (static/BYO) or first-party binding keeps the direct
+ *    stored-client path — re-registering would silently rebind the connection
+ *    to an automatic client.
+ *  - A binding whose row is GONE has nothing to start directly against, so it
+ *    re-registers when the method supports the automatic flow at all.
+ *  Pass `clients: undefined` while the summaries are loading: the decision is
+ *  then `"unknown"`, never a guess. */
+export function reconnectRoute(
+  clients: readonly OAuthClientSummary[] | undefined,
+  connection: Connection,
+  methodSupportsAutomatic: boolean,
+): ReconnectRoute {
+  if (clients === undefined) return { kind: "unknown" };
+  const stored = reconnectStoredClient(clients, connection);
+  if (stored !== undefined) {
+    return stored.origin.kind === "dynamic_client_registration"
+      ? { kind: "automatic", stored }
+      : { kind: "direct" };
+  }
+  return methodSupportsAutomatic ? { kind: "automatic", stored: undefined } : { kind: "direct" };
+}
+
+/** Reconnect's view of the client-summaries query:
+ *  - `"ready"` — a current successful load; routing reads these summaries.
+ *  - `"loading"` — the query is in flight (first load, or a retry after a
+ *    failure); the action waits, exactly as before.
+ *  - `"failed"` — the query failed. Stale data from an earlier success NEVER
+ *    routes: a binding changed since that snapshot can misroute (repeat the
+ *    origin-drift dead end, or treat a client absent from the snapshot as
+ *    vanished and rebind it). The menu item surfaces the failure instead of
+ *    sitting silently disabled, and opening the menu retries the query (see
+ *    `retryReconnectClientsOnMenuOpen`). */
+export type ReconnectClientsView =
+  | { readonly kind: "ready"; readonly clients: readonly OAuthClientSummary[] }
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed" };
+
+/** Fold the summaries query into Reconnect's availability. Only a current
+ *  Success is ready — a Failure reads as failed even when it retains a
+ *  `previousSuccess`. A failure that is `waiting` is a retry in flight, so it
+ *  reads as loading, not failed. */
+export function reconnectClientsView(
+  result: AsyncResult.AsyncResult<readonly OAuthClientSummary[], unknown>,
+): ReconnectClientsView {
+  if (AsyncResult.isSuccess(result)) return { kind: "ready", clients: result.value };
+  if (AsyncResult.isFailure(result) && !result.waiting) return { kind: "failed" };
+  return { kind: "loading" };
+}
+
+/** Recovery for the failed view: OPENING the row menu retries the query, so a
+ *  transient listClients error never leaves Reconnect dead for the mounted
+ *  lifetime. Only the failed view refetches — ready and loading views must
+ *  not restart a request that already has data or is already running. */
+export function retryReconnectClientsOnMenuOpen(
+  open: boolean,
+  view: ReconnectClientsView,
+  retry: () => void,
+): void {
+  if (open && view.kind === "failed") retry();
 }
 
 // ---------------------------------------------------------------------------

@@ -22,9 +22,10 @@ import {
   type Owner,
 } from "./ids";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
-import { HealthCheckResult } from "./health-check";
+import { HealthCheckResult, isToolSyncHealth } from "./health-check";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
+import { ToolResult } from "./tool-result";
 
 const schemaToStandard = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<A, I> =>
   Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(schema) as never) as StaticToolSchema<
@@ -88,10 +89,10 @@ const ConnectionsListInput = Schema.Struct({
   verbose: Schema.optional(Schema.Boolean),
 });
 
-/** Lean per-connection shape for list scans. Omits the full `oauthScope`
- *  grant string (a single connection's scope list can run to thousands of
- *  characters and dominates the payload) in favor of `oauthScopeCount`. The
- *  full scope is included only when the caller passes `verbose: true`. */
+/** Lean per-connection shape for list scans. The default projection summarizes
+ *  the full `oauthScope` grant string as `oauthScopeCount` and trims health
+ *  probe diagnostics. Those optional fields are populated only for `verbose:
+ *  true`. */
 const ConnectionListItem = Schema.Struct({
   owner: OwnerSchema,
   name: Schema.String,
@@ -389,8 +390,8 @@ const connectionToOutput = (connection: Connection) => ({
 const oauthScopeCount = (scope: string | null | undefined): number | null =>
   scope == null ? null : scope.split(/\s+/).filter(Boolean).length;
 
-/** Lean projection for `connections.list`. Summarizes `oauthScope` to a count
- *  unless `verbose`, where the full grant string is included too. */
+/** Lean projection for `connections.list`. Summarizes `oauthScope` and health
+ * diagnostics unless `verbose`, where the full grant string is included too. */
 const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   owner: connection.owner,
   name: String(connection.name),
@@ -404,9 +405,39 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
-  lastHealth: connection.lastHealth ?? null,
+  // Keep full probe diagnostics behind the explicit verbose opt-in.
+  lastHealth:
+    connection.lastHealth == null || verbose
+      ? (connection.lastHealth ?? null)
+      : {
+          status: connection.lastHealth.status,
+          ...(connection.lastHealth.identity !== undefined
+            ? { identity: connection.lastHealth.identity }
+            : {}),
+          checkedAt: connection.lastHealth.checkedAt,
+        },
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
+
+/** How long a non-healthy persisted verdict may be served to an agent before
+ *  it is re-verified. Verdicts are sticky — nothing re-probes them between UI
+ *  visits — so without read-time revalidation an agent keeps reporting
+ *  "unhealthy, reconnect" for a connection that recovered long ago (or was
+ *  never really down: invocation auto-refreshes OAuth tokens, so a stale
+ *  "expired" verdict often describes a working connection). The window is
+ *  short so recovery shows on the next read, but bounds repeated lists from
+ *  hammering a genuinely-down upstream. Healthy verdicts are deliberately
+ *  served as-is: they mislead no one into reconnect guidance, and the UI
+ *  owns their background revalidation. */
+const NON_HEALTHY_REVALIDATE_MS = 60 * 1000;
+
+/** Whether an agent read must re-verify a persisted verdict before reporting
+ *  it. Only probe-refutable non-healthy verdicts qualify: `unknown` and
+ *  missing verdicts carry no reconnect implication, and a tool-sync failure
+ *  verdict cannot be refuted by a credential probe (a successful sync clears
+ *  it instead). */
+const needsAgentReadRevalidation = (last: HealthCheckResult | null | undefined): boolean =>
+  (last?.status === "expired" || last?.status === "degraded") && !isToolSyncHealth(last);
 
 const toolToOutput = (toolRow: Tool) => ({
   address: String(toolRow.address),
@@ -593,25 +624,54 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           inputSchema: ConnectionsListInputStd,
           outputSchema: ConnectionsListOutputStd,
           execute: (input: typeof ConnectionsListInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.connections.list({
+            Effect.gen(function* () {
+              const connections = yield* ctx.connections.list({
                 integration:
                   input.integration === undefined
                     ? undefined
                     : IntegrationSlug.make(input.integration),
                 owner: input.owner === undefined ? undefined : (input.owner as Owner),
-              }),
-              (connections) => ({
-                connections: connections.map((connection) =>
+              });
+              // Re-verify sticky non-healthy verdicts before reporting them
+              // (the same probe as the UI's "Check now"). The server owns the
+              // stampede control: `ifStaleMs` caches settled verdicts per
+              // window, and concurrent readers past that gate coalesce onto
+              // one in-flight probe per connection. A grant the AS recorded
+              // dead is never re-probed there — only an explicit reconnect
+              // clears that verdict. Quiet on probe failure: the persisted
+              // verdict is still the best known state, exactly like the UI
+              // surfaces.
+              const revalidated = yield* Effect.forEach(
+                connections,
+                (connection) =>
+                  needsAgentReadRevalidation(connection.lastHealth)
+                    ? ctx.connections
+                        .checkHealth(
+                          {
+                            owner: connection.owner,
+                            integration: connection.integration,
+                            name: connection.name,
+                          },
+                          { ifStaleMs: NON_HEALTHY_REVALIDATE_MS },
+                        )
+                        .pipe(
+                          Effect.map((health) => ({ ...connection, lastHealth: health })),
+                          Effect.catch(() => Effect.succeed(connection)),
+                        )
+                    : Effect.succeed(connection),
+                { concurrency: 4 },
+              );
+              return {
+                connections: revalidated.map((connection) =>
                   connectionToListItem(connection, input.verbose === true),
                 ),
-              }),
-            ),
+              };
+            }),
         }),
         tool({
           name: "connections.create",
           description:
-            'Low-level create or replace for a saved connection from provider item references. For a no-auth integration (public MCP server, public REST API), pass `template: "none"` with no `from`/`inputs` to wire it up directly. For normal API keys/tokens, use `connections.createHandoff` so the user enters the credential in the web UI. OAuth credentials should use `oauth.start`.',
+            'Low-level create for a saved connection from provider item references. Fails if a connection with the same owner, integration, and name already exists (remove it first, or pick a different name). For a no-auth integration (public MCP server, public REST API), pass `template: "none"` with no `from`/`inputs` to wire it up directly. For normal API keys/tokens, use `connections.createHandoff` so the user enters the credential in the web UI. OAuth credentials should use `oauth.start`.',
           inputSchema: ConnectionCreateInputStd,
           outputSchema: ConnectionOutputStd,
           // Creating a connection binds a credential reference and roots a new
@@ -622,9 +682,25 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // approval-gated (the v1 `sources.configure` carried the same guard).
           annotations: { requiresApproval: true },
           execute: (input: typeof ConnectionCreateInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.connections.create(createConnectionInputFromTool(input)),
-              connectionToOutput,
+            ctx.connections.create(createConnectionInputFromTool(input)).pipe(
+              Effect.map(connectionToOutput),
+              // Expected, caller-actionable failures resolve as ToolResult.fail
+              // (the sandbox sees `{ ok: false, error }`); anything else stays
+              // a defect and surfaces as the opaque internal-error generic.
+              Effect.catchTags({
+                ConnectionAlreadyExistsError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "connection_already_exists", message: error.message }),
+                  ),
+                IntegrationNotFoundError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "integration_not_found", message: error.message }),
+                  ),
+                InvalidConnectionInputError: (error) =>
+                  Effect.succeed(
+                    ToolResult.fail({ code: "invalid_connection_input", message: error.message }),
+                  ),
+              }),
             ),
         }),
         tool({

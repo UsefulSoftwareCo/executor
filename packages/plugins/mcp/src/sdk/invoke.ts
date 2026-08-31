@@ -8,7 +8,7 @@
 //      legitimately retain state in that session. The pool keeps one idle
 //      connection per resolved identity and leases it exclusively per invoke;
 //      stdio and callers without a pool remain strictly per-call.
-//   2. Installing a per-invocation `ElicitRequestSchema` handler that bridges
+//   2. Installing a per-invocation `elicitation/create` handler that bridges
 //      MCP's elicit capability into the host's elicit function threaded via
 //      `InvokeToolInput.elicit`.
 //   3. Calling `client.callTool({ name, arguments })`.
@@ -16,12 +16,11 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import {
-  ElicitRequestSchema,
-  ErrorCode,
-  McpError,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { ProtocolError } from "@modelcontextprotocol/client";
+
+// SDK error classes come through the lazy loader; by the time a tool call can
+// fail, the connect path has always loaded the module (see client-module.ts).
+import { mcpClientSdkIfLoaded } from "./client-module";
 
 import {
   ElicitationId,
@@ -64,12 +63,25 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
   ).test(message);
 };
 
-const isUnknownToolCause = (cause: unknown, toolName: string): boolean =>
+const asProtocolError = (cause: unknown): ProtocolError | undefined => {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined) return undefined;
   // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK surfaces JSON-RPC protocol errors as this Error subclass
-  cause instanceof McpError &&
-  (cause.code === ErrorCode.InvalidParams || cause.code === ErrorCode.MethodNotFound) &&
-  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: instanceof narrows to the SDK's McpError, whose message carries the only unknown-tool discriminator the protocol provides
-  isUnknownToolMessage(cause.message, toolName);
+  return cause instanceof sdk.client.ProtocolError ? cause : undefined;
+};
+
+const isUnknownToolCause = (cause: unknown, toolName: string): boolean => {
+  const sdk = mcpClientSdkIfLoaded();
+  const protocolError = asProtocolError(cause);
+  return (
+    sdk !== undefined &&
+    protocolError !== undefined &&
+    (protocolError.code === sdk.client.ProtocolErrorCode.InvalidParams ||
+      protocolError.code === sdk.client.ProtocolErrorCode.MethodNotFound) &&
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message carries the only unknown-tool discriminator the protocol provides
+    isUnknownToolMessage(protocolError.message, toolName)
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Elicitation bridge — decode incoming MCP ElicitRequest, route through
@@ -83,31 +95,69 @@ const McpElicitParams = Schema.Union([
     url: Schema.String,
     elicitationId: Schema.optional(Schema.String),
     id: Schema.optional(Schema.String),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
   Schema.Struct({
     mode: Schema.optional(Schema.Literal("form")),
     message: Schema.String,
     requestedSchema: Schema.Record(Schema.String, Schema.Unknown),
+    _meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
 ]);
 type McpElicitParams = typeof McpElicitParams.Type;
 
 const decodeElicitParams = Schema.decodeUnknownSync(McpElicitParams);
+const decodeElicitContent = Schema.decodeUnknownSync(
+  Schema.Record(
+    Schema.String,
+    Schema.Union([
+      Schema.String,
+      Schema.Number,
+      Schema.Boolean,
+      Schema.mutable(Schema.Array(Schema.String)),
+    ]),
+  ),
+);
 
-const toElicitationRequest = (params: McpElicitParams): ElicitationRequest =>
-  params.mode === "url"
+/** The `_meta` keys that describe the TERMS of an approval, and nothing else.
+ *
+ *  `_meta` is an open, implementation-defined map: servers put progress
+ *  tokens, internal ids, and their own opaque state in it. A host that renders
+ *  all of it as "approval terms" both misleads (none of that is a term the
+ *  user is agreeing to) and risks surfacing something private. So this
+ *  projects the known consent vocabulary and drops the rest — an unknown
+ *  server contributes nothing rather than noise. */
+export const APPROVAL_TERM_KEYS = ["persist", "origin", "connector_name", "connector_id"] as const;
+
+export const approvalTerms = (meta: Record<string, unknown> | undefined) => {
+  if (meta === undefined) return {};
+  const terms = Object.fromEntries(
+    APPROVAL_TERM_KEYS.flatMap((key) => {
+      const value = meta[key];
+      return typeof value === "string" ? [[key, value] as const] : [];
+    }),
+  );
+  return Object.keys(terms).length > 0 ? { meta: terms } : {};
+};
+
+const toElicitationRequest = (params: McpElicitParams): ElicitationRequest => {
+  const meta = approvalTerms(params._meta);
+  return params.mode === "url"
     ? UrlElicitation.make({
         message: params.message,
         url: params.url,
         elicitationId: ElicitationId.make(params.elicitationId ?? params.id ?? ""),
+        ...meta,
       })
     : FormElicitation.make({
         message: params.message,
         requestedSchema: params.requestedSchema,
+        ...meta,
       });
+};
 
 const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
-  client.setRequestHandler(ElicitRequestSchema, async (request: { params: unknown }) => {
+  client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {
     const params = decodeElicitParams(request.params);
     const req = toElicitationRequest(params);
     // Use runPromiseExit so we can inspect typed failures — `elicit`
@@ -119,7 +169,9 @@ const installElicitationHandler = (client: McpConnection["client"], elicit: Elic
       const response = exit.value;
       return {
         action: response.action,
-        ...(response.action === "accept" && response.content ? { content: response.content } : {}),
+        ...(response.action === "accept" && response.content
+          ? { content: decodeElicitContent(response.content) }
+          : {}),
       };
     }
     const failure = exit.cause.reasons.find(Cause.isFailReason);
@@ -149,7 +201,7 @@ const installToolListChangedHandler = (
   onToolListChanged: (() => void) | undefined,
 ): void => {
   if (!onToolListChanged) return;
-  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+  client.setNotificationHandler("notifications/tools/list_changed", () => {
     onToolListChanged();
   });
 };
@@ -189,8 +241,7 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        // oxlint-disable-next-line executor/no-instanceof-tagged-error -- boundary: MCP SDK protocol failures are its McpError subclass; transport failures use other error shapes
-        const protocolFailure = cause instanceof McpError;
+        const protocolFailure = asProtocolError(cause) !== undefined;
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,

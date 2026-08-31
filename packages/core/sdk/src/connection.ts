@@ -31,11 +31,11 @@ export interface Connection {
   /** Callable handle `tools.<integration>.<owner>.<connection>`. Append `.<tool>`
    *  to reach one of its tools. */
   readonly address: ConnectionAddress;
-  /** Optional human label (which account). Not load-bearing. */
+  /** Optional human label (which account). Not load-bearing for routing, but
+   *  agent-visible through `connections.list`. */
   readonly identityLabel?: string | null;
-  /** User-curated description of what this connection is for. Agent-visible:
-   *  surfaces next to the connection's prefix in the execute-tool inventory
-   *  and in `connections.list`, so it is the place to give agents context a
+  /** User-curated description of what this connection is for. Agent-visible
+   *  through `connections.list`, so it is the place to give agents context a
    *  spec can't (e.g. "the staging CRM — reads only"). */
   readonly description?: string | null;
   /** Epoch ms when an OAuth access token expires; null/absent for static creds. */

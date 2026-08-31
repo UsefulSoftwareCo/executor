@@ -36,8 +36,20 @@ const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
 
 /** The revalidation query: a healthy (but stale) verdict defers to the
  *  server-enforced window so N open tabs can't stampede the upstream; a
- *  missing or non-healthy verdict forces a fresh probe. */
-const revalidateQuery = (
+ *  missing or non-healthy verdict forces a fresh probe.
+ *
+ *  A non-healthy verdict deliberately sends NO window. Suppressing its probe
+ *  would suppress the only thing that can discover recovery: the verdict is
+ *  persisted, so a gated request would answer "still expired" from the row
+ *  the previous probe wrote, and the dot could not turn green until the window
+ *  elapsed. Recovery visibility is the contract these surfaces are built on
+ *  (see the health-checks-ui, graphql-introspection-health and
+ *  mcp-oauth-reconnect-health scenarios), so the upstream cost of re-probing a
+ *  broken connection is paid on purpose. What must NOT happen — one broken
+ *  connection raising a server error on every probe — is fixed where it
+ *  belongs, in the server folding a credential-resolution failure into a
+ *  persisted verdict rather than into the failure channel. */
+export const revalidateQuery = (
   last: HealthCheckResult | null | undefined,
 ): { readonly ifStaleMs?: number } =>
   last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};

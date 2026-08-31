@@ -4,6 +4,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { createExecutor, IntegrationSlug } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 import { openApiPlugin, parse } from "@executor-js/plugin-openapi";
+import { resolveSpecFormatAdapter } from "../../sdk/spec-format";
 import type { AuthenticationInput } from "@executor-js/plugin-openapi";
 
 import { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-format-adapter";
@@ -288,5 +289,32 @@ it.effect("preserves a Google preset's full consumer consent boundary when refre
     expect(oauthTemplate?.kind === "oauth2" ? oauthTemplate.scopes : undefined).toEqual(
       expect.arrayContaining([GMAIL_FULL_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]),
     );
+  }),
+);
+
+it.effect("a hand-pasted Discovery URL selects the adapter without a preset", () =>
+  Effect.gen(function* () {
+    const detected = yield* resolveSpecFormatAdapter(
+      [googleDiscoveryAdapter],
+      undefined,
+      GMAIL_URL,
+    );
+    expect(detected?.id).toBe("google-discovery");
+
+    const plainOpenApi = yield* resolveSpecFormatAdapter(
+      [googleDiscoveryAdapter],
+      undefined,
+      "https://api.example.com/openapi.json",
+    );
+    expect(plainOpenApi).toBeNull();
+
+    // An explicit format id still wins over detection, and an unknown one
+    // still fails rather than silently falling back.
+    const explicit = yield* resolveSpecFormatAdapter(
+      [googleDiscoveryAdapter],
+      "google-discovery",
+      "https://api.example.com/openapi.json",
+    );
+    expect(explicit?.id).toBe("google-discovery");
   }),
 );

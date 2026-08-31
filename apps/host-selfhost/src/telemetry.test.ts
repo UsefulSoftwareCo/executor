@@ -1,6 +1,6 @@
 import { expect, test } from "@effect/vitest";
 import { FetchHttpClient } from "effect/unstable/http";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Layer } from "effect";
 
 import { makeTelemetryLive } from "./telemetry";
 
@@ -84,6 +84,101 @@ test("log export needs its own endpoint when only traces is configured", async (
     { log: true },
   );
   expect(urls).toEqual(["http://collector.test/v1/traces"]);
+});
+
+// The self-host exporter is its own path to the wire — no cloud span processor
+// runs here — so the credential scrub is asserted on the serialized OTLP
+// payload the collector actually receives.
+test("the exported payload carries no query values, userinfo, or fragments", async () => {
+  const SECRET = "synthetic-selfhost-canary";
+  const seen: Array<Request> = [];
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      // A span whose URL attributes carry every credential shape at once.
+      yield* Effect.void.pipe(
+        Effect.withSpan("canary.request", {
+          attributes: {
+            "url.full": `https://svc:${SECRET}-userinfo@api.test/graphql?owner=${SECRET}-query#access_token=${SECRET}-fragment`,
+            "url.query": `owner=${SECRET}-query`,
+            "error.message": `request to https://api.test/graphql?key=${SECRET}-text failed`,
+          },
+        }),
+      );
+      // A failed span: the error message (with its raw URL) becomes the
+      // exported status message and exception event.
+      yield* Effect.fail(
+        `Transport: fetch failed (GET https://u:${SECRET}-err@api.test/graphql?key=${SECRET}-errq)`,
+      ).pipe(Effect.withSpan("canary.failure"), Effect.exit);
+    }).pipe(
+      Effect.provide(
+        makeTelemetryLive({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.test" }).pipe(
+          Layer.provide(
+            stubFetch((request) => {
+              seen.push(request);
+              return new Response(null, { status: 200 });
+            }),
+          ),
+        ),
+      ),
+      Effect.scoped,
+    ),
+  );
+
+  const body = await seen[0]?.text();
+  expect(body).toBeDefined();
+  // Non-vacuous: both spans made it onto the wire with their host and path.
+  expect(body).toContain("canary.request");
+  expect(body).toContain("canary.failure");
+  expect(body).toContain("/graphql");
+  expect(body).not.toContain(SECRET);
+  // No exported url.full keeps a query string.
+  expect(body).not.toContain("graphql?");
+});
+
+// Logs are their own OTLP signal with their own serialization path: the
+// OtlpLogger exports `Cause.pretty` output and every log annotation, and the
+// server logs OAuth callback failure causes whose error messages embed the raw
+// URL. The scrub is asserted on the logs payload the collector receives.
+test("the exported logs payload carries no credential-bearing URLs", async () => {
+  const SECRET = "synthetic-selfhost-log-canary";
+  const seen: Array<Request> = [];
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Effect.logError(
+        "oauth callback failed",
+        Cause.fail(
+          `Transport: fetch failed (GET https://u:${SECRET}-userinfo@api.test/api/oauth/callback?code=${SECRET}-code)`,
+        ),
+      ).pipe(
+        Effect.annotateLogs(
+          "request.url",
+          `https://api.test/api/oauth/callback?code=${SECRET}-annotation`,
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        makeTelemetryLive({
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.test",
+          EXECUTOR_OTEL_EXPORT_LOGS: "true",
+        }).pipe(
+          Layer.provide(
+            stubFetch((request) => {
+              seen.push(request);
+              return new Response(null, { status: 200 });
+            }),
+          ),
+        ),
+      ),
+      Effect.scoped,
+    ),
+  );
+
+  const body = await seen.find((request) => request.url.endsWith("/v1/logs"))?.text();
+  expect(body).toBeDefined();
+  // Non-vacuous: the record, its cause, and the scrubbed URL are on the wire.
+  expect(body).toContain("oauth callback failed");
+  expect(body).toContain("/api/oauth/callback");
+  expect(body).not.toContain(SECRET);
 });
 
 // --- helpers ---------------------------------------------------------------

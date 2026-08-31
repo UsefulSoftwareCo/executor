@@ -1,5 +1,61 @@
 # @executor-js/analytics
 
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.7
+
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [[`21119da`](https://github.com/UsefulSoftwareCo/executor/commit/21119da662d2d225b033b3532e1f17d97311a39d)]:
+  - @executor-js/execution@1.6.6
+
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.5
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.4
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.3
+
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.2
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [[`62748e8`](https://github.com/UsefulSoftwareCo/executor/commit/62748e86122b747226c76c2e112c5c4d2b4f7095), [`d4afe0c`](https://github.com/UsefulSoftwareCo/executor/commit/d4afe0c79f146dd169a00988a2d5d0469297be19)]:
+  - @executor-js/execution@1.6.1
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.0
+
 ## 0.1.6
 
 ### Patch Changes

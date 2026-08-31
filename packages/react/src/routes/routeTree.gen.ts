@@ -19,6 +19,7 @@ import { Route as DotArtifactsRouteImport } from './artifacts'
 import { Route as DotActivityRouteImport } from './activity'
 import { Route as DotToolkitsDottoolkitSlugRouteImport } from './toolkits.$toolkitSlug'
 import { Route as DotResumeDotexecutionIdRouteImport } from './resume.$executionId'
+import { Route as DotIntegrationsDotbrowseRouteImport } from './integrations.browse'
 import { Route as DotIntegrationsDotnamespaceRouteImport } from './integrations.$namespace'
 import { Route as DotConnectDotintegrationSlugRouteImport } from './connect.$integrationSlug'
 import { Route as DotArtifactsDotartifactIdRouteImport } from './artifacts.$artifactId'
@@ -76,6 +77,12 @@ const DotResumeDotexecutionIdRoute = DotResumeDotexecutionIdRouteImport.update({
   path: '/{-$orgSlug}/resume/$executionId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotIntegrationsDotbrowseRoute =
+  DotIntegrationsDotbrowseRouteImport.update({
+    id: '/{-$orgSlug}/integrations/browse',
+    path: '/{-$orgSlug}/integrations/browse',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const DotIntegrationsDotnamespaceRoute =
   DotIntegrationsDotnamespaceRouteImport.update({
     id: '/{-$orgSlug}/integrations/$namespace',
@@ -119,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/artifacts/$artifactId': typeof DotArtifactsDotartifactIdRoute
   '/{-$orgSlug}/connect/$integrationSlug': typeof DotConnectDotintegrationSlugRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
+  '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
@@ -136,6 +144,7 @@ export interface FileRoutesByTo {
   '/{-$orgSlug}/artifacts/$artifactId': typeof DotArtifactsDotartifactIdRoute
   '/{-$orgSlug}/connect/$integrationSlug': typeof DotConnectDotintegrationSlugRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
+  '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
@@ -154,6 +163,7 @@ export interface FileRoutesById {
   '/{-$orgSlug}/artifacts/$artifactId': typeof DotArtifactsDotartifactIdRoute
   '/{-$orgSlug}/connect/$integrationSlug': typeof DotConnectDotintegrationSlugRoute
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
+  '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
@@ -173,6 +183,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/artifacts/$artifactId'
     | '/{-$orgSlug}/connect/$integrationSlug'
     | '/{-$orgSlug}/integrations/$namespace'
+    | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
@@ -190,6 +201,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/artifacts/$artifactId'
     | '/{-$orgSlug}/connect/$integrationSlug'
     | '/{-$orgSlug}/integrations/$namespace'
+    | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
@@ -207,6 +219,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/artifacts/$artifactId'
     | '/{-$orgSlug}/connect/$integrationSlug'
     | '/{-$orgSlug}/integrations/$namespace'
+    | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
@@ -224,6 +237,7 @@ export interface RootRouteChildren {
   DotIndexRoute: typeof DotIndexRoute
   DotConnectDotintegrationSlugRoute: typeof DotConnectDotintegrationSlugRoute
   DotIntegrationsDotnamespaceRoute: typeof DotIntegrationsDotnamespaceRoute
+  DotIntegrationsDotbrowseRoute: typeof DotIntegrationsDotbrowseRoute
   DotResumeDotexecutionIdRoute: typeof DotResumeDotexecutionIdRoute
   DotIntegrationsDotaddDotpluginKeyRoute: typeof DotIntegrationsDotaddDotpluginKeyRoute
   DotPluginsDotpluginIdDotsplatRoute: typeof DotPluginsDotpluginIdDotsplatRoute
@@ -301,6 +315,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotResumeDotexecutionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/{-$orgSlug}/integrations/browse': {
+      id: '/{-$orgSlug}/integrations/browse'
+      path: '/{-$orgSlug}/integrations/browse'
+      fullPath: '/{-$orgSlug}/integrations/browse'
+      preLoaderRoute: typeof DotIntegrationsDotbrowseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/{-$orgSlug}/integrations/$namespace': {
       id: '/{-$orgSlug}/integrations/$namespace'
       path: '/{-$orgSlug}/integrations/$namespace'
@@ -374,6 +395,7 @@ const rootRouteChildren: RootRouteChildren = {
   DotIndexRoute: DotIndexRoute,
   DotConnectDotintegrationSlugRoute: DotConnectDotintegrationSlugRoute,
   DotIntegrationsDotnamespaceRoute: DotIntegrationsDotnamespaceRoute,
+  DotIntegrationsDotbrowseRoute: DotIntegrationsDotbrowseRoute,
   DotResumeDotexecutionIdRoute: DotResumeDotexecutionIdRoute,
   DotIntegrationsDotaddDotpluginKeyRoute:
     DotIntegrationsDotaddDotpluginKeyRoute,

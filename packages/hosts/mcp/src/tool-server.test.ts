@@ -56,6 +56,8 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   pausedExecutionCount: () => Effect.succeed(0),
   hasPausedExecutions: () => Effect.succeed(false),
   getDescription: Effect.succeed(overrides.description ?? "test executor"),
+  // The fake forks nothing, so there is no sandbox fiber to end.
+  shutdown: Effect.void,
 });
 
 type TestServerConfig<E extends Cause.YieldableError> = Pick<
@@ -1807,6 +1809,19 @@ describe("MCP host server — skills tool", () => {
     });
   });
 
+  // pi and other hosts that ship no skill tool of their own read
+  // `executor_skills` as the general skill reader they are missing, so the
+  // description has to scope itself to this server before a model tries to
+  // read a SKILL.md through it.
+  it("scopes the skills tool description to this server's own docs", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      const description = tools.find((t) => t.name === "skills")?.description ?? "";
+      expect(description).toContain("Not a general skill reader");
+      expect(description).toContain("SKILL.md");
+    });
+  });
+
   it("returns the execute skill body by name", async () => {
     await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
       const result = await client.callTool({
@@ -1866,6 +1881,9 @@ describe("MCP host server — skills tool", () => {
       });
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('No skill named "nope"');
+      // The miss is where a model that asked for an outside skill lands, so the
+      // note names the boundary instead of only reporting the bad name.
+      expect(textOf(result)).toContain("only Executor's own docs");
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
     });
@@ -1953,5 +1971,66 @@ describe("MCP host server — hang-visibility tracing", () => {
         },
       },
     );
+  });
+});
+
+// Pins that formatting a completed execution for MCP walks the result value
+// exactly once (`formatExecuteResult`'s pretty print), with or without emit()
+// output — the with-output and without-output branches are alternatives, never
+// stacked. A `toJSON` probe counts full `JSON.stringify` walks of the value.
+describe("formatMcpExecutionOutcome serialization cost", () => {
+  const instrumented = () => {
+    let walks = 0;
+    const probe = {
+      toJSON: () => {
+        walks += 1;
+        return "probe";
+      },
+    };
+    return { value: { data: [1, 2, 3], probe }, walks: () => walks };
+  };
+
+  it("stringifies the result value once for a plain completed outcome", () => {
+    const fixture = instrumented();
+    const outcome: ExecutionResult = {
+      status: "completed",
+      result: { result: fixture.value, logs: [] },
+    };
+
+    const result = formatMcpExecutionOutcome(outcome);
+
+    expect(fixture.walks()).toBe(1);
+    const first = result.content[0];
+    expectDefined(first);
+    expect(first).toEqual({
+      type: "text",
+      text: JSON.stringify(fixture.value, null, 2),
+    });
+    expectDefined(result.structuredContent);
+    expect(result.structuredContent["result"]).toBe(fixture.value);
+    // The identity probe above walked the value once more; discount it.
+    expect(fixture.walks()).toBe(2);
+  });
+
+  it("stringifies the result value once when emit() output is present", () => {
+    const fixture = instrumented();
+    const outcome: ExecutionResult = {
+      status: "completed",
+      result: {
+        result: fixture.value,
+        logs: [],
+        output: [{ type: "content", content: { type: "text", text: "emitted" } }],
+      },
+    };
+
+    const result = formatMcpExecutionOutcome(outcome);
+
+    expect(fixture.walks()).toBe(1);
+    expect(result.content[0]).toEqual({ type: "text", text: "emitted" });
+    const returned = result.content[1];
+    expectDefined(returned);
+    expect(returned.type).toBe("text");
+    if (returned.type !== "text") return;
+    expect(returned.text).toContain('"data"');
   });
 });

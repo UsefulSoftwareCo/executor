@@ -31,16 +31,27 @@ type Owner = "org" | "user";
 
 export interface AnalyticsEvents {
   // ── Integrations ─────────────────────────────────────────────────────────
-  integration_connect_dialog_opened: {};
+  /** The full-page picker was opened. Replaces the connect dialog, whose
+   *  `integration_connect_dialog_opened` this supersedes — keep both readable
+   *  in dashboards spanning the change. */
+  integration_browse_opened: { via: "header" | "empty-state" | "sidebar" };
   integration_detect_submitted: {
     success: boolean;
     detected_kind?: string;
     confidence?: string;
   };
+  /** Thumbs on the AI-generated credential guidance panel — the accuracy
+   *  signal for the registry's machine-written setup text. */
+  credential_guidance_rated: {
+    domain: string;
+    credential_label: string;
+    vote: "up" | "down";
+  };
   integration_add_started: {
     plugin_key: string;
-    via: "detect" | "manual" | "preset" | "command_palette";
+    via: "detect" | "manual" | "preset" | "command_palette" | "catalog";
     preset_id?: string;
+    catalog_domain?: string;
   };
   integration_added: { plugin_key: string; integration_slug?: string };
   integration_add_cancelled: { plugin_key: string };
@@ -157,6 +168,7 @@ export interface AnalyticsEvents {
   mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
   mcp_install_artifacts_toggled: { artifacts: boolean };
+  mcp_install_search_tools_toggled: { search_tools: boolean };
 
   // ── Command palette ──────────────────────────────────────────────────────
   command_palette_navigated: {

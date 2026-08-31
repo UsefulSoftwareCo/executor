@@ -26,6 +26,7 @@ const ProviderParams = { key: ProviderKey };
 const ProviderEntryResponse = Schema.Struct({
   id: ProviderItemId,
   name: Schema.String,
+  group: Schema.optional(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

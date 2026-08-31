@@ -11,7 +11,37 @@ export class UniqueViolationError extends Data.TaggedError("UniqueViolationError
   readonly model?: string;
 }> {}
 
-export type StorageFailure = StorageError | UniqueViolationError;
+/**
+ * The database connection itself failed — the statement never got a verdict.
+ * Distinct from `StorageError` (a query the backend answered with an error)
+ * because the two need different responses: a connection fault is either a
+ * transient socket loss worth retrying on a FRESH pool, or a pool-lifetime
+ * bug that must stay loud.
+ *
+ * `retryable` says which. It is a property of the fault, not a policy:
+ *   - `true` — the socket died underneath a live pool, or was never
+ *     established because the backend was unreachable (`CONNECTION_CLOSED`,
+ *     `CONNECT_TIMEOUT`, `ECONNREFUSED`, `ECONNRESET`). Reconnecting can
+ *     succeed.
+ *   - `false` — the pool was already torn down or the socket belongs to a
+ *     different request context (`CONNECTION_ENDED`, `CONNECTION_DESTROYED`,
+ *     the workerd cross-request I/O rejection). Retrying is futile by
+ *     construction — postgres.js rejects every query once `end()` has been
+ *     called — so these must surface rather than be papered over.
+ *
+ * No retry consumes this yet; classification lands first so the retry seam
+ * (and the request-scope fix behind these faults) can be designed against a
+ * typed signal instead of driver strings.
+ */
+export class StorageConnectionError extends Data.TaggedError("StorageConnectionError")<{
+  readonly message: string;
+  readonly label: string;
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly cause: unknown;
+}> {}
+
+export type StorageFailure = StorageError | StorageConnectionError | UniqueViolationError;
 
 export type FumaTables = Record<string, AnyTable>;
 type EmptyFumaSchema = FumaSchema<"latest", Record<never, never>>;
@@ -57,23 +87,112 @@ const isUniqueViolation = (cause: unknown): boolean => {
   return false;
 };
 
-const causeMessage = (cause: unknown): string | undefined => {
-  const message =
-    cause && typeof cause === "object"
-      ? // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: preserve database driver error text inside typed StorageError
-        (cause as Record<string, unknown>)["message"]
-      : undefined;
-  return typeof message === "string" && message.length > 0 ? message : undefined;
+/**
+ * postgres.js raises connection faults through `Errors.connection(code, …)`,
+ * which puts the code on `error.code` (see `postgres/src/errors.js`). Workerd's
+ * cross-request I/O rejection is a plain `Error` with no code, so it is matched
+ * on its fixed runtime text and given a synthetic code.
+ */
+const RETRYABLE_CONNECTION_CODES: ReadonlySet<string> = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECT_TIMEOUT",
+  "ECONNREFUSED",
+  "ECONNRESET",
+]);
+const FATAL_CONNECTION_CODES: ReadonlySet<string> = new Set([
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+]);
+const CROSS_REQUEST_IO_CODE = "CROSS_REQUEST_IO";
+const CROSS_REQUEST_IO_PATTERN = /cannot perform i\/o on behalf of a different request/i;
+
+/** Walk a cause chain, newest first, at most 5 links deep (as `isUniqueViolation` does). */
+const walkCauses = (cause: unknown, visit: (err: Record<string, unknown>) => boolean): boolean => {
+  let current = cause;
+  for (let i = 0; i < 5; i += 1) {
+    const err =
+      current && typeof current === "object" ? (current as Record<string, unknown>) : null;
+    if (!err) return false;
+    if (visit(err)) return true;
+    const innerCause = err["cause"];
+    if (!innerCause || innerCause === current) return false;
+    current = innerCause;
+  }
+  return false;
 };
 
+/** First driver error code in the cause chain, if any. Never the error text. */
+const causeCode = (cause: unknown): string | undefined => {
+  let found: string | undefined;
+  walkCauses(cause, (err) => {
+    const code = err["code"];
+    if (typeof code === "string" && code.length > 0) {
+      found = code;
+      return true;
+    }
+    return false;
+  });
+  return found;
+};
+
+/** Connection-fault code in the cause chain, if this is a connection fault at all. */
+const connectionFaultCode = (cause: unknown): string | undefined => {
+  let found: string | undefined;
+  walkCauses(cause, (err) => {
+    const code = err["code"];
+    if (
+      typeof code === "string" &&
+      (RETRYABLE_CONNECTION_CODES.has(code) || FATAL_CONNECTION_CODES.has(code))
+    ) {
+      found = code;
+      return true;
+    }
+    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: workerd's cross-request I/O rejection carries no code, only this fixed message
+    const message = err["message"];
+    if (typeof message === "string" && CROSS_REQUEST_IO_PATTERN.test(message)) {
+      found = CROSS_REQUEST_IO_CODE;
+      return true;
+    }
+    return false;
+  });
+  return found;
+};
+
+/**
+ * Build the failure message from stable inputs only — the call-site label and
+ * the driver's error code — never the driver's text.
+ *
+ * The driver text is `Failed query: <sql>\nparams: <bound values>`
+ * (`drizzle-orm/errors.js`). Copying it into the message made error reporting
+ * group by statement shape, splitting one defect across a report per table and
+ * WHERE-clause, and printed bound parameters (organization ids, user ids,
+ * user-chosen connection names) into report titles. The full driver error is
+ * preserved on `cause`, which the reporter still receives as a chained
+ * exception.
+ */
+const stableMessage = (label: string, code: string | undefined): string =>
+  code ? `FumaDB ${label} failed: ${code}` : `FumaDB ${label} failed`;
+
 export const isStorageFailure = (error: unknown): error is StorageFailure =>
-  Predicate.isTagged(error, "StorageError") || Predicate.isTagged(error, "UniqueViolationError");
+  Predicate.isTagged(error, "StorageError") ||
+  Predicate.isTagged(error, "StorageConnectionError") ||
+  Predicate.isTagged(error, "UniqueViolationError");
 
 export const fumaFailureFromCause = (label: string, cause: unknown): StorageFailure => {
   if (isStorageFailure(cause)) return cause;
   if (isUniqueViolation(cause)) return new UniqueViolationError({ model: label });
+  const connectionCode = connectionFaultCode(cause);
+  if (connectionCode !== undefined) {
+    return new StorageConnectionError({
+      message: stableMessage(label, connectionCode),
+      label,
+      code: connectionCode,
+      retryable: RETRYABLE_CONNECTION_CODES.has(connectionCode),
+      cause,
+    });
+  }
   return new StorageError({
-    message: causeMessage(cause) ?? `FumaDB operation failed: ${label}`,
+    message: stableMessage(label, causeCode(cause)),
     cause,
   });
 };
@@ -166,6 +285,7 @@ const makeSafeFumaQuery = <TSchema extends AnySchema>(
       db.transaction((transactionDb) => run(makeSafeFumaQuery(transactionDb, options))),
     updateMany: (name, value) => db.updateMany(table(name), value),
     upsert: (name, value) => db.upsert(table(name), value),
+    upsertMany: (name, value) => db.upsertMany(table(name), value),
   };
 
   return Object.freeze(query);

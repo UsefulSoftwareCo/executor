@@ -145,7 +145,7 @@ export const AdminUser = Schema.Struct({
  * forbidden-field lists in `platform-view.test.ts` and `admin-users.test.ts`.
  */
 export const AdminConnectionHealth = Schema.Struct({
-  /** The stored verdict: healthy / expired / degraded / unknown. */
+  /** The stored verdict: healthy / expired / misconfigured / degraded / unknown. */
   status: HealthStatus,
   /** Epoch ms the check ran, so an operator can tell a fresh verdict from a
    *  stale one. */

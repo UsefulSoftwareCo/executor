@@ -1,5 +1,113 @@
 # @executor-js/react
 
+## 1.4.70
+
+### Patch Changes
+
+- Updated dependencies [[`98d6c6a`](https://github.com/UsefulSoftwareCo/executor/commit/98d6c6ad3272fca371fc2d8b14b2e332100d8322)]:
+  - @executor-js/sdk@1.6.7
+  - @executor-js/api@1.4.70
+
+## 1.4.69
+
+### Patch Changes
+
+- [#1865](https://github.com/UsefulSoftwareCo/executor/pull/1865) [`9a1fbd5`](https://github.com/UsefulSoftwareCo/executor/commit/9a1fbd5f0de25f622f303c76f998443c1bb72063) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Desktop OAuth connects finish the moment the provider redirects**
+
+  When the desktop app runs an OAuth flow in the system browser, the app learned about completion by polling the local server once a second. The completed result sat in memory while the user watched the "Connecting…" spinner for up to a second more — about half a second wasted on average, on every connect.
+
+  The await endpoint now long-polls: the server holds the request open (up to 25 seconds per hold) and answers the instant the flow completes. The client polls one request at a time and reconnects after each answer, so requests never stack. Mixed versions stay compatible in both directions: an old client still gets its answer within one poll of a new server, and a new client against an old server behaves exactly as before.
+
+- Updated dependencies []:
+  - @executor-js/api@1.4.69
+  - @executor-js/sdk@1.6.6
+
+## 1.4.68
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.5
+  - @executor-js/api@1.4.68
+
+## 1.4.67
+
+### Patch Changes
+
+- [#1559](https://github.com/UsefulSoftwareCo/executor/pull/1559) [`9dcfaa5`](https://github.com/UsefulSoftwareCo/executor/commit/9dcfaa5ee8ad2ebc17407caf94d8d4dcf55e3562) Thanks [@Adityakk9031](https://github.com/Adityakk9031)! - **Reconnecting a DCR connection now re-registers instead of reusing a stranded client**
+
+  A dynamically registered OAuth client is bound to the redirect URI it registered with. Once the app's callback origin changed (127.0.0.1 to localhost), Reconnect still started the flow against the stored client, and the authorization server rejected it — leaving no way to repair the connection.
+
+  Reconnect now takes the same probe → CIMD-or-register → start route as the initial connect, so the registration gateway replaces the stranded client against the current redirect URI. Methods with a fixed, hand-registered app are unaffected and keep using their stored client.
+
+- Updated dependencies [[`ffcfbc0`](https://github.com/UsefulSoftwareCo/executor/commit/ffcfbc0de27d0ae55215839fb70395b0b7d9a65c), [`10e16a5`](https://github.com/UsefulSoftwareCo/executor/commit/10e16a5baa2648657b70038e7d11429c58e4d242), [`515d6aa`](https://github.com/UsefulSoftwareCo/executor/commit/515d6aa391a04a3579a7b10f974ec316a563cf7a), [`06bf742`](https://github.com/UsefulSoftwareCo/executor/commit/06bf74254f3432e8d75fd8b493ef7a435ea4bc84)]:
+  - @executor-js/sdk@1.6.4
+  - @executor-js/api@1.4.67
+
+## 1.4.66
+
+### Patch Changes
+
+- [#1814](https://github.com/UsefulSoftwareCo/executor/pull/1814) [`66fb1a4`](https://github.com/UsefulSoftwareCo/executor/commit/66fb1a4154226d28691ca83bdf6f3daa417ef0ce) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A click outside a dialog or sheet no longer discards the form inside it**
+
+  Radix dismisses an overlay surface on any un-prevented outside interaction, and `DialogContent` and `SheetContent` only prevented that for clicks landing in a portaled combobox or select popup. Every other outside click fell through to dismissal, so a stray click on the page behind a form — after switching windows to copy an ID, for example — closed the surface and destroyed what the user had typed. These surfaces unmount their state on close by design, so nothing was recoverable.
+
+  The default is now the opposite: an outside interaction keeps the surface open. Escape and the close button are unchanged and still close it. `DialogContent` and `SheetContent` take a new `dismissOnOutsideClick` prop for surfaces with nothing to lose — confirmations, pickers, and read-only panels — and the portaled-popup guard still applies there, so choosing a combobox option never dismisses.
+
+  `CommandDialog` sets `dismissOnOutsideClick` on by default, because a command palette holds only a search string and clicking away is the expected way to leave it.
+
+- [#1822](https://github.com/UsefulSoftwareCo/executor/pull/1822) [`d7e4b73`](https://github.com/UsefulSoftwareCo/executor/commit/d7e4b73a86b8e413af70e0fcb26f38a35a3f4546) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **An OAuth app can now be registered without an RFC 8707 resource, and that absence holds on every request**
+
+  Microsoft Entra v2 rejects any authorization request that carries both a v2 `scope` (such as `https://api.fabric.microsoft.com/.default`) and the RFC 8707 `resource` parameter, failing with `AADSTS9010010` before the consent screen. Executor made that unavoidable for MCP servers behind Entra: registering an app for an MCP integration always derived the MCP endpoint as the resource, the form had no field to change it, and so every request carried the parameter Entra rejects.
+
+  The register/edit OAuth app form now shows the resource indicator. It is still prefilled for MCP servers — nothing changes for providers that accept the parameter — but it can be cleared, and a cleared value persists as "no resource". A resource-less app then omits `resource` on all four grants alike: the authorization request, the code exchange, token refresh, and client-credentials. Symmetry matters here — sending `resource` on authorize but not on the token request (or the reverse) would bind the two tokens to different audiences.
+
+  Two adjacent gaps closed with it:
+  - MCP scope discovery no longer depends on the app's resource. It now falls back to the integration's own discovery URL (the MCP endpoint), so clearing the resource does not break connecting.
+  - Token refresh for a first-party OAuth app dropped the app's configured resource, refreshing to a different audience than the original grant. It now sends the same resource the authorization request sent.
+
+  Apps that keep their resource — the default for every discovered MCP server — behave exactly as before: the parameter is sent on every grant, as the MCP authorization spec expects.
+
+- Updated dependencies [[`c1f51b7`](https://github.com/UsefulSoftwareCo/executor/commit/c1f51b7f96328b795669bb3d241667660dc2b060), [`02b52cd`](https://github.com/UsefulSoftwareCo/executor/commit/02b52cd01b09d3601ffe88d1f9c0b777f26e76ae)]:
+  - @executor-js/sdk@1.6.3
+  - @executor-js/api@1.4.66
+
+## 1.4.65
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.2
+  - @executor-js/api@1.4.65
+
+## 1.4.64
+
+### Patch Changes
+
+- [#1746](https://github.com/UsefulSoftwareCo/executor/pull/1746) [`9dff4e8`](https://github.com/UsefulSoftwareCo/executor/commit/9dff4e8e6598e7d3108634a71269245ba9b480bb) Thanks [@sergical](https://github.com/sergical)! - **The connection edit sheet now previews what agents actually read**
+
+  The "What agents see" preview in the connection edit sheet rendered a `- \`<prefix>\` — <description>`inventory line. That line left the`execute`tool description when the inventory was slimmed to bare integration slugs, so the preview showed text no agent reads. The account label was also marked "Display-only", but`connections.list` returns it to agents alongside the description.
+
+  The preview now mirrors the `connections.list` item for the connection (`name`, `identityLabel`, `description`), and the sheet copy says that both fields are agent-visible while the callable name stays as it was at connect time.
+
+- Updated dependencies [[`55180cb`](https://github.com/UsefulSoftwareCo/executor/commit/55180cb1487f9a3a28ddc0ee0bedfab8464c1f72)]:
+  - @executor-js/sdk@1.6.1
+  - @executor-js/api@1.4.64
+
+## 1.4.63
+
+### Patch Changes
+
+- [#1703](https://github.com/UsefulSoftwareCo/executor/pull/1703) [`2bdbedf`](https://github.com/UsefulSoftwareCo/executor/commit/2bdbedf257f54d7c209e8c856c618174c10d6bb3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **A slow OAuth discovery no longer kills the connect with no popup and no error**
+
+  The transparent connect flows opened the sign-in window only after their setup round trips had answered: DCR after probe and dynamic registration, CIMD after minting the client, reconnect after starting the session. `window.open` needs transient user activation, which browsers expire a few seconds after the click, so once the API was slow enough the browser refused the window and the connect ended with nothing on screen but the button returning to "Connect". Every MCP integration takes that path.
+
+  The window is now claimed on the click itself and navigated when the authorization URL arrives, however long that takes, and it is closed again on the paths that end without signing in (failed probe, no registration endpoint, rejected registration, failed client mint) as well as on cancel and unmount. A window the browser does refuse is now reported instead of swallowed: the flows stop before their round trips, and the sign-in error renders above the dialog footer, where the automatic flows can actually show it, rather than inside a method tab panel they never render.
+
+- Updated dependencies [[`a2d1417`](https://github.com/UsefulSoftwareCo/executor/commit/a2d141758e478274813c8c24d354e1fd0f66af49)]:
+  - @executor-js/sdk@1.6.0
+  - @executor-js/api@1.4.63
+
 ## 1.4.62
 
 ### Patch Changes

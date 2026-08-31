@@ -1311,6 +1311,8 @@ const startMcpHarness = async (openApi: OpenApiServer): Promise<McpHarness> => {
 const startSchemaElicitationMcpHarness = (): Promise<McpHarness> =>
   startMcpHarnessForEngine({
     getDescription: Effect.succeed("schema elicitation test executor"),
+    // The fake forks nothing, so there is no sandbox fiber to end.
+    shutdown: Effect.void,
     execute: () => Effect.succeed({ result: null }),
     executeWithPause: () =>
       Effect.succeed(

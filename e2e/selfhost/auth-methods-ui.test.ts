@@ -169,7 +169,7 @@ scenario(
         });
 
         await step("The probe detected OAuth", async () => {
-          await page.getByText("Method 1 · Detected").waitFor();
+          await page.getByText("OAuth · Detected").waitFor();
           // The OAuth editor declares discovery-at-connect, not pasted URLs.
           await page.getByText("OAuth metadata is discovered from this server").waitFor();
         });

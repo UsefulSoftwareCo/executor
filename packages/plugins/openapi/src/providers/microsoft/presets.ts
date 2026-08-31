@@ -1,5 +1,7 @@
 import type { IntegrationPreset } from "@executor-js/sdk/core";
 
+import { microsoftGraphSliceUrl } from "./slice-urls";
+
 export interface MicrosoftGraphPreset {
   readonly id: string;
   readonly name: string;
@@ -42,6 +44,11 @@ export const MICROSOFT_AUTHORIZATION_URL =
 export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 export const MICROSOFT_AUTH_TEMPLATE_SLUG = "azureAdDelegated";
 export const MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG = "azureAdClientCredentials";
+// Both templates are plain oauth2, so without labels they'd render as two
+// identical "OAuth2" methods. Microsoft's terms: delegated (signed-in user)
+// vs app-only (client credentials, no user).
+export const MICROSOFT_DELEGATED_AUTH_LABEL = "OAuth2 (user)";
+export const MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL = "OAuth2 (app-only)";
 export const MICROSOFT_GRAPH_BASE_SCOPES: readonly string[] = ["offline_access"];
 export const MICROSOFT_GRAPH_IDENTITY_SCOPE = "User.Read";
 export const MICROSOFT_GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
@@ -528,13 +535,16 @@ export const microsoftGraphTagPrefixesForPresetIds = (
 export const microsoftServiceSlug = (presetId: string): string =>
   `microsoft_${presetId.replaceAll("-", "_")}`;
 
-const microsoftGraphCatalogUrl = (presetId: string): string =>
-  `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${encodeURIComponent(presetId)}`;
+// Catalog tiles point at the slice URL itself: the URL a user sees (and the
+// integration stores) is exactly what gets fetched — no server-side source
+// substitution. The slice asset name carries the selection.
+const microsoftGraphCatalogUrl = (presetId: string): string => microsoftGraphSliceUrl(presetId);
 
 const microsoftGraphCatalogAuthTemplate = (preset: MicrosoftGraphScopePreset) => [
   {
     slug: MICROSOFT_AUTH_TEMPLATE_SLUG,
     kind: "oauth2" as const,
+    label: MICROSOFT_DELEGATED_AUTH_LABEL,
     authorizationUrl: MICROSOFT_AUTHORIZATION_URL,
     tokenUrl: MICROSOFT_TOKEN_URL,
     scopes: microsoftGraphScopesForPresetIds([preset.id]),
@@ -542,6 +552,7 @@ const microsoftGraphCatalogAuthTemplate = (preset: MicrosoftGraphScopePreset) =>
   {
     slug: MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
     kind: "oauth2" as const,
+    label: MICROSOFT_CLIENT_CREDENTIALS_AUTH_LABEL,
     authorizationUrl: MICROSOFT_AUTHORIZATION_URL,
     tokenUrl: MICROSOFT_TOKEN_URL,
     scopes: [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
@@ -558,6 +569,7 @@ export const microsoftCatalog: readonly IntegrationPreset[] = microsoftGraphScop
     ...(preset.featured ? { featured: preset.featured } : {}),
     family: "microsoft",
     specFormat: "microsoft-graph",
+    registryListed: true,
     defaultSlug: microsoftServiceSlug(preset.id),
     authTemplate: microsoftGraphCatalogAuthTemplate(preset),
     ...(preset.id === "profile" ? { healthCheck: { operation: "me.GetUser" } } : {}),

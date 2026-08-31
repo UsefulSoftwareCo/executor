@@ -43,7 +43,12 @@ import {
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
-import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execution";
+import {
+  buildExecuteDescription,
+  parseIntegrationInventory,
+  type ResumeResponse,
+} from "@executor-js/execution";
+import { acquireBuildSlot, type BuildSlotHandle } from "./session-build-semaphore";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
 // engine with `CloudMeteredExecutionStackLayer`, so every MCP execution is
@@ -58,7 +63,7 @@ import { buildExecuteDescription, type ResumeResponse } from "@executor-js/execu
 // `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
-import { resolveOrganization } from "../auth/organization";
+import { resolveSessionMetaForToken } from "./session-meta";
 import {
   DbService,
   combinedSchema,
@@ -71,6 +76,7 @@ import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry
 import {
   captureCause as reportCause,
   captureCauseEffect as reportCauseEffect,
+  claimCauseHandledByDurableObject,
   tagCurrentSentryScopeWithCurrentOtelSpan,
 } from "../observability";
 import { parseTraceparent } from "./traceparent";
@@ -101,14 +107,14 @@ const positiveMilliseconds = (raw: string | undefined): number | undefined => {
   return Math.floor(parsed);
 };
 
+/** Same shape as `positiveMilliseconds`, for a plain count rather than a
+ *  duration — used only by the resident-runtime soft-cap override below. */
+const positiveInteger = positiveMilliseconds;
+
 type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
   readonly end: () => Promise<void>;
 };
-
-class OrganizationNotFoundError extends Data.TaggedError("OrganizationNotFoundError")<{
-  readonly organizationId: string;
-}> {}
 
 class McpModelResumeForwardError extends Data.TaggedError("McpModelResumeForwardError")<{
   readonly cause: unknown;
@@ -165,11 +171,35 @@ const loadAppShellHtml = makeAssetsShellHtmlLoader({
     import("virtual:executor-mcp-apps-shell-dev-html").then((mod) => mod.devShellHtml),
 });
 
+// QuickJS-WASM must be loaded before the smoke render asks for a sandbox: the
+// default variant cannot fetch its own `.wasm` on Workers. `../quickjs` is
+// imported dynamically here, not at module scope, so a session that never
+// calls create_artifact/edit_artifact never pays for it — see the comment on
+// the dynamic import block in `buildMcpServer` for why that matters on a cold
+// isolate. `preloadQuickJs()` itself is memoized per isolate (and resets on
+// failure), so concurrent artifact calls, and repeat calls after the first,
+// are all free past the first successful load.
+const smokeRenderArtifactAfterQuickJsPreload: typeof smokeRenderArtifact = async (code) => {
+  const { preloadQuickJs } = await import("../quickjs");
+  await preloadQuickJs();
+  return smokeRenderArtifact(code);
+};
+
 // ---------------------------------------------------------------------------
 // Durable Object
 // ---------------------------------------------------------------------------
 
 export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionDbHandle> {
+  // Set once per `buildMcpServer` call, read back by `sessionFootprintAttributes`
+  // so the counts land on the base's `McpSessionDO.init` span alongside
+  // `mcp.isolate.*` residency — see the comment at the `parseIntegrationInventory`
+  // call site below for why this is free to compute.
+  private lastSessionFootprint: Record<string, number> = {};
+
+  protected override sessionFootprintAttributes(): Record<string, number> {
+    return this.lastSessionFootprint;
+  }
+
   protected override sessionTimeoutMs(): number {
     return positiveMilliseconds(env.MCP_SESSION_TIMEOUT_MS) ?? super.sessionTimeoutMs();
   }
@@ -182,6 +212,25 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override executionOwnerDirectory(): McpExecutionOwnerDirectory | null {
     return mcpExecutionOwnerDirectoryFromNamespace(env.MCP_EXECUTION_OWNER);
+  }
+
+  // Test-only override so e2e can exercise a REAL cross-DO eviction request in
+  // workerd without registering 32 sessions. Unset in production, where this
+  // falls through to the base class's `RESIDENT_RUNTIME_SOFT_CAP`.
+  protected override residentRuntimeSoftCap(): number {
+    return positiveInteger(env.MCP_RESIDENT_RUNTIME_SOFT_CAP) ?? super.residentRuntimeSoftCap();
+  }
+
+  protected override supportsCapEviction(): boolean {
+    return true;
+  }
+
+  protected override requestSelfEviction(): Promise<void> {
+    // Routed through this session's OWN stub (never a direct in-process call)
+    // so `requestCapEviction`'s teardown runs under an IoContext scoped to
+    // this request, not whatever request happened to trigger the eviction
+    // check — see the base class's `requestSelfEviction` doc comment.
+    return mcpSessionStub(env.MCP_SESSION, this.sessionId).requestCapEviction();
   }
 
   protected override forwardModelResumeToOwner(
@@ -208,27 +257,27 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     });
   }
 
-  protected override resolveSessionMeta(token: McpSessionInit): Effect.Effect<SessionMeta> {
+  protected override resolveSessionMeta(
+    token: McpSessionInit,
+    storedMeta: SessionMeta | null,
+  ): Effect.Effect<SessionMeta> {
+    // The database handle is opened LAZILY: on the props and stored paths — the
+    // overwhelming majority of inits — nothing here touches Postgres at all,
+    // which is the whole point. postgres.js only dials on first query, so
+    // building the handle costs nothing; `ensuring` still closes it.
     const dbHandle = makeEphemeralDb();
-    return Effect.gen(function* () {
-      const org = yield* resolveOrganization(token.organizationId);
-      if (!org) {
-        return yield* new OrganizationNotFoundError({ organizationId: token.organizationId });
-      }
-      return {
-        organizationId: org.id,
-        organizationName: org.name,
-        organizationSlug: org.slug,
-        userId: token.userId,
-        resource: token.resource,
-        elicitationMode: token.elicitationMode,
-        artifactsEnabled: token.artifactsEnabled,
-      } satisfies SessionMeta;
-    }).pipe(
+    return resolveSessionMetaForToken(token, storedMeta).pipe(
       Effect.withSpan("McpSessionDOSqlite.resolveSessionMeta"),
       Effect.provide(makeSessionServices(dbHandle)),
       Effect.ensuring(Effect.promise(() => dbHandle.end())),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: a vanished org is a defect; the worker already verified the bearer
+      // The base's `resolveSessionMeta` seam has no error channel, and a
+      // Durable Object's `init` can only reject its Promise — so a failure has
+      // to leave as a defect. What changed is WHAT leaves: an unreachable
+      // organization directory is now a bounded, classified
+      // `McpSessionMetaUnavailableError` whose message the worker recognises
+      // and renders as a retryable 503 (see `agent-handler.ts`), instead of an
+      // unclassified Postgres cause that produced a 500 and a client hang.
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the DO init seam is Promise-only; the failure is classified before it dies
       Effect.orDie,
     );
   }
@@ -238,39 +287,62 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     dbHandle: CloudSessionDbHandle,
   ): Effect.Effect<BuiltMcpServer> {
     const self = this;
-    return Effect.gen(function* () {
+    // Set synchronously, inside the `Effect.promise` executor below, before
+    // any `await` — so there is no window where interruption can land after
+    // the handle exists but before this is assigned. `cancel` is idempotent
+    // (see `session-build-semaphore.ts`), so it is safe to invoke from both
+    // the abort listener below AND the `Effect.ensuring` finalizer without
+    // risking a double release.
+    let buildSlot: BuildSlotHandle | undefined;
+    const build = Effect.gen(function* () {
+      // A burst of cold sessions landing on one isolate at once used to pay
+      // full concurrent build cost; this bounds it to `MAX_CONCURRENT_BUILDS`
+      // at a time and queues the rest FIFO, degrading to old concurrent
+      // behavior (see `timedOut` below) rather than stalling if the queue
+      // itself gets stuck. See `session-build-semaphore.ts`.
+      //
+      // `Effect.promise` hands its executor an `AbortSignal` tied to this
+      // fiber's own interruption — firing it (rather than merely walking
+      // away) is what lets a waiter still sitting in the semaphore's queue
+      // be dequeued immediately on a client disconnect, instead of getting
+      // granted a slot later with no one left to release it.
+      const slot = yield* Effect.promise((signal) => {
+        const handle = acquireBuildSlot();
+        buildSlot = handle;
+        signal.addEventListener("abort", () => handle.cancel(), { once: true });
+        return handle.promise;
+      });
+      if (slot.timedOut) {
+        yield* Effect.annotateCurrentSpan({ "mcp.init.build_queue_timeout": true });
+      } else if (slot.waitMs > 0) {
+        yield* Effect.annotateCurrentSpan({ "mcp.init.build_queue_ms": slot.waitMs });
+      }
+
       // Imported here rather than at module scope. Cloudflare requires a
       // Durable Object class to be exported from the Worker entry, so every
       // static import this module makes is evaluated by *every* cold isolate —
       // including the ones that only render a page or forward a passthrough
-      // proxy and never open an MCP session. These three roots pull the whole
-      // code-execution stack (sucrase, ajv, QuickJS-WASM): measured at 1.9 MB
-      // of the Worker's startup closure, for code only a real session runs.
+      // proxy and never open an MCP session. These two roots pull the whole
+      // code-execution stack (sucrase, ajv): measured at 1.9 MB of the
+      // Worker's startup closure, for code only a real session runs.
       // `apps/cloud/scripts/start-closure.mjs` reports that number and will
-      // show it moving back if these become static again.
-      const [{ preloadQuickJs }, { makeExecutionStack }, { CloudMeteredExecutionStackLayer }] =
-        yield* Effect.promise(
-          () =>
-            Promise.all([
-              import("../quickjs"),
-              import("../engine/execution-stack"),
-              import("../engine/execution-stack-metered"),
-            ]) as Promise<
-              [
-                typeof import("../quickjs"),
-                typeof import("../engine/execution-stack"),
-                typeof import("../engine/execution-stack-metered"),
-              ]
-            >,
-        );
+      // show it moving back if these become static again. QuickJS-WASM is a
+      // separate dynamic import off the artifact smoke-render path only (see
+      // `smokeRenderArtifactAfterQuickJsPreload` above) — it is never needed
+      // during init, so it no longer lives in this Promise.all at all.
+      const [{ makeExecutionStack }, { CloudMeteredExecutionStackLayer }] = yield* Effect.promise(
+        () =>
+          Promise.all([
+            import("../engine/execution-stack"),
+            import("../engine/execution-stack-metered"),
+          ]) as Promise<
+            [
+              typeof import("../engine/execution-stack"),
+              typeof import("../engine/execution-stack-metered"),
+            ]
+          >,
+      );
 
-      // QuickJS-WASM must be loaded before anything asks for a sandbox: the
-      // default variant cannot fetch its own `.wasm` on Workers. Cloud runs
-      // user `execute` code on the dynamic-worker runtime, but the artifact
-      // smoke render is a QuickJS sandbox on every host — without this it fails
-      // open on each create and the check silently does nothing.
-      // Idempotent per isolate.
-      yield* Effect.promise(() => preloadQuickJs());
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
@@ -292,6 +364,17 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
       const description = yield* buildExecuteDescription(executor).pipe(
         Effect.withSpan("mcp.execute.description.build"),
       );
+      // Cheap size proxy for the session's footprint: `parseIntegrationInventory`
+      // is a regex walk over the description string already built above, the
+      // same trick `createExecutorMcpServer` uses to derive its per-integration
+      // search tools without a second `connections.list()` — no new query, no
+      // catalog serialization. This is a *count* of distinct connected
+      // integrations, not raw connections (several connections can share one
+      // integration) and is capped at the description's 50-item inventory
+      // limit, same as what the model itself sees.
+      self.lastSessionFootprint = {
+        "mcp.session.integration_count": parseIntegrationInventory(description).length,
+      };
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
       const mcpServer = yield* createExecutorMcpServer({
         engine,
@@ -302,12 +385,15 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // persisted without a value restores to the default, same as a fresh
         // connection whose URL says nothing about `?artifacts=`.
         artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
+        // Per-integration search tools are off by default, opt-in per
+        // connection (`?search_tools=true`). Same restore rule as artifacts.
+        searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
         loadAppShellHtml,
-        smokeRenderArtifact,
+        smokeRenderArtifact: smokeRenderArtifactAfterQuickJsPreload,
         artifactUrl: artifactUrlFor(
           env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
           sessionMeta.organizationSlug,
@@ -333,8 +419,21 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
             : { mode: sessionElicitationMode },
       }).pipe(Effect.withSpan("McpSessionDOSqlite.createExecutorMcpServer"));
       return { mcpServer, engine } satisfies BuiltMcpServer;
-    }).pipe(
+    });
+    return build.pipe(
       Effect.withSpan("McpSessionDOSqlite.buildMcpServer"),
+      // Always paired with the `acquireBuildSlot` above: releases on success,
+      // failure, and interruption alike, so a build that throws — or a fiber
+      // that is interrupted mid-build — never wedges the FIFO queue behind
+      // it. `handle.cancel()` is idempotent and self-describing about
+      // whether a slot was actually granted, so no separate "did we acquire"
+      // flag is needed here; this and the abort listener above may both fire
+      // for the same handle without double-releasing.
+      Effect.ensuring(
+        Effect.sync(() => {
+          buildSlot?.cancel();
+        }),
+      ),
       Effect.provide(makeSessionServices(dbHandle)),
       // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: runtime-build failures surface as the base's tapCause/cleanup defect
       Effect.orDie,
@@ -362,6 +461,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override prepareErrorCaptureScope(): Effect.Effect<void> {
     return Effect.asVoid(tagCurrentSentryScopeWithCurrentOtelSpan);
+  }
+
+  // The DO owns this cause; `instrumentDurableObjectWithSentry` (server.ts) must
+  // not report it a second time when the rejection escapes the method.
+  protected override claimCauseHandled(_cause: Cause.Cause<unknown>): Effect.Effect<void> {
+    return claimCauseHandledByDurableObject;
   }
 
   // Best-effort export the DO isolate's buffered spans after the RPC settles,

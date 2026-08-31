@@ -37,6 +37,7 @@ import {
   OAuth2Preset,
   SecurityScheme,
   previewSpecText,
+  previewSpecTextStreaming,
   type SpecPreview,
 } from "./preview";
 import { deriveAuthenticationTemplateFromPreview, firstBaseUrlForPreview } from "./derive-auth";
@@ -97,6 +98,10 @@ export interface OpenApiSpecConfig {
    *  then the title). */
   readonly description?: string;
   readonly baseUrl?: string;
+  /** The product's domain, when the caller knows it (a registry row names
+   *  notion.com); display identity for guidance/favicons when the spec's
+   *  own host is a code host. */
+  readonly displayDomain?: string;
   /** Static headers applied to every request (no secret material). */
   readonly headers?: Record<string, string>;
   /** Static query params applied to every request. */
@@ -287,6 +292,7 @@ const AuthenticationSchema = Schema.Union([
   Schema.Struct({
     slug: Schema.String,
     kind: Schema.Literal("oauth2"),
+    label: Schema.optional(Schema.String),
     authorizationUrl: Schema.String,
     tokenUrl: Schema.String,
     resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -305,6 +311,7 @@ const AddIntegrationInputSchema = Schema.Struct({
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
+  displayDomain: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   specFormat: Schema.optional(Schema.String),
@@ -579,7 +586,7 @@ export const describeOpenApiAuthMethods = (
       if (template.kind === "oauth2") {
         return {
           id: String(template.slug),
-          label: "OAuth2",
+          label: template.label ?? "OAuth2",
           kind: "oauth",
           template: String(template.slug),
           oauth: {
@@ -601,7 +608,9 @@ export const describeOpenApiIntegrationDisplay = (
 ): { readonly url?: string; readonly family?: string } => {
   const config = decodeOpenApiIntegrationConfig(record.config);
   return {
-    url: config?.baseUrl ?? config?.specUrl,
+    url:
+      config?.baseUrl ??
+      (config?.displayDomain ? `https://${config.displayDomain}` : config?.specUrl),
     ...(config?.family ? { family: config.family } : {}),
   };
 };
@@ -659,6 +668,7 @@ export const openApiPlugin = definePlugin<
       const adapter = yield* resolveSpecFormatAdapter(
         options?.specFormats ?? [],
         config.specFormat,
+        config.spec.kind === "url" ? config.spec.url : undefined,
       );
       if (adapter) {
         if (config.spec.kind !== "url") {
@@ -780,6 +790,7 @@ export const openApiPlugin = definePlugin<
           const adapter = yield* resolveSpecFormatAdapter(
             options?.specFormats ?? [],
             config.specFormat,
+            config.spec.kind === "url" ? config.spec.url : undefined,
           );
           const derivedIdentity =
             adapter?.deriveIdentity && resolved.document
@@ -807,18 +818,25 @@ export const openApiPlugin = definePlugin<
           const explicitBaseUrl = config.baseUrl ?? resolved.baseUrl;
           const needsDerivedBaseUrl = explicitBaseUrl == null;
           const needsDerivedAuth = config.authenticationTemplate == null;
+          // Spec-format selections (resolved.keepPathItem) preview via the
+          // streaming path: the whole-document parse of a Graph-sized source is
+          // the measured isolate OOM. The OAuth-discovery enrich re-parses the
+          // full text for the same reason, and an adapter spec declares its
+          // auth (or the adapter supplies the template), so it is skipped.
           const preview =
             needsDerivedBaseUrl || needsDerivedAuth
-              ? yield* previewSpecText(resolved.specText).pipe(
-                  Effect.flatMap((rawPreview) =>
-                    enrichPreviewWithDiscoveredOAuth({
-                      specText: resolved.specText,
-                      preview: rawPreview,
-                      specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
-                      baseUrl: explicitBaseUrl,
-                    }),
-                  ),
-                )
+              ? resolved.keepPathItem
+                ? yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem)
+                : yield* previewSpecText(resolved.specText).pipe(
+                    Effect.flatMap((rawPreview) =>
+                      enrichPreviewWithDiscoveredOAuth({
+                        specText: resolved.specText,
+                        preview: rawPreview,
+                        specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
+                        baseUrl: explicitBaseUrl,
+                      }),
+                    ),
+                  )
               : undefined;
           const derivedBaseUrl =
             needsDerivedBaseUrl && preview ? firstBaseUrlForPreview(preview) : undefined;
@@ -856,6 +874,7 @@ export const openApiPlugin = definePlugin<
             // resolved per call from the operation's `servers` (extracted from
             // the spec), so we never bake a derived base URL into the config.
             ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+            ...(config.displayDomain ? { displayDomain: config.displayDomain } : {}),
             ...(config.headers ? { headers: config.headers } : {}),
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
             ...(config.specFormat ? { specFormat: config.specFormat } : {}),
@@ -1101,6 +1120,12 @@ export const openApiPlugin = definePlugin<
               },
               httpClientLayer,
             );
+            // Spec-format selections stream (whole-parse of a Graph-sized
+            // source OOMs the isolate) and skip the OAuth-discovery enrich —
+            // same rationale as the addSpec derived preview above.
+            if (resolved.keepPathItem) {
+              return yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem);
+            }
             const preview = yield* previewSpecText(resolved.specText);
             return yield* enrichPreviewWithDiscoveredOAuth({
               specText: resolved.specText,

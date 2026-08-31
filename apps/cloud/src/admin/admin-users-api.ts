@@ -330,10 +330,13 @@ const AdminUsersProviderMiddleware = HttpRouter.middleware<{ provides: AdminUser
     return (httpEffect) =>
       Effect.gen(function* () {
         // Built inside the request body so the execution seams close over the
-        // per-request postgres socket.
+        // per-request postgres socket. `local` keeps that promise: the
+        // `longLived` context re-applied below carries the boot `CurrentMemoMap`,
+        // so a shared build would hand overlapping requests one another's socket.
         const provider = yield* Effect.provide(
           AdminUsersProvider.asEffect(),
           workosAdminUsersProvider.pipe(Layer.provide(CloudExecutionSeamsLayer)),
+          { local: true },
         );
         return yield* Effect.provideService(httpEffect, AdminUsersProvider, provider);
       }).pipe(Effect.provideContext(longLived));

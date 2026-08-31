@@ -37,6 +37,7 @@ export const CONSOLE_ROUTE_PATHS = [
   "/connect/$integrationSlug",
   "/integrations/$namespace",
   "/integrations/add/$pluginKey",
+  "/integrations/browse",
   "/policies",
   "/activity",
   "/secrets",
@@ -79,6 +80,7 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
       "/integrations/add/$pluginKey",
       route("/integrations/add/$pluginKey", file("integrations.add.$pluginKey.tsx")),
     ],
+    ["/integrations/browse", route("/integrations/browse", file("integrations.browse.tsx"))],
     ["/policies", route("/policies", file("policies.tsx"))],
     // The tool call log. Every host that runs tools has one, so it is part of
     // the shared contract rather than a per-host page.

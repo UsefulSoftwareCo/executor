@@ -36,7 +36,12 @@ export type {
   IFumaClient,
   StorageFailure,
 } from "./fuma-runtime";
-export { StorageError, UniqueViolationError, isStorageFailure } from "./fuma-runtime";
+export {
+  StorageError,
+  StorageConnectionError,
+  UniqueViolationError,
+  isStorageFailure,
+} from "./fuma-runtime";
 
 // IDs (branded) — the v2 set.
 export {
@@ -69,6 +74,7 @@ export {
   IntegrationNotFoundError,
   IntegrationAlreadyExistsError,
   IntegrationRemovalNotAllowedError,
+  ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
@@ -110,6 +116,7 @@ export { ToolSchemaView, IntegrationDetectionResult } from "./types";
 // Health-check vocabulary (pure Schema + helpers).
 export {
   HealthStatus,
+  HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,
   HealthCheckResponseSample,
@@ -117,12 +124,15 @@ export {
   HealthCheckCandidateParameter,
   HealthCheckResponseField,
   classifyHttpStatus,
+  classifyProbeResponse,
   extractIdentity,
   compareHealthCheckCandidates,
   candidateIdentityTier,
   sortHealthCheckCandidatesByIdentity,
   projectResponseFields,
   extractResponseFields,
+  pathNamesASecret,
+  REDACTED_SAMPLE_VALUE,
   identityPathTier,
   rankResponseSample,
 } from "./health-check";
@@ -232,6 +242,7 @@ export {
 
 // Elicitation.
 export {
+  ElicitationMeta,
   FormElicitation,
   UrlElicitation,
   ElicitationAction,
@@ -313,6 +324,13 @@ export {
   OAuthRegisterDynamicError,
   OAuthSessionNotFoundError,
   FIRST_PARTY_OAUTH_CLIENT_PREFIX,
+  SubjectTokenTypeSchema,
+  DEFAULT_SUBJECT_TOKEN_TYPE,
+  EnterpriseManagedStartInputSchema,
+  EnterpriseIdentityProviderDescriptorSchema,
+  type SubjectTokenType,
+  type EnterpriseManagedStartInput,
+  type EnterpriseIdentityProviderDescriptor,
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
   type FirstPartyOAuthClientConfig,
@@ -330,6 +348,18 @@ export {
   type OAuthProbeResult,
   type OAuthService,
 } from "./oauth-client";
+
+// The enterprise-managed rollout PORT (not its implementation): hosts that
+// operate a feature-flag service implement this and hand it to
+// `createExecutor`. Core depends on no vendor.
+export {
+  ENTERPRISE_MANAGED_ROLLOUT_ENABLED,
+  type EnterpriseManagedRollout,
+  type EnterpriseManagedRolloutContext,
+  type EnterpriseManagedRolloutDecision,
+  type EnterpriseManagedRolloutEvent,
+  type EnterpriseManagedRolloutWithheldReason,
+} from "./oauth-ema";
 
 // NOTE: the OAuth 2.1 implementation helpers (`./oauth-helpers`,
 // `makeOAuthService` in `./oauth-service`, discovery in `./oauth-discovery`)
@@ -419,6 +449,8 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  DEFAULT_TOOLS_SYNC_GRACE_MS,
+  STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,
   collectTables,
   parseToolAddress,
@@ -481,6 +513,14 @@ export {
   oauthClientGcSqliteMigration,
   runSqliteOAuthClientGcMigration,
 } from "./sqlite-oauth-client-gc-migration";
+// Rewrite `bigint` columns an earlier build left in SQLite's INTEGER storage
+// class, which the bigint row mapper cannot read (issue #1771).
+export {
+  bigintStorageClassSqliteMigration,
+  runSqliteBigintStorageClassMigration,
+  LEGACY_BIGINT_STORAGE_CLASS_COLUMNS,
+  type BigintStorageClassColumn,
+} from "./sqlite-bigint-storage-class-migration";
 export {
   authToolFailure,
   isUnauthorizedToolFailure,
@@ -492,3 +532,21 @@ export {
   insufficientScopeFromEmbeddedJson,
   type InsufficientScopeDetection,
 } from "./insufficient-scope";
+
+// Endpoint sanitization for span attributes — plugins stamping a user-supplied
+// endpoint must strip its credential-bearing parts first.
+export { endpointForTelemetry, endpointTelemetryAttributes } from "./telemetry-endpoint";
+
+// URL redaction for exported telemetry — the shared scrub every exporter path
+// (cloud span processors, self-host and browser OTLP serialization, the
+// browser-traces forwarder) consumes.
+export {
+  redactOtlpTraceExport,
+  redactSpanUrlAttributes,
+  redactStringElements,
+  redactUrlForTelemetry,
+  redactUrlsInText,
+  STRIPPED_QUERY_ATTRIBUTE,
+  UrlRedactingOtlpSerializationJson,
+  type RedactedUrl,
+} from "./telemetry-url-redaction";

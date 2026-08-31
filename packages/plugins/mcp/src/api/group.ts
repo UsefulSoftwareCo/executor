@@ -31,10 +31,16 @@ const StringMap = Schema.Record(Schema.String, Schema.String);
 const AddRemoteServerPayload = Schema.Struct({
   transport: Schema.optional(Schema.Literal("remote")),
   name: Schema.String,
+  family: Schema.optional(Schema.String),
   /** Agent-visible catalog description. Defaults to the display name. */
   description: Schema.optional(Schema.String),
   endpoint: Schema.String,
   remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
+  /** Pin legacy protocol negotiation for a server that echoes the modern
+   *  revision but breaks its contract (the probe reports when only legacy
+   *  worked). Omitting this here silently stripped the pin from the stored
+   *  integration, leaving it unusable against exactly that server. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
   slug: Schema.optional(Schema.String),
   queryParams: Schema.optional(StringMap),
   headers: Schema.optional(StringMap),
@@ -48,6 +54,7 @@ const AddRemoteServerPayload = Schema.Struct({
 const AddStdioServerPayload = Schema.Struct({
   transport: Schema.Literal("stdio"),
   name: Schema.String,
+  family: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
@@ -56,7 +63,27 @@ const AddStdioServerPayload = Schema.Struct({
   envVars: Schema.optional(Schema.Array(Schema.String)),
   /** One-shot secret env values (programmatic). The UI sends `envVars`. */
   env: Schema.optional(StringMap),
+  /** Non-secret environment stored on the integration and injected at spawn.
+   *  Unlike `env`, nothing here becomes a credential the user must type. */
+  staticEnv: Schema.optional(StringMap),
   cwd: Schema.optional(Schema.String),
+  /** Protocol negotiation at connect: `auto` probes `server/discover` (spec
+   *  2026-07-28) for modern-only servers; default is the legacy `initialize`
+   *  handshake. */
+  versionNegotiation: Schema.optional(Schema.Literals(["legacy", "auto"])),
+  /** Opt out of process reuse — spawn a fresh child for every tool call.
+   *  Absent means the spawned server is kept alive between calls. */
+  spawnPerCall: Schema.optional(Schema.Boolean),
+  /** Reach the server through the Codex app-server bridge: the command spawns
+   *  `codex app-server` and `server` names the MCP server inside Codex. */
+  appServer: Schema.optional(
+    Schema.Struct({
+      server: Schema.String,
+      surface: Schema.optional(Schema.Literals(["sky", "browser"])),
+      modulePath: Schema.optional(Schema.String),
+      presetId: Schema.optional(Schema.String),
+    }),
+  ),
   slug: Schema.optional(Schema.String),
 });
 
@@ -79,6 +106,12 @@ const ProbeEndpointResponse = Schema.Struct({
   serverName: Schema.NullOr(Schema.String),
   /** Server `instructions` from initialize — prefills the description field. */
   instructions: Schema.NullOr(Schema.String),
+  /** Which protocol negotiation worked, when discovery succeeded. `legacy`
+   *  means the server echoes the modern revision but breaks its contract, and
+   *  the add must pin `versionNegotiation: "legacy"` on the integration —
+   *  omitting this field here silently stripped it from the HTTP response and
+   *  the pin never happened. */
+  versionNegotiation: Schema.optional(Schema.Literals(["auto", "legacy"])),
 });
 
 // ---------------------------------------------------------------------------
@@ -123,6 +156,67 @@ const GetServerResponse = Schema.NullOr(
     config: McpIntegrationConfig,
   }),
 );
+
+// Locally installed Codex plugins with stdio MCP servers, reported by the
+// server-side scanner as one-click stdio presets. `available: false` entries
+// render with `setupHint` instead of an add action.
+const CodexPluginEntrySchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  summary: Schema.String,
+  available: Schema.Boolean,
+  slug: Schema.String,
+  source: Schema.Literals(["curated", "scanned"]),
+  command: Schema.String,
+  args: Schema.Array(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  env: Schema.optional(StringMap),
+  /** Present on curated entries: add through the Codex app-server bridge,
+   *  calling tools on this named server inside Codex. */
+  appServer: Schema.optional(
+    Schema.Struct({
+      server: Schema.String,
+      surface: Schema.optional(Schema.Literals(["sky", "browser"])),
+      modulePath: Schema.optional(Schema.String),
+      presetId: Schema.optional(Schema.String),
+    }),
+  ),
+  setupHint: Schema.optional(Schema.String),
+  setupUrl: Schema.optional(Schema.String),
+  fallbackIcon: Schema.optional(Schema.String),
+  /** The plugin's own icon from its local install, as a data URI. */
+  icon: Schema.optional(Schema.String),
+  /** The plugin's own display metadata from its local manifest. */
+  displayName: Schema.optional(Schema.String),
+  tagline: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+});
+
+/** The result of actually trying the plugin, not a reading of any privacy
+ *  database — macOS exposes no way to read another app's decisions. */
+const CodexPluginAccessResponse = Schema.Struct({
+  status: Schema.Literals([
+    "ok",
+    "blocked",
+    "not-installed",
+    "nothing-to-check",
+    "unknown",
+    "unsupported",
+  ]),
+  message: Schema.optional(Schema.String),
+});
+
+const ListCodexPluginsResponse = Schema.Struct({
+  plugins: Schema.Array(CodexPluginEntrySchema),
+});
+
+// One plugin's icon by preset id, for `executor:`-scheme icon resolution
+// (static catalog presets cannot embed a machine-local file; an <img> cannot
+// carry the bearer header, so the client fetches this and renders the data
+// URI).
+const CodexPluginIconResponse = Schema.Struct({
+  icon: Schema.NullOr(Schema.String),
+});
 
 // ---------------------------------------------------------------------------
 // Group
@@ -180,5 +274,25 @@ export const McpGroup = HttpApiGroup.make("mcp")
       payload: ConfigureAuthPayload,
       success: ConfigureAuthResponse,
       error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listCodexPlugins", "/mcp/codex-plugins", {
+      success: ListCodexPluginsResponse,
+      error: [InternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("checkCodexPluginAccess", "/mcp/codex-plugins/:id/check", {
+      params: { id: Schema.String },
+      success: CodexPluginAccessResponse,
+      error: [InternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getCodexPluginIcon", "/mcp/codex-plugins/:id/icon", {
+      params: { id: Schema.String },
+      success: CodexPluginIconResponse,
+      error: [InternalError],
     }),
   );

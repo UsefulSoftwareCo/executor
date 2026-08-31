@@ -60,11 +60,28 @@ declare global {
       // number to drive the backstop. Production leaves it unset.
       EXECUTION_RATE_LIMIT_PER_HOUR?: string;
 
+      // Optional override for the counter DO's check budget in milliseconds
+      // (defaults to RATE_LIMIT_CHECK_TIMEOUT_MS = 2000 when unset or
+      // unparseable). Same purpose as the cap override: the production budget
+      // can't be blown on demand, so tests set a tiny one to exercise the
+      // fail-open path. Production leaves it unset.
+      EXECUTION_RATE_LIMIT_CHECK_TIMEOUT_MS?: string;
+
       // First-party OAuth apps (executor-owned provider registrations). Each
       // pair enables one-click connect through `first-party:<provider>`; an
       // unset pair simply ships no first-party app for that provider. The
       // registered callback on the provider side must be
       // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback`.
+      FIRST_PARTY_AIRTABLE_CLIENT_ID?: string;
+      FIRST_PARTY_AIRTABLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_ATLASSIAN_CLIENT_ID?: string;
+      FIRST_PARTY_ATLASSIAN_CLIENT_SECRET?: string;
+      FIRST_PARTY_BOX_CLIENT_ID?: string;
+      FIRST_PARTY_BOX_CLIENT_SECRET?: string;
+      FIRST_PARTY_CLICKUP_CLIENT_ID?: string;
+      FIRST_PARTY_CLICKUP_CLIENT_SECRET?: string;
+      FIRST_PARTY_FIGMA_CLIENT_ID?: string;
+      FIRST_PARTY_FIGMA_CLIENT_SECRET?: string;
       FIRST_PARTY_GITHUB_CLIENT_ID?: string;
       FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
       // Endpoint overrides for the GitHub first-party app, so tests/dev can
@@ -72,8 +89,18 @@ declare global {
       // production (the real github.com endpoints are the defaults).
       FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
       FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+      FIRST_PARTY_GITLAB_CLIENT_ID?: string;
+      FIRST_PARTY_GITLAB_CLIENT_SECRET?: string;
       FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
       FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_HUBSPOT_CLIENT_ID?: string;
+      FIRST_PARTY_HUBSPOT_CLIENT_SECRET?: string;
+      FIRST_PARTY_LINEAR_CLIENT_ID?: string;
+      FIRST_PARTY_LINEAR_CLIENT_SECRET?: string;
+      FIRST_PARTY_MICROSOFT_CLIENT_ID?: string;
+      FIRST_PARTY_MICROSOFT_CLIENT_SECRET?: string;
+      FIRST_PARTY_NOTION_CLIENT_ID?: string;
+      FIRST_PARTY_NOTION_CLIENT_SECRET?: string;
       FIRST_PARTY_SLACK_CLIENT_ID?: string;
       FIRST_PARTY_SLACK_CLIENT_SECRET?: string;
 
@@ -91,6 +118,9 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
+      /** Test-only override for the isolate-wide resident-runtime soft cap
+       *  (see `RESIDENT_RUNTIME_SOFT_CAP`). Unset in production. */
+      MCP_RESIDENT_RUNTIME_SOFT_CAP?: string;
       NODE_ENV?: string;
 
       // Shared with frontend

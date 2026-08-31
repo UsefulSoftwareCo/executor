@@ -21,7 +21,11 @@ export const ProvidersHandlers = HttpApiBuilder.group(ExecutorApi, "providers", 
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
           const entries = yield* executor.providers.items(path.key);
-          return entries.map((entry) => ({ id: entry.id, name: entry.name }));
+          return entries.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            ...(entry.group !== undefined ? { group: entry.group } : {}),
+          }));
         }),
       ),
     ),

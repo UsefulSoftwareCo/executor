@@ -25,6 +25,8 @@ import { loadOrMintLocalAuthToken } from "./local-auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { resolveSupervisedDaemonAttach } from "./supervised-daemon";
+import { classifySidecarExit } from "./sidecar-exit";
+import { isAppQuitting } from "./app-quit";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
 
 // Sidecar output is echoed to the terminal (visible when Electron is run
@@ -44,8 +46,12 @@ const expectedExits = new WeakSet<ChildProcess>();
 // Main/index.ts subscribes to swap the dead web UI for the in-window crash
 // screen. A callback (not an import) keeps this module free of window
 // concerns.
-let unexpectedExitListener: (() => void) | null = null;
-export const onUnexpectedSidecarExit = (listener: () => void) => {
+export interface SidecarExitNotice {
+  /** False for an expected shutdown, where nothing was sent upstream. */
+  readonly reported: boolean;
+}
+let unexpectedExitListener: ((notice: SidecarExitNotice) => void) | null = null;
+export const onUnexpectedSidecarExit = (listener: (notice: SidecarExitNotice) => void) => {
   unexpectedExitListener = listener;
 };
 
@@ -209,6 +215,18 @@ const resolveClientDir = (): string => {
 const delay = (ms: number): Promise<void> =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
+/**
+ * Where this app keeps `data.db`, `auth.json`, and the server manifest.
+ *
+ * A dev run overrides it: that SQLite has ONE owner, so a dev build started
+ * beside an installed Executor otherwise dies on the installed app's lock.
+ * Redirecting HOME is not an alternative — the machine-local tools a plugin
+ * drives resolve their own paths from it, and Codex Computer Use fails at
+ * "native pipe startup" under a synthetic home.
+ */
+const executorScopeDir = (): string =>
+  process.env.EXECUTOR_DESKTOP_SCOPE_DIR ?? join(homedir(), ".executor");
+
 export async function startSidecar(options: StartOptions = {}): Promise<SidecarConnection> {
   const hostname = options.hostname ?? "127.0.0.1";
   const settings = getServerSettings();
@@ -220,7 +238,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   // userData (set in main/index.ts) is still used for electron-store,
   // electron-log, and window-state — those stay app-scoped to avoid colliding
   // with anything else under HOME.
-  const scopeDir = join(homedir(), ".executor");
+  const scopeDir = executorScopeDir();
   const dataDir = scopeDir;
   mkdirSync(dataDir, { recursive: true });
 
@@ -341,17 +359,34 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
 
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       if (resolved) {
-        // Post-boot exit: expected when we stopped it ourselves (quit,
-        // restart, update); anything else is a sidecar crash under a live
-        // window — log it and report upstream with the stderr tail.
-        if (expectedExits.has(child)) {
-          sidecarLog.info(`exited (code=${code} signal=${signal})`);
+        // Post-boot exit. Expected when we stopped it ourselves (quit, restart,
+        // update) and when something outside the app interrupted it — the child
+        // shares Electron's process group, so a group-wide SIGINT reaches it
+        // directly and surfaces as code 130. Only the rest is a crash under a
+        // live window, reported upstream with the stderr tail.
+        const classification = classifySidecarExit({
+          code,
+          signal,
+          stoppedByUs: expectedExits.has(child),
+          appQuitting: isAppQuitting(),
+        });
+        if (classification.kind === "managed-stop") {
+          sidecarLog.info(`exited (code=${code} signal=${signal}) — ${classification.reason}`);
+          return;
+        }
+        if (classification.kind === "external-shutdown") {
+          // The server really is gone, so the window still has to say so; it
+          // just wasn't a crash, so nothing is reported.
+          sidecarLog.info(
+            `Sidecar shut down by ${classification.reason} (code=${code} signal=${signal})`,
+          );
+          unexpectedExitListener?.({ reported: false });
           return;
         }
         const message = `Sidecar exited unexpectedly (code=${code} signal=${signal})`;
         sidecarLog.error(message);
         reportSidecarCrash(message, stderrBuffer);
-        unexpectedExitListener?.();
+        unexpectedExitListener?.({ reported: true });
         return;
       }
       if (rejected) return;
@@ -406,7 +441,7 @@ const isDaemonReachable = async (origin: string): Promise<boolean> => {
  * is handled by the existing single-instance / ownership logic.
  */
 export async function attachToSupervisedDaemon(): Promise<SidecarConnection | null> {
-  const dataDir = join(homedir(), ".executor");
+  const dataDir = executorScopeDir();
   const manifest = readManifest(dataDir);
   const decision = await resolveSupervisedDaemonAttach(manifest, {
     isReachable: isDaemonReachable,
