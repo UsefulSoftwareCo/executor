@@ -188,16 +188,24 @@ describe("PKCE", () => {
 // buildAuthorizationUrl
 // ---------------------------------------------------------------------------
 
-describe("providerAuthorizeExtras (Google offline/consent quirk)", () => {
+describe("providerAuthorizeExtras (provider authorization quirks)", () => {
   it("adds access_type=offline + prompt=consent for the Google authorize host", () => {
     expect(providerAuthorizeExtras("https://accounts.google.com/o/oauth2/v2/auth")).toEqual({
       access_type: "offline",
       prompt: "consent",
     });
   });
-  it("adds nothing for non-Google hosts or an unparseable URL (token host ≠ authorize host)", () => {
+
+  it("adds optional_scope for workspace-owned HubSpot OAuth clients", () => {
+    expect(providerAuthorizeExtras("https://app.hubspot.com/oauth/authorize")).toEqual({
+      optional_scope: "content crm.objects.custom.read crm.schemas.custom.read",
+    });
+  });
+
+  it("adds nothing for unrelated hosts, token hosts, or an unparseable URL", () => {
     expect(providerAuthorizeExtras("https://accounts.spotify.com/authorize")).toEqual({});
     expect(providerAuthorizeExtras("https://oauth2.googleapis.com/token")).toEqual({});
+    expect(providerAuthorizeExtras("https://api.hubapi.com/oauth/v3/token")).toEqual({});
     expect(providerAuthorizeExtras("not a url")).toEqual({});
   });
 });

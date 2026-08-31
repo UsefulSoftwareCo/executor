@@ -6,6 +6,7 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { slackMcpUserScopes } from "@executor-js/react/lib/slack-mcp-oauth";
 import { IntegrationSlug, type FirstPartyOAuthClientConfig } from "@executor-js/sdk";
+import { HUBSPOT_OPTIONAL_SCOPES } from "@executor-js/sdk/host-internal";
 
 /** Cloud secret bindings that enable host-operated OAuth clients. A provider
  *  is absent unless both values in its pair are present. */
@@ -145,12 +146,6 @@ const HUBSPOT_REQUIRED_SCOPES = [
   "settings.users.write",
   "tickets",
   "timeline",
-] as const;
-
-const HUBSPOT_OPTIONAL_SCOPES = [
-  "content",
-  "crm.objects.custom.read",
-  "crm.schemas.custom.read",
 ] as const;
 
 const MICROSOFT_SCOPES = [
