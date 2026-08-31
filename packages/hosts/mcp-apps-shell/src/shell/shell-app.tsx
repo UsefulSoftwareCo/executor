@@ -69,7 +69,8 @@ type RendererRequest =
       args: unknown;
       role?: unknown;
     }
-  | { type: "executor.renderer.ready"; token: string }
+  | { type: "executor.renderer.ready"; token: string; openLinkNonce: unknown }
+  | { type: "executor.openLink"; token: string; url: unknown; openLinkNonce: unknown }
   | { type: "executor.renderer.config"; token: string; config: unknown }
   | { type: "executor.renderer.size"; token: string; height: unknown }
   | { type: "executor.renderer.error"; token: string; message: unknown }
@@ -254,6 +255,14 @@ const buildRendererSrcDoc = (token: string): string => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** The frame is untrusted, so only allow plain web links through. A
+ * `javascript:` URL would run as the host page, not inside the sandbox. */
+const isExternalWebUrl = (value: unknown): value is string => {
+  if (typeof value !== "string" || !URL.canParse(value)) return false;
+  const protocol = new URL(value).protocol;
+  return protocol === "http:" || protocol === "https:";
+};
+
 // ---------------------------------------------------------------------------
 // Remembered approvals ("Approve and don't ask again")
 // ---------------------------------------------------------------------------
@@ -378,6 +387,10 @@ export function McpAppsShell({
   const pendingInteractionRef = useRef<PendingInteraction | null>(null);
   const rendererFrameRef = useRef<HTMLIFrameElement | null>(null);
   const rendererRef = useRef<RendererState | null>(null);
+  // The nonce the renderer made before running any generated code. We never
+  // send it back into the frame, so a link request has to prove it knows this
+  // nonce, not just the public renderer token.
+  const openLinkAuthorizationRef = useRef<{ token: string; nonce: string } | null>(null);
   // Whether the embedding host can store a preview snapshot. Held in a ref
   // because the renderer message handler is built once and must not be rebuilt
   // when the context changes.
@@ -533,6 +546,11 @@ export function McpAppsShell({
       };
 
       if (data.type === "executor.renderer.ready") {
+        if (typeof data.openLinkNonce !== "string" || data.openLinkNonce === "") return;
+        openLinkAuthorizationRef.current = {
+          token: current.token,
+          nonce: data.openLinkNonce,
+        };
         postToRenderer({
           type: "executor.render",
           code: current.code,
@@ -546,6 +564,23 @@ export function McpAppsShell({
           // renderer host-agnostic: under a real MCP client this is absent and
           // no capture work happens at all.
           capturePreview: capturePreviewRef.current,
+        });
+        return;
+      }
+
+      // The frame can't open links itself, so it relays the click to us and we
+      // ask the host to open it. We check the nonce and the URL first.
+      if (data.type === "executor.openLink") {
+        const authorization = openLinkAuthorizationRef.current;
+        if (
+          authorization?.token !== current.token ||
+          data.openLinkNonce !== authorization.nonce ||
+          !isExternalWebUrl(data.url)
+        ) {
+          return;
+        }
+        app.openLink({ url: data.url }).catch((error: unknown) => {
+          console.error("[executor-shell] Failed to open generated link:", error);
         });
         return;
       }
@@ -633,7 +668,7 @@ export function McpAppsShell({
 
     window.addEventListener("message", handleRendererMessage);
     return () => window.removeEventListener("message", handleRendererMessage);
-  }, [hostContext?.theme, postToRenderer]);
+  }, [app, hostContext?.theme, postToRenderer]);
 
   useEffect(() => {
     if (renderer) {
@@ -674,6 +709,7 @@ export function McpAppsShell({
         height: 240,
       };
       rendererRef.current = nextRenderer;
+      openLinkAuthorizationRef.current = null;
       setRenderer(nextRenderer);
       setComponent(null);
       setError(null);
@@ -682,6 +718,7 @@ export function McpAppsShell({
       setError(`Compilation error: ${msg}`);
       setComponent(null);
       rendererRef.current = null;
+      openLinkAuthorizationRef.current = null;
       setRenderer(null);
     }
   }, []);
@@ -745,6 +782,7 @@ export function McpAppsShell({
       };
       setComponent(() => DataView);
       rendererRef.current = null;
+      openLinkAuthorizationRef.current = null;
       setRenderer(null);
       setError(null);
     };
