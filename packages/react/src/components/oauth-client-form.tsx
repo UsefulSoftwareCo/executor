@@ -3,10 +3,12 @@ import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import { ExternalLink } from "lucide-react";
 import {
+  isTokenEndpointAuthMethod,
   OAuthClientSlug,
   type IntegrationSlug,
   type OAuthGrant,
   type Owner,
+  type TokenEndpointAuthMethod,
 } from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
@@ -67,7 +69,16 @@ export interface OAuthClientFormPrefill {
    *  prefilled "Register automatically" picks the right client-auth method
    *  instead of defaulting to public ("none"). */
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
+  /** Saved manual-client transport. Omitted means client_secret_post. */
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }
+
+export const preferredManualTokenEndpointAuthMethod = (
+  advertised: readonly string[] | undefined,
+): TokenEndpointAuthMethod =>
+  advertised?.includes("client_secret_basic") === true && !advertised.includes("client_secret_post")
+    ? "basic"
+    : "body";
 
 /** The scopes to register via DCR. The integration's DECLARED (template) scopes
  *  are authoritative and immutable, so they win. Otherwise the DISCOVERED set is
@@ -99,11 +110,13 @@ export const canSubmitOAuthClientForm = (input: {
   readonly clientSecret: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }): boolean =>
   !input.submitting &&
   input.name.trim().length > 0 &&
   input.clientId.trim().length > 0 &&
   (input.grant === "authorization_code" || input.clientSecret.trim().length > 0) &&
+  (input.tokenEndpointAuthMethod !== "basic" || input.clientSecret.trim().length > 0) &&
   input.tokenUrl.trim().length > 0 &&
   (input.grant === "client_credentials" || input.authorizationUrl.trim().length > 0);
 
@@ -182,6 +195,10 @@ export function OAuthClientForm(props: {
   const [grant, setGrant] = useState<OAuthGrant>(prefill?.grant ?? "authorization_code");
   const [clientId, setClientId] = useState(prefill?.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
+  const [tokenEndpointAuthMethod, setTokenEndpointAuthMethod] = useState<TokenEndpointAuthMethod>(
+    prefill?.tokenEndpointAuthMethod ??
+      preferredManualTokenEndpointAuthMethod(prefill?.tokenEndpointAuthMethodsSupported),
+  );
   const [issuerUrl, setIssuerUrl] = useState("");
   const [discoveredIssuer, setDiscoveredIssuer] = useState<string | null>(prefill?.issuer ?? null);
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
@@ -239,6 +256,7 @@ export function OAuthClientForm(props: {
     clientSecret,
     authorizationUrl,
     tokenUrl,
+    tokenEndpointAuthMethod,
   });
 
   // DCR is offered when the server advertises a registration endpoint AND we
@@ -344,6 +362,7 @@ export function OAuthClientForm(props: {
         grant,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
+        tokenEndpointAuthMethod,
         resource: normalizedResource,
         // Editing preserves the app's already-recorded origin (via
         // `intentIntegration`, passed verbatim by the caller); a fresh
@@ -550,6 +569,51 @@ export function OAuthClientForm(props: {
             data-ph-block
           />
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Token endpoint authentication</Label>
+        <RadioGroup
+          value={tokenEndpointAuthMethod}
+          onValueChange={(next: string) => {
+            if (isTokenEndpointAuthMethod(next)) setTokenEndpointAuthMethod(next);
+          }}
+          className="grid gap-2 sm:grid-cols-2"
+        >
+          {(
+            [
+              {
+                value: "body",
+                label: "Request body",
+                hint: "client_secret_post",
+              },
+              {
+                value: "basic",
+                label: "HTTP Basic",
+                hint: "client_secret_basic",
+              },
+            ] as const
+          ).map((option) => (
+            <Label
+              key={option.value}
+              htmlFor={`token-auth-${option.value}`}
+              className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+            >
+              <RadioGroupItem
+                id={`token-auth-${option.value}`}
+                value={option.value}
+                className="mt-0.5"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="block font-mono text-xs text-muted-foreground">{option.hint}</span>
+              </span>
+            </Label>
+          ))}
+        </RadioGroup>
+        {tokenEndpointAuthMethod === "basic" && clientSecret.trim().length === 0 ? (
+          <p className="text-xs text-destructive">HTTP Basic requires a client secret.</p>
+        ) : null}
       </div>
 
       {/* endpoints */}

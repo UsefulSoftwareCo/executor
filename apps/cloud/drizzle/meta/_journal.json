@@ -113,6 +113,13 @@
       "when": 1785355354955,
       "tag": "0015_equal_the_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788164746073,
+      "tag": "0016_oauth_client_token_auth",
+      "breakpoints": true
     }
   ]
 }

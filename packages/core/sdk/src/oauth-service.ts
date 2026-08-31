@@ -40,6 +40,7 @@ import {
   firstPartyOAuthClientAllowsScopes,
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
+  parseStoredTokenEndpointAuthMethod,
   type ConnectResult,
   type CreateOAuthClientInput,
   type EnterpriseManagedStartInput,
@@ -857,6 +858,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
+      if (input.tokenEndpointAuthMethod === "basic" && input.clientSecret.length === 0) {
+        return yield* new StorageError({
+          message: "HTTP Basic token endpoint authentication requires a client secret.",
+          cause: undefined,
+        });
+      }
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>
@@ -903,6 +910,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           grant: input.grant,
           client_id: input.clientId,
           client_secret_item_id: clientSecretItemIdValue,
+          token_endpoint_auth_method: input.tokenEndpointAuthMethod ?? null,
           resource: input.resource ?? null,
           origin_kind: input.origin?.kind ?? "manual",
           // Recorded intent, kept for BOTH origins: a manual app registered from
@@ -1295,6 +1303,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         tokenUrl: config.tokenUrl,
         resource: config.resource ?? null,
         clientId: config.clientId,
+        ...(config.tokenEndpointAuthMethod === undefined
+          ? {}
+          : { tokenEndpointAuthMethod: config.tokenEndpointAuthMethod }),
         origin: {
           kind: "first_party",
           ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
@@ -1317,6 +1328,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 }),
               );
             }
+            const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
+              row.token_endpoint_auth_method,
+            );
+            if (tokenEndpointAuthMethod === null) {
+              return Effect.fail(
+                new StorageError({
+                  message: `oauth_client ${String(row.slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
+                  cause: undefined,
+                }),
+              );
+            }
             return Effect.succeed({
               owner: String(row.owner) as Owner,
               slug: OAuthClientSlug.make(String(row.slug)),
@@ -1325,6 +1347,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               tokenUrl: String(row.token_url),
               resource: row.resource == null ? null : String(row.resource),
               clientId: String(row.client_id),
+              ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
               origin: parseOAuthClientOrigin(row),
             } satisfies OAuthClientSummary);
           }),
@@ -1368,6 +1391,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
             );
           }
+          const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
+            row.token_endpoint_auth_method,
+          );
+          if (tokenEndpointAuthMethod === null) {
+            return Effect.fail(
+              new StorageError({
+                message: `oauth_client ${String(slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
+                cause: undefined,
+              }),
+            );
+          }
           // `client_secret_item_id` is null for DCR-minted / public PKCE clients;
           // the token exchange treats a missing secret as "public client, omit
           // client_secret" (see pickClientAuth). A confidential client persisted
@@ -1390,6 +1424,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               clientId: String(row.client_id),
               clientSecret,
               resource: row.resource == null ? null : String(row.resource),
+              ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
             } satisfies LoadedOAuthClient;
           });
         }),
@@ -1529,6 +1564,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           clientId: client.clientId,
           clientSecret: client.clientSecret,
           scopes: requestedScopes,
+          clientAuth: client.tokenEndpointAuthMethod,
           resource: client.resource ?? undefined,
           endpointUrlPolicy: deps.endpointUrlPolicy,
           fetch,

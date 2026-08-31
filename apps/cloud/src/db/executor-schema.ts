@@ -98,6 +98,7 @@ export const oauth_client = pgTable(
     grant: text("grant").notNull(),
     client_id: text("client_id").notNull(),
     client_secret_item_id: text("client_secret_item_id"),
+    token_endpoint_auth_method: text("token_endpoint_auth_method"),
     resource: text("resource"),
     origin_kind: text("origin_kind"),
     origin_integration: text("origin_integration"),

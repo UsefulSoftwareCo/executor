@@ -4,6 +4,7 @@ import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
+  preferredManualTokenEndpointAuthMethod,
   registrationScopes,
   resolveOriginIntegration,
 } from "./oauth-client-form";
@@ -111,6 +112,29 @@ describe("canSubmitOAuthClientForm", () => {
         authorizationUrl: "",
       }),
     ).toBe(false);
+  });
+
+  it("requires a secret when HTTP Basic is selected", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "authorization_code",
+        clientSecret: "",
+        tokenEndpointAuthMethod: "basic",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("preferredManualTokenEndpointAuthMethod", () => {
+  it("selects Basic when it is the only advertised confidential method", () => {
+    expect(preferredManualTokenEndpointAuthMethod(["client_secret_basic"])).toBe("basic");
+  });
+
+  it("keeps the compatible request-body default when both methods are advertised", () => {
+    expect(
+      preferredManualTokenEndpointAuthMethod(["client_secret_basic", "client_secret_post"]),
+    ).toBe("body");
   });
 });
 

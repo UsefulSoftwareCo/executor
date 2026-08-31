@@ -60,6 +60,7 @@ export interface OAuthTestServerOptions {
   readonly defaultPassword?: string;
   readonly defaultClientId?: string;
   readonly defaultClientSecret?: string;
+  readonly defaultTokenEndpointAuthMethod?: "client_secret_post" | "client_secret_basic";
   readonly clients?: Readonly<Record<string, string | null>>;
   readonly scopes?: readonly string[];
   readonly omitTokenResponseScopes?: readonly string[];
@@ -257,9 +258,11 @@ const decodeBasicAuthorization = (
   const decoded = Buffer.from(match[1]!, "base64").toString("utf8");
   const separator = decoded.indexOf(":");
   if (separator < 0) return null;
+  const decodeFormComponent = (component: string): string =>
+    new URLSearchParams(`value=${component}`).get("value") ?? component;
   return {
-    username: decoded.slice(0, separator),
-    password: decoded.slice(separator + 1),
+    username: decodeFormComponent(decoded.slice(0, separator)),
+    password: decodeFormComponent(decoded.slice(separator + 1)),
   };
 };
 
@@ -566,7 +569,7 @@ export const serveOAuthTestServer = (
     clients.set(defaultClientId, {
       clientSecret: defaultClientSecret,
       redirectUris: new Set(),
-      tokenEndpointAuthMethod: "client_secret_post",
+      tokenEndpointAuthMethod: options.defaultTokenEndpointAuthMethod ?? "client_secret_post",
     });
     for (const [clientId, clientSecret] of Object.entries(options.clients ?? {})) {
       clients.set(clientId, {
@@ -786,6 +789,12 @@ export const serveOAuthTestServer = (
           const client = clientId ? clients.get(clientId) : undefined;
           if (!clientId || !client) {
             return oauthError(401, "invalid_client", "Unknown client");
+          }
+          if (
+            (client.tokenEndpointAuthMethod === "client_secret_basic" && !basic) ||
+            (client.tokenEndpointAuthMethod === "client_secret_post" && basic)
+          ) {
+            return oauthError(401, "invalid_client", "Wrong client authentication method");
           }
           if (client.clientSecret !== null && client.clientSecret !== clientSecret) {
             return oauthError(401, "invalid_client", "Invalid client secret");

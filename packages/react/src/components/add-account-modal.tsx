@@ -2733,6 +2733,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                   resource: editingClient.resource ?? null,
                   grant: editingClient.grant,
                   clientId: editingClient.clientId,
+                  tokenEndpointAuthMethod: editingClient.tokenEndpointAuthMethod,
                 }}
                 onCreated={() => setEditingClient(null)}
                 onCancel={() => setEditingClient(null)}

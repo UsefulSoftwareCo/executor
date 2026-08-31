@@ -30,6 +30,7 @@ import {
   OAuthState,
   Owner,
   ProviderKey,
+  TokenEndpointAuthMethodSchema,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ const CreateClientPayload = Schema.Struct({
   grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
   clientId: Schema.String,
   clientSecret: Schema.String,
+  tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   /** Integration whose connect dialog registered this manual app. Recorded so
    *  the picker matches it to this integration by intent, not root domain. */
@@ -116,6 +118,7 @@ const OAuthClientSummaryResponse = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
+  tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
   origin: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("manual") }),
     Schema.Struct({
