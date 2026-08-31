@@ -482,6 +482,95 @@ describe("executor.policies", () => {
     }),
   );
 
+  it.effect("create refuses an explicit position that shadows a more-specific rule", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      // The org's narrow leaf rule commits first, at the top.
+      const leaf = yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.org.main.delete",
+        action: "block",
+      });
+      // A broad wildcard approve whose caller-supplied position sorts ABOVE
+      // the leaf rule: first match per owner wins, so this would silently
+      // weaken the org's block into an approve. `"0"` (0x30) sorts before
+      // every key generateKeyBetween emits (`"a0"`…), so it claims the top of
+      // the owner's list. Refused, not stored.
+      const result = yield* Effect.result(
+        executor.policies.create({
+          owner: "org",
+          pattern: "*",
+          action: "approve",
+          position: "0",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(String((result as { failure: { message: string } }).failure.message)).toContain(
+        "more-specific rule",
+      );
+      void leaf;
+    }),
+  );
+
+  it.effect("update refuses a position that hoists a broad rule above a narrower one", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const narrow = yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.org.main.delete",
+        action: "block",
+      });
+      const broad = yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*",
+        action: "approve",
+      });
+      // Broad starts below narrow (the default placement). A client-supplied
+      // position above the narrow rule would flip match precedence — refused.
+      const result = yield* Effect.result(
+        executor.policies.update({
+          id: String(broad.id),
+          owner: "org",
+          position: "0",
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+
+      // Reordering among equally-specific rules is still allowed.
+      const equallySpecific = yield* executor.policies.create({
+        owner: "org",
+        pattern: "github.*",
+        action: "require_approval",
+      });
+      yield* executor.policies.update({
+        id: String(equallySpecific.id),
+        owner: "org",
+        position: narrow.position,
+      });
+      const rules = yield* executor.policies.list();
+      expect(rules.find((r) => r.pattern === "github.*")?.position).toBe(narrow.position);
+    }),
+  );
+
+  it.effect("update rejects an unknown action", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const created = yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*",
+        action: "require_approval",
+      });
+      const result = yield* Effect.result(
+        executor.policies.update({
+          id: String(created.id),
+          owner: "org",
+          action: "deny-everything" as never,
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    }),
+  );
+
   it.effect("remove deletes the rule", () =>
     Effect.gen(function* () {
       const executor = yield* setupExecutor();

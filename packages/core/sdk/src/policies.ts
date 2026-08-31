@@ -180,6 +180,64 @@ export const positionForNewPattern = (
   return generateKeyBetween(prev, next);
 };
 
+/**
+ * Whether two patterns can possibly match the same tool id. Conservative:
+ * any shared prefix up to the first differing literal segment counts as
+ * overlap, and a wildcard segment anywhere before a difference does too.
+ * Only used to scope the ordering invariant below — false positives keep the
+ * invariant strict; false negatives would be unsafe, and there are none
+ * (segment-by-segment, a shared literal prefix plus a wildcard or exhaustion
+ * is the only way to a common tool id).
+ */
+const patternsOverlap = (a: string, b: string): boolean => {
+  if (a === "*" || b === "*") return true;
+  const as = a.split(".");
+  const bs = b.split(".");
+  const len = Math.min(as.length, bs.length);
+  for (let i = 0; i < len; i++) {
+    const sa = as[i]!;
+    const sb = bs[i]!;
+    if (sa === "*" || sb === "*") return true;
+    if (sa !== sb) return false;
+  }
+  return true;
+};
+
+/**
+ * Whether a CALLER-SUPPLIED position is safe for `pattern` among the owner's
+ * committed rules. `positionForNewPattern` computes the safest key when the
+ * client omits one; a client that sends one can otherwise place a broad rule
+ * above a narrower rule of the same owner and silently weaken it — first
+ * match per owner wins (`resolveToolPolicy`), so precedence is authority.
+ * The invariant is the same one the default placement enforces: a rule may
+ * never sort ABOVE (lexically before) an existing rule that is MORE specific
+ * than it AND can match a tool this rule also matches. Equally- or
+ * less-specific rules, and rules over disjoint tool sets, remain freely
+ * orderable.
+ *
+ * `excludeId` omits the rule being updated, so a reorder is judged against
+ * the OTHER committed rules.
+ */
+export const isValidPositionForPattern = (
+  pattern: string,
+  position: string,
+  rows: ReadonlyArray<Pick<ToolPolicyRow, "pattern" | "position" | "id">>,
+  excludeId?: string,
+): boolean => {
+  const newScore = patternSpecificity(pattern);
+  for (const row of rows) {
+    if (excludeId !== undefined && row.id === excludeId) continue;
+    if (
+      patternSpecificity(row.pattern) > newScore &&
+      patternsOverlap(row.pattern, pattern) &&
+      position <= row.position
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
 const actionRestrictionRank = (action: ToolPolicyAction): number =>
   Match.value(action).pipe(
     Match.when("block", () => 3),
