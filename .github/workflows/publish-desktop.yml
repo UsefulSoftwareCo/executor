@@ -108,30 +108,11 @@ jobs:
         with:
           node-version: 24
 
-      - name: Cache Bun package cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: bun-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-cache-${{ runner.os }}-${{ runner.arch }}-
-
-      # Electron's postinstall downloads a ~120MB runtime zip into this cache,
-      # and electron-builder pulls its packaging tools (nsis, winCodeSign,
-      # AppImage) into a sibling cache on first use. Both are keyed only by
-      # version, so a lockfile-keyed cache stays warm across most releases.
-      - name: Cache Electron downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/electron
-            ~/Library/Caches/electron-builder
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
-          restore-keys: electron-cache-${{ runner.os }}-${{ runner.arch }}-
-
+      # No package/electron caches here on purpose: on Blacksmith's NVMe
+      # runners a cold `bun install` (8-55s) is as fast as a cache
+      # restore + warm install, and bun.lock changes on every release
+      # (Version Packages), so each publish would pay the cache-save tail
+      # (~45s on the mac critical path) for nothing.
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
