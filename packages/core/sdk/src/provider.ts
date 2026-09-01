@@ -27,7 +27,16 @@ export interface CredentialProvider {
    *  connection's `remove` only drops our routing, leaving the item intact. */
   readonly writable: boolean;
   /** Resolve a value by opaque id. The single hop a credential goes through
-   *  before its template is applied. The provider interprets the id. */
+   *  before its template is applied. The provider interprets the id.
+   *
+   *  AN ITEM ID IS UNIQUE ONLY WITHIN AN OWNER PARTITION, never globally. The
+   *  ids the SDK constructs embed the owner LITERAL (`org` / `user`) but not the
+   *  subject, so two members of the same org computing an id for their own
+   *  `user`-owned connection arrive at the SAME string. A provider that keeps
+   *  one flat namespace across subjects will therefore let one member's write
+   *  overwrite another's, and one member's delete remove another's — the shipped
+   *  stores avoid this by filing rows per `(tenant, owner, subject)`. Partition
+   *  by the same key, or two people quietly share one credential slot. */
   readonly get: (id: ProviderItemId) => Effect.Effect<string | null, StorageFailure>;
   readonly has?: (id: ProviderItemId) => Effect.Effect<boolean, StorageFailure>;
   readonly set?: (id: ProviderItemId, value: string) => Effect.Effect<void, StorageFailure>;
