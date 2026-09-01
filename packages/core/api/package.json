@@ -42,6 +42,8 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
     "effect": "catalog:",

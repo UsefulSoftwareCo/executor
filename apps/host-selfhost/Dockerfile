@@ -12,7 +12,11 @@
 FROM oven/bun:1 AS prod-deps
 WORKDIR /app
 COPY . .
-RUN bun install --frozen-lockfile --production --ignore-scripts --filter @executor-js/host-selfhost \
+# The public API tarball exposes only the client, while its workspace server sources use
+# host-mcp and execution as build-time collaborators. Include API development dependencies
+# for this intermediate bundle stage; package-runtime copies only the runtime closure below.
+RUN bun install --frozen-lockfile --ignore-scripts \
+      --filter @executor-js/host-selfhost --filter @executor-js/api \
   && bun run apps/host-selfhost/scripts/package-runtime.ts
 
 FROM oven/bun:1 AS build

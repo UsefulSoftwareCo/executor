@@ -47,7 +47,7 @@ describe("makeExecutorApiClient", () => {
     }),
   );
 
-  it.effect("declares a public client boundary with no private workspace dependencies", () =>
+  it.effect("declares a public client boundary with no private runtime dependencies", () =>
     Effect.gen(function* () {
       const [source, changesetsSource] = yield* Effect.all([
         Effect.promise(() => readFile(new URL("../package.json", import.meta.url), "utf8")),
@@ -91,13 +91,18 @@ describe("makeExecutorApiClient", () => {
         },
       });
       expect(manifest.dependencies).toEqual({ "@executor-js/sdk": "workspace:*" });
-      const declaredDependencies = [
+      expect(manifest.devDependencies).toMatchObject({
+        "@executor-js/execution": "workspace:*",
+        "@executor-js/host-mcp": "workspace:*",
+      });
+      const publishableDependencies = [
         ...Object.keys(manifest.dependencies ?? {}),
-        ...Object.keys(manifest.devDependencies ?? {}),
         ...Object.keys(manifest.optionalDependencies ?? {}),
         ...Object.keys(manifest.peerDependencies ?? {}),
       ];
-      expect(declaredDependencies.filter((name) => changesets.ignore?.includes(name))).toEqual([]);
+      expect(publishableDependencies.filter((name) => changesets.ignore?.includes(name))).toEqual(
+        [],
+      );
       expect(manifest.private).not.toBe(true);
     }),
   );
