@@ -5,7 +5,8 @@ directories (`SKILL.md` with YAML frontmatter + optional `scripts/`, `references
 that carry procedure the way integrations carry capability. vision.md already stakes skills as
 a first-party capability and an artifact kind; this plan pins the concrete shape.
 
-Decisions (Ethan, 2026-09-01). The design splits three ways: **bring in**, **use**, **manage**.
+Decisions (Ethan + Rhys, 2026-09-01). The design splits three ways: **bring in**, **use**,
+**manage**.
 
 ## Format and posture
 
@@ -19,11 +20,15 @@ Decisions (Ethan, 2026-09-01). The design splits three ways: **bring in**, **use
 
 ## Bring in
 
-- **CLI, `npx skills`-shaped**: `executor skills add <owner>/<repo>` (GitHub), plus import
-  from the local filesystem (`executor skills add ./path`). Same discovery walk as the
-  ecosystem CLI: `SKILL.md` directories under the usual container layouts.
+- **Add / create over MCP**: agent-facing bring-in tools on the MCP surface — add a skill
+  from a source (GitHub URL, `.well-known` index) and create one in place (the vision.md
+  `skills.create` authoring path), gated like the other authoring meta-capabilities.
 - **Dashboard**: drop-in link, like adding an integration — paste a GitHub URL, we fetch and
   auto-fill name/description/file listing from the skill's frontmatter for confirmation.
+- **CLI, `npx skills`-shaped**: `executor skills add <owner>/<repo>` (GitHub), plus import
+  from the local filesystem (`executor skills add ./path`). Same discovery walk as the
+  ecosystem CLI: `SKILL.md` directories under the usual container layouts. The CLI is a
+  secondary surface — MCP and the dashboard are the primary bring-in paths.
 - **Pinning + manual sync only.** Imports record source + content hash (lockfile semantics,
   the shape `skills-lock.json` already has). No background auto-update: a manual
   `executor skills sync` and a dashboard "check for updates" re-fetch from the source and
@@ -43,7 +48,8 @@ Decisions (Ethan, 2026-09-01). The design splits three ways: **bring in**, **use
   (name + description); bodies load only via `get`. Skills stay under `skills.*`; they do
   **not** appear in the general `tools.search` results.
 - **Materialize to disk**: `executor skills sync` can also write the catalog into
-  `.agents/skills/` for agents that only read local files.
+  `.agents/skills/` for agents that only read local files. Nice-to-have, not a pillar —
+  same secondary-CLI caveat as above.
 
 ## Manage
 
@@ -66,8 +72,8 @@ separate, hand-curated thing.
 
 1. Rename the internal `skills` tool; land the skill store (workspace/personal scoped,
    file-backed) with `skills.search`/`skills.get` in code mode.
-2. Bring-in surfaces: CLI add (GitHub + filesystem) with lockfile pinning, dashboard drop-in,
-   manual sync.
+2. Bring-in surfaces: MCP add/create and dashboard drop-in with lockfile pinning and manual
+   sync; CLI add (GitHub + filesystem) behind them.
 3. Serve per SEP-2640 and pass through upstream MCP-served skills; `.agents/skills/`
    materialization.
 4. Toolset attachment and the dashboard page's full management surface.
