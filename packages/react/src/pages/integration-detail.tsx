@@ -11,6 +11,7 @@ import {
   IntegrationSlug,
   ToolAddress,
   effectivePolicyFromSorted,
+  isToolSyncHealth,
   type Connection,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -255,7 +256,17 @@ export function IntegrationDetailPage(props: {
   const healthProbeFor = useConnectionsHealth(integrationConnections);
   const toolsHealthIssue = useMemo(() => {
     const issues = integrationConnections
-      .map((connection) => ({ connection, probe: healthProbeFor(connection) }))
+      .map((connection) => ({
+        connection,
+        // The health hook hides tool-sync stamps from CONNECTION-health
+        // display, but this consumer explains an empty CATALOG — and a
+        // "Tool sync failing" stamp is exactly that explanation (it carries
+        // the sync failure and drives the "Check and sync tools" recovery).
+        // Fall back to the raw persisted verdict when it is one.
+        probe:
+          healthProbeFor(connection) ??
+          (isToolSyncHealth(connection.lastHealth) ? connection.lastHealth : null),
+      }))
       .filter(
         (
           entry,

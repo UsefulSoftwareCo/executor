@@ -1,9 +1,4 @@
-import type {
-  HealthCheckReason,
-  HealthStatus,
-  IntegrationSlug,
-  Owner,
-} from "@executor-js/sdk/shared";
+import type { HealthStatus, IntegrationSlug, Owner } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Pure display logic for the admin Users section.
@@ -22,7 +17,10 @@ export interface AdminConnectionRow {
   readonly oauthScope: string | null;
   readonly lastHealth: {
     readonly status: HealthStatus;
-    readonly reason?: HealthCheckReason;
+    /** A `HealthCheckReason` literal, tolerant of future additions (the admin
+     *  wire types it as a plain string); unrecognized values read as
+     *  unclassified. */
+    readonly reason?: string;
   } | null;
 }
 
