@@ -28,25 +28,47 @@ import type { CloudflareConfig } from "../config";
 export const principalFromAccessClaims = (
   claims: Record<string, unknown>,
   config: CloudflareConfig,
-): Principal => {
-  const email = typeof claims.email === "string" ? claims.email : "";
+): Principal | null => {
+  const claimedEmail = typeof claims.email === "string" ? claims.email : "";
   const sub = typeof claims.sub === "string" && claims.sub.length > 0 ? claims.sub : "";
   const commonName = typeof claims.common_name === "string" ? claims.common_name : "";
+  const isServiceToken = claims.type === "app" && sub.length === 0 && commonName.length > 0;
+  const email = isServiceToken ? "" : claimedEmail;
   const nameClaim = claims[config.accessNameClaim];
   const groupsClaim = claims[config.accessGroupsClaim];
   const groups = Array.isArray(groupsClaim) ? groupsClaim.map(String) : [];
-  const isAdmin = email.length > 0 && config.adminEmails.includes(email.toLowerCase());
+  const mappedServiceSubject = isServiceToken
+    ? (config.accessServiceTokenSubjects[commonName.toLowerCase()] ?? "")
+    : "";
+  const isAdmin =
+    !isServiceToken && email.length > 0 && config.adminEmails.includes(email.toLowerCase());
+  const accountId = mappedServiceSubject || sub || email || commonName;
+
+  // A valid signature alone is not an identity. Reject claims that provide no
+  // human subject, email fallback, or service-token common_name.
+  if (accountId.length === 0) return null;
 
   return {
     kind: "member",
-    accountId: sub || email || commonName,
+    // An explicit mapping lets a dedicated service token reach the same
+    // personal connections as a human Access subject. Human identities keep
+    // Access' stable `sub`; unmapped service tokens keep their own common_name.
+    accountId,
     organizationId: config.organizationId,
     organizationName: config.organizationName,
     organizationSlug: config.organizationSlug,
     email,
     name: typeof nameClaim === "string" ? nameClaim : commonName || null,
     avatarUrl: null,
-    roles: isAdmin ? ["admin", ...groups] : groups.length > 0 ? groups : ["member"],
+    // A bearer service token never inherits the mapped human's admin or group
+    // privileges. The shared accountId grants access only to user-owned data.
+    roles: isServiceToken
+      ? ["member"]
+      : isAdmin
+        ? ["admin", ...groups]
+        : groups.length > 0
+          ? groups
+          : ["member"],
   };
 };
 

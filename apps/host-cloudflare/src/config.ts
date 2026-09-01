@@ -40,6 +40,10 @@ export interface CloudflareEnv {
   readonly ACCESS_GROUPS_CLAIM?: string;
   /** Comma-separated emails granted the admin role. */
   readonly ADMIN_EMAILS?: string;
+  /** Comma-separated `<service-token common_name>=<human Access sub>` mappings.
+   *  A mapped service token can use the human subject's personal connections,
+   *  but it remains a non-admin member. */
+  readonly ACCESS_SERVICE_TOKEN_SUBJECTS?: string;
   /** The single organization id/name every authenticated user belongs to. */
   readonly SELF_HOSTED_ORG_ID?: string;
   readonly SELF_HOSTED_ORG_NAME?: string;
@@ -64,6 +68,7 @@ export interface CloudflareConfig {
   readonly accessNameClaim: string;
   readonly accessGroupsClaim: string;
   readonly adminEmails: readonly string[];
+  readonly accessServiceTokenSubjects: Readonly<Record<string, string>>;
   readonly organizationId: string;
   readonly organizationName: string;
   /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
@@ -91,6 +96,34 @@ const splitLower = (value: string | undefined): readonly string[] =>
     .split(",")
     .map((part) => part.trim().toLowerCase())
     .filter((part) => part.length > 0);
+
+const parseServiceTokenSubjects = (value: string | undefined): Readonly<Record<string, string>> => {
+  const seenCommonNames = new Set<string>();
+  return Object.fromEntries(
+    (value ?? "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .map((part) => {
+        const separator = part.indexOf("=");
+        const commonName = part.slice(0, separator).trim().toLowerCase();
+        const subject = part.slice(separator + 1).trim();
+        if (
+          separator <= 0 ||
+          commonName.length === 0 ||
+          subject.length === 0 ||
+          seenCommonNames.has(commonName)
+        ) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an invalid identity map must fail closed at boot
+          throw new Error(
+            'ACCESS_SERVICE_TOKEN_SUBJECTS must contain unique comma-separated "<common_name>=<Access sub>" entries',
+          );
+        }
+        seenCommonNames.add(commonName);
+        return [commonName, subject];
+      }),
+  );
+};
 
 const normalizeAccessTeamDomain = (value: string | undefined): string =>
   (value ?? "")
@@ -161,6 +194,7 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     accessNameClaim: env.ACCESS_NAME_CLAIM ?? "name",
     accessGroupsClaim: env.ACCESS_GROUPS_CLAIM ?? "groups",
     adminEmails: splitLower(env.ADMIN_EMAILS),
+    accessServiceTokenSubjects: parseServiceTokenSubjects(env.ACCESS_SERVICE_TOKEN_SUBJECTS),
     organizationId: env.SELF_HOSTED_ORG_ID ?? "default",
     organizationName: env.SELF_HOSTED_ORG_NAME ?? "Default",
     organizationSlug: resolveOrgSlug(env.SELF_HOSTED_ORG_SLUG),

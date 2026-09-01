@@ -53,8 +53,48 @@ describe("loadConfig", () => {
       accessTeamDomain: "Team.cloudflareaccess.com",
       accessAud: "aud-tag",
       adminEmails: [],
+      accessServiceTokenSubjects: {},
       enableDevAuth: false,
     });
+  });
+
+  it("normalises dedicated service-token subject mappings", () => {
+    expect(
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: "ABC123.access=user-123, DEF456.access=user-456",
+        }),
+      ).accessServiceTokenSubjects,
+    ).toEqual({
+      "abc123.access": "user-123",
+      "def456.access": "user-456",
+    });
+  });
+
+  it("rejects malformed service-token subject mappings", () => {
+    expect(() =>
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: "missing-subject",
+        }),
+      ),
+    ).toThrowError("ACCESS_SERVICE_TOKEN_SUBJECTS");
+  });
+
+  it("rejects duplicate service-token subject mappings", () => {
+    expect(() =>
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: "ABC123.access=user-123, abc123.access=user-456",
+        }),
+      ),
+    ).toThrowError("ACCESS_SERVICE_TOKEN_SUBJECTS");
   });
 });
 
@@ -69,6 +109,7 @@ describe("Cloudflare deployment configuration", () => {
     expect(config.vars).not.toHaveProperty("ACCESS_TEAM_DOMAIN");
     expect(config.vars).not.toHaveProperty("ACCESS_AUD");
     expect(config.vars).not.toHaveProperty("ADMIN_EMAILS");
+    expect(config.vars).not.toHaveProperty("ACCESS_SERVICE_TOKEN_SUBJECTS");
     expect(config.vars).toHaveProperty("ENABLE_DEV_AUTH", "false");
   });
 });
