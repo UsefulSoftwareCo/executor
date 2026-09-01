@@ -174,6 +174,24 @@ describe("connectionHealthStatus", () => {
   it("a never-probed connection is unchecked, not healthy", () => {
     expect(connectionHealthStatus(connection({ lastHealth: null }))).toBe("unknown");
   });
+
+  it("a tool-sync stamp is catalog state, not a degraded connection", () => {
+    // Same rule as the console's `presentableHealth`: one failed sync sweep
+    // must not paint an operator's view of a user's connections amber.
+    expect(
+      connectionHealthStatus(
+        connection({ lastHealth: { status: "degraded", reason: "tool_sync_failed" } }),
+      ),
+    ).toBe("unknown");
+  });
+
+  it("a genuine degraded probe verdict still reads degraded", () => {
+    expect(
+      connectionHealthStatus(
+        connection({ lastHealth: { status: "degraded", reason: "probe_timeout" } }),
+      ),
+    ).toBe("degraded");
+  });
 });
 
 describe("isConnectableIntegration", () => {

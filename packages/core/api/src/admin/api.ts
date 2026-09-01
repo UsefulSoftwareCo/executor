@@ -36,7 +36,13 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
-import { ConnectionName, HealthStatus, IntegrationSlug, Owner } from "@executor-js/sdk/shared";
+import {
+  ConnectionName,
+  HealthCheckReason,
+  HealthStatus,
+  IntegrationSlug,
+  Owner,
+} from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -150,6 +156,11 @@ export const AdminConnectionHealth = Schema.Struct({
   /** Epoch ms the check ran, so an operator can tell a fresh verdict from a
    *  stale one. */
   checkedAt: Schema.Number,
+  /** Enumerable failure mechanism (`HealthCheckReason`). Carried so the view
+   *  can tell a tool-sync stamp (`tool_sync_failed` — catalog state, not
+   *  credential health) from a genuine probe verdict without the free-text
+   *  `detail` this plane deliberately strips. */
+  reason: Schema.optional(HealthCheckReason),
 });
 
 /**

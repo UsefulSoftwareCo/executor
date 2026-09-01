@@ -1,4 +1,9 @@
-import type { HealthStatus, IntegrationSlug, Owner } from "@executor-js/sdk/shared";
+import type {
+  HealthCheckReason,
+  HealthStatus,
+  IntegrationSlug,
+  Owner,
+} from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Pure display logic for the admin Users section.
@@ -15,7 +20,10 @@ export interface AdminConnectionRow {
   readonly integration: IntegrationSlug;
   readonly name: string;
   readonly oauthScope: string | null;
-  readonly lastHealth: { readonly status: HealthStatus } | null;
+  readonly lastHealth: {
+    readonly status: HealthStatus;
+    readonly reason?: HealthCheckReason;
+  } | null;
 }
 
 // ── Last seen ───────────────────────────────────────────────────────────────
@@ -142,9 +150,16 @@ export const adminUserCopyableEmail = (user: AdminUserIdentityRow): string | nul
 // ── Connections ─────────────────────────────────────────────────────────────
 
 /** The health status a row displays. A connection that was never probed carries
- *  no verdict, which is `unknown` in the shared vocabulary. */
-export const connectionHealthStatus = (connection: AdminConnectionRow): HealthStatus =>
-  connection.lastHealth?.status ?? "unknown";
+ *  no verdict, which is `unknown` in the shared vocabulary. A tool-sync stamp
+ *  (`reason: "tool_sync_failed"`) is catalog state, not credential health —
+ *  the same rule the console's `presentableHealth` applies — so it reads
+ *  `unknown` here rather than painting the row degraded. */
+export const connectionHealthStatus = (connection: AdminConnectionRow): HealthStatus => {
+  const last = connection.lastHealth;
+  if (last === null) return "unknown";
+  if (last.reason === "tool_sync_failed") return "unknown";
+  return last.status;
+};
 
 /** The catalog row this view needs: the slug it marks, plus the `kind` that
  *  says whether connecting is even a thing one can do to it. Structural so
