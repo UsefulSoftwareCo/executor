@@ -74,8 +74,12 @@ export interface InstanceAdmin {
  * string is the common case rather than the contract. Membership in the
  * privileged set is therefore tested per role, not by equality on the whole
  * field — an `"owner,admin"` value must not read as neither.
+ *
+ * Exported for the identity seam: the same "who counts as an admin" answer
+ * decides the executor's workspace-write binding (`Principal.orgRole`), and
+ * there is only one place to be right about it.
  */
-const isPrivileged = (role: string): boolean =>
+export const isPrivileged = (role: string): boolean =>
   role
     .split(",")
     .map((part) => part.trim())

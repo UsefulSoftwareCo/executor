@@ -30,6 +30,10 @@ export interface CredentialProvider {
    *  before its template is applied. The provider interprets the id. */
   readonly get: (id: ProviderItemId) => Effect.Effect<string | null, StorageFailure>;
   readonly has?: (id: ProviderItemId) => Effect.Effect<boolean, StorageFailure>;
+  /** Unconditional replacement. This public seam intentionally promises no
+   * compare-and-set/version token: file, OS-keychain, remote-vault, and
+   * external implementations do not share an atomic conditional-write
+   * primitive. Callers must not infer successor safety from a preceding get. */
   readonly set?: (id: ProviderItemId, value: string) => Effect.Effect<void, StorageFailure>;
   readonly delete?: (id: ProviderItemId) => Effect.Effect<void, StorageFailure>;
   /** Browse entries for discovery (pick a 1Password item). Optional — some

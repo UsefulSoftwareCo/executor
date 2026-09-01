@@ -52,10 +52,11 @@ import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { messageFromExit } from "../api/error-reporting";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import { ownerLabel, ownerLabelForHost, useOwnerDisplay } from "../api/owner-display";
 import {
   ConnectionOwnerDropdown,
-  connectionOwnerOptionsForHost,
+  connectionOwnerOptionsForAccess,
   defaultConnectionOwnerForHost,
   normalizeConnectionOwner,
   resolveOAuthConnectionOwnerForHost,
@@ -1406,16 +1407,25 @@ function AddAccountModalView(props: AddAccountModalProps) {
     open,
     onOpenChange,
     initialState,
-    createCustomMethod,
-    removeCustomMethod,
+    createCustomMethod: requestedCreateCustomMethod,
+    removeCustomMethod: requestedRemoveCustomMethod,
   } = props;
   const organizationId = useOrganizationId();
   const ownerDisplay = useOwnerDisplay();
-  const ownerOptions = useMemo(
-    () => connectionOwnerOptionsForHost(organizationId),
-    [organizationId],
-  );
+  const canCreateWorkspaceConnections = useCanCreateWorkspaceConnections();
+  const ownerOptions = useMemo(() => {
+    return connectionOwnerOptionsForAccess(organizationId, canCreateWorkspaceConnections);
+  }, [canCreateWorkspaceConnections, organizationId]);
   const defaultOwner = defaultConnectionOwnerForHost(organizationId);
+  // Custom methods mutate the workspace-wide integration catalog, so they stay
+  // admin-only even though members can add Personal connections using methods
+  // that an admin has already configured.
+  const createCustomMethod = canCreateWorkspaceConnections
+    ? requestedCreateCustomMethod
+    : undefined;
+  const removeCustomMethod = canCreateWorkspaceConnections
+    ? requestedRemoveCustomMethod
+    : undefined;
 
   // The selectable methods: the declared ones plus any custom method created in
   // this session (so a just-created method shows + can be selected before the
@@ -1879,6 +1889,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
   ): { readonly onEdit: () => void; readonly onRemove: () => void } | undefined => {
     // First-party apps are host config, not rows: nothing to edit or remove.
     if (appOption.origin.kind === "first_party") return undefined;
+    // Members may use a shared app to mint their own Personal connection, but
+    // only admins may edit or remove that Workspace-owned app.
+    if (appOption.owner === "org" && !canCreateWorkspaceConnections) return undefined;
     const summary = clientSummaries.find(
       (c: OAuthClientSummary) =>
         c.owner === appOption.owner && String(c.slug) === String(appOption.slug),
@@ -2815,7 +2828,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
               </DialogTitle>
               <DialogDescription>
                 {ownerDisplay.showOwnerLabels
-                  ? "A connection is a saved way to use this integration, owned by you or the workspace."
+                  ? canCreateWorkspaceConnections
+                    ? "A connection is a saved way to use this integration, owned by you or the workspace."
+                    : "A connection is a saved way to use this integration, owned by you."
                   : "A connection is a saved way to use this integration."}
               </DialogDescription>
             </DialogHeader>

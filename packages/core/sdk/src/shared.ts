@@ -59,6 +59,7 @@ export {
   IntegrationNotFoundError,
   IntegrationAlreadyExistsError,
   IntegrationRemovalNotAllowedError,
+  OrgWriteDeniedError,
   ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
   InvalidConnectionInputError,

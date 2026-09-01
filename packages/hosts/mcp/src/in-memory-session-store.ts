@@ -21,7 +21,9 @@ import {
   McpSessionStore,
   defaultMcpResource,
   mcpResourceKey,
+  orgWriteAccessForPrincipal,
   principalOwns,
+  withOrgWriteAccess,
   type McpDispatchInput,
   type McpDispatchResult,
   type Principal,
@@ -342,15 +344,17 @@ export const makeInMemoryMcpSessionStore = (
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
+    owners.set(sessionId, { principal, resource });
     touch(sessionId);
     // Claim before the await, release in the finalizer — `runHandleRequest`
     // already recovers every failure to a 500, but `ensuring` also covers an
     // interrupt, so the counter cannot be left permanently raised (which would
     // make the session immortal, the opposite leak).
     beginRequest(sessionId);
-    return runHandleRequest(transport, request).pipe(
-      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
-    );
+    return runHandleRequest(
+      transport,
+      withOrgWriteAccess(request, orgWriteAccessForPrincipal(principal)),
+    ).pipe(Effect.ensuring(Effect.sync(() => endRequest(sessionId))));
   };
 
   /**
@@ -420,14 +424,18 @@ export const makeInMemoryMcpSessionStore = (
           yield* Effect.promise(() => mcpServer.connect(transport));
           // The session id is minted on the first (initialize) request, so we
           // drive `handleRequest` here; if no id results we close eagerly.
-          return yield* runHandleRequest(transport, request, () => {
-            // Nothing was ever registered under a session id, so `dispose` has
-            // no entry to work from — release the three handles by hand, engine
-            // included.
-            void ignoreClose(null, "transport", () => transport.close());
-            void ignoreClose(null, "server", () => mcpServer.close());
-            void shutdownEngine(null, engine);
-          });
+          return yield* runHandleRequest(
+            transport,
+            withOrgWriteAccess(request, orgWriteAccessForPrincipal(principal)),
+            () => {
+              // Nothing was ever registered under a session id, so `dispose` has
+              // no entry to work from — release the three handles by hand, engine
+              // included.
+              void ignoreClose(null, "transport", () => transport.close());
+              void ignoreClose(null, "server", () => mcpServer.close());
+              void shutdownEngine(null, engine);
+            },
+          );
         }),
       ),
       // A build failure has nowhere typed to go in the envelope; render a 500.
@@ -532,7 +540,12 @@ export const makeInMemoryMcpSessionStore = (
     const response = raw === null ? null : decodeResumeResponse(raw);
     if (!response) return json({ error: "Invalid approval response" }, 400);
 
-    await Effect.runPromise(approvals.recordResponse(executionId, response));
+    await Effect.runPromise(
+      approvals.recordResponse(executionId, {
+        response,
+        orgWriteAccess: principal ? orgWriteAccessForPrincipal(principal) : "allowed",
+      }),
+    );
     return json({
       status: "completed",
       ...formatResumeAcknowledgement(executionId, response),

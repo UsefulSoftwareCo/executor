@@ -4,10 +4,15 @@ import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
+  initialOAuthClientOwner,
   preferredManualTokenEndpointAuthMethod,
   registrationScopes,
   resolveOriginIntegration,
 } from "./oauth-client-form";
+import {
+  connectionOwnerOptionsForAccess,
+  normalizeConnectionOwner,
+} from "../plugins/connection-owner";
 import { oauthAppSetupFor } from "./oauth-app-setup";
 
 const validBase = {
@@ -134,6 +139,18 @@ describe("canSubmitOAuthClientForm", () => {
         tokenEndpointAuthMethod: "basic_raw",
       }),
     ).toBe(false);
+  });
+});
+
+describe("OAuth client owner default", () => {
+  it("restores Workspace when loading resolves to admin unless Personal was chosen", () => {
+    const defaultChoice = initialOAuthClientOwner(undefined);
+    const loadingOptions = connectionOwnerOptionsForAccess("org_123", false);
+    expect(normalizeConnectionOwner(defaultChoice, loadingOptions)).toBe("user");
+
+    const adminOptions = connectionOwnerOptionsForAccess("org_123", true);
+    expect(normalizeConnectionOwner(defaultChoice, adminOptions)).toBe("org");
+    expect(normalizeConnectionOwner("user", adminOptions)).toBe("user");
   });
 });
 

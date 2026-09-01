@@ -25,6 +25,7 @@ import {
   type IntegrationConfig,
   type IntegrationRecord,
   type OAuthClientSummary,
+  type OrgWriteDeniedError,
   type Owner,
   type PluginCtx,
   type StaticToolSchema,
@@ -2049,12 +2050,17 @@ export interface McpPluginExtension {
     input: McpServerInput,
   ) => Effect.Effect<
     { readonly slug: string },
-    McpExtensionFailure | IntegrationAlreadyExistsError
+    McpExtensionFailure | IntegrationAlreadyExistsError | OrgWriteDeniedError
   >;
-  readonly removeServer: (slug: string) => Effect.Effect<void, McpExtensionFailure>;
+  readonly removeServer: (
+    slug: string,
+  ) => Effect.Effect<void, McpExtensionFailure | OrgWriteDeniedError>;
   /** Ensure every stdio integration has its default connection (migrating any
    *  legacy inline env into the secret store). Idempotent; safe to run at boot. */
-  readonly reconcileStdioConnections: () => Effect.Effect<void, McpExtensionFailure>;
+  readonly reconcileStdioConnections: () => Effect.Effect<
+    void,
+    McpExtensionFailure | OrgWriteDeniedError
+  >;
   readonly getServer: (
     slug: string,
   ) => Effect.Effect<
@@ -2064,11 +2070,11 @@ export interface McpPluginExtension {
   readonly configureServer: (
     slug: string,
     config: McpIntegrationConfigType,
-  ) => Effect.Effect<void, McpExtensionFailure>;
+  ) => Effect.Effect<void, McpExtensionFailure | OrgWriteDeniedError>;
   readonly configureAuth: (
     slug: string,
     input: McpConfigureAuthInput,
-  ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure>;
+  ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure | OrgWriteDeniedError>;
   /** Locally installed Codex plugins with stdio MCP servers, as one-click
    *  presets. Empty when stdio is disabled. */
   readonly listCodexPlugins: () => Effect.Effect<readonly CodexPluginEntry[], never>;

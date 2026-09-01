@@ -359,7 +359,6 @@ type UsersWithConnectionsBody = {
     }>;
   }>;
 };
-
 const ORG_A = "Bearer org_a_key";
 
 /**

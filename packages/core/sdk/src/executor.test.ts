@@ -37,6 +37,7 @@ const memoryProvider = (): CredentialProvider => {
     writable: true,
     get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
     set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+    delete: (id) => Effect.sync(() => void store.delete(String(id))),
   };
 };
 

@@ -17,6 +17,7 @@ import {
   ToolAddress,
   createExecutor,
   endpointForTelemetry,
+  makeInMemoryBlobStore,
 } from "@executor-js/sdk";
 import {
   makeTestConfig,
@@ -120,6 +121,21 @@ const makeExecutor = () =>
     makeTestConfig({ plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const }),
   );
 
+const recordingBlobStore = () => {
+  const base = makeInMemoryBlobStore();
+  let writes = 0;
+  return {
+    store: {
+      ...base,
+      put: (namespace: string, key: string, value: string) =>
+        Effect.sync(() => {
+          writes += 1;
+        }).pipe(Effect.andThen(base.put(namespace, key, value))),
+    },
+    writeCount: () => writes,
+  };
+};
+
 const toolAddr = (integration: string, connection: string, tool: string): ToolAddress =>
   ToolAddress.make(`tools.${integration}.org.${connection}.${tool}`);
 
@@ -141,6 +157,29 @@ const createOrgConnection = (
   });
 
 describe("graphqlPlugin real protocol server", () => {
+  it.effect("denies member schema persistence before writing an org blob", () =>
+    Effect.gen(function* () {
+      const blobs = recordingBlobStore();
+      const config = makeTestConfig({ plugins: [graphqlPlugin()] as const });
+      const member = yield* createExecutor({
+        ...config,
+        blobs: blobs.store,
+        orgWrites: "denied",
+      });
+
+      const error = yield* member.graphql
+        .addIntegration({
+          endpoint: "https://example.test/graphql",
+          slug: "denied-graphql",
+          introspectionJson,
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "OrgWriteDeniedError" });
+      expect(blobs.writeCount()).toBe(0);
+    }),
+  );
+
   it("uses query-free endpoints for invocation attributes", () => {
     expect(endpointForTelemetry("https://api.example.test/graphql?token=secret#section")).toBe(
       "https://api.example.test/graphql",

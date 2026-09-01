@@ -7,6 +7,18 @@ export class StorageError extends Data.TaggedError("StorageError")<{
   readonly cause: unknown;
 }> {}
 
+/**
+ * A committed row points at an executor-owned credential write that did not
+ * finish. The operation is safe to retry; provider references and causes stay
+ * internal and are never projected onto the wire.
+ */
+export class CredentialWriteIncompleteError extends Data.TaggedError(
+  "CredentialWriteIncompleteError",
+)<{
+  readonly message: string;
+  readonly cause: unknown;
+}> {}
+
 export class UniqueViolationError extends Data.TaggedError("UniqueViolationError")<{
   readonly model?: string;
 }> {}
@@ -41,7 +53,11 @@ export class StorageConnectionError extends Data.TaggedError("StorageConnectionE
   readonly cause: unknown;
 }> {}
 
-export type StorageFailure = StorageError | StorageConnectionError | UniqueViolationError;
+export type StorageFailure =
+  | StorageError
+  | CredentialWriteIncompleteError
+  | StorageConnectionError
+  | UniqueViolationError;
 
 export type FumaTables = Record<string, AnyTable>;
 type EmptyFumaSchema = FumaSchema<"latest", Record<never, never>>;
@@ -175,6 +191,7 @@ const stableMessage = (label: string, code: string | undefined): string =>
 
 export const isStorageFailure = (error: unknown): error is StorageFailure =>
   Predicate.isTagged(error, "StorageError") ||
+  Predicate.isTagged(error, "CredentialWriteIncompleteError") ||
   Predicate.isTagged(error, "StorageConnectionError") ||
   Predicate.isTagged(error, "UniqueViolationError");
 
@@ -217,9 +234,17 @@ export const activeFumaDbRef = Context.Reference<FumaDb | null>("executor/Active
 // still roll back. `afterCommit` solves this structurally: while a transaction
 // is active the effect is queued on the outermost transaction's hook list and
 // runs after its commit; with no active transaction it runs immediately.
-// Hooks are best-effort observers: failures and defects are swallowed, and a
-// rolled-back transaction discards its queue.
-const pendingCommitHooksRef = Context.Reference<Array<Effect.Effect<void>> | null>(
+// A rolled-back transaction discards both kinds. Observer failures are
+// swallowed; required finalizers attempt every queued effect and report their
+// combined failure only after the database commit is already durable.
+type PendingCommitHook =
+  | { readonly _tag: "Observer"; readonly effect: Effect.Effect<void> }
+  | {
+      readonly _tag: "Required";
+      readonly effect: Effect.Effect<void, StorageFailure>;
+    };
+
+const pendingCommitHooksRef = Context.Reference<Array<PendingCommitHook> | null>(
   "executor/PendingCommitHooks",
   { defaultValue: () => null },
 );
@@ -228,10 +253,40 @@ export const afterCommit = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.flatMap(Effect.service(pendingCommitHooksRef), (hooks) =>
     hooks
       ? Effect.sync(() => {
-          hooks.push(effect);
+          hooks.push({ _tag: "Observer", effect });
         })
       : effect.pipe(Effect.ignoreCause({ log: false })),
   );
+
+/**
+ * Run a required external finalizer after the outermost database commit.
+ * Nested transactions queue it and return; the outer transaction attempts all
+ * required finalizers after commit and then reports any combined failure.
+ */
+export const afterCommitRequired = (
+  effect: Effect.Effect<void, StorageFailure>,
+): Effect.Effect<void, StorageFailure> =>
+  Effect.flatMap(Effect.service(pendingCommitHooksRef), (hooks) =>
+    hooks
+      ? Effect.sync(() => {
+          hooks.push({ _tag: "Required", effect });
+        })
+      : effect,
+  );
+
+const runCommitHooks = (hooks: readonly PendingCommitHook[]): Effect.Effect<void, StorageFailure> =>
+  Effect.gen(function* () {
+    let failureCause: Cause.Cause<StorageFailure> = Cause.empty;
+    for (const hook of hooks) {
+      if (Predicate.isTagged(hook, "Observer")) {
+        yield* hook.effect.pipe(Effect.ignoreCause({ log: false }));
+        continue;
+      }
+      const exit = yield* Effect.exit(hook.effect);
+      if (Exit.isFailure(exit)) failureCause = Cause.combine(failureCause, exit.cause);
+    }
+    if (failureCause.reasons.length > 0) return yield* Effect.failCause(failureCause);
+  });
 
 class TransactionEffectFailure {
   constructor(readonly error: unknown) {}
@@ -304,37 +359,33 @@ export const makeFumaClient = (db: FumaDb, options: MakeFumaClientOptions = {}):
       // The outermost transaction owns the post-commit hook queue; hooks
       // queued anywhere inside (including nested pass-through transactions)
       // run only after THIS commit, and are discarded on rollback.
-      const commitHooks: Array<Effect.Effect<void>> = [];
-      return Effect.tryPromise({
-        try: () =>
-          db.transaction(async (transactionDb) => {
-            const exit = await Effect.runPromiseExit(
-              effect.pipe(
-                Effect.provideService(activeFumaDbRef, transactionDb),
-                Effect.provideService(pendingCommitHooksRef, commitHooks),
-              ),
-            );
-            if (Exit.isSuccess(exit)) return exit.value;
+      const commitHooks: PendingCommitHook[] = [];
+      return Effect.contextWith((context) =>
+        Effect.tryPromise({
+          try: () =>
+            db.transaction(async (transactionDb) => {
+              const exit = await Effect.runPromiseExitWith(context)(
+                effect.pipe(
+                  Effect.provideService(activeFumaDbRef, transactionDb),
+                  Effect.provideService(pendingCommitHooksRef, commitHooks),
+                ),
+              );
+              if (Exit.isSuccess(exit)) return exit.value;
 
-            const failure = exit.cause.reasons.find(Cause.isFailReason);
-            // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB transactions roll back when the callback rejects
-            if (failure) throw new TransactionEffectFailure(failure.error);
-            // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB transactions roll back when the callback rejects
-            throw new TransactionEffectDefect(exit.cause);
-          }),
-        catch: (cause): E | StorageFailure => {
-          if (cause instanceof TransactionEffectFailure) return cause.error as E;
-          if (cause instanceof TransactionEffectDefect) {
-            return fumaFailureFromCause("transaction", cause.cause);
-          }
-          return fumaFailureFromCause("transaction", cause);
-        },
-      }).pipe(
-        Effect.tap(() =>
-          Effect.forEach(commitHooks, (hook) => hook.pipe(Effect.ignoreCause({ log: false })), {
-            discard: true,
-          }),
-        ),
+              const failure = exit.cause.reasons.find(Cause.isFailReason);
+              // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB transactions roll back when the callback rejects
+              if (failure) throw new TransactionEffectFailure(failure.error);
+              // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: FumaDB transactions roll back when the callback rejects
+              throw new TransactionEffectDefect(exit.cause);
+            }),
+          catch: (cause): E | StorageFailure => {
+            if (cause instanceof TransactionEffectFailure) return cause.error as E;
+            if (cause instanceof TransactionEffectDefect) {
+              return fumaFailureFromCause("transaction", cause.cause);
+            }
+            return fumaFailureFromCause("transaction", cause);
+          },
+        }).pipe(Effect.tap(() => runCommitHooks(commitHooks))),
       );
     }).pipe(Effect.withSpan("fumadb.transaction")) as Effect.Effect<A, E | StorageFailure>;
 

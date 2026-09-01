@@ -21,7 +21,9 @@ import { schema as fumaSchema, type RelationsMap } from "@executor-js/fumadb/sch
 import type { AnyColumn } from "@executor-js/fumadb/schema";
 import {
   StorageError,
+  CredentialWriteIncompleteError,
   afterCommit,
+  afterCommitRequired,
   isStorageFailure,
   makeFumaClient,
   type FumaDb,
@@ -71,6 +73,17 @@ import {
   type OnElicitation,
   type InvokeOptions,
 } from "./elicitation";
+import { currentOrgWriteAccess, type OrgWriteAccess } from "./org-write-access";
+import {
+  restoreCredentialSnapshotsWithRecheck,
+  snapshotCredentialWrites,
+  type CredentialWriteSnapshot,
+} from "./credential-compensation";
+import {
+  credentialAttemptItemId,
+  makeCredentialWriteAttempt,
+  parseCredentialWriteAttempt,
+} from "./credential-item-reference";
 
 export type { OnElicitation, InvokeOptions } from "./elicitation";
 import {
@@ -93,6 +106,7 @@ import {
   InvalidConnectionInputError,
   IntegrationRemovalNotAllowedError,
   NoHandlerError,
+  OrgWriteDeniedError,
   PluginNotLoadedError,
   ToolBlockedError,
   ToolInvocationError,
@@ -357,10 +371,13 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly update: (
       slug: IntegrationSlug,
       patch: { readonly name?: string; readonly description?: string },
-    ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
+    ) => Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly remove: (
       slug: IntegrationSlug,
-    ) => Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure>;
+    ) => Effect.Effect<
+      void,
+      IntegrationRemovalNotAllowedError | OrgWriteDeniedError | StorageFailure
+    >;
     readonly detect: (
       url: string,
     ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
@@ -385,7 +402,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       readonly set: (
         slug: IntegrationSlug,
         spec: HealthCheckSpec | null,
-      ) => Effect.Effect<void, IntegrationNotFoundError | StorageFailure>;
+      ) => Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure>;
     };
   };
 
@@ -398,6 +415,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
+      | OrgWriteDeniedError
       | StorageFailure
     >;
     readonly list: (filter?: {
@@ -410,15 +428,15 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly update: (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
-    ) => Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly remove: (
       ref: ConnectionRef,
-    ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<void, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly refresh: (
       ref: ConnectionRef,
     ) => Effect.Effect<
       readonly Tool[],
-      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+      ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
     >;
     /** Run the integration's declared health check against a saved connection:
      *  classify the credential (healthy / expired / degraded / unknown) and
@@ -460,9 +478,15 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 
   readonly policies: {
     readonly list: () => Effect.Effect<readonly ToolPolicy[], StorageFailure>;
-    readonly create: (input: CreateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-    readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-    readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
+    readonly create: (
+      input: CreateToolPolicyInput,
+    ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+    readonly update: (
+      input: UpdateToolPolicyInput,
+    ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+    readonly remove: (
+      input: RemoveToolPolicyInput,
+    ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
     readonly resolve: (address: ToolAddress) => Effect.Effect<EffectivePolicy, StorageFailure>;
   };
 
@@ -795,6 +819,29 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * every subject's connection rows, credential item ids included.
    */
   readonly platformView?: boolean;
+  /**
+   * Whether this binding may CONFIGURE workspace-level state: `owner: "org"`
+   * rows (shared connections, org tool policies, org OAuth clients) and the
+   * tenant-shared integration catalog. Hosts derive it from the acting
+   * member's role — admins bind `"allowed"`, plain members `"denied"`.
+   * `"request"` reads the fiber-local {@link CurrentOrgWriteAccess} at every
+   * guarded sink. Session hosts bind that reference from the freshly
+   * authenticated request without caching a positive authorization decision
+   * for the session lifetime.
+   * Defaults to `"allowed"` for non-session callers with no role model
+   * (local's single user, the CLI, tests).
+   *
+   * `"denied"` gates only the USER-INTENT settings surfaces (`policies`,
+   * `connections` create/update/remove in Workspace scope, `integrations`
+   * update/remove/healthCheck, OAuth client CRUD and connect flows in Workspace
+   * scope, new-integration registration). Members may still create and manage
+   * Personal connections and OAuth apps. They also USE workspace resources:
+   * reads, tool execution over org connections, and the operational writes
+   * those imply (token refresh, tool-catalog re-sync) are deliberately
+   * untouched — which is why this is a surface gate, not a storage-policy axis
+   * like `platformView`'s blanket `writes: "denied"`.
+   */
+  readonly orgWrites?: OrgWriteAccess | "request";
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -1115,7 +1162,10 @@ const normalizeConnectionInputs = (
   input: ConnectionValueInput,
 ): readonly NormalizedConnectionInput[] => {
   if ("inputs" in input) {
-    return Object.entries(input.inputs).map(([variable, origin]) => ({ variable, origin }));
+    return Object.entries(input.inputs).map(([variable, origin]) => ({
+      variable,
+      origin,
+    }));
   }
   if ("values" in input) {
     return Object.entries(input.values).map(([variable, value]) => ({
@@ -1136,6 +1186,12 @@ const connectionItemIds = (row: ConnectionRow): Record<string, string> => {
   const decoded = decodeJsonColumn(row.item_ids);
   if (decoded == null || typeof decoded !== "object") return {};
   return decoded as Record<string, string>;
+};
+
+/** Read the storage surrogate retained on adapter results but hidden by FumaRow. */
+const storageRowId = (row: unknown): string | null => {
+  const value = row == null ? null : (row as Record<string, unknown>)["row_id"];
+  return typeof value === "string" ? value : null;
 };
 
 // Accepts a projected row (the invoke/list paths select away the heavy
@@ -1857,6 +1913,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           )
         : Effect.void;
 
+    // Workspace-settings gate (`ExecutorConfig.orgWrites`). Called at the top
+    // of every user-intent workspace-level mutation: with an explicit owner it
+    // refuses only `"org"` targets; with no owner it guards a tenant-shared
+    // surface outright. Deliberately NOT wired into the storage owner policy —
+    // operational org-row writes (token refresh, tool-catalog re-sync) must
+    // keep working for a denied member.
+    const guardOrgWrite = (owner?: Owner): Effect.Effect<void, OrgWriteDeniedError> =>
+      Effect.gen(function* () {
+        const access =
+          config.orgWrites === "request" ? yield* currentOrgWriteAccess : config.orgWrites;
+        if (access === "denied" && (owner === undefined || owner === "org")) {
+          return yield* new OrgWriteDeniedError();
+        }
+      });
+
     // Built-in core-tools plugin: agent-facing static tools over the v2 surface.
     const plugins: readonly AnyPlugin[] = config.coreTools
       ? ([
@@ -1922,7 +1993,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // execute success path, served by tools.schema when a tool declares no
     // output schema. Backed by plugin_storage under a reserved system id.
     const shapeMemory = makeShapeMemory(
-      makePluginStorageFacade({ core, pluginId: SHAPE_MEMORY_PLUGIN_ID, owner: ownerBinding }),
+      makePluginStorageFacade({
+        core,
+        pluginId: SHAPE_MEMORY_PLUGIN_ID,
+        owner: ownerBinding,
+      }),
     );
 
     // Populated once, never mutated after startup.
@@ -1932,6 +2007,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Credential providers keyed by `provider.key`, in registration order.
     const credentialProviders = new Map<string, CredentialProvider>();
     const credentialProviderOrder: string[] = [];
+    // Identifies this live executor incarnation. Structured attempt metadata
+    // carries it beside opaque credential references, so an in-flight create in
+    // this runtime still returns the normal duplicate error while a later
+    // runtime can recognize and retry a row stranded before its write ran.
+    const credentialWriteRuntimeId = crypto.randomUUID();
 
     const staticToolOwner = (): Owner => (subject == null ? "org" : "user");
     const staticToolConnection = (integration: StaticIntegrationDecl): ConnectionName =>
@@ -2341,9 +2421,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             },
           );
         }
-        const idpClientSecret = idpRow.client_secret_item_id
-          ? ((yield* provider.get(ProviderItemId.make(String(idpRow.client_secret_item_id)))) ?? "")
+        const idpClientSecretItemId = idpRow.client_secret_item_id
+          ? String(idpRow.client_secret_item_id)
+          : null;
+        const idpClientSecret = idpClientSecretItemId
+          ? yield* provider.get(ProviderItemId.make(idpClientSecretItemId))
           : "";
+        if (
+          idpClientSecret === null &&
+          idpClientSecretItemId !== null &&
+          parseCredentialWriteAttempt(idpRow.credential_write) !== null
+        ) {
+          return yield* input.reauth(
+            "The enterprise identity provider OAuth app credential write is incomplete. Retry the connection operation.",
+            { credentialMissing: true },
+          );
+        }
 
         const grant = yield* mintEnterpriseManagedAccessToken({
           idp: {
@@ -2404,7 +2497,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 }),
               ),
             EmaUpstreamUnavailable: (cause) =>
-              Effect.fail(new StorageError({ message: enterpriseManagedMessage(cause), cause })),
+              Effect.fail(
+                new StorageError({
+                  message: enterpriseManagedMessage(cause),
+                  cause,
+                }),
+              ),
           }),
           Effect.tapError((error) =>
             Predicate.isTagged(error, "CredentialResolutionError") && error.reauthRequired === true
@@ -2435,7 +2533,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const owner = row.owner as Owner;
         const reauth = (
           message: string,
-          options?: { readonly credentialMissing?: boolean; readonly blockedByAdmin?: boolean },
+          options?: {
+            readonly credentialMissing?: boolean;
+            readonly blockedByAdmin?: boolean;
+          },
         ): CredentialResolutionError =>
           new CredentialResolutionError({
             owner,
@@ -2456,7 +2557,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // rejections over two days, surfacing nothing).
         const reauthState = oauthReauthRequiredFromProviderState(row.provider_state);
         if (reauthState !== null) {
-          yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.skipped_known_dead": true });
+          yield* Effect.annotateCurrentSpan({
+            "executor.oauth.refresh.skipped_known_dead": true,
+          });
           const recordedHealth = Option.getOrNull(decodeLastHealth(row.last_health));
           const recordedDetail =
             reauthState.oauthReauthRequiredDetail ??
@@ -2498,7 +2601,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               resource: firstParty.resource ?? null,
               ...(firstParty.tokenEndpointAuthMethod === undefined
                 ? {}
-                : { tokenEndpointAuthMethod: firstParty.tokenEndpointAuthMethod }),
+                : {
+                    tokenEndpointAuthMethod: firstParty.tokenEndpointAuthMethod,
+                  }),
               ...(firstParty.tokenRequestFormat === undefined
                 ? {}
                 : { tokenRequestFormat: firstParty.tokenRequestFormat }),
@@ -2518,10 +2623,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
           return {
             clientId: String(stored.client_id),
-            clientSecret: stored.client_secret_item_id
-              ? ((yield* provider.get(ProviderItemId.make(String(stored.client_secret_item_id)))) ??
-                "")
-              : "",
+            clientSecret: yield* Effect.gen(function* () {
+              if (!stored.client_secret_item_id) return "";
+              const itemId = String(stored.client_secret_item_id);
+              const resolved = yield* provider.get(ProviderItemId.make(itemId));
+              if (
+                resolved === null &&
+                parseCredentialWriteAttempt(stored.credential_write) !== null
+              ) {
+                return yield* new StorageError({
+                  message: `OAuth client credential write for ${clientOwner}/${clientSlug} is incomplete; retry the connection operation.`,
+                  cause: undefined,
+                });
+              }
+              return resolved ?? "";
+            }),
             tokenUrl: String(stored.token_url),
             grant: String(stored.grant),
             resource: stored.resource ? String(stored.resource) : null,
@@ -2735,7 +2851,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // or token material. The code is the dimension that separates
         // invalid_client (a rotated app secret — fleet-wide, page someone)
         // from server_error (transient, the next invoke retries).
-        Effect.tap(() => Effect.annotateCurrentSpan({ "executor.oauth.refresh.outcome": "ok" })),
+        Effect.tap(() =>
+          Effect.annotateCurrentSpan({
+            "executor.oauth.refresh.outcome": "ok",
+          }),
+        ),
         Effect.tapError((error: StorageFailure | CredentialResolutionError) =>
           Effect.annotateCurrentSpan({
             "executor.oauth.refresh.outcome": "fail",
@@ -2845,7 +2965,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         const out: Record<string, string | null> = {};
         for (const [variable, itemId] of Object.entries(connectionItemIds(row))) {
-          out[variable] = yield* provider.get(ProviderItemId.make(itemId));
+          const value = yield* provider.get(ProviderItemId.make(itemId));
+          if (value === null && parseCredentialWriteAttempt(row.credential_write) !== null) {
+            return yield* new CredentialWriteIncompleteError({
+              message: `Credential write for ${row.owner}/${row.integration}/${row.name} is incomplete; retry the connection operation.`,
+              cause: undefined,
+            });
+          }
+          out[variable] = value;
         }
         return out;
       }).pipe(
@@ -3060,13 +3187,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationsRegister = (
       pluginId: string,
       input: RegisterIntegrationInput,
-    ): Effect.Effect<void, StorageFailure> =>
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
       transaction(
         Effect.gen(function* () {
           const now = new Date();
           const existing = yield* findIntegrationRow(input.slug);
           const config = input.config === undefined ? null : input.config;
           if (existing) {
+            // Extension methods also run for subjectless boot/system executors,
+            // which must be able to converge existing catalog rows. A bound
+            // subject is an end-user principal, so its replacement is the same
+            // workspace mutation as creation and requires the live role guard.
+            if (subject !== null) yield* guardOrgWrite();
             yield* core.updateMany("integration", {
               where: (b: AnyCb) => b("slug", "=", String(input.slug)),
               set: {
@@ -3081,6 +3213,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
             return false;
           }
+          // A NEW catalog row is always user intent (the add-integration
+          // flows), including from a subjectless executor.
+          yield* guardOrgWrite();
           yield* core.create("integration", {
             tenant,
             slug: String(input.slug),
@@ -3098,7 +3233,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ).pipe(
         Effect.tap((created) =>
           created
-            ? notifyIntegrationChange({ kind: "added", pluginKey: pluginId, slug: input.slug })
+            ? notifyIntegrationChange({
+                kind: "added",
+                pluginKey: pluginId,
+                slug: input.slug,
+              })
             : Effect.void,
         ),
         Effect.asVoid,
@@ -3111,30 +3250,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         readonly description?: string;
         readonly config?: IntegrationConfig;
       },
-    ): Effect.Effect<void, StorageFailure> =>
-      Effect.gen(function* () {
-        const now = new Date();
-        const set: Record<string, unknown> = { updated_at: now };
-        if (patch.name !== undefined) set.name = patch.name;
-        if (patch.description !== undefined) set.description = patch.description;
-        if (patch.config !== undefined) {
-          set.config = patch.config;
-          // A config change can change the derived tools. The writer can only
-          // rebuild catalogs in its own partition (owner policy), so revise
-          // the integration: other subjects' connections compare this stamp
-          // against their `tools_synced_at` and lazily rebuild on next read.
-          set.config_revised_at = now.getTime();
-        }
-        yield* core.updateMany("integration", {
-          where: (b: AnyCb) => b("slug", "=", String(slug)),
-          set,
-        });
-      });
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite();
+          const now = new Date();
+          const set: Record<string, unknown> = { updated_at: now };
+          if (patch.name !== undefined) set.name = patch.name;
+          if (patch.description !== undefined) set.description = patch.description;
+          if (patch.config !== undefined) {
+            set.config = patch.config;
+            // A config change can change the derived tools. The writer can only
+            // rebuild catalogs in its own partition (owner policy), so revise
+            // the integration: other subjects' connections compare this stamp
+            // against their `tools_synced_at` and lazily rebuild on next read.
+            set.config_revised_at = now.getTime();
+          }
+          yield* core.updateMany("integration", {
+            where: (b: AnyCb) => b("slug", "=", String(slug)),
+            set,
+          });
+        }),
+      );
 
     const integrationsUpdatePublic = (
       slug: IntegrationSlug,
       patch: { readonly name?: string; readonly description?: string },
-    ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       Effect.gen(function* () {
         const existing = yield* findIntegrationRow(slug);
         if (!existing) return yield* new IntegrationNotFoundError({ slug });
@@ -3143,9 +3285,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const integrationsRemove = (
       slug: IntegrationSlug,
-    ): Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure> =>
+    ): Effect.Effect<
+      void,
+      IntegrationRemovalNotAllowedError | OrgWriteDeniedError | StorageFailure
+    > =>
       transaction(
         Effect.gen(function* () {
+          yield* guardOrgWrite();
           const existing = yield* findIntegrationRow(slug);
           if (!existing) return null;
           if (!existing.can_remove) {
@@ -3177,7 +3323,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ).pipe(
         Effect.tap((removedPluginId) =>
           removedPluginId !== null
-            ? notifyIntegrationChange({ kind: "removed", pluginKey: removedPluginId, slug })
+            ? notifyIntegrationChange({
+                kind: "removed",
+                pluginKey: removedPluginId,
+                slug,
+              })
             : Effect.void,
         ),
         Effect.asVoid,
@@ -3233,15 +3383,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const integrationSetHealthCheck = (
       slug: IntegrationSlug,
       spec: HealthCheckSpec | null,
-    ): Effect.Effect<void, IntegrationNotFoundError | StorageFailure> =>
-      Effect.gen(function* () {
-        const row = yield* findIntegrationRow(slug);
-        if (!row) return yield* new IntegrationNotFoundError({ slug });
-        yield* core.updateMany("integration", {
-          where: (b: AnyCb) => b("slug", "=", String(slug)),
-          set: { health_check: spec, updated_at: new Date() },
-        });
-      });
+    ): Effect.Effect<void, IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite();
+          const row = yield* findIntegrationRow(slug);
+          if (!row) return yield* new IntegrationNotFoundError({ slug });
+          yield* core.updateMany("integration", {
+            where: (b: AnyCb) => b("slug", "=", String(slug)),
+            set: { health_check: spec, updated_at: new Date() },
+          });
+        }),
+      );
 
     // ------------------------------------------------------------------
     // Per-connection tool production
@@ -3303,7 +3456,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const syncedSet = (row: ConnectionRow | null) => {
           const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
           return isToolSyncHealth(health)
-            ? { tools_synced_at: Date.now(), last_health: null, updated_at: new Date() }
+            ? {
+                tools_synced_at: Date.now(),
+                last_health: null,
+                updated_at: new Date(),
+              }
             : { tools_synced_at: Date.now() };
         };
         // Every exit stamps the sync time — including the cleanup paths that
@@ -3563,9 +3720,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
+      | OrgWriteDeniedError
       | StorageFailure
     > =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
         const name = connectionIdentifier(String(input.name));
         // Typed (not StorageError) so the HTTP edge can answer 400 with the
         // reason instead of an opaque 500 — callers can act on it.
@@ -3592,7 +3751,36 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           integration: input.integration,
           name,
         });
+        let retryingRowId: string | null = null;
+        let retryingItemIds: readonly string[] = [];
         if (duplicate) {
+          const duplicateItemIds = Object.values(connectionItemIds(duplicate));
+          const duplicateProvider = credentialProviders.get(duplicate.provider);
+          const duplicateAttempt = parseCredentialWriteAttempt(duplicate.credential_write);
+          const belongsToCrashedRuntime =
+            duplicateItemIds.length > 0 &&
+            duplicateAttempt !== null &&
+            duplicateAttempt.runtimeId !== credentialWriteRuntimeId;
+          const hasMissingCredential =
+            belongsToCrashedRuntime && duplicateProvider?.set
+              ? (yield* Effect.forEach(duplicateItemIds, (itemId) =>
+                  duplicateProvider
+                    .get(ProviderItemId.make(itemId))
+                    .pipe(Effect.map((value) => value === null)),
+                )).some(Boolean)
+              : false;
+          retryingRowId = hasMissingCredential ? storageRowId(duplicate) : null;
+          retryingItemIds = hasMissingCredential ? duplicateItemIds : [];
+          if (retryingRowId !== null) {
+            yield* Effect.logInfo("executor credential stranded row detected", {
+              tenant,
+              owner: input.owner,
+              integration: String(input.integration),
+              rowId: retryingRowId,
+            });
+          }
+        }
+        if (duplicate && retryingRowId === null) {
           return yield* new ConnectionAlreadyExistsError({
             owner: input.owner,
             integration: input.integration,
@@ -3625,16 +3813,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
         let providerKey: string;
+        let credentialWrite: ReturnType<typeof makeCredentialWriteAttempt> | null = null;
         const itemIds: Record<string, string> = {};
         // Pasted-value provider writes, built here but run only AFTER this
         // create wins the row insert below. Each entry carries its own undo
         // so a write that does not complete can tear down exactly the items
         // it already stored.
-        const pastedWrites: Array<{
-          readonly itemId: ProviderItemId;
-          readonly write: Effect.Effect<void, StorageFailure>;
-          readonly remove: Effect.Effect<void, StorageFailure> | null;
-        }> = [];
+        const pastedWrites: CredentialWriteSnapshot[] = [];
         if (external.length > 0 && pasted.length > 0) {
           return yield* new InvalidConnectionInputError({
             message: "A connection cannot mix pasted and external-provider inputs.",
@@ -3668,21 +3853,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           providerKey = String(provider.key);
+          const attemptId = crypto.randomUUID();
+          credentialWrite = makeCredentialWriteAttempt(credentialWriteRuntimeId, attemptId);
+          const credentialValues: Array<{
+            readonly itemId: ProviderItemId;
+            readonly value: string;
+          }> = [];
           for (const i of pasted) {
-            const itemId = `connection:${input.owner}:${input.integration}:${name}:${i.variable}`;
-            // Deferred until the row insert wins: the item id is deterministic,
-            // so writing here would overwrite the credential of an existing (or
-            // concurrently created) connection with the same name even when
-            // this create loses the row conflict.
+            const itemId = credentialAttemptItemId(
+              `connection:${input.owner}:${input.integration}:${name}:${i.variable}`,
+              attemptId,
+            );
+            // Deferred until the row insert wins. The row records this attempt's
+            // unique item id before the provider write, so an in-flight read can
+            // only observe a missing value and fail closed; it cannot fall back
+            // to a predecessor's credential.
             if ("value" in i.origin && provider.set) {
               const id = ProviderItemId.make(itemId);
-              pastedWrites.push({
-                itemId: id,
-                write: provider.set(id, i.origin.value),
-                remove: provider.delete ? provider.delete(id) : null,
-              });
+              credentialValues.push({ itemId: id, value: i.origin.value });
             }
             itemIds[i.variable] = itemId;
+          }
+          if (provider.set) {
+            pastedWrites.push(
+              ...(yield* snapshotCredentialWrites(
+                { ...provider, set: provider.set },
+                credentialValues,
+                (itemId) =>
+                  new StorageError({
+                    message: `Credential provider ${String(provider.key)} cannot restore new credential ${String(itemId)} because it does not support deletion.`,
+                    cause: undefined,
+                  }),
+              )),
+            );
           }
         }
 
@@ -3699,10 +3902,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // is read through a narrow cast. Every adapter generates it ORM-side
         // on insert; a create result without it is a broken storage contract
         // and fails here, inside the transaction, before any provider write.
-        const rowIdOf = (row: unknown): string | null => {
-          const value = row == null ? null : (row as Record<string, unknown>)["row_id"];
-          return typeof value === "string" ? value : null;
-        };
         const insertedRowId = yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow({
@@ -3711,10 +3910,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               name,
             });
             if (existing) {
-              return yield* new ConnectionAlreadyExistsError({
-                owner: input.owner,
-                integration: input.integration,
-                name,
+              if (storageRowId(existing) !== retryingRowId) {
+                return yield* new ConnectionAlreadyExistsError({
+                  owner: input.owner,
+                  integration: input.integration,
+                  name,
+                });
+              }
+              yield* core.deleteMany("connection", {
+                where: (b: AnyCb) => b("row_id", "=", retryingRowId),
               });
             }
             const inserted = yield* core.create("connection", {
@@ -3726,6 +3930,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               template: String(input.template),
               provider: providerKey,
               item_ids: itemIds,
+              credential_write: credentialWrite,
               identity_label: input.identityLabel ?? null,
               description: input.description ?? null,
               oauth_client: null,
@@ -3736,7 +3941,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               created_at: now,
               updated_at: now,
             });
-            const rowId = rowIdOf(inserted);
+            const rowId = storageRowId(inserted);
             if (rowId === null) {
               return yield* new StorageError({
                 message:
@@ -3761,280 +3966,292 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
         );
 
-        // Winner-only credential write: only the create whose row insert
-        // committed may touch the provider — a pasted value's item id is
-        // deterministic, so a losing create would clobber the winner's (or a
-        // pre-existing connection's) secret. The writes run inline, straight
-        // after the transactional insert above and BEFORE the connection's
-        // tools are produced below: GraphQL/MCP plugins do authenticated
-        // introspection via `getValues()` at tool-production time, so the
-        // credentials must exist by then or the catalog is discovered
-        // empty/incomplete and never re-discovered.
-        //
-        // Known limitation (pre-existing, not addressed here): `transaction`
-        // nests by pass-through, so a create running inside an enclosing
-        // plugin `ctx.transaction` writes credentials before the OUTER
-        // commit. If that transaction rolls back, the row vanishes with it
-        // but the credential items survive as orphans at their deterministic
-        // ids — inert until the next same-shaped create overwrites them.
-        // External credential stores cannot join a database transaction, and
-        // deferring the write past the outer commit was tried and reverted:
-        // it broke the tool-production ordering above and could not guarantee
-        // the deferred hook runs exactly once under interruption.
-        if (pastedWrites.length > 0) {
-          const written: ProviderItemId[] = [];
-          const writeAll = Effect.gen(function* () {
-            for (const entry of pastedWrites) {
-              yield* entry.write;
-              written.push(entry.itemId);
-            }
-          });
-
-          // While the committed row exists no concurrent create can win, so
-          // on an incomplete write it is ours to tear down — a surviving row
-          // whose item_ids were never stored would 409 every retry while
-          // failing every invocation with `connection_value_missing`. But
-          // "ours" needs proof before anything is deleted: the composite key
-          // (owner, integration, name) can change hands while compensation is
-          // still pending (provider calls can be slow) — a concurrent remove
-          // frees the name, a new create takes it and writes fresh secrets at
-          // the SAME deterministic item ids. The one column that tells our
-          // row apart from such a successor is `insertedRowId`, so the row
-          // delete carries it in its WHERE (guarded delete), and the identity
-          // check runs in the same transaction as the delete so both see one
-          // consistent row.
-          //
-          // Order matters: the ROW is deleted first, and the credential items
-          // are undone only when the guarded delete actually removed OUR row.
-          // If the row is already gone or replaced, losing compensation is
-          // correct — the remover already cleaned up, and the deterministic
-          // item ids may by now carry the successor's secrets, so deleting
-          // them here would clobber a healthy connection. Nothing here is
-          // silent: every failed or impossible undo is logged, and
-          // `rowOutcome` converts a stranded row into an error that names it.
-          //
-          // Known limitations, accepted deliberately: provider credential
-          // stores expose no conditional delete, so perfect cleanup under a
-          // concurrent remove/recreate is impossible at this layer, and no
-          // further machinery is built for it.
-          // - Under concurrent remove/recreate, compensation may skip item
-          //   deletion, leaving orphaned credential values at the
-          //   deterministic item ids. Orphans are inert without a row and the
-          //   next same-shaped create overwrites them; orphans are preferred
-          //   over the alternative, clobbering a live successor's secrets.
-          // - A successor that overwrites one variable, fails before the
-          //   next, and then also fails its own compensating row delete
-          //   leaves a stranded connection that can resolve one stale
-          //   predecessor value. Closing this needs provider-side conditional
-          //   deletes, which do not exist; the stranded state is surfaced
-          //   loudly as the typed StorageError below, naming the connection.
-          // - On a non-transactional adapter (statements auto-commit, no
-          //   rollback — Cloudflare D1) the guarded delete may already have
-          //   committed when its own rejection surfaces or when the
-          //   confirmation read fails; the items are left in place as inert
-          //   orphans.
-          const rowOutcomeRef = yield* Ref.make<
-            "removed" | "superseded" | "overtaken" | "failed" | "unknown"
-          >("removed");
-          const logContext = {
+        if (retryingRowId !== null) {
+          yield* Effect.logInfo("executor credential stranded row replaced", {
+            tenant,
             owner: input.owner,
             integration: String(input.integration),
-            connection: String(name),
-          };
-          const compensate = Effect.gen(function* () {
-            // Progress marker for the transaction below. It distinguishes
-            // "compensation failed before the guarded delete was issued"
-            // (nothing can have been deleted; a surviving row is truthfully
-            // stranded) from "the delete was attempted". Set BEFORE the
-            // delete statement is issued, not after it resolves: a rejection
-            // DURING the statement is already ambiguous on an auto-commit
-            // adapter (D1), where the delete may have executed before the
-            // rejection surfaced. Deliberately a plain mutable outside the
-            // transaction: a rollback cannot un-set it, which is the point —
-            // it records that the statement was issued, not committed state.
-            // On an interactive adapter a failure from the attempt onward
-            // rolls the delete back; on an auto-commit adapter the delete
-            // may already have committed. This layer cannot tell which world
-            // it is in, so any failure from the attempt onward is reported
-            // as "unknown", never as a stranded row.
-            let rowDeleteAttempted = false;
-            const rowOutcome = yield* transaction(
-              Effect.gen(function* () {
-                const current = yield* findConnectionRow({
-                  owner: input.owner,
-                  integration: input.integration,
-                  name,
-                });
-                if (rowIdOf(current) !== insertedRowId) {
-                  return "superseded" as const;
-                }
-                // From here on a failure can no longer prove the row
-                // survived: the statement below may execute before its
-                // rejection surfaces.
-                rowDeleteAttempted = true;
-                yield* core.deleteMany("connection", {
-                  where: (b: AnyCb) =>
-                    b.and(
-                      byOwner(input.owner)(b),
-                      b("integration", "=", String(input.integration)),
-                      b("name", "=", String(name)),
-                      // Even if the row changed hands between the read above
-                      // and this statement, only OUR row can match.
-                      b("row_id", "=", insertedRowId),
-                    ),
-                });
-                // `deleteMany` returns void, so whether the guarded delete
-                // removed OUR row cannot be read off its result — and the
-                // identity read above and the delete can straddle a
-                // concurrent remove/recreate under weak isolation. Confirm
-                // against the table instead, in this same transaction: the
-                // guarded delete could only ever match our row, so any row
-                // still holding the name is a successor (or restored
-                // original) — our delete removed nothing, and the surviving
-                // row's owner owns both the name and the credential items.
-                // Only when no row remains is ours provably gone and the
-                // items ours to undo. A successor inserting after this
-                // transaction commits can still interleave with the item
-                // deletes below; that residual is accepted (see the
-                // known-limitations note above).
-                const survivor = yield* findConnectionRow({
-                  owner: input.owner,
-                  integration: input.integration,
-                  name,
-                });
-                if (survivor !== null) {
-                  return "overtaken" as const;
-                }
-                return "removed" as const;
-              }),
-            ).pipe(
-              Effect.catchCause((cause) =>
-                rowDeleteAttempted
-                  ? Effect.logError(
-                      "executor connection create could not confirm its compensating row delete: the connection row may be deleted or stranded",
-                      { ...logContext, cause },
-                    ).pipe(Effect.as("unknown" as const))
-                  : Effect.logError(
-                      "executor connection create stranded a connection row it could not delete",
-                      { ...logContext, cause },
-                    ).pipe(Effect.as("failed" as const)),
-              ),
-            );
-            yield* Ref.set(rowOutcomeRef, rowOutcome);
-            if (rowOutcome === "superseded") {
-              // A concurrent remove took our row, and a successor may already
-              // own the name and the item ids. The remover cleaned up;
-              // nothing left here is ours to touch.
-              yield* Effect.logInfo(
-                "executor connection create skipped compensation: the connection row was already removed or replaced",
-                logContext,
-              );
-              return;
-            }
-            if (rowOutcome === "overtaken") {
-              // The guarded delete removed nothing and another row now holds
-              // the name: a concurrent remove/recreate interleaved between
-              // the identity read and the delete. The surviving row's owner
-              // owns the name and the credential items; deleting the items
-              // here would destroy that live connection's secrets.
-              yield* Effect.logInfo(
-                "executor connection create skipped credential cleanup: its guarded row delete removed nothing and another connection now holds the name; the surviving connection owns the credential items",
-                logContext,
-              );
-              return;
-            }
-            if (rowOutcome === "failed") {
-              // Compensation failed before the row delete was even issued,
-              // so the row — still ours — keeps holding the name together
-              // with the items that already landed. Leave the items in
-              // place (they belong to the
-              // stranded row the caller is told to remove) and let the exit
-              // handling below surface the error.
-              return;
-            }
-            if (rowOutcome === "unknown") {
-              // The guarded delete was attempted but its outcome could not
-              // be confirmed — the statement itself rejected, or the
-              // confirmation read after it failed — so whether OUR row
-              // survived cannot be known: an interactive adapter rolled the
-              // delete back with the transaction (row stranded), a
-              // non-transactional adapter may have already committed it (row
-              // gone). Deleting the items under a surviving row
-              // would strand it valueless, so ALL item deletion is skipped;
-              // the exit handling below reports the unconfirmed state.
-              return;
-            }
-            for (const entry of pastedWrites) {
-              if (!written.includes(entry.itemId)) continue;
-              if (entry.remove === null) {
-                // A provider exposing `set` without `delete` cannot undo its
-                // own writes; say so instead of silently skipping.
-                yield* Effect.logWarning(
-                  "executor connection create cannot undo a credential write: the provider has no delete, so a partial credential may be stranded",
-                  { ...logContext, item: String(entry.itemId) },
-                );
-                continue;
-              }
-              yield* entry.remove.pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logError("executor connection create failed to undo a credential write", {
-                    ...logContext,
-                    item: String(entry.itemId),
-                    cause,
-                  }),
-                ),
-              );
-            }
+            replacedRowId: retryingRowId,
+            replacementRowId: insertedRowId,
           });
-
-          // `onExit`, not `tapError`: compensation must also run when the
-          // write is interrupted or dies with a defect. The stranded-row
-          // promise must hold on every one of those exit shapes, so the exit
-          // is captured and re-raised by hand: a typed failure or a defect
-          // that left the row behind becomes the StorageError below, while an
-          // interruption cannot carry a typed error at all (interrupting wins
-          // over failing) — for it the loud log inside `compensate` is the
-          // only signal, and the interruption is re-raised untouched.
-          const writeExit = yield* writeAll.pipe(
-            Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : compensate)),
-            Effect.exit,
-          );
-          if (Exit.isFailure(writeExit)) {
-            const rowOutcome = yield* Ref.get(rowOutcomeRef);
-            if (rowOutcome === "failed" && !Cause.hasInterruptsOnly(writeExit.cause)) {
-              return yield* new StorageError({
-                message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded with incomplete credentials and must be removed manually.`,
-                cause: Cause.squash(writeExit.cause),
-              });
-            }
-            if (rowOutcome === "unknown" && !Cause.hasInterruptsOnly(writeExit.cause)) {
-              return yield* new StorageError({
-                message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and its compensating delete could not be confirmed: the connection row may be deleted or may remain with incomplete credentials; its credential items were left in place.`,
-                cause: Cause.squash(writeExit.cause),
-              });
-            }
-            return yield* Effect.failCause(writeExit.cause);
-          }
         }
 
-        // Record the sighting. The request seam (`makeScopedExecutor`) already
-        // does this for every hosted call, so this is the belt for direct
-        // SDK/CLI callers that never pass through it — a connecting principal
-        // must always have a subject row. Outside
-        // the transaction above: bookkeeping must not roll back the
-        // connection, and `touchSubject` cannot fail. No-ops on a pure-org
-        // executor (no principal to record), including for `owner: "org"`
-        // connections created by a bound member.
-        yield* touchSubject(rootDbUntyped, { tenant, externalId: subject });
+        if (retryingRowId !== null && retryingItemIds.length > 0) {
+          const provider = credentialProviders.get(providerKey);
+          const deleteItem = provider?.delete;
+          if (deleteItem) {
+            yield* afterCommit(
+              Effect.forEach(retryingItemIds, (itemId) => deleteItem(ProviderItemId.make(itemId)), {
+                discard: true,
+              }).pipe(
+                Effect.catch(() =>
+                  Effect.logWarning("executor credential replaced row cleanup failed", {
+                    tenant,
+                    owner: input.owner,
+                    integration: String(input.integration),
+                    replacedRowId: retryingRowId,
+                  }),
+                ),
+              ),
+            );
+          }
+        }
 
         const ref: ConnectionRef = {
           owner: input.owner,
           integration: input.integration,
           name,
         };
-        // Produce + persist tools for the new connection.
-        yield* produceConnectionTools(integrationRow, ref).pipe(
-          Effect.catchTag("IntegrationNotFoundError", () => Effect.succeed([] as readonly Tool[])),
+
+        // Provider writes cannot enlist in the database transaction. Queue
+        // them on the outermost commit so a plugin wrapping this create in
+        // `ctx.transaction` cannot roll the row back after credentials have
+        // escaped. Tool production stays in the same required finalizer,
+        // after the credentials it may need for authenticated introspection.
+        // Without an enclosing transaction the inner row transaction has
+        // already committed, so the finalizer runs here and preserves the
+        // ordinary call's synchronous success/failure contract.
+        yield* afterCommitRequired(
+          Effect.gen(function* () {
+            if (pastedWrites.length > 0) {
+              const written: ProviderItemId[] = [];
+              const writeAll = Effect.gen(function* () {
+                for (const entry of pastedWrites) {
+                  yield* entry.write;
+                  written.push(entry.itemId);
+                }
+              });
+
+              // Every item id belongs only to this attempt, so a successor can
+              // never resolve or be clobbered through these entries. Row identity
+              // still matters for compensation: delete only the row this attempt
+              // inserted, then best-effort delete its now-inert item ids. On a
+              // non-transactional adapter a rejected delete can have an unknown
+              // outcome; in that case the items remain because a surviving row
+              // may still reference them. Missing attempt references remain
+              // fail-closed and a later executor incarnation can retry them.
+              const rowOutcomeRef = yield* Ref.make<
+                "removed" | "superseded" | "overtaken" | "failed" | "unknown"
+              >("removed");
+              const logContext = {
+                owner: input.owner,
+                integration: String(input.integration),
+                connection: String(name),
+              };
+              const compensate = Effect.gen(function* () {
+                // Progress marker for the transaction below. It distinguishes
+                // "compensation failed before the guarded delete was issued"
+                // (nothing can have been deleted; a surviving row is truthfully
+                // stranded) from "the delete was attempted". Set BEFORE the
+                // delete statement is issued, not after it resolves: a rejection
+                // DURING the statement is already ambiguous on an auto-commit
+                // adapter (D1), where the delete may have executed before the
+                // rejection surfaced. Deliberately a plain mutable outside the
+                // transaction: a rollback cannot un-set it, which is the point —
+                // it records that the statement was issued, not committed state.
+                // On an interactive adapter a failure from the attempt onward
+                // rolls the delete back; on an auto-commit adapter the delete
+                // may already have committed. This layer cannot tell which world
+                // it is in, so any failure from the attempt onward is reported
+                // as "unknown", never as a stranded row.
+                let rowDeleteAttempted = false;
+                const rowOutcome = yield* transaction(
+                  Effect.gen(function* () {
+                    const current = yield* findConnectionRow({
+                      owner: input.owner,
+                      integration: input.integration,
+                      name,
+                    });
+                    if (storageRowId(current) !== insertedRowId) {
+                      return "superseded" as const;
+                    }
+                    // From here on a failure can no longer prove the row
+                    // survived: the statement below may execute before its
+                    // rejection surfaces.
+                    rowDeleteAttempted = true;
+                    yield* core.deleteMany("connection", {
+                      where: (b: AnyCb) =>
+                        b.and(
+                          byOwner(input.owner)(b),
+                          b("integration", "=", String(input.integration)),
+                          b("name", "=", String(name)),
+                          // Even if the row changed hands between the read above
+                          // and this statement, only OUR row can match.
+                          b("row_id", "=", insertedRowId),
+                        ),
+                    });
+                    // `deleteMany` returns void, so whether the guarded delete
+                    // removed OUR row cannot be read off its result — and the
+                    // identity read above and the delete can straddle a
+                    // concurrent remove/recreate under weak isolation. Confirm
+                    // against the table instead, in this same transaction: the
+                    // guarded delete could only ever match our row, so any row
+                    // still holding the name is a successor (or restored
+                    // original) — our delete removed nothing, and the surviving
+                    // row's owner owns both the name and the credential items.
+                    // Only when no row remains is ours provably gone and the
+                    // items ours to undo. A successor inserting after this
+                    // transaction commits can still interleave with the item
+                    // deletes below; that residual is accepted (see the
+                    // known-limitations note above).
+                    const survivor = yield* findConnectionRow({
+                      owner: input.owner,
+                      integration: input.integration,
+                      name,
+                    });
+                    if (survivor !== null) {
+                      return "overtaken" as const;
+                    }
+                    return "removed" as const;
+                  }),
+                ).pipe(
+                  Effect.catchCause((cause) =>
+                    rowDeleteAttempted
+                      ? Effect.logError(
+                          "executor connection create could not confirm its compensating row delete: the connection row may be deleted or stranded",
+                          { ...logContext, cause },
+                        ).pipe(Effect.as("unknown" as const))
+                      : Effect.logError(
+                          "executor connection create stranded a connection row it could not delete",
+                          { ...logContext, cause },
+                        ).pipe(Effect.as("failed" as const)),
+                  ),
+                );
+                yield* Ref.set(rowOutcomeRef, rowOutcome);
+                if (rowOutcome === "superseded") {
+                  // A concurrent remove took our row, and a successor may already
+                  // own the name and the item ids. The remover cleaned up;
+                  // nothing left here is ours to touch.
+                  yield* Effect.logInfo(
+                    "executor connection create skipped compensation: the connection row was already removed or replaced",
+                    logContext,
+                  );
+                  return;
+                }
+                if (rowOutcome === "overtaken") {
+                  // The guarded delete removed nothing and another row now holds
+                  // the name: a concurrent remove/recreate interleaved between
+                  // the identity read and the delete. The surviving row's owner
+                  // owns the name and the credential items; deleting the items
+                  // here would destroy that live connection's secrets.
+                  yield* Effect.logInfo(
+                    "executor connection create skipped credential cleanup: its guarded row delete removed nothing and another connection now holds the name; the surviving connection owns the credential items",
+                    logContext,
+                  );
+                  return;
+                }
+                if (rowOutcome === "failed") {
+                  // Compensation failed before the row delete was even issued,
+                  // so the row — still ours — keeps holding the name together
+                  // with the items that already landed. Leave the items in
+                  // place (they belong to the
+                  // stranded row the caller is told to remove) and let the exit
+                  // handling below surface the error.
+                  return;
+                }
+                if (rowOutcome === "unknown") {
+                  // The guarded delete was attempted but its outcome could not
+                  // be confirmed — the statement itself rejected, or the
+                  // confirmation read after it failed — so whether OUR row
+                  // survived cannot be known: an interactive adapter rolled the
+                  // delete back with the transaction (row stranded), a
+                  // non-transactional adapter may have already committed it (row
+                  // gone). Deleting the items under a surviving row
+                  // would strand it valueless, so ALL item deletion is skipped;
+                  // the exit handling below reports the unconfirmed state.
+                  return;
+                }
+                const writtenSnapshots = pastedWrites.filter((entry) =>
+                  written.includes(entry.itemId),
+                );
+                for (const entry of writtenSnapshots) {
+                  if (!entry.restoreSupported) {
+                    yield* Effect.logWarning(
+                      "executor connection create cannot undo a credential write: the provider has no delete, so a partial credential may be stranded",
+                      { ...logContext, item: String(entry.itemId) },
+                    );
+                  }
+                }
+                const restoreOutcome = yield* restoreCredentialSnapshotsWithRecheck(
+                  writtenSnapshots,
+                  Effect.succeed(true),
+                );
+                if (Predicate.isTagged(restoreOutcome, "Failed")) {
+                  yield* Effect.logError(
+                    "executor connection create failed to restore credential writes",
+                    { ...logContext, cause: restoreOutcome.cause },
+                  );
+                }
+              });
+
+              // `onExit`, not `tapError`: compensation must also run when the
+              // write is interrupted or dies with a defect. The stranded-row
+              // promise must hold on every one of those exit shapes, so the exit
+              // is captured and re-raised by hand: a typed failure or a defect
+              // that left the row behind becomes the StorageError below, while an
+              // interruption cannot carry a typed error at all (interrupting wins
+              // over failing) — for it the loud log inside `compensate` is the
+              // only signal, and the interruption is re-raised untouched.
+              const writeExit = yield* writeAll.pipe(
+                Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : compensate)),
+                Effect.exit,
+              );
+              if (Exit.isFailure(writeExit)) {
+                const rowOutcome = yield* Ref.get(rowOutcomeRef);
+                if (rowOutcome === "failed" && !Cause.hasInterruptsOnly(writeExit.cause)) {
+                  return yield* new StorageError({
+                    message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and the compensating delete also failed: the connection row is stranded with incomplete credentials and must be removed manually.`,
+                    cause: Cause.squash(writeExit.cause),
+                  });
+                }
+                if (rowOutcome === "unknown" && !Cause.hasInterruptsOnly(writeExit.cause)) {
+                  return yield* new StorageError({
+                    message: `Failed to store credentials for connection ${input.owner}/${String(input.integration)}/${String(name)}, and its compensating delete could not be confirmed: the connection row may be deleted or may remain with incomplete credentials; its credential items were left in place.`,
+                    cause: Cause.squash(writeExit.cause),
+                  });
+                }
+                return yield* Effect.failCause(writeExit.cause);
+              }
+            }
+
+            const committedRow = yield* findConnectionRow(ref);
+            if (storageRowId(committedRow) !== insertedRowId) {
+              yield* Effect.logInfo("executor credential write superseded", {
+                tenant,
+                owner: input.owner,
+                integration: String(input.integration),
+                rowId: insertedRowId,
+              });
+              const provider = credentialProviders.get(providerKey);
+              const deleteItem = provider?.delete;
+              if (deleteItem) {
+                yield* Effect.forEach(
+                  pastedWrites,
+                  (entry) => deleteItem(entry.itemId).pipe(Effect.ignore),
+                  { discard: true },
+                );
+              }
+              return yield* new StorageError({
+                message: `Credential write attempt for ${input.owner}/${String(input.integration)}/${String(name)} was superseded before it became ready.`,
+                cause: undefined,
+              });
+            }
+
+            // Record the sighting. The request seam (`makeScopedExecutor`) already
+            // does this for every hosted call, so this is the belt for direct
+            // SDK/CLI callers that never pass through it — a connecting principal
+            // must always have a subject row. Outside the committed connection
+            // transaction: bookkeeping cannot roll back the connection, and
+            // `touchSubject` cannot fail. No-ops on a pure-org executor.
+            yield* touchSubject(rootDbUntyped, { tenant, externalId: subject });
+
+            // Produce + persist tools only after credentials exist.
+            yield* produceConnectionTools(integrationRow, ref).pipe(
+              Effect.catchTag("IntegrationNotFoundError", () =>
+                Effect.succeed([] as readonly Tool[]),
+              ),
+            );
+          }),
         );
 
         const row = yield* findConnectionRow(ref);
@@ -4049,6 +4266,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               template: String(input.template),
               provider: providerKey,
               item_ids: itemIds,
+              credential_write: credentialWrite,
               identity_label: input.identityLabel ?? null,
               description: input.description ?? null,
               oauth_client: null,
@@ -4061,12 +4279,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             } as ConnectionRow);
       });
 
-    // Mint (or re-mint) an OAuth connection: write the connection row with its
-    // OAuth lifecycle fields (the access token is already stored in the provider
-    // by the OAuth service) + produce the connection's tools. Unlike
-    // `connectionsCreate` (which rejects an existing name), this path upserts on
-    // purpose: reconnect/refresh re-mints the SAME connection, stamping the
-    // OAuth columns.
+    // Mint (or re-mint) an OAuth connection: snapshot the credential writes,
+    // persist the row with this attempt's references and OAuth lifecycle fields,
+    // then run provider writes and tool production only from
+    // `afterCommitRequired`. Unlike `connectionsCreate` (which rejects an
+    // existing name), this path upserts on purpose: reconnect/refresh re-mints
+    // the SAME connection, stamping the OAuth columns.
     const mintOAuthConnection = (
       input: MintOAuthConnectionInput,
     ): Effect.Effect<Connection, StorageFailure> =>
@@ -4104,14 +4322,71 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             : { missingOAuthScopes: input.missingOAuthScopes }),
           ...(input.enterpriseManaged === undefined
             ? {}
-            : { [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged }),
+            : {
+                [ENTERPRISE_MANAGED_PROVIDER_STATE_KEY]: input.enterpriseManaged,
+              }),
         };
         // Null, not `{}`, when this grant records nothing: an empty object would
         // read back as "state exists and is empty" on a column whose absence is
         // what every reader tests.
         const providerState =
           Object.keys(nextProviderState).length === 0 ? null : nextProviderState;
-        yield* transaction(
+        const credentialProvider = credentialProviders.get(input.provider);
+        const credentialSet = credentialProvider?.set;
+        if (!credentialProvider || !credentialSet) {
+          return yield* new StorageError({
+            message: `Credential provider ${input.provider} is not registered as writable.`,
+            cause: undefined,
+          });
+        }
+        const credentialAttemptId = crypto.randomUUID();
+        const credentialWrite = makeCredentialWriteAttempt(
+          credentialWriteRuntimeId,
+          credentialAttemptId,
+        );
+        const versionedCredentialValues = input.credentialValues.map((entry) => ({
+          baseItemId: entry.itemId,
+          value: entry.value,
+          itemId: credentialAttemptItemId(entry.itemId, credentialAttemptId),
+        }));
+        const versionedItemId = versionedCredentialValues.find(
+          (entry) => entry.baseItemId === input.itemId,
+        )?.itemId;
+        if (versionedItemId === undefined) {
+          return yield* new StorageError({
+            message: "OAuth mint input did not include the access-token credential value.",
+            cause: undefined,
+          });
+        }
+        const versionedRefreshItemId =
+          input.refreshItemId === null
+            ? null
+            : versionedCredentialValues.find((entry) => entry.baseItemId === input.refreshItemId)
+                ?.itemId;
+        if (input.refreshItemId !== null && versionedRefreshItemId === undefined) {
+          return yield* new StorageError({
+            message: "OAuth mint input did not include the refresh credential value.",
+            cause: undefined,
+          });
+        }
+        const credentialWrites = yield* snapshotCredentialWrites(
+          { ...credentialProvider, set: credentialSet },
+          versionedCredentialValues.map((entry) => ({
+            itemId: ProviderItemId.make(entry.itemId),
+            value: entry.value,
+          })),
+          () =>
+            new StorageError({
+              message: `Credential provider ${input.provider} cannot safely compensate a new OAuth credential because it does not support deletion.`,
+              cause: undefined,
+            }),
+          { requireDeleteForNew: true },
+        );
+        const mintedRowIdOf = (row: unknown): string | null => {
+          const value = row == null ? null : (row as Record<string, unknown>)["row_id"];
+          return typeof value === "string" ? value : null;
+        };
+        const committed = yield* transaction(
           Effect.gen(function* () {
             const existing = yield* findConnectionRow(ref);
             const existingLabel = existing?.identity_label?.trim() ? existing.identity_label : null;
@@ -4120,11 +4395,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             const set: Record<string, unknown> = {
               template: String(input.template),
               provider: input.provider,
-              item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
+              item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
+              credential_write: credentialWrite,
               identity_label: identityLabel,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
-              refresh_item_id: input.refreshItemId,
+              refresh_item_id: versionedRefreshItemId,
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
@@ -4137,47 +4413,157 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               updated_at: now,
             };
             if (existing) {
-              yield* core.updateMany("connection", {
-                where: (b: AnyCb) =>
-                  b.and(
-                    byOwner(input.owner)(b),
-                    b("integration", "=", String(input.integration)),
-                    b("name", "=", String(name)),
-                  ),
-                set,
-              });
-            } else {
-              yield* core.create("connection", {
-                tenant: keys.tenant,
-                owner: keys.owner,
-                subject: keys.subject,
-                integration: String(input.integration),
-                name: String(name),
-                template: String(input.template),
-                provider: input.provider,
-                item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
-                identity_label: identityLabel,
-                // Curated description: never stamped by a mint — a reconnect
-                // or token refresh must not erase what the user wrote.
-                description: null,
-                oauth_client: String(input.oauthClient),
-                oauth_client_owner: input.oauthClientOwner,
-                refresh_item_id: input.refreshItemId,
-                expires_at: input.expiresAt,
-                oauth_scope: input.oauthScope,
-                oauth_token_url: input.oauthTokenUrl ?? null,
-                provider_state: providerState,
-                created_at: now,
-                updated_at: now,
+              const existingRowId = mintedRowIdOf(existing);
+              if (existingRowId === null) {
+                return yield* new StorageError({
+                  message:
+                    "Storage adapter did not return the existing connection row's row_id; OAuth replacement cannot be compensated safely.",
+                  cause: undefined,
+                });
+              }
+              yield* core.deleteMany("connection", {
+                where: (b: AnyCb) => b("row_id", "=", existingRowId),
               });
             }
+            const inserted = yield* core.create(
+              "connection",
+              existing
+                ? (() => {
+                    const { row_id: _previousRowId, ...previous } = existing as ConnectionRow & {
+                      readonly row_id: string;
+                    };
+                    return { ...previous, ...set };
+                  })()
+                : {
+                    tenant: keys.tenant,
+                    owner: keys.owner,
+                    subject: keys.subject,
+                    integration: String(input.integration),
+                    name: String(name),
+                    template: String(input.template),
+                    provider: input.provider,
+                    item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
+                    credential_write: credentialWrite,
+                    identity_label: identityLabel,
+                    // Curated description: never stamped by a mint — a reconnect
+                    // or token refresh must not erase what the user wrote.
+                    description: null,
+                    oauth_client: String(input.oauthClient),
+                    oauth_client_owner: input.oauthClientOwner,
+                    refresh_item_id: versionedRefreshItemId,
+                    expires_at: input.expiresAt,
+                    oauth_scope: input.oauthScope,
+                    oauth_token_url: input.oauthTokenUrl ?? null,
+                    provider_state: providerState,
+                    created_at: now,
+                    updated_at: now,
+                  },
+            );
+            const rowId = mintedRowIdOf(inserted);
+            if (rowId === null) {
+              return yield* new StorageError({
+                message:
+                  "Storage adapter did not return the minted connection row's row_id; credential persistence cannot be compensated safely.",
+                cause: undefined,
+              });
+            }
+            return { existing, rowId };
           }),
         );
 
-        // Produce + persist tools for the minted connection (same path
-        // connections.create uses).
-        yield* produceConnectionTools(integrationRow, ref).pipe(
-          Effect.catchTag("IntegrationNotFoundError", () => Effect.succeed([] as readonly Tool[])),
+        yield* afterCommitRequired(
+          Effect.gen(function* () {
+            const credentialWriteExit = yield* Effect.forEach(
+              credentialWrites,
+              (entry) => credentialSet(entry.itemId, entry.value),
+              { discard: true },
+            ).pipe(Effect.exit);
+            if (Exit.isFailure(credentialWriteExit)) {
+              const restoredRow = yield* transaction(
+                Effect.gen(function* () {
+                  const current = yield* findConnectionRow(ref);
+                  if (mintedRowIdOf(current) !== committed.rowId) return false;
+                  yield* core.deleteMany("connection", {
+                    where: (b: AnyCb) => b("row_id", "=", committed.rowId),
+                  });
+                  if (committed.existing) {
+                    yield* core.create("connection", committed.existing);
+                  }
+                  return true;
+                }),
+              ).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logError(
+                    "OAuth connection credential compensation could not restore its row",
+                    {
+                      owner: input.owner,
+                      integration: String(input.integration),
+                      connection: String(name),
+                      cause,
+                    },
+                  ).pipe(Effect.as(false)),
+                ),
+              );
+              if (!restoredRow) {
+                return yield* new StorageError({
+                  message: `Failed to store OAuth credentials for ${input.owner}/${String(input.integration)}/${String(name)}, and the connection row could not be safely restored.`,
+                  cause: credentialWriteExit.cause,
+                });
+              }
+
+              // The row recheck preserves the compensation contract, but the
+              // provider items themselves are unique to this attempt. Restoring
+              // or deleting them therefore cannot touch a successor even if one
+              // commits after the recheck.
+              const credentialRestore = yield* restoreCredentialSnapshotsWithRecheck(
+                credentialWrites,
+                transaction(
+                  Effect.gen(function* () {
+                    const current = yield* findConnectionRow(ref);
+                    return committed.existing === null
+                      ? current === null
+                      : mintedRowIdOf(current) === mintedRowIdOf(committed.existing);
+                  }),
+                ),
+              );
+              if (Predicate.isTagged(credentialRestore, "Superseded")) {
+                return yield* new StorageError({
+                  message: `Failed to store OAuth credentials for ${input.owner}/${String(input.integration)}/${String(name)}, and credential cleanup was skipped because the compensated row was superseded.`,
+                  cause: credentialWriteExit.cause,
+                });
+              }
+              if (Predicate.isTagged(credentialRestore, "Failed")) {
+                return yield* new StorageError({
+                  message: `Failed to store OAuth credentials for ${input.owner}/${String(input.integration)}/${String(name)}, and credential compensation also failed.`,
+                  cause: credentialRestore.cause,
+                });
+              }
+              return yield* Effect.failCause(credentialWriteExit.cause);
+            }
+
+            const deleteCredential = credentialProvider.delete;
+            if (committed.existing && deleteCredential) {
+              const priorIds = new Set([
+                ...Object.values(connectionItemIds(committed.existing)),
+                ...(committed.existing.refresh_item_id === null
+                  ? []
+                  : [String(committed.existing.refresh_item_id)]),
+              ]);
+              yield* Effect.forEach(
+                priorIds,
+                (itemId) => deleteCredential(ProviderItemId.make(itemId)).pipe(Effect.ignore),
+                { discard: true },
+              );
+            }
+
+            // Produce + persist tools for the minted connection (same path
+            // connections.create uses).
+            yield* produceConnectionTools(integrationRow, ref).pipe(
+              Effect.catchTag("IntegrationNotFoundError", () =>
+                Effect.succeed([] as readonly Tool[]),
+              ),
+            );
+          }),
         );
 
         const row = yield* findConnectionRow(ref);
@@ -4191,12 +4577,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               name: String(name),
               template: String(input.template),
               provider: input.provider,
-              item_ids: { [PRIMARY_INPUT_VARIABLE]: input.itemId },
+              item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
+              credential_write: credentialWrite,
               identity_label: identityLabel,
               description: null,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
-              refresh_item_id: input.refreshItemId,
+              refresh_item_id: versionedRefreshItemId,
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
@@ -4242,37 +4629,41 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const connectionsUpdate = (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
-    ): Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure> =>
-      Effect.gen(function* () {
-        const row = yield* findConnectionRow(ref);
-        if (!row) {
-          return yield* new ConnectionNotFoundError({
-            owner: ref.owner,
-            integration: ref.integration,
-            name: ref.name,
+    ): Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite(ref.owner);
+          const row = yield* findConnectionRow(ref);
+          if (!row) {
+            return yield* new ConnectionNotFoundError({
+              owner: ref.owner,
+              integration: ref.integration,
+              name: ref.name,
+            });
+          }
+          const set: Record<string, unknown> = { updated_at: new Date() };
+          if (input.description !== undefined) set.description = input.description;
+          if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
+          yield* core.updateMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(ref.owner)(b),
+                b("integration", "=", String(ref.integration)),
+                b("name", "=", String(ref.name)),
+              ),
+            set,
           });
-        }
-        const set: Record<string, unknown> = { updated_at: new Date() };
-        if (input.description !== undefined) set.description = input.description;
-        if (input.identityLabel !== undefined) set.identity_label = input.identityLabel;
-        yield* core.updateMany("connection", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(ref.owner)(b),
-              b("integration", "=", String(ref.integration)),
-              b("name", "=", String(ref.name)),
-            ),
-          set,
-        });
-        const updated = yield* findConnectionRow(ref);
-        return rowToConnection(updated ?? row);
-      });
+          const updated = yield* findConnectionRow(ref);
+          return rowToConnection(updated ?? row);
+        }),
+      );
 
     const connectionsRemove = (
       ref: ConnectionRef,
-    ): Effect.Effect<void, ConnectionNotFoundError | StorageFailure> =>
+    ): Effect.Effect<void, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure> =>
       transaction(
         Effect.gen(function* () {
+          yield* guardOrgWrite(ref.owner);
           const row = yield* findConnectionRow(ref);
           if (!row) {
             return yield* new ConnectionNotFoundError({
@@ -4319,9 +4710,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       ref: ConnectionRef,
     ): Effect.Effect<
       readonly Tool[],
-      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+      ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
     > =>
       Effect.gen(function* () {
+        yield* guardOrgWrite(ref.owner);
         const row = yield* findConnectionRow(ref);
         if (!row) {
           return yield* new ConnectionNotFoundError({
@@ -4339,7 +4731,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     // No health-check capability ⇒ "unknown" rather than an error: the caller
     // can still render the connection, just without a liveness verdict.
-    const unknownHealth = (): HealthCheckResult => ({ status: "unknown", checkedAt: Date.now() });
+    const unknownHealth = (): HealthCheckResult => ({
+      status: "unknown",
+      checkedAt: Date.now(),
+    });
 
     /** Persist a verdict with a compare-and-swap on `updated_at`: the single
      *  UPDATE commits only while the row still carries the stamp the caller's
@@ -4698,7 +5093,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 // must not hide inside a green span.
                 oauthCredentialHealthWithoutProbe(connectionRow).pipe(
                   Effect.tap((result) => persistProbeHealthResult(ref, result)),
-                  Effect.map((result) => ({ source: "credential_only" as const, result })),
+                  Effect.map((result) => ({
+                    source: "credential_only" as const,
+                    result,
+                  })),
                 )
               : foldCredentialResolutionIntoVerdict(
                   Effect.gen(function* () {
@@ -4722,7 +5120,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     // hands it to the plugin; plugins no longer read it out of
                     // their config.
                     return yield* foldPluginFailure(
-                      check({ ctx: runtime.ctx, integration: record, credential, spec }),
+                      check({
+                        ctx: runtime.ctx,
+                        integration: record,
+                        credential,
+                        spec,
+                      }),
                       `Health check for connection "${ref.name}" failed.`,
                     );
                   }),
@@ -4735,7 +5138,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   // mount, so leaving it unwritten is what turns one broken
                   // connection into unbounded upstream and error traffic.
                   Effect.tap((result) => persistProbeHealthResult(ref, result)),
-                  Effect.map((result) => ({ source: "probe" as const, result })),
+                  Effect.map((result) => ({
+                    source: "probe" as const,
+                    result,
+                  })),
                 );
           const run = freshVerdict.pipe(
             Effect.exit,
@@ -4763,7 +5169,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         const integrationRow = yield* findIntegrationRow(input.integration);
         if (!integrationRow) {
-          return yield* new IntegrationNotFoundError({ slug: input.integration });
+          return yield* new IntegrationNotFoundError({
+            slug: input.integration,
+          });
         }
         const runtime = runtimes.get(integrationRow.plugin_id);
         const check = runtime?.plugin.checkHealth;
@@ -4885,9 +5293,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // once, then resolve every tool in this operation against that
           // snapshot. Avoids the per-tool resolve N+1 on the list surface.
           activeToolPolicyProvider.prepare
-          ? activeToolPolicyProvider
-              .prepare()
-              .pipe(Effect.map((resolve) => ({ kind: "prepared" as const, resolve })))
+          ? activeToolPolicyProvider.prepare().pipe(
+              Effect.map((resolve) => ({
+                kind: "prepared" as const,
+                resolve,
+              })),
+            )
           : activeToolPolicyProvider.resolve
             ? Effect.succeed({
                 kind: "provider" as const,
@@ -5067,7 +5478,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
         );
       }
-      yield* Effect.all(rebuilds, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY });
+      yield* Effect.all(rebuilds, {
+        concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
+      });
     });
 
     // How long a tools read waits for the stale sync before answering from
@@ -5393,82 +5806,100 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const policiesCreate = (
       input: CreateToolPolicyInput,
-    ): Effect.Effect<ToolPolicy, StorageFailure> =>
-      Effect.gen(function* () {
-        if (!isValidPattern(input.pattern)) {
-          return yield* new StorageError({
-            message: `Invalid tool policy pattern: ${input.pattern}`,
-            cause: undefined,
+    ): Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite(input.owner);
+          if (!isValidPattern(input.pattern)) {
+            return yield* new StorageError({
+              message: `Invalid tool policy pattern: ${input.pattern}`,
+              cause: undefined,
+            });
+          }
+          if (!isToolPolicyAction(input.action)) {
+            return yield* new StorageError({
+              message: `Invalid tool policy action: ${String(input.action)}`,
+              cause: undefined,
+            });
+          }
+          yield* requireUserSubject(input.owner);
+          const keys = yield* Effect.try({
+            try: () => ownedKeys(input.owner),
+            catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
           });
-        }
-        if (!isToolPolicyAction(input.action)) {
-          return yield* new StorageError({
-            message: `Invalid tool policy action: ${String(input.action)}`,
-            cause: undefined,
+          const existing = yield* core.findMany("tool_policy", {
+            where: byOwner(input.owner),
           });
-        }
-        yield* requireUserSubject(input.owner);
-        const keys = yield* Effect.try({
-          try: () => ownedKeys(input.owner),
-          catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
-        });
-        const existing = yield* core.findMany("tool_policy", {
-          where: byOwner(input.owner),
-        });
-        // Default placement is specificity-aware (below any more-specific
-        // rule), not top-of-list: a client that omits position — the UI when
-        // its policy list is stale, the API, an agent tool — must not have its
-        // broad rule silently shadow an existing narrow one.
-        const position = input.position ?? positionForNewPattern(input.pattern, existing);
-        const id = PolicyId.make(
-          `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
-        );
-        const now = new Date();
-        const created = yield* core.create("tool_policy", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          id: String(id),
-          pattern: input.pattern,
-          action: input.action,
-          position,
-          created_at: now,
-          updated_at: now,
-        });
-        return rowToToolPolicy(created);
-      });
+          // Default placement is specificity-aware (below any more-specific
+          // rule), not top-of-list: a client that omits position — the UI when
+          // its policy list is stale, the API, an agent tool — must not have its
+          // broad rule silently shadow an existing narrow one.
+          const position = input.position ?? positionForNewPattern(input.pattern, existing);
+          const id = PolicyId.make(
+            `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+          );
+          const now = new Date();
+          const created = yield* core.create("tool_policy", {
+            tenant: keys.tenant,
+            owner: keys.owner,
+            subject: keys.subject,
+            id: String(id),
+            pattern: input.pattern,
+            action: input.action,
+            position,
+            created_at: now,
+            updated_at: now,
+          });
+          return rowToToolPolicy(created);
+        }),
+      );
 
     const policiesUpdate = (
       input: UpdateToolPolicyInput,
-    ): Effect.Effect<ToolPolicy, StorageFailure> =>
-      Effect.gen(function* () {
-        if (input.pattern !== undefined && !isValidPattern(input.pattern)) {
-          return yield* new StorageError({
-            message: `Invalid tool policy pattern: ${input.pattern}`,
-            cause: undefined,
-          });
-        }
-        const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
-        const existing = yield* core.findFirst("tool_policy", { where });
-        if (!existing) {
-          return yield* new StorageError({
-            message: `Tool policy not found: ${input.id}`,
-            cause: undefined,
-          });
-        }
-        const set: Record<string, unknown> = { updated_at: new Date() };
-        if (input.pattern !== undefined) set.pattern = input.pattern;
-        if (input.action !== undefined) set.action = input.action;
-        if (input.position !== undefined) set.position = input.position;
-        yield* core.updateMany("tool_policy", { where, set });
-        const updated = yield* core.findFirst("tool_policy", { where });
-        return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
-      });
+    ): Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite(input.owner);
+          if (input.pattern !== undefined && !isValidPattern(input.pattern)) {
+            return yield* new StorageError({
+              message: `Invalid tool policy pattern: ${input.pattern}`,
+              cause: undefined,
+            });
+          }
+          const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
+          const existing = yield* core.findFirst("tool_policy", { where });
+          if (!existing) {
+            return yield* new StorageError({
+              message: `Tool policy not found: ${input.id}`,
+              cause: undefined,
+            });
+          }
+          const set: Record<string, unknown> = { updated_at: new Date() };
+          if (input.pattern !== undefined) set.pattern = input.pattern;
+          if (input.action !== undefined) set.action = input.action;
+          if (input.position !== undefined) set.position = input.position;
+          yield* core.updateMany("tool_policy", { where, set });
+          const updated = yield* core.findFirst("tool_policy", { where });
+          if (!updated) {
+            return yield* new StorageError({
+              message: `Tool policy disappeared while it was being updated: ${input.id}`,
+              cause: undefined,
+            });
+          }
+          return rowToToolPolicy(updated);
+        }),
+      );
 
-    const policiesRemove = (input: RemoveToolPolicyInput): Effect.Effect<void, StorageFailure> =>
-      core.deleteMany("tool_policy", {
-        where: (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id)),
-      });
+    const policiesRemove = (
+      input: RemoveToolPolicyInput,
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
+      transaction(
+        Effect.gen(function* () {
+          yield* guardOrgWrite(input.owner);
+          const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
+          yield* core.deleteMany("tool_policy", { where });
+        }),
+      );
 
     const policiesResolve = (
       address: ToolAddress,
@@ -5531,7 +5962,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       id: string,
     ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
-        const row = yield* core.findFirst("artifact", { where: artifactById(id) });
+        const row = yield* core.findFirst("artifact", {
+          where: artifactById(id),
+        });
         if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
         return rowToArtifact(row);
       });
@@ -5549,7 +5982,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const where = artifactById(input.id);
           const existing = yield* core.findFirst("artifact", { where });
           if (!existing) {
-            return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+            return yield* new ArtifactNotFoundError({
+              id: ArtifactId.make(input.id),
+            });
           }
           // `bindings` is written on every overwrite, including back to null:
           // it interprets `code`, so carrying the previous value forward under
@@ -5604,9 +6039,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const where = artifactById(input.id);
         const existing = yield* core.findFirst("artifact", { where });
         if (!existing) {
-          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+          return yield* new ArtifactNotFoundError({
+            id: ArtifactId.make(input.id),
+          });
         }
-        yield* core.updateMany("artifact", { where, set: { preview: input.preview } });
+        yield* core.updateMany("artifact", {
+          where,
+          set: { preview: input.preview },
+        });
       });
 
     const artifactsRename = (
@@ -5616,7 +6056,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const where = artifactById(input.id);
         const existing = yield* core.findFirst("artifact", { where });
         if (!existing) {
-          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+          return yield* new ArtifactNotFoundError({
+            id: ArtifactId.make(input.id),
+          });
         }
         const set = { title: input.title, updated_at: new Date() };
         yield* core.updateMany("artifact", { where, set });
@@ -6051,8 +6493,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               Effect.catchTag("CredentialResolutionError", () => Effect.succeed(null)),
             );
             if (!refreshed) return { result: first, usedValues: values };
-            yield* Effect.annotateCurrentSpan({ "executor.oauth.refresh.retried": true });
-            return { result: yield* invokeWith(refreshed), usedValues: refreshed };
+            yield* Effect.annotateCurrentSpan({
+              "executor.oauth.refresh.retried": true,
+            });
+            return {
+              result: yield* invokeWith(refreshed),
+              usedValues: refreshed,
+            };
           });
           yield* healPersistedHealthOnUse(connectionRow, result, usedValues);
           return result;
@@ -6109,7 +6556,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       owner: ownerBinding,
       tenant,
       subject,
+      credentialWriteRuntimeId,
       ownedKeys: (owner: Owner) => ownedKeys(owner),
+      guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
       connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),
@@ -6201,6 +6650,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         httpClientLayer: config.httpClientLayer ?? FetchHttpClient.layer,
         core: {
           integrations: {
+            authorizeWrite: () => guardOrgWrite(),
             register: (input: RegisterIntegrationInput) => integrationsRegister(plugin.id, input),
             update: (slug, patch) => integrationsUpdate(slug, patch),
             list: () => integrationsList(),
@@ -6403,7 +6853,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // same way `touchSubject` relies on it.
       const getSubject = (externalId: string): Effect.Effect<AdminSubject | null, StorageFailure> =>
         platformCore
-          .findFirst("subject", { where: (b: AnyCb) => b("external_id", "=", externalId) })
+          .findFirst("subject", {
+            where: (b: AnyCb) => b("external_id", "=", externalId),
+          })
           .pipe(Effect.map((row) => (row === null ? null : rowToAdminSubject(row))));
 
       const listSubjectConnections = (

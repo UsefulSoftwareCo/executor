@@ -39,6 +39,7 @@ export const LOCAL_PRINCIPAL: Principal = {
   name: "Local",
   avatarUrl: null,
   roles: [],
+  orgRoleModel: "none",
 };
 
 const bearerToken = (headers: Headers): string | undefined => {

@@ -28,6 +28,7 @@
 import { Data, Effect, Predicate, Result, Schedule } from "effect";
 
 import type { McpSessionInit, SessionMeta } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { sessionOrgRoleMetadata } from "@executor-js/cloudflare/mcp/role-metadata";
 
 import { UserStoreService } from "../auth/context";
 import { WorkOSClient } from "../auth/workos";
@@ -111,17 +112,23 @@ const failureReason = (failure: unknown): string =>
 
 const metaFromIdentity = (
   token: McpSessionInit,
-  organization: { readonly name: string; readonly slug?: string },
-): SessionMeta => ({
-  organizationId: token.organizationId,
-  organizationName: organization.name,
-  ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
-  userId: token.userId,
-  resource: token.resource,
-  elicitationMode: token.elicitationMode,
-  artifactsEnabled: token.artifactsEnabled,
-  searchToolsEnabled: token.searchToolsEnabled,
-});
+  organization: {
+    readonly name: string;
+    readonly slug?: string;
+  },
+): SessionMeta => {
+  return {
+    organizationId: token.organizationId,
+    organizationName: organization.name,
+    ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
+    ...sessionOrgRoleMetadata(token),
+    userId: token.userId,
+    resource: token.resource,
+    elicitationMode: token.elicitationMode,
+    artifactsEnabled: token.artifactsEnabled,
+    searchToolsEnabled: token.searchToolsEnabled,
+  };
+};
 
 /**
  * Read the organization row, retrying only failures a retry can clear, and

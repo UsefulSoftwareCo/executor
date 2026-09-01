@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Owner } from "@executor-js/sdk/shared";
 
 import { useOrganizationId } from "../api/organization-context";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import {
   CardStack,
   CardStackContent,
@@ -67,6 +68,26 @@ export const connectionOwnerOptionsForHost = (
 ): readonly ConnectionOwnerOption[] =>
   organizationId === null ? localConnectionOwnerOptions() : connectionOwnerOptions();
 
+/** Owner choices visible to the active role. Members of organization hosts get
+ * exactly one Personal option, which both forces `owner: "user"` and makes the
+ * owner dropdown disappear. Admins retain Personal + Workspace. Local hosts
+ * retain their single Local option regardless of tenant-role loading. */
+export const connectionOwnerOptionsForAccess = (
+  organizationId: string | null,
+  canCreateWorkspaceConnections: boolean,
+): readonly ConnectionOwnerOption[] => {
+  const options = connectionOwnerOptionsForHost(organizationId);
+  return organizationId === null || canCreateWorkspaceConnections
+    ? options
+    : options.filter((option) => option.owner === "user");
+};
+
+/** Whether the active role may mutate a connection with this owner. */
+export const canManageConnectionForAccess = (
+  owner: Owner,
+  canCreateWorkspaceConnections: boolean,
+): boolean => owner === "user" || canCreateWorkspaceConnections;
+
 export const defaultConnectionOwnerForHost = (organizationId: string | null): Owner =>
   organizationId === null ? LOCAL_CONNECTION_OWNER : DEFAULT_CONNECTION_OWNER;
 
@@ -107,7 +128,8 @@ export function useConnectionOwner(input?: { readonly initialOwner?: Owner }): {
   readonly connectionOwnerOptions: readonly ConnectionOwnerOption[];
 } {
   const organizationId = useOrganizationId();
-  const options = connectionOwnerOptionsForHost(organizationId);
+  const canCreateWorkspaceConnections = useCanCreateWorkspaceConnections();
+  const options = connectionOwnerOptionsForAccess(organizationId, canCreateWorkspaceConnections);
   const [connectionOwner, setConnectionOwner] = useState<Owner>(
     input?.initialOwner ?? defaultConnectionOwnerForHost(organizationId),
   );
