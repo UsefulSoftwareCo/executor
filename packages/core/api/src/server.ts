@@ -33,6 +33,7 @@ export {
 export { AdminUsersHandlers } from "./admin/handlers";
 export {
   platformViewOf,
+  listAuditEvents as listAdminAuditEvents,
   listUsers as listAdminUsers,
   listUsersWithConnections as listAdminUsersWithConnections,
   listUserConnections as listAdminUserConnections,

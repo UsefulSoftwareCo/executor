@@ -10,6 +10,12 @@ test("idColumn accepts uuid type", () => {
   expect(col.id).toBe(true);
 });
 
+test("idColumn accepts unbounded string type", () => {
+  const col = idColumn("id", "string").defaultTo$("auto");
+  expect(col.type).toBe("string");
+  expect(col.id).toBe(true);
+});
+
 test("column accepts uuid type", () => {
   const col = column("token", "uuid");
   expect(col.type).toBe("uuid");
@@ -88,6 +94,36 @@ test("Drizzle SQLite generates UUID schema correctly", () => {
 
   expect(generated).toContain('text("id")');
   expect(generated).toContain("primaryKey()");
+});
+
+test("Drizzle PostgreSQL generates a text primary id correctly", () => {
+  const stringIdSchema = schema({
+    version: "1.0.0",
+    tables: {
+      audit: table("audit", {
+        id: idColumn("id", "string").defaultTo$("auto"),
+      }),
+    },
+  });
+
+  const generated = Drizzle.generateSchema(stringIdSchema, "postgresql");
+  expect(generated).toContain('text("id")');
+  expect(generated).toContain("primaryKey()");
+});
+
+test("Drizzle MySQL rejects an unbounded string primary id", () => {
+  const stringIdSchema = schema({
+    version: "1.0.0",
+    tables: {
+      audit: table("audit", {
+        id: idColumn("id", "string").defaultTo$("auto"),
+      }),
+    },
+  });
+
+  expect(() => Drizzle.generateSchema(stringIdSchema, "mysql")).toThrowError(
+    "Cannot generate MySQL schema for unbounded string primary key audit.id; declare an explicit varchar(n) id instead.",
+  );
 });
 
 test("TypeORM generates UUID schema correctly", () => {

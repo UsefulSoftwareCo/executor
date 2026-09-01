@@ -59,11 +59,19 @@ import {
   type ConnectionRow,
   type CoreSchema,
   type IntegrationRow,
+  type AuditEventRow,
   type OAuthClientRow,
   type ToolInvocationRow,
   type ToolRow,
   type ToolPolicyRow,
 } from "./core-schema";
+import type {
+  AdminAuditEvent,
+  AdminListAuditEventsOptions,
+  AuditEventInput,
+  AuditEventAction,
+  AuditResourceType,
+} from "./audit";
 import {
   ElicitationDeclinedError,
   ElicitationResponse,
@@ -636,6 +644,11 @@ const normalizeAdminPaging = (
 };
 
 export interface ExecutorAdmin {
+  /** Newest-first tenant audit history. Identifiers only: no credential
+   * material or free-form configuration is exposed. */
+  readonly listAuditEvents: (
+    options?: AdminListAuditEventsOptions,
+  ) => Effect.Effect<readonly AdminAuditEvent[], StorageFailure>;
   /** One page of subjects under the tenant, oldest first (stable: ties break on
    *  `external_id`). ALWAYS bounded: no arguments means
    *  {@link ADMIN_DEFAULT_PAGE_SIZE} rows from offset 0, and `limit` is clamped
@@ -1989,6 +2002,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
+    const recordAuditEvent = (input: AuditEventInput): Effect.Effect<void, StorageFailure> => {
+      const createdAt = new Date();
+      const id = `aud_${createdAt.getTime().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+      return core
+        .create("audit_event", {
+          tenant,
+          id,
+          actor_id: subject,
+          action: input.action,
+          resource_type: input.resourceType,
+          resource_owner: input.resourceOwner ?? null,
+          resource_parent: input.resourceParent ?? null,
+          resource_id: input.resourceId,
+          created_at: createdAt,
+        })
+        .pipe(Effect.asVoid);
+    };
+
     // Runtime-observed output shapes ("muscle memory"): learned on the
     // execute success path, served by tools.schema when a tool declares no
     // output schema. Backed by plugin_storage under a reserved system id.
@@ -3237,6 +3268,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 updated_at: now,
               },
             });
+            yield* recordAuditEvent({
+              action: "updated",
+              resourceType: "integration",
+              resourceId: String(input.slug),
+            });
             return false;
           }
           // A NEW catalog row is always user intent (the add-integration
@@ -3253,6 +3289,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             can_refresh: input.canRefresh ?? false,
             created_at: now,
             updated_at: now,
+          });
+          yield* recordAuditEvent({
+            action: "created",
+            resourceType: "integration",
+            resourceId: String(input.slug),
           });
           return true;
         }),
@@ -3295,6 +3336,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.updateMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
             set,
+          });
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "integration",
+            resourceId: String(slug),
           });
         }),
       );
@@ -3344,6 +3390,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.deleteMany("connection", { where });
           yield* core.deleteMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
+          });
+          yield* recordAuditEvent({
+            action: "removed",
+            resourceType: "integration",
+            resourceId: String(slug),
           });
           return existing.plugin_id;
         }),
@@ -3419,6 +3470,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.updateMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
             set: { health_check: spec, updated_at: new Date() },
+          });
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "integration",
+            resourceId: String(slug),
           });
         }),
       );
@@ -3992,6 +4048,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 cause: undefined,
               });
             }
+            yield* recordAuditEvent({
+              action: "created",
+              resourceType: "connection",
+              resourceOwner: input.owner,
+              resourceParent: String(input.integration),
+              resourceId: String(name),
+            });
             return rowId;
           }),
         ).pipe(
@@ -4145,6 +4208,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     if (survivor !== null) {
                       return "overtaken" as const;
                     }
+                    yield* recordAuditEvent({
+                      action: "rolled_back",
+                      resourceType: "connection",
+                      resourceOwner: input.owner,
+                      resourceParent: String(input.integration),
+                      resourceId: String(name),
+                    });
                     return "removed" as const;
                   }),
                 ).pipe(
@@ -4224,6 +4294,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     "executor connection create failed to restore credential writes",
                     { ...logContext, cause: restoreOutcome.cause },
                   );
+                  yield* recordAuditEvent({
+                    action: "rollback_failed",
+                    resourceType: "connection",
+                    resourceOwner: input.owner,
+                    resourceParent: String(input.integration),
+                    resourceId: String(name),
+                  });
                 }
               });
 
@@ -4510,6 +4587,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 cause: undefined,
               });
             }
+            yield* recordAuditEvent({
+              action: existing ? "updated" : "created",
+              resourceType: "connection",
+              resourceOwner: input.owner,
+              resourceParent: String(input.integration),
+              resourceId: String(name),
+            });
             return { existing, rowId };
           }),
         );
@@ -4532,6 +4616,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   if (committed.existing) {
                     yield* core.create("connection", committed.existing);
                   }
+                  yield* recordAuditEvent({
+                    action: "rolled_back",
+                    resourceType: "connection",
+                    resourceOwner: input.owner,
+                    resourceParent: String(input.integration),
+                    resourceId: String(name),
+                  });
                   return true;
                 }),
               ).pipe(
@@ -4576,6 +4667,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 });
               }
               if (Predicate.isTagged(credentialRestore, "Failed")) {
+                yield* recordAuditEvent({
+                  action: "rollback_failed",
+                  resourceType: "connection",
+                  resourceOwner: input.owner,
+                  resourceParent: String(input.integration),
+                  resourceId: String(name),
+                });
                 return yield* new StorageError({
                   message: `Failed to store OAuth credentials for ${input.owner}/${String(input.integration)}/${String(name)}, and credential compensation also failed.`,
                   cause: credentialRestore.cause,
@@ -4696,6 +4794,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ),
             set,
           });
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "connection",
+            resourceOwner: ref.owner,
+            resourceParent: String(ref.integration),
+            resourceId: String(ref.name),
+          });
           const updated = yield* findConnectionRow(ref);
           return rowToConnection(updated ?? row);
         }),
@@ -4745,6 +4850,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 b("integration", "=", String(ref.integration)),
                 b("name", "=", String(ref.name)),
               ),
+          });
+          yield* recordAuditEvent({
+            action: "removed",
+            resourceType: "connection",
+            resourceOwner: ref.owner,
+            resourceParent: String(ref.integration),
+            resourceId: String(ref.name),
           });
         }),
       );
@@ -5893,6 +6005,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             created_at: now,
             updated_at: now,
           });
+          yield* recordAuditEvent({
+            action: "created",
+            resourceType: "tool_policy",
+            resourceOwner: input.owner,
+            resourceId: String(id),
+          });
           return rowToToolPolicy(created);
         }),
       );
@@ -5929,6 +6047,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               cause: undefined,
             });
           }
+          yield* recordAuditEvent({
+            action: "updated",
+            resourceType: "tool_policy",
+            resourceOwner: input.owner,
+            resourceId: input.id,
+          });
           return rowToToolPolicy(updated);
         }),
       );
@@ -5940,7 +6064,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         Effect.gen(function* () {
           yield* guardOrgWrite(input.owner);
           const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
+          const existing = yield* core.findFirst("tool_policy", { where });
           yield* core.deleteMany("tool_policy", { where });
+          if (existing) {
+            yield* recordAuditEvent({
+              action: "removed",
+              resourceType: "tool_policy",
+              resourceOwner: input.owner,
+              resourceId: input.id,
+            });
+          }
         }),
       );
 
@@ -6602,6 +6735,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       credentialWriteRuntimeId,
       ownedKeys: (owner: Owner) => ownedKeys(owner),
       guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
+      recordAuditEvent,
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
       connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),
@@ -6872,6 +7006,44 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         };
       };
 
+      const rowToAdminAuditEvent = (row: AuditEventRow): AdminAuditEvent => ({
+        id: row.id,
+        actorId: row.actor_id == null ? null : String(row.actor_id),
+        action: row.action as AuditEventAction,
+        resourceType: row.resource_type as AuditResourceType,
+        resourceOwner: row.resource_owner == null ? null : (row.resource_owner as Owner),
+        resourceParent: row.resource_parent == null ? null : String(row.resource_parent),
+        resourceId: String(row.resource_id),
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+      });
+
+      const listAuditEvents = (
+        options?: AdminListAuditEventsOptions,
+      ): Effect.Effect<readonly AdminAuditEvent[], StorageFailure> => {
+        const { limit, offset } = normalizeAdminPaging(options);
+        return platformCore
+          .findMany("audit_event", {
+            where: (b: AnyCb) =>
+              b.and(
+                options?.actorId === undefined ? true : b("actor_id", "=", options.actorId),
+                options?.action === undefined ? true : b("action", "=", options.action),
+                options?.resourceType === undefined
+                  ? true
+                  : b("resource_type", "=", options.resourceType),
+                options?.resourceOwner === undefined
+                  ? true
+                  : b("resource_owner", "=", options.resourceOwner),
+              ),
+            orderBy: [
+              ["created_at", "desc"],
+              ["id", "desc"],
+            ],
+            limit,
+            offset,
+          })
+          .pipe(Effect.map((rows) => rows.map(rowToAdminAuditEvent)));
+      };
+
       const listSubjects = (
         options?: AdminListSubjectsOptions,
       ): Effect.Effect<readonly AdminSubject[], StorageFailure> => {
@@ -6985,6 +7157,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
 
       return {
+        listAuditEvents,
         listSubjects,
         getSubject,
         listSubjectConnections,

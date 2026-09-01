@@ -118,6 +118,11 @@ export function generateSchema(
         }
         return { name: "text" };
       case "string":
+        if (provider === "mysql" && column instanceof IdColumn) {
+          throw new Error(
+            `Cannot generate MySQL schema for unbounded string primary key ${column.table.ormName}.${column.ormName}; declare an explicit varchar(n) id instead.`,
+          );
+        }
         return { name: "text" };
       case "binary":
         return {

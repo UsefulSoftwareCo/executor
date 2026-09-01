@@ -141,6 +141,26 @@ export const adminUserCopyableEmail = (user: AdminUserIdentityRow): string | nul
 
 // ── Connections ─────────────────────────────────────────────────────────────
 
+/** Append-only action vocabulary shown in the admin activity feed. */
+export type AdminAuditAction =
+  | "created"
+  | "updated"
+  | "removed"
+  | "rolled_back"
+  | "rollback_failed";
+
+/** Render an audit action without exposing its storage spelling. */
+const AUDIT_ACTION_LABELS = {
+  created: "Created",
+  updated: "Updated",
+  removed: "Removed",
+  rolled_back: "Rolled back",
+  rollback_failed: "Rollback failed",
+} satisfies Record<AdminAuditAction, string>;
+
+/** Render an audit action without exposing its storage spelling. */
+export const auditActionLabel = (action: AdminAuditAction): string => AUDIT_ACTION_LABELS[action];
+
 /** The health status a row displays. A connection that was never probed carries
  *  no verdict, which is `unknown` in the shared vocabulary. */
 export const connectionHealthStatus = (connection: AdminConnectionRow): HealthStatus =>
@@ -262,6 +282,40 @@ export const connectLinkUrl = (
   const org = orgSlug?.trim();
   return org ? `${base}/${org}/connect/${integration}` : `${base}/connect/${integration}`;
 };
+
+// ── Audit activity ─────────────────────────────────────────────────────────
+
+export interface AdminAuditActorRow {
+  readonly actorId: string | null;
+  readonly actorEmail: string | null;
+  readonly actorDisplayName: string | null;
+}
+
+/** Human-readable actor, with the stable id retained as the final fallback. */
+export const adminAuditActorLabel = (event: AdminAuditActorRow): string =>
+  event.actorEmail ?? event.actorDisplayName ?? event.actorId ?? "System";
+
+export const adminAuditResourceLabel = (event: {
+  readonly resourceType: "connection" | "integration" | "oauth_client" | "tool_policy";
+  readonly resourceParent: string | null;
+  readonly resourceId: string;
+}): string => {
+  const kind =
+    event.resourceType === "oauth_client"
+      ? "OAuth app"
+      : event.resourceType === "tool_policy"
+        ? "Tool policy"
+        : event.resourceType === "integration"
+          ? "Integration"
+          : "Connection";
+  const identifier = event.resourceParent
+    ? `${event.resourceParent} / ${event.resourceId}`
+    : event.resourceId;
+  return `${kind}: ${identifier}`;
+};
+
+export const adminAuditScopeLabel = (owner: Owner | null): string =>
+  owner === "user" ? "Personal" : "Workspace";
 
 // ── Paging ──────────────────────────────────────────────────────────────────
 

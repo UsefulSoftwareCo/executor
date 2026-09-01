@@ -108,6 +108,15 @@ export type {
   ValidateConnectionInput,
 } from "./connection";
 export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
+export {
+  AUDIT_EVENT_ACTIONS,
+  AUDIT_RESOURCE_TYPES,
+  type AdminAuditEvent,
+  type AdminListAuditEventsOptions,
+  type AuditEventAction,
+  type AuditResourceType,
+} from "./audit";
+
 // Credential providers.
 export type { CredentialProvider, ProviderEntry } from "./provider";
 
