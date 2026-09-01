@@ -4,6 +4,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import {
   IntegrationSlug,
+  isToolSyncHealth,
   type Connection,
   type OAuthClientSummary,
   type Owner,
@@ -172,6 +173,12 @@ function AccountRow(props: {
   const misconfigured = status === "misconfigured";
   const needsHealthAttention = status === "expired" || status === "degraded";
   const healthDetail = needsHealthAttention ? probe?.detail : undefined;
+  // A "Tool sync failing" stamp is about the CATALOG (tools may be stale or
+  // missing), not the credential — the health hook excludes it from `status`,
+  // so surface it as its own muted note instead of an unhealthy row.
+  const syncFailureDetail = isToolSyncHealth(connection.lastHealth)
+    ? connection.lastHealth?.detail
+    : undefined;
   const missingOAuthScopes = connection.missingOAuthScopes ?? [];
 
   const handleCheck = async () => {
@@ -250,6 +257,11 @@ function AccountRow(props: {
         {healthDetail ? (
           <CardStackEntryDescription className="mt-1 overflow-visible whitespace-normal text-clip text-xs text-muted-foreground">
             {healthDetail}
+          </CardStackEntryDescription>
+        ) : null}
+        {syncFailureDetail ? (
+          <CardStackEntryDescription className="mt-1 overflow-visible whitespace-normal text-clip text-xs text-muted-foreground">
+            {syncFailureDetail}
           </CardStackEntryDescription>
         ) : null}
         {needsReconsent ? (

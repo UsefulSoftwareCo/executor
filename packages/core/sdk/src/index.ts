@@ -134,6 +134,7 @@ export {
   pathNamesASecret,
   REDACTED_SAMPLE_VALUE,
   identityPathTier,
+  isToolSyncHealth,
   rankResponseSample,
 } from "./health-check";
 
