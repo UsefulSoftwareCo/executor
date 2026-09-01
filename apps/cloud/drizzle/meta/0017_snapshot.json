@@ -60,12 +60,8 @@
           "name": "memberships_account_id_accounts_id_fk",
           "tableFrom": "memberships",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -73,12 +69,8 @@
           "name": "memberships_organization_id_organizations_id_fk",
           "tableFrom": "memberships",
           "tableTo": "organizations",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["organization_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -86,10 +78,7 @@
       "compositePrimaryKeys": {
         "memberships_account_id_organization_id_pk": {
           "name": "memberships_account_id_organization_id_pk",
-          "columns": [
-            "account_id",
-            "organization_id"
-          ]
+          "columns": ["account_id", "organization_id"]
         }
       },
       "uniqueConstraints": {},
