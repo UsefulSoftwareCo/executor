@@ -497,6 +497,56 @@ describe("OpenAPI Plugin", () => {
     }),
   );
 
+  it.effect("invokes static updateSpec through executor.execute", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "runtime_update",
+          baseUrl: specServer.baseUrl,
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("runtime_update"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
+        });
+
+        const EvolvedItems = HttpApiGroup.make("items").add(
+          HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }),
+        );
+        const Widgets = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
+        );
+        yield* specServer.setApi(HttpApi.make("testApi").add(EvolvedItems).add(Widgets));
+
+        const result = unwrapInvocation(
+          yield* executor.execute(ToolAddress.make("executor.openapi.updateSpec"), {
+            slug: "runtime_update",
+          }),
+        ).data as {
+          slug: string;
+          toolCount: number;
+          addedTools: readonly string[];
+          removedTools: readonly string[];
+        };
+
+        expect(result.slug).toBe("runtime_update");
+        expect(result.addedTools).toEqual(["widgets.listWidgets"]);
+        expect(result.removedTools).toContain("items.queryRows");
+
+        const toolNames = (yield* executor.tools.list()).map((item) => String(item.name));
+        expect(toolNames).toContain("widgets.listWidgets");
+        expect(toolNames).not.toContain("items.queryRows");
+      }),
+    ),
+  );
+
   it.effect("static previewSpec returns actionable tool failures", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({ plugins: [openApiPlugin()] as const });

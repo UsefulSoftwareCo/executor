@@ -326,6 +326,19 @@ const AddIntegrationOutputSchema = Schema.Struct({
   toolCount: Schema.Number,
 });
 
+const UpdateIntegrationInputSchema = Schema.Struct({
+  slug: Schema.String,
+  spec: Schema.optional(OpenApiSpecInputSchema),
+  specOverrides: Schema.optional(SpecOverridesSchema),
+});
+
+const UpdateIntegrationOutputSchema = Schema.Struct({
+  slug: Schema.String,
+  toolCount: Schema.Number,
+  addedTools: Schema.Array(Schema.String),
+  removedTools: Schema.Array(Schema.String),
+});
+
 const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(PreviewSpecInputSchema),
 );
@@ -337,6 +350,12 @@ const AddIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
 );
 const AddIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddIntegrationOutputSchema),
+);
+const UpdateIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(UpdateIntegrationInputSchema),
+);
+const UpdateIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(UpdateIntegrationOutputSchema),
 );
 
 const openApiToolFailure = (code: string, message: string, details?: unknown) =>
@@ -1285,6 +1304,52 @@ export const openApiPlugin = definePlugin<
                         openApiToolFailure(
                           "integration_already_exists",
                           `Integration ${slug} already exists; update it instead of re-adding.`,
+                        ),
+                      ),
+                  }),
+                ),
+          }),
+          tool({
+            name: "updateSpec",
+            description:
+              "Update an existing OpenAPI integration in place and rebuild its connected tools. Omit `spec` to re-fetch the integration's stored spec URL. Provide `spec` to replace an inline or URL source. Existing connections, credentials, policies, and curated integration metadata are preserved.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Update an OpenAPI integration",
+            },
+            inputSchema: UpdateIntegrationInputStandardSchema,
+            outputSchema: UpdateIntegrationOutputStandardSchema,
+            execute: (input: typeof UpdateIntegrationInputSchema.Type) =>
+              self
+                .updateSpec(input.slug, {
+                  ...(input.spec === undefined ? {} : { spec: input.spec }),
+                  ...(input.specOverrides === undefined
+                    ? {}
+                    : { specOverrides: input.specOverrides }),
+                })
+                .pipe(
+                  Effect.map((result) =>
+                    ToolResult.ok({
+                      slug: String(result.slug),
+                      toolCount: result.toolCount,
+                      addedTools: [...result.addedTools],
+                      removedTools: [...result.removedTools],
+                    }),
+                  ),
+                  Effect.catchTags({
+                    OpenApiParseError: ({ message }: OpenApiParseError) =>
+                      Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),
+                    OpenApiExtractionError: ({ message }: OpenApiExtractionError) =>
+                      Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
+                    OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
+                      Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                    OpenApiSpecOverrideError: ({ message }) =>
+                      Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
+                    IntegrationNotFoundError: ({ slug }: IntegrationNotFoundError) =>
+                      Effect.succeed(
+                        openApiToolFailure(
+                          "integration_not_found",
+                          `Integration ${slug} was not found.`,
                         ),
                       ),
                   }),
