@@ -12,6 +12,7 @@ import {
   type OAuthGrant,
   type Owner,
   type ProviderItemId,
+  type TokenEndpointAuthMethod,
   type ToolAddress,
 } from "@executor-js/sdk/shared";
 import * as Atom from "effect/unstable/reactivity/Atom";
@@ -622,6 +623,7 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly tokenUrl: string;
           readonly grant: OAuthGrant;
           readonly clientId: string;
+          readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
           readonly resource?: string | null;
           readonly originIntegration?: IntegrationSlug | null;
         };
@@ -636,6 +638,9 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           tokenUrl: arg.payload.tokenUrl,
           resource: arg.payload.resource ?? null,
           clientId: arg.payload.clientId,
+          ...(arg.payload.tokenEndpointAuthMethod === undefined
+            ? {}
+            : { tokenEndpointAuthMethod: arg.payload.tokenEndpointAuthMethod }),
           // Mirror the server's stamp so the just-registered app matches its
           // integration in the picker immediately (before the refetch lands).
           origin: { kind: "manual", integration: arg.payload.originIntegration ?? null },

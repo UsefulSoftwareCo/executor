@@ -83,19 +83,34 @@ jobs:
       - name: Run release checks
         run: bun run release:check
 
-      - name: Publish package and create release
+      # --skip-build reuses the artifacts release:check's dry-run just built
+      # in this same tree (validated against the release version) instead of
+      # rebuilding everything a second time.
+      - name: Stage release artifacts and draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           export GITHUB_REF_TYPE=tag
           export GITHUB_REF_NAME="$RELEASE_TAG"
           export GITHUB_REF="refs/tags/$RELEASE_TAG"
-          bun run release:publish
+          bun run --cwd apps/cli src/release.ts --stage-only --skip-build
 
+      # Desktop needs only the tag and the draft release staged above — it
+      # compiles its own sidecar from the tag's source. Triggering it before
+      # the npm publishes overlaps its build with them; its release job waits
+      # for THIS run (by the id passed here) to succeed before promoting the
+      # release, so a failed npm publish still leaves the release in draft.
       - name: Trigger desktop build
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run publish-desktop.yml -f tag="$RELEASE_TAG"
+        run: gh workflow run publish-desktop.yml -f tag="$RELEASE_TAG" -f executor_run_id="$GITHUB_RUN_ID"
+
+      - name: Publish executor to npm
+        run: |
+          export GITHUB_REF_TYPE=tag
+          export GITHUB_REF_NAME="$RELEASE_TAG"
+          export GITHUB_REF="refs/tags/$RELEASE_TAG"
+          bun run --cwd apps/cli src/release.ts --publish-only
 
       - name: Trigger self-host Docker publish
         env:

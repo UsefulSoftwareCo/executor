@@ -261,6 +261,9 @@ export const coreTables = defineTables({
       // (WorkOS Vault on cloud, the local store on desktop). Null for public /
       // PKCE clients (no secret). Keeps secrets out of plaintext columns.
       client_secret_item_id: nullableTextColumn("client_secret_item_id"),
+      // Null in old rows means client_secret_post (the existing default).
+      // Stored values are "body" or "basic" and are validated on read.
+      token_endpoint_auth_method: nullableTextColumn("token_endpoint_auth_method"),
       // RFC 8707 Resource Indicator (MCP). Sent on the refresh request so the
       // re-minted access token stays bound to the same resource. Null when the
       // provider doesn't use resource indicators.

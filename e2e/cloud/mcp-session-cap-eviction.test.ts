@@ -147,10 +147,12 @@ scenario(
     const openedSessionIds: string[] = [];
 
     const scenarioBody = Effect.gen(function* () {
-      // Open more sessions than the cap allows, at limited concurrency. None
-      // of them run any work, so every one is immediately eviction-eligible —
-      // crossing the cap must pick at least one and tear it down through its
-      // own stub.
+      // Open more sessions than the cap allows. Keep admission sequential:
+      // the cloud e2e database is one serialized PGlite instance, and this
+      // scenario exercises resident eviction rather than concurrent cold
+      // builds. None of the sessions run any work, so every one is immediately
+      // eviction-eligible — crossing the cap must pick at least one and tear it
+      // down through its own stub.
       const sessionIds = yield* Effect.forEach(
         Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
         (index) =>
@@ -159,7 +161,7 @@ scenario(
               openedSessionIds.push(sessionId);
             }),
           ),
-        { concurrency: 8 },
+        { concurrency: 1 },
       );
 
       expect(sessionIds.length, "every session opened").toBe(SESSIONS_TO_OPEN);

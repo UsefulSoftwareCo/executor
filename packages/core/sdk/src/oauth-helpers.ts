@@ -19,7 +19,7 @@
 import { Data, Effect, Option, Predicate, Schema } from "effect";
 import * as oauth from "oauth4webapi";
 
-import type { SubjectTokenType } from "./oauth-client";
+import type { SubjectTokenType, TokenEndpointAuthMethod } from "./oauth-client";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -842,7 +842,7 @@ const hostnameForTelemetry = (url: string): string => URL.parse(url)?.hostname ?
 // oauth4webapi adapter helpers
 // ---------------------------------------------------------------------------
 
-export type ClientAuthMethod = "body" | "basic";
+export type ClientAuthMethod = TokenEndpointAuthMethod;
 
 /**
  * The token-endpoint client-auth transport used when a caller doesn't specify
@@ -850,8 +850,10 @@ export type ClientAuthMethod = "body" | "basic";
  * method our DCR registers (`token_endpoint_auth_method: client_secret_post`)
  * and the one every confidential client in the v2 model uses. EXPLICIT and
  * documented rather than a hidden inline `?? "body"`: callers that need
- * `client_secret_basic` pass `clientAuth: "basic"`. For PUBLIC clients (no
- * secret) the method is irrelevant — `pickClientAuth` returns `None()`.
+ * `client_secret_basic` pass `clientAuth: "basic"`. Providers that reject the
+ * RFC form encoding can explicitly pass `clientAuth: "basic_raw"`. For PUBLIC
+ * clients (no secret) the method is irrelevant — `pickClientAuth` returns
+ * `None()`.
  */
 export const DEFAULT_CLIENT_AUTH_METHOD: ClientAuthMethod = "body";
 
@@ -914,15 +916,29 @@ const oauth4webapiRequestOptions = (
 // (public PKCE — `None()`, RFC 7636). This is not a silent guess: `loadClient`
 // persists a non-empty secret for confidential clients and null/"" for public
 // ones, so an absent secret here unambiguously means "public client". The
-// `method` only chooses HOW a present secret is sent (post vs basic).
+// `method` only chooses HOW a present secret is sent (post vs either Basic
+// credential encoding).
+const base64BasicCredentials = (clientId: string, clientSecret: string): string => {
+  const bytes = new TextEncoder().encode(`${clientId}:${clientSecret}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return globalThis.btoa(binary);
+};
+
+const rawClientSecretBasic =
+  (clientSecret: string): oauth.ClientAuth =>
+  (_authorizationServer, client, _body, headers) => {
+    headers.set("authorization", `Basic ${base64BasicCredentials(client.client_id, clientSecret)}`);
+  };
+
 const pickClientAuth = (
   clientSecret: string | null | undefined,
   method: ClientAuthMethod,
 ): oauth.ClientAuth => {
   if (!clientSecret) return oauth.None();
-  return method === "basic"
-    ? oauth.ClientSecretBasic(clientSecret)
-    : oauth.ClientSecretPost(clientSecret);
+  if (method === "basic") return oauth.ClientSecretBasic(clientSecret);
+  if (method === "basic_raw") return rawClientSecretBasic(clientSecret);
+  return oauth.ClientSecretPost(clientSecret);
 };
 
 const normalizedTokenScope = (
@@ -1122,13 +1138,6 @@ export type ExchangeAuthorizationCodeInput = {
   readonly fetch?: typeof globalThis.fetch;
 };
 
-const base64BasicCredentials = (clientId: string, clientSecret: string): string => {
-  const bytes = new TextEncoder().encode(`${clientId}:${clientSecret}`);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return globalThis.btoa(binary);
-};
-
 const jsonTokenEndpointRequest = async (input: {
   readonly tokenUrl: string;
   readonly clientId: string;
@@ -1149,21 +1158,24 @@ const jsonTokenEndpointRequest = async (input: {
     accept: "application/json",
     "content-type": "application/json",
   });
-  const confidential = Boolean(input.clientSecret);
-  if (confidential && input.clientAuth === "basic") {
-    headers.set(
-      "authorization",
-      `Basic ${base64BasicCredentials(input.clientId, input.clientSecret ?? "")}`,
+  const clientSecret = input.clientSecret ?? "";
+  const confidential = clientSecret.length > 0;
+  if (confidential && input.clientAuth !== "body") {
+    await pickClientAuth(clientSecret, input.clientAuth)(
+      asFromTokenUrl(tokenUrl, input.endpointUrlPolicy),
+      { client_id: input.clientId },
+      new URLSearchParams(),
+      headers,
     );
   }
   const body = {
     grant_type: input.grantType,
     ...input.parameters,
-    ...(confidential && input.clientAuth === "basic"
+    ...(confidential && input.clientAuth !== "body"
       ? {}
       : {
           client_id: input.clientId,
-          ...(confidential ? { client_secret: input.clientSecret ?? "" } : {}),
+          ...(confidential ? { client_secret: clientSecret } : {}),
         }),
   };
   // oxlint-disable-next-line executor/no-raw-fetch -- boundary: provider token exchange is the SDK's HTTP boundary and preserves its injected fetch seam

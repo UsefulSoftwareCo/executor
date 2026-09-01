@@ -140,7 +140,12 @@ import {
   type MintOAuthConnectionInput,
   type OAuthScopePolicy,
 } from "./oauth-service";
-import { isFirstPartyOAuthClientSlug, type OAuthService } from "./oauth-client";
+import {
+  isFirstPartyOAuthClientSlug,
+  parseStoredTokenEndpointAuthMethod,
+  type OAuthService,
+  type TokenEndpointAuthMethod,
+} from "./oauth-client";
 import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
@@ -2164,7 +2169,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenUrl: string;
       readonly grant: string;
       readonly resource: string | null;
-      readonly tokenEndpointAuthMethod?: "body" | "basic";
+      readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
       readonly tokenRequestFormat?: "form" | "json";
     }
 
@@ -2524,6 +2529,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const clientOwner = (row.oauth_client_owner ?? row.owner) as Owner;
           const stored = yield* loadOAuthClientRow(clientOwner, clientSlug);
           if (!stored) return null;
+          const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
+            stored.token_endpoint_auth_method,
+          );
+          if (tokenEndpointAuthMethod === null) {
+            return yield* new StorageError({
+              message: `oauth_client ${clientSlug} has an unknown token endpoint auth method: ${String(stored.token_endpoint_auth_method)}`,
+              cause: undefined,
+            });
+          }
           return {
             clientId: String(stored.client_id),
             clientSecret: stored.client_secret_item_id
@@ -2533,6 +2547,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tokenUrl: String(stored.token_url),
             grant: String(stored.grant),
             resource: stored.resource ? String(stored.resource) : null,
+            ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
           } satisfies RefreshClient;
         });
         if (!clientRow) {
@@ -2588,6 +2603,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 clientId: clientRow.clientId,
                 clientSecret,
                 scopes: grantedScopes,
+                clientAuth: clientRow.tokenEndpointAuthMethod,
                 resource: clientRow.resource ?? undefined,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
