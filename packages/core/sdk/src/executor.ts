@@ -3793,7 +3793,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // pasted inputs go to the default writable store, external `from` inputs to
         // their provider. Mixing pasted + external, or two external providers, is
         // rejected (the connection row carries one `provider`).
-        const inputs = normalizeConnectionInputs(input);
+        const isNoAuth = String(input.template) === String(NO_AUTH_TEMPLATE);
+        const inputs = isNoAuth ? [] : normalizeConnectionInputs(input);
         const pasted = inputs.filter((i) => "value" in i.origin);
         const external = inputs.filter((i) => "from" in i.origin);
         // A credentialed connection is born wired: it must reference at least
@@ -3806,7 +3807,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // submits `values: {}` for them). OAuth connections are minted via
         // `mintOAuthConnection`, not this path; an external `from` reference
         // may resolve to null and is surfaced at invoke time, not here.
-        const isNoAuth = String(input.template) === String(NO_AUTH_TEMPLATE);
         if (inputs.length === 0 && !isNoAuth) {
           return yield* new InvalidConnectionInputError({
             message: "A connection must supply at least one credential input.",

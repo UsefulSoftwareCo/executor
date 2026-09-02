@@ -720,6 +720,21 @@ describe("connections.create", () => {
     }),
   );
 
+  it.effect("normalizes a no-auth scalar placeholder to an empty credential binding", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("public-scalar"),
+        integration: INTEG,
+        template: AuthTemplateSlug.make("none"),
+        value: "",
+      });
+
+      expect(yield* executor.demo.resolveValue("org", "public-scalar")).toBeNull();
+    }),
+  );
+
   it.effect("allows an empty-string value (no-auth integrations bind one)", () =>
     Effect.gen(function* () {
       const executor = yield* setup();
