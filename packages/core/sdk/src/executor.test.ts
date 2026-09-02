@@ -539,6 +539,9 @@ describe("createExecutor", () => {
       const integration = yield* executor.integrations
         .get(IntegrationSlug.make("diagnostics"))
         .pipe(Effect.provide(Logger.layer([capture])));
+      yield* executor.integrations
+        .get(IntegrationSlug.make("diagnostics"))
+        .pipe(Effect.provide(Logger.layer([capture])));
       expect(integration?.authMethods).toEqual([
         {
           id: "credential",
@@ -549,12 +552,12 @@ describe("createExecutor", () => {
         },
       ]);
       expect(
-        warnings.some(
+        warnings.filter(
           (line) =>
             line.includes("executor omitted invalid plugin auth method") &&
             line.includes("no-auth methods cannot declare credential placements"),
         ),
-      ).toBe(true);
+      ).toHaveLength(1);
 
       yield* executor.connections.create({
         owner: "org",

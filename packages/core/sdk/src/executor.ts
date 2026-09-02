@@ -3075,6 +3075,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // plugin's `describeAuthMethods` hook. The hook is plugin-authored, so a
     // throw (malformed config it didn't guard) degrades to `[]` rather than
     // failing the catalog read.
+    const warnedInvalidAuthMethods = new Set<string>();
     const describeAuthMethodsForRow = (
       row: IntegrationRow,
     ): Effect.Effect<readonly AuthMethodDescriptor[]> =>
@@ -3090,12 +3091,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const valid: AuthMethodDescriptor[] = [];
         for (const method of methods) {
           if (method.kind === "none" && method.placements !== undefined) {
-            yield* Effect.logWarning("executor omitted invalid plugin auth method", {
-              plugin: row.plugin_id,
-              integration: row.slug,
-              method: method.id,
-              reason: "no-auth methods cannot declare credential placements",
-            });
+            const warningKey = [row.plugin_id, row.slug, method.id]
+              .map((value) => `${value.length}:${value}`)
+              .join("");
+            if (!warnedInvalidAuthMethods.has(warningKey)) {
+              warnedInvalidAuthMethods.add(warningKey);
+              yield* Effect.logWarning("executor omitted invalid plugin auth method", {
+                plugin: row.plugin_id,
+                integration: row.slug,
+                method: method.id,
+                reason: "no-auth methods cannot declare credential placements",
+              });
+            }
             continue;
           }
           valid.push(method);
