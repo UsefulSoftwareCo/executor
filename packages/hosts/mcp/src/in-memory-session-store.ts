@@ -313,7 +313,10 @@ export const makeInMemoryMcpSessionStore = (
   /**
    * Drive a transport for one web request, recovering any defect to a 500. On a
    * fresh transport that never minted a session id (e.g. a non-initialize first
-   * request), close it and its server eagerly so they don't leak.
+   * request), close it and its server eagerly so they don't leak. The SDK
+   * transport rejects malformed or literal-null POST bodies before dispatch;
+   * every request that reaches dispatch has its org-write-access header
+   * overwritten below with the value derived from the authenticated principal.
    */
   const runHandleRequest = (
     transport: WebStandardStreamableHTTPServerTransport,

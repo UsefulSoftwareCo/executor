@@ -129,6 +129,9 @@ const demoPlugin = definePlugin(() => ({
 const diagnosticsPlugin = definePlugin(() => ({
   id: "diagnostics" as const,
   storage: () => ({}),
+  describeAuthMethods: () => [
+    { id: "none", label: "No authentication", kind: "none", template: "none" },
+  ],
   resolveTools: ({ connection }) =>
     Effect.succeed({
       tools: [],

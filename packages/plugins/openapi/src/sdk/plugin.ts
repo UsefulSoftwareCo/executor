@@ -51,7 +51,11 @@ import {
 } from "./spec-format";
 import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
-import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import {
+  ApiKeyAuthTemplate,
+  describeApiKeyAuthMethod,
+  describeNoneAuthMethod,
+} from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
@@ -603,26 +607,26 @@ export const describeOpenApiAuthMethods = (
 ): readonly AuthMethodDescriptor[] => {
   const config = decodeOpenApiIntegrationConfig(record.config);
   if (!config) return [];
-  return (config.authenticationTemplate ?? []).map(
-    (template: Authentication): AuthMethodDescriptor => {
-      if (template.kind === "oauth2") {
-        return {
-          id: String(template.slug),
-          label: template.label ?? "OAuth2",
-          kind: "oauth",
-          template: String(template.slug),
-          oauth: {
-            authorizationUrl: template.authorizationUrl,
-            tokenUrl: template.tokenUrl,
-            resource: template.resource ?? null,
-            scopes: template.scopes,
-            supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
-          },
-        };
-      }
-      return describeApiKeyAuthMethod(template);
-    },
-  );
+  const templates = config.authenticationTemplate ?? [];
+  if (templates.length === 0) return [describeNoneAuthMethod("none")];
+  return templates.map((template: Authentication): AuthMethodDescriptor => {
+    if (template.kind === "oauth2") {
+      return {
+        id: String(template.slug),
+        label: template.label ?? "OAuth2",
+        kind: "oauth",
+        template: String(template.slug),
+        oauth: {
+          authorizationUrl: template.authorizationUrl,
+          tokenUrl: template.tokenUrl,
+          resource: template.resource ?? null,
+          scopes: template.scopes,
+          supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+        },
+      };
+    }
+    return describeApiKeyAuthMethod(template);
+  });
 };
 
 export const describeOpenApiIntegrationDisplay = (

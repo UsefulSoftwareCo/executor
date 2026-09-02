@@ -60,6 +60,7 @@ const memoryProvider = (): CredentialProvider => {
 };
 
 const INTEG = IntegrationSlug.make("vercel");
+const COLLIDING_INTEG = IntegrationSlug.make("reserved-slug-collision");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 
 /** Wrap a test `FumaDb` so every transaction it opens is observable. The
@@ -112,6 +113,27 @@ const demoPlugin = definePlugin(() => ({
     }),
   invokeTool: ({ toolRow, credential }) =>
     Effect.succeed({ ran: toolRow.name, value: credential.value }),
+  describeAuthMethods: (integration) =>
+    String(integration.slug) === String(COLLIDING_INTEG)
+      ? [
+          {
+            id: "none",
+            label: "API key with a legacy colliding slug",
+            kind: "apikey",
+            template: "none",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+        ]
+      : [
+          {
+            id: String(TEMPLATE),
+            label: "API key",
+            kind: "apikey",
+            template: String(TEMPLATE),
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+          { id: "none", label: "No authentication", kind: "none", template: "none" },
+        ],
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -119,10 +141,22 @@ const demoPlugin = definePlugin(() => ({
         description: "Vercel",
         config: {},
       }),
+    seedCollidingIntegration: () =>
+      ctx.core.integrations.register({
+        slug: COLLIDING_INTEG,
+        description: "Legacy colliding auth method",
+        config: {},
+      }),
     resolveValue: (owner: "org" | "user", name: string) =>
       ctx.connections.resolveValue({
         owner,
         integration: INTEG,
+        name: ConnectionName.make(name),
+      }),
+    resolveCollidingValue: (owner: "org" | "user", name: string) =>
+      ctx.connections.resolveValue({
+        owner,
+        integration: COLLIDING_INTEG,
         name: ConnectionName.make(name),
       }),
   }),
@@ -690,10 +724,10 @@ describe("connections.create", () => {
     }),
   );
 
-  // The no-auth template: public servers need no credential. The UI submits
-  // `values: {}` for them and the persisted row carries an empty `item_ids`
-  // map — that is the canonical shape (every migrated no-auth connection in
-  // prod has it), so it must create cleanly and keep its tools on refresh.
+  // A no-auth method needs no credential. SDK callers may submit `values: {}`;
+  // the dashboard's legacy shape is `values: { token: "" }`. Both canonicalize
+  // to an empty `item_ids` map (the shape of migrated no-auth connections), so
+  // creation and refresh must keep the connection's tools.
   it.effect('creates a no-auth (`template: "none"`) connection from an empty `values` map', () =>
     Effect.gen(function* () {
       const executor = yield* setup();
@@ -732,6 +766,64 @@ describe("connections.create", () => {
       });
 
       expect(yield* executor.demo.resolveValue("org", "public-scalar")).toBeNull();
+    }),
+  );
+
+  it.effect("normalizes the dashboard's no-auth empty-value placeholder", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("public-dashboard"),
+        integration: INTEG,
+        template: AuthTemplateSlug.make("none"),
+        values: { token: "" },
+      });
+
+      expect(yield* executor.demo.resolveValue("org", "public-dashboard")).toBeNull();
+    }),
+  );
+
+  it.effect("rejects a real credential for a resolved no-auth method", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("public-with-secret"),
+          integration: INTEG,
+          template: AuthTemplateSlug.make("none"),
+          value: "must-not-be-dropped",
+        }),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(result.failure).toMatchObject({
+        _tag: "InvalidConnectionInputError",
+        message: "A no-auth connection cannot accept credential inputs.",
+      });
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("preserves credentials for an API-key method with a colliding no-auth slug", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.demo.seedCollidingIntegration();
+      const integration = yield* executor.integrations.get(COLLIDING_INTEG);
+      expect(integration?.authMethods).toMatchObject([{ kind: "apikey", template: "none" }]);
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("legacy-api-key"),
+        integration: COLLIDING_INTEG,
+        template: AuthTemplateSlug.make("none"),
+        value: "preserved-secret",
+      });
+
+      expect(yield* executor.demo.resolveCollidingValue("org", "legacyApiKey")).toBe(
+        "preserved-secret",
+      );
     }),
   );
 
