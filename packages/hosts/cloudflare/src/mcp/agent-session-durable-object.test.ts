@@ -158,10 +158,13 @@ type HarnessSession = {
     identity: McpApprovalOwner,
     response: ResumeResponse,
   ) => Promise<McpSessionModelResumeResult>;
-  validateMcpSessionOwner: (identity: {
-    readonly accountId: string;
-    readonly organizationId: string;
-  }, resource: McpResource) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
+  validateMcpSessionOwner: (
+    identity: {
+      readonly accountId: string;
+      readonly organizationId: string;
+    },
+    resource: McpResource,
+  ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
 
 class StaleCloseTransport implements Transport {
@@ -550,9 +553,7 @@ describe("McpAgentSessionDOBase transport restore", () => {
     const session = await makeHarnessSession();
     const identity = { accountId: "user-1", organizationId: "org-1" };
 
-    await expect(
-      session.validateMcpSessionOwner(identity, defaultMcpResource),
-    ).resolves.toBe("ok");
+    await expect(session.validateMcpSessionOwner(identity, defaultMcpResource)).resolves.toBe("ok");
     await expect(
       session.validateMcpSessionOwner(identity, {
         kind: "toolkit",
@@ -581,14 +582,20 @@ describe("McpAgentSessionDOBase transport restore", () => {
 
     await session.alarm();
 
-    const first = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    }, defaultMcpResource);
-    const second = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    }, defaultMcpResource);
+    const first = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
+    const second = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
 
     await firstRestoreEntered.promise;
     await Promise.resolve();
@@ -617,10 +624,13 @@ describe("McpAgentSessionDOBase transport restore", () => {
 
     await session.alarm();
 
-    const restore = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    }, defaultMcpResource);
+    const restore = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
     const sdkStart = session.onStart();
 
     await firstStartEntered.promise;

@@ -127,10 +127,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     }
 
     if (sessionId) {
-      const owner = await mcpSessionStub(
-        env.MCP_SESSION,
-        sessionId,
-      ).validateMcpSessionOwner(
+      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner(
         {
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
@@ -150,9 +147,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const props = await Effect.runPromise(
-      propsForPrincipal(request, outcome.principal, resource),
-    );
+    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withVerifiedIdentityHeaders(
       request,

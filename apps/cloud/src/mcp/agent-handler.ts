@@ -256,10 +256,7 @@ export const makeCloudMcpAgentHandler = () => {
       let owner: "ok" | "not_found" | "forbidden" | "terminated";
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a Durable Object stub RPC rejects with a plain platform Error, never a typed failure
       try {
-        owner = await mcpSessionStub(
-          env.MCP_SESSION,
-          sessionId,
-        ).validateMcpSessionOwner(
+        owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner(
           {
             accountId: outcome.principal.accountId,
             organizationId: outcome.principal.organizationId,

@@ -18,11 +18,7 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import {
-  defaultMcpResource,
-  mcpResourceKey,
-  type McpResource,
-} from "@executor-js/host-mcp";
+import { defaultMcpResource, mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
@@ -1569,8 +1565,7 @@ export abstract class McpAgentSessionDOBase<
         const ownerMatches =
           identity.accountId === sessionMeta.userId &&
           identity.organizationId === sessionMeta.organizationId;
-        const resourceMatches =
-          mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
+        const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
         return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
       }).pipe(
         Effect.withSpan("McpSessionDO.validateMcpSessionOwner"),
