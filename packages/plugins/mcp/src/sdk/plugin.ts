@@ -418,6 +418,20 @@ const normalizeSlug = (input: McpServerInput): string =>
 /** Slug for a stdio server's secret-env auth method (one per integration). */
 const STDIO_ENV_TEMPLATE = "env";
 
+/** Recover the inline credentials carried by a pre-auth-revamp stdio config.
+ *  A non-null result is the single predicate shared by catalog projection and
+ *  reconciliation: those values must never be mistaken for static env. */
+const legacyStdioInlineCredentials = (
+  config: McpStdioIntegrationConfig,
+): {
+  readonly values: Readonly<Record<string, string>>;
+  readonly vars: readonly string[];
+} | null => {
+  const values = config.env ?? {};
+  const vars = Object.keys(values);
+  return vars.length > 0 ? { values, vars } : null;
+};
+
 /** The secret env var NAMES a stdio add declares: the explicit `envVars`
  *  declaration plus the keys of any one-shot `env` values, de-duplicated and
  *  order-preserving. */
@@ -850,7 +864,16 @@ export const describeMcpAuthMethods = (
   // servers declare header/query/oauth methods. Both project from the same
   // optional `authenticationTemplate`.
   if (config.transport === "stdio" && config.authenticationTemplate === undefined) {
-    return [describeNoneAuthMethod("none")];
+    const credentials = legacyStdioInlineCredentials(config);
+    return credentials === null
+      ? [describeNoneAuthMethod("none")]
+      : [
+          describeStdioEnvAuthMethod({
+            slug: STDIO_ENV_TEMPLATE,
+            kind: "stdio_env",
+            vars: credentials.vars,
+          }),
+        ];
   }
   const methods = config.authenticationTemplate ?? [];
   return methods.map((method: McpAuthMethod): AuthMethodDescriptor => {
@@ -1224,16 +1247,14 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               });
               if (connections.length > 0) return; // already connectable — nothing to heal.
 
-              const inlineEnv = config.env ?? {};
-              const envVars = Object.keys(inlineEnv);
-              const hasEnv = envVars.length > 0;
+              const credentials = legacyStdioInlineCredentials(config);
 
               yield* ctx.connections.create({
                 owner: "org",
                 name: ConnectionName.make("default"),
                 integration: integration.slug,
-                template: AuthTemplateSlug.make(hasEnv ? STDIO_ENV_TEMPLATE : "none"),
-                values: hasEnv ? { ...inlineEnv } : {},
+                template: AuthTemplateSlug.make(credentials === null ? "none" : STDIO_ENV_TEMPLATE),
+                values: credentials === null ? {} : { ...credentials.values },
               });
 
               // The secret is now on the connection: canonicalize this legacy
@@ -1245,9 +1266,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 args: config.args,
                 cwd: config.cwd,
                 versionNegotiation: config.versionNegotiation,
-                authenticationTemplate: hasEnv
-                  ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars: envVars }]
-                  : [{ slug: "none", kind: "none" }],
+                authenticationTemplate:
+                  credentials === null
+                    ? [{ slug: "none", kind: "none" }]
+                    : [
+                        {
+                          slug: STDIO_ENV_TEMPLATE,
+                          kind: "stdio_env",
+                          vars: credentials.vars,
+                        },
+                      ],
               };
               yield* ctx.core.integrations.update(integration.slug, { config: nextConfig });
             }).pipe(

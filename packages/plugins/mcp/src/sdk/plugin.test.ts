@@ -1542,6 +1542,113 @@ describe("mcpPlugin endpoint telemetry", () => {
 });
 
 describe("stdio static env", () => {
+  it.effect("projects legacy inline stdio env as credentialed and rejects empty values", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor
+            .close()
+            .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const integration = IntegrationSlug.make("legacy-stdio-with-auth");
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio with auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: String(integration),
+        });
+        yield* executor.mcp.configureServer(String(integration), {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+          env: { API_KEY: "legacy-secret" },
+        });
+
+        const projected = yield* executor.integrations.get(integration);
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "env",
+            label: "Environment variables",
+            kind: "apikey",
+            template: "env",
+            placements: [{ carrier: "env", name: "API_KEY", prefix: "", variable: "API_KEY" }],
+          },
+        ]);
+
+        const error = yield* executor.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("empty"),
+            integration,
+            template: AuthTemplateSlug.make("env"),
+            values: {},
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "InvalidConnectionInputError",
+          message: "A connection must supply at least one credential input.",
+        });
+        expect(yield* executor.connections.list({ integration })).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("projects legacy stdio without inline env as no-auth and accepts empty values", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor
+            .close()
+            .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const integration = IntegrationSlug.make("legacy-stdio-without-auth");
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio without auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug: String(integration),
+        });
+        yield* executor.mcp.configureServer(String(integration), {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+        });
+
+        const projected = yield* executor.integrations.get(integration);
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "none",
+            label: "No authentication",
+            kind: "none",
+            template: "none",
+          },
+        ]);
+
+        const connection = yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("public"),
+          integration,
+          template: AuthTemplateSlug.make("none"),
+          values: {},
+        });
+        expect(String(connection.address)).toBe("tools.legacy-stdio-without-auth.org.public");
+        expect(yield* executor.connections.list({ integration })).toHaveLength(1);
+      }),
+    ),
+  );
+
   it.effect("reconciles a legacy no-secret stdio integration with its default connection", () =>
     Effect.scoped(
       Effect.gen(function* () {
