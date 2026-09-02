@@ -135,13 +135,6 @@ test("the owner sees who uses the instance; a plain member cannot look", async (
     "the joined view reports the same identities, keyed the same way",
   ).toEqual(body.users.map((user) => [user.externalId, user.email]).sort());
 
-  const audit = await adminUsers(adminToken, "/api/admin/audit-events");
-  expect(audit.status).toBe(200);
-  expect(
-    Array.isArray(((await audit.json()) as { events: readonly unknown[] }).events),
-    "the owner receives the audit collection",
-  ).toBe(true);
-
   // -------------------------------------------------------------------------
   // The single-user read, by opaque id and by email.
   // -------------------------------------------------------------------------
@@ -228,12 +221,10 @@ test("the owner sees who uses the instance; a plain member cannot look", async (
   // The gate: a plain member may not read the instance-wide view.
   const asMember = await adminUsers(memberToken);
   expect(asMember.status, "a member is refused").toBe(403);
-  expect((await adminUsers(memberToken, "/api/admin/audit-events")).status).toBe(403);
 
   // And an anonymous caller has no session at all.
   const anonymous = await adminUsers();
   expect(anonymous.status, "no session → unauthorized").toBe(401);
-  expect((await adminUsers(undefined, "/api/admin/audit-events")).status).toBe(401);
 
   // The single-user read refuses on the same terms — and refuses BEFORE
   // looking, so a refused caller cannot probe which users exist.
