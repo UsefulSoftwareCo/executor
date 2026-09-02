@@ -1542,7 +1542,7 @@ describe("mcpPlugin endpoint telemetry", () => {
 });
 
 describe("stdio static env", () => {
-  it.effect("projects legacy inline stdio env as credentialed and rejects empty values", () =>
+  it.effect("uses stored credentials instead of legacy inline stdio env at runtime", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const config = makeTestConfig({
@@ -1595,6 +1595,25 @@ describe("stdio static env", () => {
           message: "A connection must supply at least one credential input.",
         });
         expect(yield* executor.connections.list({ integration })).toEqual([]);
+
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("fresh"),
+          integration,
+          template: AuthTemplateSlug.make("env"),
+          values: { API_KEY: "fresh-secret" },
+        });
+
+        const result = yield* executor.execute(
+          ToolAddress.make("tools.legacy-stdio-with-auth.org.fresh.read_env"),
+          { name: "API_KEY" },
+        );
+        expect(result).toMatchObject({
+          ok: true,
+          data: {
+            content: [{ type: "text", text: "fresh-secret" }],
+          },
+        });
       }),
     ),
   );

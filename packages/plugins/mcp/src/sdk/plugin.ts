@@ -432,6 +432,26 @@ const legacyStdioInlineCredentials = (
   return vars.length > 0 ? { values, vars } : null;
 };
 
+/** Project the auth methods a stored MCP config truthfully exposes. Legacy
+ *  stdio rows carried credentials inline and had no declared method, so both
+ *  catalog validation and runtime rendering must see the same synthetic
+ *  method until reconciliation canonicalizes the row. */
+const projectedMcpAuthMethods = (config: McpIntegrationConfigType): readonly McpAuthMethod[] => {
+  if (config.transport === "stdio" && config.authenticationTemplate === undefined) {
+    const credentials = legacyStdioInlineCredentials(config);
+    return credentials === null
+      ? [{ slug: "none", kind: "none" }]
+      : [
+          {
+            slug: STDIO_ENV_TEMPLATE,
+            kind: "stdio_env",
+            vars: credentials.vars,
+          },
+        ];
+  }
+  return config.authenticationTemplate ?? [];
+};
+
 /** The secret env var NAMES a stdio add declares: the explicit `envVars`
  *  declaration plus the keys of any one-shot `env` values, de-duplicated and
  *  order-preserving. */
@@ -646,7 +666,7 @@ const selectAuthMethod = (
   config: McpIntegrationConfigType,
   templateSlug: string | null,
 ): McpAuthMethod | undefined => {
-  const methods = config.authenticationTemplate ?? [];
+  const methods = projectedMcpAuthMethods(config);
   if (templateSlug !== null) {
     const match = methods.find((method: McpAuthMethod) => method.slug === templateSlug);
     if (match) return match;
@@ -861,21 +881,9 @@ export const describeMcpAuthMethods = (
   if (!config) return [];
 
   // Stdio servers declare a single `stdio_env` method (or `none`); remote
-  // servers declare header/query/oauth methods. Both project from the same
-  // optional `authenticationTemplate`.
-  if (config.transport === "stdio" && config.authenticationTemplate === undefined) {
-    const credentials = legacyStdioInlineCredentials(config);
-    return credentials === null
-      ? [describeNoneAuthMethod("none")]
-      : [
-          describeStdioEnvAuthMethod({
-            slug: STDIO_ENV_TEMPLATE,
-            kind: "stdio_env",
-            vars: credentials.vars,
-          }),
-        ];
-  }
-  const methods = config.authenticationTemplate ?? [];
+  // servers declare header/query/oauth methods. Runtime method selection uses
+  // this same truthful projection, including synthetic legacy stdio methods.
+  const methods = projectedMcpAuthMethods(config);
   return methods.map((method: McpAuthMethod): AuthMethodDescriptor => {
     if (method.kind === "stdio_env") return describeStdioEnvAuthMethod(method);
     if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
