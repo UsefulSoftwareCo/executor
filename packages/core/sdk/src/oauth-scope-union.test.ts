@@ -37,7 +37,10 @@ const DECLARED_SCOPES = ["calendar", "gmail", "drive", "sheets"] as const;
  *  scopes (the MCP/no-template-scopes case). */
 const makeScopePluginWithId = <const TId extends string>(
   id: TId,
-  config: { readonly scopes: readonly string[] | null },
+  config: {
+    readonly scopes: readonly string[] | null;
+    readonly authorizationUrl?: string;
+  },
   options: { readonly discoversScopes?: boolean; readonly discoveryUrl?: string } = {},
 ) =>
   definePlugin(() => ({
@@ -49,7 +52,10 @@ const makeScopePluginWithId = <const TId extends string>(
       }),
     invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
     describeAuthMethods: (record: IntegrationRecord): readonly AuthMethodDescriptor[] => {
-      const cfg = record.config as { readonly scopes?: readonly string[] | null } | null;
+      const cfg = record.config as {
+        readonly scopes?: readonly string[] | null;
+        readonly authorizationUrl?: string;
+      } | null;
       const scopes = cfg?.scopes;
       if (scopes == null) {
         // No declared oauth scopes. Server-targeting methods (MCP) expose a
@@ -73,7 +79,12 @@ const makeScopePluginWithId = <const TId extends string>(
           label: "OAuth2",
           kind: "oauth",
           template: String(TEMPLATE),
-          oauth: { scopes },
+          oauth: {
+            scopes,
+            ...(cfg?.authorizationUrl === undefined
+              ? {}
+              : { authorizationUrl: cfg.authorizationUrl }),
+          },
         },
       ];
     },
@@ -82,13 +93,20 @@ const makeScopePluginWithId = <const TId extends string>(
         ctx.core.integrations.register({
           slug: INTEG,
           description: "Acme",
-          config: { scopes: config.scopes },
+          config: {
+            scopes: config.scopes,
+            ...(config.authorizationUrl === undefined
+              ? {}
+              : { authorizationUrl: config.authorizationUrl }),
+          },
         }),
     }),
   }))();
 
-const makeScopePlugin = (config: { readonly scopes: readonly string[] | null }) =>
-  makeScopePluginWithId("acme", config);
+const makeScopePlugin = (config: {
+  readonly scopes: readonly string[] | null;
+  readonly authorizationUrl?: string;
+}) => makeScopePluginWithId("acme", config);
 
 const makeMcpScopePlugin = (config: { readonly scopes: readonly string[] | null }) =>
   makeScopePluginWithId("mcp", config, { discoversScopes: true });
@@ -221,6 +239,57 @@ describe("oauth.start integration-driven scopes", () => {
           expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([...DECLARED_SCOPES]);
         }),
       ),
+  );
+
+  it.effect("moves integration-declared optional scopes out of scope into optional_scope", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const declared = [
+          "oauth",
+          "crm.objects.contacts.read",
+          "crm.objects.companies.read",
+        ] as const;
+        const optional = [
+          "crm.objects.contacts.read",
+          "crm.objects.companies.read",
+          "content",
+        ] as const;
+        const server = yield* serveOAuthTestServer({ scopes: [...declared] });
+        const plugins = [
+          memoryCredentialsPlugin(),
+          makeScopePlugin({
+            scopes: declared,
+            authorizationUrl: `${server.authorizationEndpoint}?optional_scope=${optional.join("+")}`,
+          }),
+        ] as const;
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const url = new URL(started.authorizationUrl);
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["oauth"]);
+        expect(url.searchParams.get("optional_scope")?.split(/\s+/)).toEqual(optional);
+      }),
+    ),
   );
 
   it.effect("filters stale declared scopes against authorization-server metadata", () =>

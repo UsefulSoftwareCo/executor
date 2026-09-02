@@ -176,7 +176,14 @@ const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAu
  *  8707 resource: a user may clear the client's resource (Entra v2 rejects
  *  the parameter, #1789) without losing scope discovery. */
 export type OAuthScopePolicy =
-  | { readonly kind: "scopes"; readonly scopes: readonly string[] }
+  | {
+      readonly kind: "scopes";
+      readonly scopes: readonly string[];
+      /** Provider-specific scopes declared on the integration's authorization
+       *  endpoint (HubSpot `optional_scope`). These must not also be sent in
+       *  the RFC `scope` parameter. */
+      readonly optionalScopes?: readonly string[];
+    }
   | { readonly kind: "discover"; readonly discoveryUrl: string };
 
 /** Everything the OAuth service needs from the executor: fuma access for the
@@ -1761,9 +1768,21 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           : scopePolicy.kind === "discover"
             ? requestedScopes
             : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+      const providerExtras = providerAuthorizeExtras(client.authorizationUrl);
+      const workspaceOptionalScopes = firstPartyFlow
+        ? []
+        : dedupeScopes([
+            ...(providerExtras.optional_scope ?? "").split(/\s+/).filter(Boolean),
+            ...(scopePolicy.kind === "scopes" ? (scopePolicy.optionalScopes ?? []) : []),
+          ]);
+      const workspaceOptionalScopeSet = new Set(workspaceOptionalScopes);
       const completeAuthorizationScopes = dedupeScopes([
-        ...authorizationRequestedScopes,
+        ...authorizationRequestedScopes.filter((scope) => !workspaceOptionalScopeSet.has(scope)),
         ...(firstParty?.additionalAuthorizationScopes ?? []),
+      ]);
+      const completeRequestedScopes = dedupeScopes([
+        ...completeAuthorizationScopes,
+        ...workspaceOptionalScopes,
       ]);
 
       // authorization_code: persist a session + build the authorize URL.
@@ -1826,7 +1845,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           payload: {
             owner: input.owner,
             clientOwner: input.clientOwner,
-            requestedScopes: completeAuthorizationScopes,
+            requestedScopes: completeRequestedScopes,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -1848,7 +1867,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
             extraParams: {
-              ...providerAuthorizeExtras(client.authorizationUrl),
+              ...providerExtras,
+              ...(workspaceOptionalScopes.length > 0
+                ? { optional_scope: workspaceOptionalScopes.join(" ") }
+                : {}),
               ...(firstParty?.authorizationExtraParams ?? {}),
             },
             endpointUrlPolicy: deps.endpointUrlPolicy,
