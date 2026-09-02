@@ -5412,30 +5412,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           try: () => ownedKeys(input.owner),
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
-        const existing = yield* core.findMany("tool_policy", {
-          where: byOwner(input.owner),
-        });
-        // Default placement is specificity-aware (below any more-specific
-        // rule), not top-of-list: a client that omits position — the UI when
-        // its policy list is stale, the API, an agent tool — must not have its
-        // broad rule silently shadow an existing narrow one.
-        const position = input.position ?? positionForNewPattern(input.pattern, existing);
-        const id = PolicyId.make(
-          `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+        // Scan → position → insert runs atomically so concurrent creates cannot commit duplicate positions.
+        return yield* transaction(
+          Effect.gen(function* () {
+            const existing = yield* core.findMany("tool_policy", {
+              where: byOwner(input.owner),
+            });
+            // Default placement is specificity-aware (below any more-specific
+            // rule), not top-of-list: a client that omits position — the UI
+            // when its policy list is stale, the API, an agent tool — must
+            // not have its broad rule silently shadow an existing narrow one.
+            const position = input.position ?? positionForNewPattern(input.pattern, existing);
+            const id = PolicyId.make(
+              `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+            );
+            const now = new Date();
+            const created = yield* core.create("tool_policy", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(id),
+              pattern: input.pattern,
+              action: input.action,
+              position,
+              created_at: now,
+              updated_at: now,
+            });
+            return rowToToolPolicy(created);
+          }),
         );
-        const now = new Date();
-        const created = yield* core.create("tool_policy", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          id: String(id),
-          pattern: input.pattern,
-          action: input.action,
-          position,
-          created_at: now,
-          updated_at: now,
-        });
-        return rowToToolPolicy(created);
       });
 
     const policiesUpdate = (
@@ -5449,20 +5454,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
         const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
-        const existing = yield* core.findFirst("tool_policy", { where });
-        if (!existing) {
-          return yield* new StorageError({
-            message: `Tool policy not found: ${input.id}`,
-            cause: undefined,
-          });
-        }
-        const set: Record<string, unknown> = { updated_at: new Date() };
-        if (input.pattern !== undefined) set.pattern = input.pattern;
-        if (input.action !== undefined) set.action = input.action;
-        if (input.position !== undefined) set.position = input.position;
-        yield* core.updateMany("tool_policy", { where, set });
-        const updated = yield* core.findFirst("tool_policy", { where });
-        return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
+        // Existence check, write, and re-read commit together.
+        return yield* transaction(
+          Effect.gen(function* () {
+            const existing = yield* core.findFirst("tool_policy", { where });
+            if (!existing) {
+              return yield* new StorageError({
+                message: `Tool policy not found: ${input.id}`,
+                cause: undefined,
+              });
+            }
+            const set: Record<string, unknown> = { updated_at: new Date() };
+            if (input.pattern !== undefined) set.pattern = input.pattern;
+            if (input.action !== undefined) set.action = input.action;
+            if (input.position !== undefined) set.position = input.position;
+            yield* core.updateMany("tool_policy", { where, set });
+            const updated = yield* core.findFirst("tool_policy", { where });
+            return rowToToolPolicy(updated ?? ({ ...existing, ...set } as ToolPolicyRow));
+          }),
+        );
       });
 
     const policiesRemove = (input: RemoveToolPolicyInput): Effect.Effect<void, StorageFailure> =>
