@@ -178,6 +178,7 @@ scenario(
             name: ConnectionName.make("workspace"),
             integration: IntegrationSlug.make(slug),
             template: AuthTemplateSlug.make("none"),
+            value: "",
           },
         });
 

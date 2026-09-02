@@ -271,6 +271,7 @@ scenario(
           name: MAIN,
           integration: slug,
           template: NONE,
+          value: "",
         },
       });
 
@@ -327,6 +328,7 @@ scenario(
           name: MAIN,
           integration: slug,
           template: NONE,
+          value: "",
         },
       });
 
