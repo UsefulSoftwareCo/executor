@@ -43,6 +43,7 @@ const memoryProvider = (): CredentialProvider => {
 
 const INTEG = IntegrationSlug.make("demo");
 const PINNED = IntegrationSlug.make("demo-pinned");
+const COLLIDING_NONE_INTEG = IntegrationSlug.make("demo-legacy-none");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const CONN = ConnectionName.make("main");
 
@@ -92,6 +93,18 @@ const demoPlugin = definePlugin(() => ({
       },
     }),
   invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+  describeAuthMethods: (integration) =>
+    String(integration.slug) === String(COLLIDING_NONE_INTEG)
+      ? [
+          {
+            id: "none",
+            label: "Legacy API key",
+            kind: "apikey",
+            template: "none",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+        ]
+      : [],
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -107,6 +120,12 @@ const demoPlugin = definePlugin(() => ({
         description: "Demo (pinned)",
         config: {},
         canRemove: false,
+      }),
+    seedCollidingNone: () =>
+      ctx.core.integrations.register({
+        slug: COLLIDING_NONE_INTEG,
+        description: "Legacy colliding auth method",
+        config: {},
       }),
     storagePut: (owner: "org" | "user", key: string, value: string) =>
       ctx.storage.put(owner, key, value),
@@ -376,6 +395,58 @@ describe("createExecutor", () => {
 
       const out = yield* executor.execute(addr("run"), {});
       expect(out).toEqual({ ran: "run" });
+    }),
+  );
+
+  it.effect("creates a provider-backed legacy slug-none connection through the core tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        coreTools: { webBaseUrl: "http://localhost:3000" },
+      });
+      yield* executor.demo.seed();
+      yield* executor.demo.seedCollidingNone();
+
+      const missingOrigin = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "missing",
+          integration: String(INTEG),
+          template: String(TEMPLATE),
+        },
+      );
+      expect(missingOrigin).toEqual({
+        ok: false,
+        error: {
+          code: "invalid_connection_input",
+          message: "A connection must supply at least one credential input.",
+        },
+      });
+
+      const created = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "legacy",
+          integration: String(COLLIDING_NONE_INTEG),
+          template: "none",
+          from: { provider: "memory", id: "legacy-secret" },
+        },
+      );
+      expect(created).toMatchObject({
+        owner: "org",
+        name: "legacy",
+        integration: String(COLLIDING_NONE_INTEG),
+        template: "none",
+        address: "tools.demo-legacy-none.org.legacy",
+      });
+
+      const invoked = yield* executor.execute(
+        ToolAddress.make("tools.demo-legacy-none.org.legacy.run"),
+        {},
+      );
+      expect(invoked).toEqual({ ran: "run" });
     }),
   );
 
