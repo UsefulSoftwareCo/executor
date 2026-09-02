@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
+import { fileURLToPath } from "node:url";
 import {
   HttpClient,
   HttpClientRequest,
@@ -38,6 +39,9 @@ import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
 // elicitation.test.ts + owner-isolation.test.ts.
 
 const TEMPLATE = AuthTemplateSlug.make("none");
+const stdioNegotiationFixture = fileURLToPath(
+  new URL("./stdio-negotiation-test-server.ts", import.meta.url),
+);
 
 const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
 const JsonRpcRequest = Schema.Struct({
@@ -1538,6 +1542,55 @@ describe("mcpPlugin endpoint telemetry", () => {
 });
 
 describe("stdio static env", () => {
+  it.effect("reconciles a legacy no-secret stdio integration with its default connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = makeTestConfig({
+          plugins: [
+            memoryCredentialsPlugin(),
+            mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+          ] as const,
+        });
+        const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+          executor.close().pipe(Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+        );
+        const slug = "legacy-stdio-no-auth";
+
+        yield* executor.mcp.addServer({
+          name: "Legacy stdio no auth",
+          endpoint: "http://127.0.0.1:1/mcp",
+          slug,
+        });
+        yield* executor.mcp.configureServer(slug, {
+          transport: "stdio",
+          command: "bun",
+          args: ["run", stdioNegotiationFixture],
+        });
+
+        const projected = yield* executor.integrations.get(IntegrationSlug.make(slug));
+        expect(projected?.authMethods).toEqual([
+          {
+            id: "none",
+            label: "No authentication",
+            kind: "none",
+            template: "none",
+          },
+        ]);
+
+        yield* executor.mcp.reconcileStdioConnections();
+
+        const connections = yield* executor.connections.list({
+          integration: IntegrationSlug.make(slug),
+        });
+        expect(connections).toHaveLength(1);
+        expect(String(connections[0]?.name)).toBe("default");
+
+        const tools = yield* executor.tools.list({ integration: IntegrationSlug.make(slug) });
+        expect(tools.map((tool) => String(tool.name))).toContain("add");
+      }),
+    ),
+  );
+
   it("keeps non-secret env off the credential surface", () => {
     // `env` declares a credential the user must type; `staticEnv` is machine
     // knowledge stored on the integration. A path the scanner already resolved

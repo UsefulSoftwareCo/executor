@@ -849,6 +849,9 @@ export const describeMcpAuthMethods = (
   // Stdio servers declare a single `stdio_env` method (or `none`); remote
   // servers declare header/query/oauth methods. Both project from the same
   // optional `authenticationTemplate`.
+  if (config.transport === "stdio" && config.authenticationTemplate === undefined) {
+    return [describeNoneAuthMethod("none")];
+  }
   const methods = config.authenticationTemplate ?? [];
   return methods.map((method: McpAuthMethod): AuthMethodDescriptor => {
     if (method.kind === "stdio_env") return describeStdioEnvAuthMethod(method);
