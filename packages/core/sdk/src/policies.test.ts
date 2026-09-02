@@ -14,6 +14,7 @@ import {
 } from "./ids";
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import {
+  combineEffectivePolicies,
   effectivePolicyFromSorted,
   isValidPattern,
   matchPattern,
@@ -243,6 +244,57 @@ describe("effectivePolicyFromSorted", () => {
     );
     expect(result.action).toBe("block");
     expect(result.policyId).toBe(PolicyId.make("outer"));
+  });
+});
+
+describe("combineEffectivePolicies", () => {
+  const user = (action: "approve" | "require_approval" | "block", pattern: string) => ({
+    action,
+    source: "user" as const,
+    pattern,
+  });
+  const pluginDefault = (action: "approve" | "require_approval") => ({
+    action,
+    source: "plugin-default" as const,
+  });
+
+  it("keeps a provider capability-boundary block", () => {
+    expect(
+      combineEffectivePolicies(user("block", "*"), user("approve", "sample.*")),
+    ).toEqual(user("block", "*"));
+  });
+
+  it("keeps a workspace block", () => {
+    expect(
+      combineEffectivePolicies(
+        user("approve", "sample.ctl.read"),
+        user("block", "sample.*"),
+      ),
+    ).toEqual(user("block", "sample.*"));
+  });
+
+  it("keeps workspace approval when the toolkit approves", () => {
+    expect(
+      combineEffectivePolicies(
+        user("approve", "sample.ctl.read"),
+        user("require_approval", "sample.*"),
+      ),
+    ).toEqual(user("require_approval", "sample.*"));
+  });
+
+  it("uses an explicit rule over a plugin default", () => {
+    expect(
+      combineEffectivePolicies(
+        user("approve", "sample.ctl.read"),
+        pluginDefault("require_approval"),
+      ),
+    ).toEqual(user("approve", "sample.ctl.read"));
+  });
+
+  it("uses the more restrictive result when both are plugin defaults", () => {
+    expect(
+      combineEffectivePolicies(pluginDefault("approve"), pluginDefault("require_approval")),
+    ).toEqual(pluginDefault("require_approval"));
   });
 });
 
