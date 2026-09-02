@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
+import type { OrgWriteAccess } from "@executor-js/sdk";
 
 import {
   buildResumeApprovalUrl,
@@ -19,6 +20,7 @@ import {
 import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
 import {
   McpSessionStore,
+  MCP_ORG_WRITE_ACCESS_HEADER,
   defaultMcpResource,
   mcpResourceKey,
   orgWriteAccessForPrincipal,
@@ -316,12 +318,36 @@ export const makeInMemoryMcpSessionStore = (
   const runHandleRequest = (
     transport: WebStandardStreamableHTTPServerTransport,
     request: Request,
+    orgWriteAccess: OrgWriteAccess,
     onClose?: () => void,
   ): Effect.Effect<Response> => {
     const finish = (): void => {
       if (onClose && !transport.sessionId) onClose();
     };
-    return Effect.promise(() => transport.handleRequest(request)).pipe(
+    const handle =
+      request.method === "POST"
+        ? Effect.tryPromise({
+            try: () => request.json(),
+            catch: () => null,
+          }).pipe(
+            Effect.orElseSucceed(() => null),
+            Effect.flatMap((parsedBody) => {
+              if (parsedBody === null)
+                return Effect.promise(() => transport.handleRequest(request));
+              const headers = new Headers(request.headers);
+              headers.set(MCP_ORG_WRITE_ACCESS_HEADER, orgWriteAccess);
+              const bodylessRequest = new Request(request.url, {
+                method: request.method,
+                headers,
+                signal: request.signal,
+              });
+              return Effect.promise(() => transport.handleRequest(bodylessRequest, { parsedBody }));
+            }),
+          )
+        : Effect.promise(() =>
+            transport.handleRequest(withOrgWriteAccess(request, orgWriteAccess)),
+          );
+    return handle.pipe(
       Effect.tap(() => Effect.sync(finish)),
       Effect.catchCause((cause) =>
         Effect.sync(() => {
@@ -351,10 +377,9 @@ export const makeInMemoryMcpSessionStore = (
     // interrupt, so the counter cannot be left permanently raised (which would
     // make the session immortal, the opposite leak).
     beginRequest(sessionId);
-    return runHandleRequest(
-      transport,
-      withOrgWriteAccess(request, orgWriteAccessForPrincipal(principal)),
-    ).pipe(Effect.ensuring(Effect.sync(() => endRequest(sessionId))));
+    return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
+      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+    );
   };
 
   /**
@@ -426,7 +451,8 @@ export const makeInMemoryMcpSessionStore = (
           // drive `handleRequest` here; if no id results we close eagerly.
           return yield* runHandleRequest(
             transport,
-            withOrgWriteAccess(request, orgWriteAccessForPrincipal(principal)),
+            request,
+            orgWriteAccessForPrincipal(principal),
             () => {
               // Nothing was ever registered under a session id, so `dispose` has
               // no entry to work from — release the three handles by hand, engine
