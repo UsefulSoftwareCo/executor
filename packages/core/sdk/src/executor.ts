@@ -3082,7 +3082,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       const record = rowToIntegrationRecord(row);
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
       try {
-        return describe(record);
+        return describe(record).map((method) =>
+          method.kind === "none" ? { ...method, placements: undefined } : method,
+        );
       } catch {
         return [];
       }

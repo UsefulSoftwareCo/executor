@@ -149,7 +149,13 @@ const diagnosticsPlugin = definePlugin(() => ({
   id: "diagnostics" as const,
   storage: () => ({}),
   describeAuthMethods: () => [
-    { id: "none", label: "No authentication", kind: "none", template: "none" },
+    {
+      id: "none",
+      label: "No authentication",
+      kind: "none",
+      template: "none",
+      placements: [{ carrier: "header", name: "X-Invalid-No-Auth-Placement", prefix: "" }],
+    },
   ],
   resolveTools: ({ connection }) =>
     Effect.succeed({
@@ -517,6 +523,8 @@ describe("createExecutor", () => {
         coreTools: {},
       });
       yield* executor.diagnostics.seed();
+      const integration = yield* executor.integrations.get(IntegrationSlug.make("diagnostics"));
+      expect(integration?.authMethods[0]?.placements).toBeUndefined();
 
       yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.create"),
