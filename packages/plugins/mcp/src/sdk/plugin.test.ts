@@ -1552,7 +1552,12 @@ describe("stdio static env", () => {
           ] as const,
         });
         const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
-          executor.close().pipe(Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+          executor
+            .close()
+            .pipe(
+              Effect.ignore,
+              Effect.ensuring(Effect.promise(() => config.testDb.close()).pipe(Effect.ignore)),
+            ),
         );
         const slug = "legacy-stdio-no-auth";
 
