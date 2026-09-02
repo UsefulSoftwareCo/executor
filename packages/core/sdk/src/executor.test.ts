@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Predicate, Result, Scheduler } from "effect";
+import { Data, Effect, Inspectable, Logger, Predicate, Result, Scheduler } from "effect";
 
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
@@ -155,6 +155,13 @@ const diagnosticsPlugin = definePlugin(() => ({
       kind: "none",
       template: "none",
       placements: [{ carrier: "header", name: "X-Invalid-No-Auth-Placement", prefix: "" }],
+    },
+    {
+      id: "credential",
+      label: "Credential",
+      kind: "apikey",
+      template: "credential",
+      placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
     },
   ],
   resolveTools: ({ connection }) =>
@@ -516,26 +523,46 @@ describe("createExecutor", () => {
     }),
   );
 
-  it.effect("surfaces failed tool sync diagnostics through connection tools", () =>
+  it.effect("omits invalid auth methods and surfaces plugin and tool sync diagnostics", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
         plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
         coreTools: {},
       });
       yield* executor.diagnostics.seed();
-      const integration = yield* executor.integrations.get(IntegrationSlug.make("diagnostics"));
-      expect(integration?.authMethods[0]?.placements).toBeUndefined();
-
-      yield* executor.execute(
-        ToolAddress.make("executor.coreTools.connections.create"),
+      const warnings: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Warn") {
+          warnings.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const integration = yield* executor.integrations
+        .get(IntegrationSlug.make("diagnostics"))
+        .pipe(Effect.provide(Logger.layer([capture])));
+      expect(integration?.authMethods).toEqual([
         {
-          owner: "org",
-          name: "main",
-          integration: "diagnostics",
-          template: "none",
+          id: "credential",
+          label: "Credential",
+          kind: "apikey",
+          template: "credential",
+          placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
         },
-        { onElicitation: "accept-all" },
-      );
+      ]);
+      expect(
+        warnings.some(
+          (line) =>
+            line.includes("executor omitted invalid plugin auth method") &&
+            line.includes("no-auth methods cannot declare credential placements"),
+        ),
+      ).toBe(true);
+
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("diagnostics"),
+        template: AuthTemplateSlug.make("credential"),
+        value: "diagnostics-credential",
+      });
 
       const listed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.list"),
@@ -579,16 +606,13 @@ describe("createExecutor", () => {
       });
       yield* executor.diagnostics.seedExpired();
 
-      yield* executor.execute(
-        ToolAddress.make("executor.coreTools.connections.create"),
-        {
-          owner: "org",
-          name: "main",
-          integration: "diagnostics_expired",
-          template: "none",
-        },
-        { onElicitation: "accept-all" },
-      );
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("diagnostics_expired"),
+        template: AuthTemplateSlug.make("credential"),
+        value: "diagnostics-credential",
+      });
 
       const refreshed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.refresh"),

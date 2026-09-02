@@ -3075,20 +3075,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // plugin's `describeAuthMethods` hook. The hook is plugin-authored, so a
     // throw (malformed config it didn't guard) degrades to `[]` rather than
     // failing the catalog read.
-    const describeAuthMethodsForRow = (row: IntegrationRow): readonly AuthMethodDescriptor[] => {
-      const runtime = runtimes.get(row.plugin_id);
-      const describe = runtime?.plugin.describeAuthMethods;
-      if (!describe) return [];
-      const record = rowToIntegrationRecord(row);
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin-authored projector must never fail the catalog read
-      try {
-        return describe(record).map((method) =>
-          method.kind === "none" ? { ...method, placements: undefined } : method,
+    const describeAuthMethodsForRow = (
+      row: IntegrationRow,
+    ): Effect.Effect<readonly AuthMethodDescriptor[]> =>
+      Effect.gen(function* () {
+        const runtime = runtimes.get(row.plugin_id);
+        const describe = runtime?.plugin.describeAuthMethods;
+        if (!describe) return [];
+        const record = rowToIntegrationRecord(row);
+        const methods = yield* Effect.sync(() => describe(record)).pipe(
+          // A malformed plugin projector must never fail the catalog read.
+          Effect.catchCause(() => Effect.succeed([])),
         );
-      } catch {
-        return [];
-      }
-    };
+        const valid: AuthMethodDescriptor[] = [];
+        for (const method of methods) {
+          if (method.kind === "none" && method.placements !== undefined) {
+            yield* Effect.logWarning("executor omitted invalid plugin auth method", {
+              plugin: row.plugin_id,
+              integration: row.slug,
+              method: method.id,
+              reason: "no-auth methods cannot declare credential placements",
+            });
+            continue;
+          }
+          valid.push(method);
+        }
+        return valid;
+      });
 
     const describeDisplayForRow = (row: IntegrationRow): IntegrationDisplayDescriptor => {
       const runtime = runtimes.get(row.plugin_id);
@@ -3134,8 +3147,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         const rows = yield* core.findMany("integration", {});
         const staticIntegrationList = staticIntegrations().map(staticDeclToIntegration);
-        const dbIntegrations = rows.map((row) =>
-          rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row)),
+        const dbIntegrations = yield* Effect.forEach(rows, (row) =>
+          describeAuthMethodsForRow(row).pipe(
+            Effect.map((authMethods) =>
+              rowToIntegration(row, authMethods, describeDisplayForRow(row)),
+            ),
+          ),
         );
         // A scoped toolkit must not advertise providers it grants no tools from
         // (mirrors `connectionsList`). Static integrations are system namespaces, not
@@ -3163,19 +3180,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
         if (staticIntegration) return staticDeclToIntegration(staticIntegration);
         const row = yield* findIntegrationRow(slug);
-        return row
-          ? rowToIntegration(row, describeAuthMethodsForRow(row), describeDisplayForRow(row))
-          : null;
+        if (!row) return null;
+        const authMethods = yield* describeAuthMethodsForRow(row);
+        return rowToIntegration(row, authMethods, describeDisplayForRow(row));
       });
 
     const integrationsGetRecord = (
       slug: IntegrationSlug,
     ): Effect.Effect<IntegrationRecord | null, StorageFailure> =>
-      findIntegrationRow(slug).pipe(
-        Effect.map((row) =>
-          row ? rowToIntegrationRecord(row, describeAuthMethodsForRow(row)) : null,
-        ),
-      );
+      Effect.gen(function* () {
+        const row = yield* findIntegrationRow(slug);
+        if (!row) return null;
+        return rowToIntegrationRecord(row, yield* describeAuthMethodsForRow(row));
+      });
 
     // Best-effort post-commit notification for `ExecutorConfig.onIntegrationChange`.
     // Routed through `afterCommit` so the observer sees only DURABLE changes:
@@ -3301,10 +3318,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
           const runtime = runtimes.get(existing.plugin_id);
           if (runtime?.plugin.removeIntegration) {
+            const authMethods = yield* describeAuthMethodsForRow(existing);
             yield* runtime.plugin
               .removeIntegration({
                 ctx: runtime.ctx,
-                integration: rowToIntegrationRecord(existing, describeAuthMethodsForRow(existing)),
+                integration: rowToIntegrationRecord(existing, authMethods),
               })
               .pipe(
                 Effect.mapError((cause) =>
@@ -3372,7 +3390,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const runtime = runtimes.get(row.plugin_id);
         const list = runtime?.plugin.listHealthCheckCandidates;
         if (!runtime || !list) return [];
-        const record = rowToIntegrationRecord(row, describeAuthMethodsForRow(row));
+        const record = rowToIntegrationRecord(row, yield* describeAuthMethodsForRow(row));
         return yield* foldPluginFailure(
           list({ ctx: runtime.ctx, integration: record }),
           `Listing health-check candidates for "${slug}" failed.`,
@@ -3795,7 +3813,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // pasted inputs go to the default writable store, external `from` inputs to
         // their provider. Mixing pasted + external, or two external providers, is
         // rejected (the connection row carries one `provider`).
-        const selectedAuthMethod = describeAuthMethodsForRow(integrationRow).find(
+        const authMethods = yield* describeAuthMethodsForRow(integrationRow);
+        const selectedAuthMethod = authMethods.find(
           (method) => method.template === String(input.template),
         );
         const isNoAuth = selectedAuthMethod?.kind === "none";
@@ -5120,7 +5139,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     const values = yield* resolveConnectionValues(connectionRow);
                     const record = rowToIntegrationRecord(
                       integrationRow,
-                      describeAuthMethodsForRow(integrationRow),
+                      yield* describeAuthMethodsForRow(integrationRow),
                     );
                     const grantedScopes = grantedScopesFromRow(connectionRow);
                     const credential: ToolInvocationCredential = {
@@ -5197,7 +5216,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const values = yield* resolveInFlightValues(input);
         const record = rowToIntegrationRecord(
           integrationRow,
-          describeAuthMethodsForRow(integrationRow),
+          yield* describeAuthMethodsForRow(integrationRow),
         );
         const credential: ToolInvocationCredential = {
           owner: input.owner,
@@ -6587,23 +6606,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // off that method (MCP exposes `discoveryUrl`), so core needs no plugin-id
       // knowledge.
       resolveOAuthScopePolicy: (integration: IntegrationSlug, template: AuthTemplateSlug) =>
-        findIntegrationRow(integration).pipe(
-          Effect.map((row): OAuthScopePolicy => {
-            const methods = row ? describeAuthMethodsForRow(row) : [];
-            const selected =
-              methods.find((m: AuthMethodDescriptor) => m.template === String(template)) ??
-              (methods.length === 1 ? methods[0] : undefined);
-            const oauth = selected?.kind === "oauth" ? selected.oauth : undefined;
-            // Declared scopes win. Discover only when the selected method
-            // declares none but names a source to discover them from (MCP).
-            // The discovery URL rides along so `oauth.start` can discover
-            // scopes even for a client whose RFC 8707 resource was cleared.
-            if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
-              return { kind: "discover", discoveryUrl: oauth.discoveryUrl };
-            }
-            return { kind: "scopes", scopes: oauth?.scopes ?? [] };
-          }),
-        ),
+        Effect.gen(function* () {
+          const row = yield* findIntegrationRow(integration);
+          const methods = row ? yield* describeAuthMethodsForRow(row) : [];
+          const selected =
+            methods.find((m: AuthMethodDescriptor) => m.template === String(template)) ??
+            (methods.length === 1 ? methods[0] : undefined);
+          const oauth = selected?.kind === "oauth" ? selected.oauth : undefined;
+          // Declared scopes win. Discover only when the selected method
+          // declares none but names a source to discover them from (MCP).
+          // The discovery URL rides along so `oauth.start` can discover
+          // scopes even for a client whose RFC 8707 resource was cleared.
+          if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
+            return {
+              kind: "discover",
+              discoveryUrl: oauth.discoveryUrl,
+            } satisfies OAuthScopePolicy;
+          }
+          return { kind: "scopes", scopes: oauth?.scopes ?? [] } satisfies OAuthScopePolicy;
+        }),
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,
       endpointUrlPolicy: config.oauthEndpointUrlPolicy,
