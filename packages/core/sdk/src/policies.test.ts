@@ -428,6 +428,23 @@ describe("executor.policies", () => {
     }),
   );
 
+  it.live("concurrent creates of equally specific rules get distinct positions", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      yield* Effect.all(
+        [
+          executor.policies.create({ owner: "org", pattern: "vercel.dns.create", action: "block" }),
+          executor.policies.create({ owner: "org", pattern: "vercel.dns.delete", action: "block" }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      const rules = yield* executor.policies.list();
+      expect(rules).toHaveLength(2);
+      expect(new Set(rules.map((r) => r.position)).size).toBe(2);
+    }),
+  );
+
   it.effect("create stores rules at the requested owner", () =>
     Effect.gen(function* () {
       const executor = yield* setupExecutor();

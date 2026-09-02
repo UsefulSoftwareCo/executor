@@ -5396,13 +5396,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           try: () => ownedKeys(input.owner),
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
-        // The read-decide-write (existing-row scan → specificity-aware
-        // position → create) runs inside ONE transaction so two concurrent
-        // policy creates can never interleave their scans and both commit a
-        // rule at the same position, or a create observe a torn sibling
-        // write. Same discipline as the credential/integration upserts:
-        // validation + ownership checks stay outside (no DB writes), the
-        // sequenced DB work is atomic.
+        // Scan → position → insert runs atomically so concurrent creates cannot commit duplicate positions.
         return yield* transaction(
           Effect.gen(function* () {
             const existing = yield* core.findMany("tool_policy", {
@@ -5444,11 +5438,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
         const where = (b: AnyCb) => b.and(byOwner(input.owner)(b), b("id", "=", input.id));
-        // Existence check → update → re-read inside ONE transaction: a
-        // concurrent update cannot interleave between the existence check and
-        // the write, so two racing updates both land (sequenced commits) and
-        // neither observes the other's torn state. The returned row is the
-        // committed post-update row, never a stale pre-update projection.
+        // Existence check, write, and re-read commit together.
         return yield* transaction(
           Effect.gen(function* () {
             const existing = yield* core.findFirst("tool_policy", { where });
