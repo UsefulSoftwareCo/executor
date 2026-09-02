@@ -26,6 +26,7 @@ return JSON.stringify(result);
 
 interface MemberRow {
   readonly id: string;
+  readonly userId: string;
   readonly email: string;
   readonly role: string;
 }
@@ -52,11 +53,11 @@ scenario(
     const target = yield* Target;
     const api = yield* Api;
     const mcp = yield* Mcp;
-    const actor = yield* target.newIdentity();
-    const controller = yield* Effect.promise(() =>
-      createInvitedIdentity(target.baseUrl, actor, {
+    const controller = yield* target.newIdentity();
+    const actor = yield* Effect.promise(() =>
+      createInvitedIdentity(target.baseUrl, controller, {
         role: "admin",
-        emailPrefix: "approval-role-controller",
+        emailPrefix: "approval-role-actor",
       }),
     );
     const controllerCookie = controller.headers?.cookie;
@@ -81,10 +82,21 @@ scenario(
     );
     const actorMember = membersBody.members.find((member) => member.email === actor.label);
     expect(
-      actorMember?.role === "owner" || actorMember?.role === "admin",
+      actorMember?.role === "admin",
       "the actor begins with privileged organization membership",
     ).toBe(true);
     if (!actorMember) return yield* Effect.die("the actor membership was not listed");
+
+    const setGlobalRole = (role: "admin" | "user"): Effect.Effect<Response> =>
+      Effect.promise(() =>
+        accountRequest(target.baseUrl, controllerCookie, "/api/auth/admin/set-role", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId: actorMember.userId, role }),
+        }),
+      );
+    const promoted = yield* setGlobalRole("admin");
+    expect(promoted.status, "the actor has a stale global admin role to distrust").toBe(200);
 
     const setRole = (roleSlug: "admin" | "member"): Effect.Effect<Response> =>
       Effect.promise(() =>
@@ -134,7 +146,11 @@ scenario(
       );
 
       expect(decision.status, "the browser decision reaches the paused execution").toBe(200);
-      expect(resumed.ok, "the resumed workspace mutation is denied at the sink").toBe(false);
+      expect(resumed.ok, "the resumed sandbox reports the tool result normally").toBe(true);
+      expect(
+        resumed.text,
+        "the resumed workspace mutation preserves the workspace-admin denial",
+      ).toMatch(/OrgWriteDenied|administrator|admin/i);
       const policies = yield* actorClient.policies.list();
       expect(
         policies.some((policy) => policy.pattern === CREATED_PATTERN),
@@ -149,6 +165,7 @@ scenario(
               payload: { owner: "org" },
             }),
           ),
+          Effect.andThen(setGlobalRole("user")),
           Effect.ignore,
         ),
       ),
