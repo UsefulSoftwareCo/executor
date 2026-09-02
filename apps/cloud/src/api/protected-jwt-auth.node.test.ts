@@ -121,6 +121,7 @@ describe("protected JWT (device-login) auth", () => {
         roles: [],
         // The stub membership carries no role slug — normalization FAILS
         // CLOSED to plain member, so the executor binds workspace writes off.
+        orgRoleModel: "organization",
         orgRole: "member",
       });
     }),
