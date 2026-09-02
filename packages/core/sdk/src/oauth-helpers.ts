@@ -281,6 +281,21 @@ export const providerAuthorizeExtras = (
   return {};
 };
 
+/** Provider-specific scopes embedded in an integration's authorization
+ *  endpoint. HubSpot models app-optional permissions with the non-standard
+ *  `optional_scope` query parameter, so they are part of the integration's
+ *  request contract rather than the registered OAuth app identity. */
+export const optionalScopesFromAuthorizationUrl = (authorizationUrl: string): readonly string[] => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input -> no optional scopes
+  try {
+    const value = new URL(authorizationUrl).searchParams.get("optional_scope");
+    if (value == null) return [];
+    return [...new Set(value.split(/\s+/).filter(Boolean))];
+  } catch {
+    return [];
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Regional token-endpoint rebind
 //

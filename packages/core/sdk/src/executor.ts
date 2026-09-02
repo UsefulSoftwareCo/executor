@@ -189,6 +189,7 @@ import {
   exchangeClientCredentials,
   isPermanentTokenRejection,
   isUnusableSuccessTokenResponse,
+  optionalScopesFromAuthorizationUrl,
   shouldRefreshToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -6119,7 +6120,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             if (oauth?.scopes === undefined && oauth?.discoveryUrl !== undefined) {
               return { kind: "discover", discoveryUrl: oauth.discoveryUrl };
             }
-            return { kind: "scopes", scopes: oauth?.scopes ?? [] };
+            return {
+              kind: "scopes",
+              scopes: oauth?.scopes ?? [],
+              optionalScopes:
+                oauth?.authorizationUrl === undefined
+                  ? []
+                  : optionalScopesFromAuthorizationUrl(oauth.authorizationUrl),
+            };
           }),
         ),
       httpClientLayer: config.httpClientLayer,

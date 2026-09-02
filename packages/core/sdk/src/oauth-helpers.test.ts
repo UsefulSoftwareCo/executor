@@ -25,6 +25,7 @@ import {
   idTokenIdentityLabel,
   isPermanentTokenRejection,
   isUnusableSuccessTokenResponse,
+  optionalScopesFromAuthorizationUrl,
   refreshAccessToken,
   shouldRefreshToken,
 } from "./oauth-helpers";
@@ -200,6 +201,15 @@ describe("providerAuthorizeExtras (provider authorization quirks)", () => {
     expect(providerAuthorizeExtras("https://app.hubspot.com/oauth/authorize")).toEqual({
       optional_scope: "content crm.objects.custom.read crm.schemas.custom.read",
     });
+  });
+
+  it("reads integration-declared optional_scope values from an authorization URL", () => {
+    expect(
+      optionalScopesFromAuthorizationUrl(
+        "https://app.hubspot.com/oauth/authorize?optional_scope=crm.objects.contacts.read+crm.objects.contacts.write+crm.objects.contacts.read",
+      ),
+    ).toEqual(["crm.objects.contacts.read", "crm.objects.contacts.write"]);
+    expect(optionalScopesFromAuthorizationUrl("not a url")).toEqual([]);
   });
 
   it("adds nothing for unrelated hosts, token hosts, or an unparseable URL", () => {
