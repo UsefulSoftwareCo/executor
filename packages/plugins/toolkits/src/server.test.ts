@@ -275,9 +275,9 @@ describe("toolkitsPlugin", () => {
       );
       const tools = yield* scoped.tools.list();
       expect(tools.map((entry) => String(entry.address))).toEqual(["sample.ctl.readTool"]);
-      expect(
-        (yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.readTool"))).action,
-      ).toBe("require_approval");
+      expect((yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.readTool"))).action).toBe(
+        "require_approval",
+      );
       expect(
         (yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.deleteTool"))).action,
       ).toBe("block");

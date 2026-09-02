@@ -259,17 +259,14 @@ describe("combineEffectivePolicies", () => {
   });
 
   it("keeps a provider capability-boundary block", () => {
-    expect(
-      combineEffectivePolicies(user("block", "*"), user("approve", "sample.*")),
-    ).toEqual(user("block", "*"));
+    expect(combineEffectivePolicies(user("block", "*"), user("approve", "sample.*"))).toEqual(
+      user("block", "*"),
+    );
   });
 
   it("keeps a workspace block", () => {
     expect(
-      combineEffectivePolicies(
-        user("approve", "sample.ctl.read"),
-        user("block", "sample.*"),
-      ),
+      combineEffectivePolicies(user("approve", "sample.ctl.read"), user("block", "sample.*")),
     ).toEqual(user("block", "sample.*"));
   });
 
@@ -772,9 +769,7 @@ describe("active tool-policy provider", () => {
       );
       expect(Result.isFailure(hidden)).toBe(true);
       expect(
-        (yield* executor.policies.resolve(
-          ToolAddress.make("toolkit-fixture.ctl.hidden"),
-        )).action,
+        (yield* executor.policies.resolve(ToolAddress.make("toolkit-fixture.ctl.hidden"))).action,
       ).toBe("block");
     }),
   );
