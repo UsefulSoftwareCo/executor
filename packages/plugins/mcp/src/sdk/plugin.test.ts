@@ -1649,6 +1649,63 @@ describe("stdio static env", () => {
     ),
   );
 
+  it.effect(
+    "rejects credential input for legacy no-auth stdio and accepts an empty input map",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const config = makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              mcpPlugin({ dangerouslyAllowStdioMCP: true }),
+            ] as const,
+          });
+          const executor = yield* Effect.acquireRelease(createExecutor(config), (executor) =>
+            executor
+              .close()
+              .pipe(Effect.orDie, Effect.ensuring(Effect.promise(() => config.testDb.close()))),
+          );
+          const integration = IntegrationSlug.make("legacy-stdio-no-auth-create");
+
+          yield* executor.mcp.addServer({
+            name: "Legacy stdio no-auth create",
+            endpoint: "http://127.0.0.1:1/mcp",
+            slug: String(integration),
+          });
+          yield* executor.mcp.configureServer(String(integration), {
+            transport: "stdio",
+            command: "bun",
+            args: ["run", stdioNegotiationFixture],
+          });
+
+          const error = yield* executor.connections
+            .create({
+              owner: "org",
+              name: ConnectionName.make("with-secret"),
+              integration,
+              template: AuthTemplateSlug.make("none"),
+              value: "must-not-be-stored",
+            })
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "InvalidConnectionInputError",
+            message: "A no-auth connection cannot accept credential inputs.",
+          });
+          expect(yield* executor.connections.list({ integration })).toEqual([]);
+
+          const connection = yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("public"),
+            integration,
+            template: AuthTemplateSlug.make("none"),
+            values: {},
+          });
+          expect(String(connection.address)).toBe("tools.legacy-stdio-no-auth-create.org.public");
+          expect(yield* executor.connections.list({ integration })).toHaveLength(1);
+        }),
+      ),
+  );
+
   it.effect("reconciles a legacy no-secret stdio integration with its default connection", () =>
     Effect.scoped(
       Effect.gen(function* () {
