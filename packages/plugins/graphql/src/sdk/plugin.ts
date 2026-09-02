@@ -843,7 +843,9 @@ export const describeGraphqlAuthMethods = (
 ): readonly AuthMethodDescriptor[] => {
   const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
   if (!config) return [];
-  return config.authenticationTemplate.map((method: GraphqlAuthMethod): AuthMethodDescriptor => {
+  const templates = config.authenticationTemplate;
+  if (templates.length === 0) return [describeNoneAuthMethod("none")];
+  return templates.map((method: GraphqlAuthMethod): AuthMethodDescriptor => {
     if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
     if (method.kind === "oauth2") {
       return {

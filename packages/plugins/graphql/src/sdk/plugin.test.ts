@@ -145,7 +145,7 @@ const createOrgConnection = (
     readonly integration: string;
     readonly name: string;
     readonly template: string;
-    readonly value: string;
+    readonly value?: string;
   },
 ) =>
   executor.connections.create({
@@ -153,7 +153,7 @@ const createOrgConnection = (
     name: ConnectionName.make(input.name),
     integration: IntegrationSlug.make(input.integration),
     template: AuthTemplateSlug.make(input.template),
-    value: input.value,
+    ...(input.value === undefined ? { values: {} } : { value: input.value }),
   });
 
 describe("graphqlPlugin real protocol server", () => {
@@ -350,7 +350,7 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "live_graph",
         name: "default",
         template: "none",
-        value: "unused",
+        value: "",
       });
 
       yield* waitForRecordedRequests(server.requests, (requests) =>
@@ -361,6 +361,44 @@ describe("graphqlPlugin real protocol server", () => {
       expect(tools.map((tool) => String(tool.name))).toEqual(
         expect.arrayContaining(["query.hello", "mutation.setGreeting"]),
       );
+    }),
+  );
+
+  it.effect("rejects credential input for no-auth GraphQL and accepts an empty input map", () =>
+    Effect.gen(function* () {
+      const server = yield* serveGreetingServer;
+      const executor = yield* makeExecutor();
+      const integration = IntegrationSlug.make("no_auth_create");
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.endpoint,
+        slug: String(integration),
+      });
+
+      const error = yield* executor.connections
+        .create({
+          owner: "org",
+          name: ConnectionName.make("with-secret"),
+          integration,
+          template: AuthTemplateSlug.make("none"),
+          value: "must-not-be-stored",
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "InvalidConnectionInputError",
+        message: "A no-auth connection cannot accept credential inputs.",
+      });
+      expect(yield* executor.connections.list({ integration })).toEqual([]);
+
+      const connection = yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("public"),
+        integration,
+        template: AuthTemplateSlug.make("none"),
+        values: {},
+      });
+      expect(String(connection.address)).toBe("tools.no_auth_create.org.public");
+      expect(yield* executor.connections.list({ integration })).toHaveLength(1);
     }),
   );
 
@@ -395,7 +433,6 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "guarded_graph",
         name: "default",
         template: "none",
-        value: "unused",
       });
 
       const tools = yield* executor.tools.list();
@@ -459,7 +496,6 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "named_ops",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       yield* executor.execute(toolAddr("named_ops", "main", "query.hello"), { name: "Ada" });
@@ -501,7 +537,6 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "http_error_graph",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       const result = yield* executor.execute(toolAddr("http_error_graph", "main", "query.hello"), {
@@ -547,7 +582,6 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "auth_wall_graph",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       const result = yield* executor.execute(toolAddr("auth_wall_graph", "main", "query.hello"), {
@@ -590,7 +624,6 @@ describe("graphqlPlugin real protocol server", () => {
           integration: "scope_graph",
           name: "main",
           template: "none",
-          value: "unused",
         });
 
         const result = yield* executor.execute(toolAddr("scope_graph", "main", "query.hello"), {
@@ -639,7 +672,6 @@ describe("graphqlPlugin real protocol server", () => {
           integration: "scope_hdr_graph",
           name: "main",
           template: "none",
-          value: "unused",
         });
 
         const result = yield* executor.execute(toolAddr("scope_hdr_graph", "main", "query.hello"), {
@@ -1001,7 +1033,6 @@ describe("graphqlPlugin real protocol server", () => {
         integration: "incomplete_sync",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       const connection = yield* executor.connections.get({
@@ -1044,7 +1075,6 @@ describe("graphqlPlugin", () => {
         integration: "test_api",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       const tools = yield* executor.tools.list();
@@ -1084,7 +1114,6 @@ describe("graphqlPlugin", () => {
         integration: "removable",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       let tools = yield* executor.tools.list();
@@ -1138,7 +1167,6 @@ describe("graphqlPlugin", () => {
         integration: "approval_test",
         name: "main",
         template: "none",
-        value: "unused",
       });
 
       const tools = yield* executor.tools.list();
@@ -1369,7 +1397,6 @@ describe("graphqlPlugin generates valid operations against rich schemas (#1146)"
         integration: slug,
         name: "main",
         template: "none",
-        value: "unused",
       });
       yield* server.clearRequests;
       return { server, executor };

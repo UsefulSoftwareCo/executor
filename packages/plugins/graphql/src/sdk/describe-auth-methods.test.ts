@@ -164,7 +164,7 @@ describe("describeGraphqlAuthMethods", () => {
     expect(methods.map((m) => m.id)).toEqual(["a", "b"]);
   });
 
-  it("returns [] when no auth methods are declared", () => {
+  it("projects an empty auth method list as no-auth", () => {
     const methods = describeGraphqlAuthMethods(
       recordWith({
         endpoint: "https://x.example/graphql",
@@ -172,7 +172,14 @@ describe("describeGraphqlAuthMethods", () => {
         authenticationTemplate: [],
       }),
     );
-    expect(methods).toEqual([]);
+    expect(methods).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
   });
 
   it("returns [] for a malformed / foreign config blob", () => {
