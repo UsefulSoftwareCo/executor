@@ -727,7 +727,16 @@ export const invokeOpenApiBackedTool = (input: {
                   details: error.cause ?? error,
                 }),
               })
-            : Effect.fail(error),
+            : error.cause !== undefined && Option.isNone(error.statusCode)
+              ? Effect.succeed({
+                  ok: false as const,
+                  failure: ToolResult.fail({
+                    code: "upstream_unreachable",
+                    message:
+                      "Could not reach the upstream server. Check your network and try again.",
+                  }),
+                })
+              : Effect.fail(error),
       ),
     );
 

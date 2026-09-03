@@ -394,9 +394,12 @@ describe("OpenAPI upstream failure modes", () => {
       const { baseUrl } = yield* startDroppingServer();
       const { executor, address } = yield* buildExecutor(baseUrl);
 
-      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      const result = yield* executor.execute(address, {});
 
-      expect(Exit.isFailure(exit)).toBe(true);
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_unreachable" },
+      });
     }),
   );
 
@@ -444,6 +447,28 @@ describe("OpenAPI upstream failure modes", () => {
 
       const result = unwrapInvocation(yield* executor.execute(address, {}));
       expect(result.data).toEqual([]);
+    }),
+  );
+
+  // Port 1 refuses immediately. The same path used to throw `Internal tool
+  // error [hex]` because the raw HttpClientError carries the request URL.
+  it.effect("connection refused returns upstream_unreachable without leaking the path", () =>
+    Effect.gen(function* () {
+      const { executor, address } = yield* buildExecutor("http://127.0.0.1:1");
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_unreachable" },
+      });
+      const failure = result as {
+        readonly ok: false;
+        readonly error: { readonly message: string };
+      };
+      expect(failure.error.message).toContain("Could not reach");
+      expect(failure.error.message).not.toContain("Internal tool error");
+      expect(failure.error.message).not.toContain("/things");
     }),
   );
 });
