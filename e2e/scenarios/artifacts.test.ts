@@ -187,6 +187,7 @@ scenario(
     const suffix = uniqueSuffix();
     const title = `Release Readiness ${suffix}`;
     const marker = `artifact-ok-${suffix}`;
+    const source = artifactSource(marker).trim();
 
     // Tracked so cleanup runs even when an assertion below fails.
     let artifactId: ArtifactId | undefined;
@@ -215,7 +216,7 @@ scenario(
       );
 
       const rendered = yield* session.call("create-artifact", {
-        code: artifactSource(marker),
+        code: source,
         title,
         description: "Whether the current release is ready to ship",
       });
@@ -552,6 +553,10 @@ scenario(
         String(structuredOf(shown).url ?? shown.text),
         "show-artifact delivers the same deep link for a non-Apps client",
       ).toContain(String(artifactId));
+      expect(
+        shown.text,
+        "show-artifact includes the current source in its text result for a non-Apps client",
+      ).toContain(`Source:\n\`\`\`tsx\n${source}\n\`\`\``);
     }).pipe(
       Effect.ensuring(
         Effect.suspend(() =>
