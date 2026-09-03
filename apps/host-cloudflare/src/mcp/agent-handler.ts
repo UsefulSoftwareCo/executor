@@ -3,8 +3,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  defaultMcpResource,
-  mcpResourceFromPathname,
+  mcpResourceFromRequest,
   orgWriteAccessForPrincipal,
   withOrgWriteAccess,
   type AuthOutcome,
@@ -73,12 +72,6 @@ const authenticate = (request: Request, config: CloudflareConfig) =>
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
   }).pipe(Effect.provide(cloudflareAccessMcpAuth(config)));
-
-// The MCP resource the request targets (`worker.ts` routes every path the
-// shared grammar recognizes here), so a session minted on a scoped path serves
-// that projection of the catalog.
-const resourceFromPath = (request: Request): McpResource =>
-  mcpResourceFromPathname(new URL(request.url).pathname) ?? defaultMcpResource;
 
 const propsForPrincipal = (
   request: Request,
@@ -153,7 +146,9 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const resource = resourceFromPath(request);
+    // `worker.ts` routes every path the shared grammar recognizes here, so a
+    // session minted on a scoped path serves that projection of the catalog.
+    const resource = mcpResourceFromRequest(request);
     const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(

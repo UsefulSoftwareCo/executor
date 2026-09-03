@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { mcpResourceFromRequest, protectedResourceMetadataUrlFor, resourceUrlFor } from "./auth";
+import { mcpResourceFromRequest } from "@executor-js/host-mcp";
+
+import { protectedResourceMetadataUrlFor, resourceUrlFor } from "./auth";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mount";
 
 describe("cloud MCP scoped route normalization", () => {

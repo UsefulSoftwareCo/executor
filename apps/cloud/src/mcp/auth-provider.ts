@@ -37,6 +37,8 @@ import {
   unauthorized,
   unavailable,
   McpAuthProvider,
+  mcpResourceFromRequest,
+  scopedMcpRoutePaths,
   type AuthOutcome,
   type McpDiscoveryRoute,
   type Principal,
@@ -48,7 +50,6 @@ import { CoreSharedServices } from "../auth/workos";
 import {
   bearerChallengeFor,
   mcpOrganizationFromRequest,
-  mcpResourceFromRequest,
   protectedResourceMetadataUrlFor,
   PROTECTED_RESOURCE_METADATA_PATH,
   McpAuth,
@@ -66,13 +67,6 @@ import {
 } from "./oauth-metadata";
 
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
-// One metadata doc per MCP sub-resource kind; the doc's `resource` mirrors the
-// path the client dialed (RFC 9728 same-origin check).
-const SCOPED_PROTECTED_RESOURCE_METADATA_PATHS = [
-  `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:slug`,
-  `${PROTECTED_RESOURCE_METADATA_PATH}/integrations/:slugs`,
-  `${PROTECTED_RESOURCE_METADATA_PATH}/tools/:toolId`,
-] as const;
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
@@ -140,9 +134,11 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
           mcpResourceFromRequest(request),
         ),
       );
+    // One metadata doc per resource; its `resource` mirrors the path the client
+    // dialed (RFC 9728 same-origin check).
     const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
       { path: PROTECTED_RESOURCE_METADATA_PATH, handler: protectedResourceMetadata },
-      ...SCOPED_PROTECTED_RESOURCE_METADATA_PATHS.map((path) => ({
+      ...scopedMcpRoutePaths(PROTECTED_RESOURCE_METADATA_PATH).map((path) => ({
         path,
         handler: protectedResourceMetadata,
       })),

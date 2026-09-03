@@ -11,6 +11,7 @@ import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
 import { disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
+import type { ExecutorMcpServerConfig } from "@executor-js/host-mcp/tool-server";
 
 // ---------------------------------------------------------------------------
 // Local server handlers.
@@ -88,21 +89,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
     const { executor, webBaseUrl } = await getExecutorBundle();
-    // Both engines below serve MCP endpoints, so the wrap binds the "mcp"
-    // plane structurally; a projected engine additionally marks `toolkit`
-    // (the resource's own label is user data and never recorded).
-    const engine = withExecutionAnalytics(
-      createExecutionEngine({
-        executor,
-        codeExecutor: makeQuickJsExecutor(),
-      }),
-      localAnalytics,
-      { plane: "mcp", toolkit: false },
-    );
     // The generative-UI surface, shared by every resource this daemon serves.
-    // A scoped resource is a projection of the boot executor, so `artifacts`
-    // is bound per resource below rather than hoisted with the rest.
-    //
     // Including the create-time smoke render, on the same terms as every other
     // host. This daemon is a dependency of `apps/cli`, whose build does not
     // configure `jsx`, and the renderer used to be unusable here for that
@@ -119,45 +106,32 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       onArtifactUsage: (action: "created" | "viewed" | "updated") =>
         localAnalytics.record(`artifact_${action}`, { via: "agent" }),
     };
+    // One config shape for every resource. The default endpoint serves the
+    // boot executor; a scoped one serves the same executor through a
+    // projection (same database handle — this process holds the data dir's
+    // exclusive lock, so a second open would contend with ourselves — same
+    // plugins, same workspace policies, narrowed to what the resource
+    // exposes). The wrap binds the "mcp" plane structurally; `toolkit` marks
+    // a projected engine (the resource's own label is user data and never
+    // recorded).
+    const configFor = (view: typeof executor, toolkit: boolean): ExecutorMcpServerConfig => ({
+      engine: withExecutionAnalytics(
+        createExecutionEngine({ executor: view, codeExecutor: makeQuickJsExecutor() }),
+        localAnalytics,
+        { plane: "mcp", toolkit },
+      ),
+      artifacts: view.artifacts,
+      connections: view.connections,
+      ...appsConfig,
+    });
     mcp = createMcpRequestHandler({
-      defaultConfig: {
-        engine,
-        artifacts: executor.artifacts,
-        connections: executor.connections,
-        ...appsConfig,
-      },
+      defaultConfig: configFor(executor, false),
       createConfigForResource: async (resource) => {
         const projection = projectionForMcpResource(resource);
-        if (projection === undefined) {
-          return {
-            config: {
-              engine,
-              artifacts: executor.artifacts,
-              connections: executor.connections,
-              ...appsConfig,
-            },
-          };
-        }
-        // A scoped resource is the boot executor seen through a projection:
-        // same database handle (this process holds the data dir's exclusive
-        // lock, so a second open would contend with ourselves), same plugins,
-        // same workspace policies, narrowed to what the resource exposes.
+        if (projection === undefined) return { config: configFor(executor, false) };
         const projected = await Effect.runPromise(executor.project(projection));
-        const projectedEngine = withExecutionAnalytics(
-          createExecutionEngine({
-            executor: projected,
-            codeExecutor: makeQuickJsExecutor(),
-          }),
-          localAnalytics,
-          { plane: "mcp", toolkit: true },
-        );
         return {
-          config: {
-            engine: projectedEngine,
-            artifacts: projected.artifacts,
-            connections: projected.connections,
-            ...appsConfig,
-          },
+          config: configFor(projected, true),
           close: () => Effect.runPromise(Effect.ignore(projected.close())),
         };
       },

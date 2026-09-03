@@ -51,9 +51,6 @@ export interface ToolProjection {
   readonly excludePersonal?: boolean;
 }
 
-/** The projection that exposes every tool under the workspace policy alone. */
-export const fullToolProjection: ToolProjection = { visible: ["*"], rules: [] };
-
 const isPersonalToolId = (toolId: string): boolean => toolId.split(".")[1] === "user";
 
 const blockedOutsideProjection: EffectivePolicy = {
@@ -87,7 +84,7 @@ const actionRank = (action: ToolPolicyAction): number =>
  * workspace "approve" does. When neither side has a rule both fall through to
  * the same plugin default.
  */
-export const mostRestrictivePolicy = (
+const mostRestrictivePolicy = (
   workspace: EffectivePolicy,
   overlay: EffectivePolicy,
 ): EffectivePolicy => {
@@ -101,7 +98,7 @@ export const mostRestrictivePolicy = (
 };
 
 /** Whether `toolId` falls inside the projection's capability boundary. */
-export const isVisibleInProjection = (projection: ToolProjection, toolId: string): boolean => {
+const isVisibleInProjection = (projection: ToolProjection, toolId: string): boolean => {
   if (projection.excludePersonal && isPersonalToolId(toolId)) return false;
   return projection.visible.some((pattern) => matchPattern(pattern, toolId));
 };
@@ -111,7 +108,7 @@ export const isVisibleInProjection = (projection: ToolProjection, toolId: string
  * rule, else the plugin default. Does not consult the workspace policy; see
  * {@link resolveProjectedPolicy} for the combined answer.
  */
-export const resolveProjectionRule = (
+const resolveProjectionRule = (
   projection: ToolProjection,
   toolId: string,
   defaultRequiresApproval?: boolean,

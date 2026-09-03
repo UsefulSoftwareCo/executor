@@ -5,12 +5,13 @@ import { IdentityProvider, isPlatformPrincipal } from "@executor-js/api/server";
 import {
   authenticated,
   McpAuthProvider,
-  mcpResourceFromPathname,
+  mcpResourceFromRequest,
   mcpResourcePath,
+  OAUTH_PROTECTED_RESOURCE_PREFIX,
+  scopedMcpRoutePaths,
   unauthorized,
   type AuthOutcome,
   type McpDiscoveryRoute,
-  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
 
@@ -57,14 +58,9 @@ import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org
 // stay on the Better Auth handler mounted at /api/auth — NOT in this seam.
 // ---------------------------------------------------------------------------
 
-const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
-// One metadata doc per scoped MCP sub-resource kind (the default doc is the
-// bare well-known path itself, Better Auth's convention).
-const SCOPED_PROTECTED_RESOURCE_METADATA_PATHS = [
-  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:slug`,
-  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/integrations/:slugs`,
-  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/tools/:toolId`,
-] as const;
+// The default doc is the bare well-known path itself (Better Auth's
+// convention); scoped docs sit under `<prefix>/mcp/...`.
+const PROTECTED_RESOURCE_METADATA_PATH = OAUTH_PROTECTED_RESOURCE_PREFIX;
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 
 const parseRoles = (role: string | null | undefined): ReadonlyArray<string> =>
@@ -99,26 +95,11 @@ const originalOrgScopedPathFor = (request: Request): string | null => {
   return header ? mcpResourcePathFromOriginalPath(header) : null;
 };
 
-/**
- * The scoped MCP resource a bare request names, read off its own path (the
- * transport path or its metadata doc), or `null` for the default endpoint.
- * The grammar is the shared one from host-mcp.
- */
-const scopedResourceFor = (request: Request): McpResource | null => {
-  const pathname = new URL(request.url).pathname;
-  const bare = pathname.startsWith(PROTECTED_RESOURCE_METADATA_PATH)
-    ? pathname.slice(PROTECTED_RESOURCE_METADATA_PATH.length)
-    : pathname;
-  const resource = mcpResourceFromPathname(bare);
-  return resource === null || resource.kind === "default" ? null : resource;
-};
+const isScopedRequest = (request: Request): boolean =>
+  mcpResourceFromRequest(request).kind !== "default";
 
-const mcpResourcePathFor = (request: Request): string => {
-  const orgScoped = originalOrgScopedPathFor(request);
-  if (orgScoped) return orgScoped;
-  const scoped = scopedResourceFor(request);
-  return scoped ? mcpResourcePath(scoped) : "/mcp";
-};
+const mcpResourcePathFor = (request: Request): string =>
+  originalOrgScopedPathFor(request) ?? mcpResourcePath(mcpResourceFromRequest(request));
 
 /**
  * Absolute protected-resource metadata URL for the 401 challenge. Derive the
@@ -131,9 +112,8 @@ const resourceMetadataUrlFor = (baseURL: string | undefined, request: Request): 
   const origin = baseURL && baseURL.length > 0 ? baseURL : new URL(request.url).origin;
   const orgScoped = originalOrgScopedPathFor(request);
   if (orgScoped) return `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${orgScoped}`;
-  const scoped = scopedResourceFor(request);
-  return scoped
-    ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${mcpResourcePath(scoped)}`
+  return isScopedRequest(request)
+    ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${mcpResourcePathFor(request)}`
     : `${origin}${PROTECTED_RESOURCE_METADATA_PATH}`;
 };
 
@@ -150,7 +130,7 @@ const scopedProtectedResourceMetadata = (
   response: Response,
   baseURL: string | undefined,
 ): Effect.Effect<Response> => {
-  if (scopedResourceFor(request) === null) return Effect.succeed(response);
+  if (!isScopedRequest(request)) return Effect.succeed(response);
   return Effect.promise(async () => {
     const body = (await response.json()) as Record<string, unknown>;
     const headers = new Headers(response.headers);
@@ -189,7 +169,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         );
       const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
         { path: PROTECTED_RESOURCE_METADATA_PATH, handler: protectedResourceMetadata },
-        ...SCOPED_PROTECTED_RESOURCE_METADATA_PATHS.map((path) => ({
+        ...scopedMcpRoutePaths(`${PROTECTED_RESOURCE_METADATA_PATH}/mcp`).map((path) => ({
           path,
           handler: protectedResourceMetadata,
         })),

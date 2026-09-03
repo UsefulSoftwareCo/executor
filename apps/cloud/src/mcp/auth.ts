@@ -14,8 +14,8 @@ import { Context, Effect, Layer, Predicate } from "effect";
 
 import {
   defaultMcpResource,
-  mcpResourceFromPathname,
   mcpResourcePath,
+  OAUTH_PROTECTED_RESOURCE_PREFIX,
   type McpResource,
 } from "@executor-js/host-mcp";
 
@@ -75,20 +75,6 @@ export const MCP_ORGANIZATION_HEADER = "x-executor-mcp-organization";
 export const mcpOrganizationFromRequest = (request: Request): string | null =>
   request.headers.get(MCP_ORGANIZATION_HEADER);
 
-/**
- * The MCP resource a request names, read off its (already org-stripped) path.
- * Both the transport path (`/mcp/toolkits/<slug>`) and its metadata doc
- * (`/.well-known/oauth-protected-resource/mcp/toolkits/<slug>`) resolve to the
- * same resource. Defaults to the whole catalog for anything else.
- */
-export const mcpResourceFromRequest = (request: Request): McpResource => {
-  const pathname = new URL(request.url).pathname;
-  const bare = pathname.startsWith(PRM_PREFIX) ? pathname.slice(PRM_PREFIX.length) : pathname;
-  return mcpResourceFromPathname(bare) ?? defaultMcpResource;
-};
-
-const PRM_PREFIX = "/.well-known/oauth-protected-resource";
-
 /** The MCP resource URL for an org selector (`…/acme/mcp` slug or legacy
  *  `…/org_xxx/mcp` id — echoed verbatim so it matches the URL the client
  *  used), or the bare resource. */
@@ -106,8 +92,8 @@ export const protectedResourceMetadataUrlFor = (
   resource: McpResource = defaultMcpResource,
 ): string =>
   organizationSelector
-    ? `${RESOURCE_ORIGIN}${PRM_PREFIX}/${organizationSelector}${mcpResourcePath(resource)}`
-    : `${RESOURCE_ORIGIN}${PRM_PREFIX}${mcpResourcePath(resource)}`;
+    ? `${RESOURCE_ORIGIN}${OAUTH_PROTECTED_RESOURCE_PREFIX}/${organizationSelector}${mcpResourcePath(resource)}`
+    : `${RESOURCE_ORIGIN}${OAUTH_PROTECTED_RESOURCE_PREFIX}${mcpResourcePath(resource)}`;
 
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
 

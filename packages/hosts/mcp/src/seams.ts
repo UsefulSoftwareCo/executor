@@ -173,6 +173,37 @@ export const mcpResourceFromSegments = (segments: readonly string[]): McpResourc
 export const mcpResourceFromPathname = (pathname: string): McpResource | null =>
   mcpResourceFromSegments(pathname.split("/"));
 
+/** The RFC 9728 well-known prefix every host mounts its resource metadata under. */
+export const OAUTH_PROTECTED_RESOURCE_PREFIX = "/.well-known/oauth-protected-resource";
+
+/**
+ * The resource a request names, whether it dialed the transport path or that
+ * path's protected-resource metadata document. Anything the grammar does not
+ * recognize (a host's bare metadata doc, an unrelated path) is the default.
+ * Hosts that add a leading org selector strip it before the request gets here.
+ */
+export const mcpResourceFromRequest = (request: Request): McpResource => {
+  const pathname = new URL(request.url).pathname;
+  const bare = pathname.startsWith(OAUTH_PROTECTED_RESOURCE_PREFIX)
+    ? pathname.slice(OAUTH_PROTECTED_RESOURCE_PREFIX.length)
+    : pathname;
+  return mcpResourceFromPathname(bare) ?? defaultMcpResource;
+};
+
+const SCOPED_MCP_ROUTE_SUFFIXES = [
+  `/${TOOLKITS_SEGMENT}/:slug`,
+  `/${INTEGRATIONS_SEGMENT}/:slugs`,
+  `/${TOOLS_SEGMENT}/:toolId`,
+] as const;
+
+/**
+ * Router patterns for the scoped sub-resources under `prefix` (a path ending
+ * in `/mcp`): the transport routes for the envelope, the metadata-doc routes
+ * for a host's discovery seam. One list, so a new resource kind is one edit.
+ */
+export const scopedMcpRoutePaths = (prefix: `/${string}`): readonly `/${string}`[] =>
+  SCOPED_MCP_ROUTE_SUFFIXES.map((suffix) => `${prefix}${suffix}` as const);
+
 /**
  * The bare pathname that names `resource`: the inverse of
  * {@link mcpResourceFromPathname}. Hosts prefix it with their org selector or

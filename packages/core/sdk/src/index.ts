@@ -205,11 +205,7 @@ export {
 
 // Tool projections — a narrowed view over the catalog, layered on policies.
 export {
-  fullToolProjection,
-  isVisibleInProjection,
-  mostRestrictivePolicy,
   resolveProjectedPolicy,
-  resolveProjectionRule,
   type ToolProjection,
   type ToolProjectionRule,
 } from "./tool-projection";

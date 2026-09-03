@@ -2,38 +2,23 @@ import { Effect, Layer } from "effect";
 
 import {
   authenticated,
-  defaultMcpResource,
   McpAuthProvider,
-  mcpResourceFromPathname,
+  mcpResourceFromRequest,
   mcpResourcePath,
+  OAUTH_PROTECTED_RESOURCE_PREFIX,
+  scopedMcpRoutePaths,
   unauthorized,
   type McpDiscoveryRoute,
-  type McpResource,
 } from "@executor-js/host-mcp";
 
 import { makeAccessVerifier } from "../auth/cloudflare-access";
 import type { CloudflareConfig } from "../config";
 
-const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
-const MCP_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp`;
-const SCOPED_PROTECTED_RESOURCE_METADATA_PATHS = [
-  `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:slug`,
-  `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/integrations/:slugs`,
-  `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/tools/:toolId`,
-] as const;
-
-// The resource a request names, whether it dialed the transport path or its
-// metadata doc. The grammar is the shared one from host-mcp.
-const resourceForRequest = (request: Request): McpResource => {
-  const pathname = new URL(request.url).pathname;
-  const bare = pathname.startsWith(PROTECTED_RESOURCE_METADATA_PATH)
-    ? pathname.slice(PROTECTED_RESOURCE_METADATA_PATH.length)
-    : pathname;
-  return mcpResourceFromPathname(bare) ?? defaultMcpResource;
-};
+const PROTECTED_RESOURCE_METADATA_PATH = OAUTH_PROTECTED_RESOURCE_PREFIX;
+const MCP_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp` as const;
 
 const resourcePathForRequest = (request: Request): string =>
-  mcpResourcePath(resourceForRequest(request));
+  mcpResourcePath(mcpResourceFromRequest(request));
 
 const metadataPathForRequest = (request: Request): string =>
   `${PROTECTED_RESOURCE_METADATA_PATH}${resourcePathForRequest(request)}`;
@@ -76,7 +61,7 @@ export const cloudflareAccessMcpAuth = (config: CloudflareConfig): Layer.Layer<M
       path: MCP_PROTECTED_RESOURCE_METADATA_PATH,
       handler: (request) => Effect.succeed(protectedResourceMetadataResponse(request)),
     },
-    ...SCOPED_PROTECTED_RESOURCE_METADATA_PATHS.map((path) => ({
+    ...scopedMcpRoutePaths(MCP_PROTECTED_RESOURCE_METADATA_PATH).map((path) => ({
       path,
       handler: (request: Request) => Effect.succeed(protectedResourceMetadataResponse(request)),
     })),

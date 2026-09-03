@@ -4,8 +4,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  defaultMcpResource,
-  mcpResourceFromPathname,
+  mcpResourceFromRequest,
   orgWriteAccessForPrincipal,
   withOrgWriteAccess,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
@@ -156,14 +155,6 @@ const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> =
   );
 };
 
-// The MCP resource the request targets. `server.ts` routes the bare `/mcp` and
-// every scoped sub-resource to this handler (`prepareMcpOrgScope` strips the
-// org selector but keeps the resource segments), so a session minted on a
-// scoped path serves that projection of the catalog. The grammar is the shared
-// one from host-mcp; a path `classifyMcpPath` accepted always parses here.
-const resourceFromPath = (request: Request): McpResource =>
-  mcpResourceFromPathname(new URL(request.url).pathname) ?? defaultMcpResource;
-
 const propsForPrincipal = (
   request: Request,
   principal: Extract<AuthOutcome, { readonly _tag: "Authenticated" }>["principal"],
@@ -287,7 +278,10 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const resource = resourceFromPath(request);
+    // `prepareMcpOrgScope` already stripped the org selector, so the path is
+    // the bare resource path and a session minted on a scoped path serves that
+    // projection of the catalog.
+    const resource = mcpResourceFromRequest(request);
     const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(

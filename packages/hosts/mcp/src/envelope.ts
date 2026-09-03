@@ -8,6 +8,7 @@ import {
   McpErrorReporter,
   McpSessionStore,
   mcpResourceFromPathname,
+  scopedMcpRoutePaths,
   type AuthOutcome,
   type McpDispatchResult,
   type McpResource,
@@ -48,11 +49,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const MCP_PATH = "/mcp";
-const SCOPED_MCP_PATHS = [
-  "/mcp/toolkits/:slug",
-  "/mcp/integrations/:slugs",
-  "/mcp/tools/:toolId",
-] as const;
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
@@ -459,7 +455,7 @@ export const McpServingRoutes = HttpRouter.use((router) =>
       );
     }
     yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
-    for (const path of SCOPED_MCP_PATHS) {
+    for (const path of scopedMcpRoutePaths(MCP_PATH)) {
       yield* router.add("*", path, scopedMcpRoute);
     }
   }),
