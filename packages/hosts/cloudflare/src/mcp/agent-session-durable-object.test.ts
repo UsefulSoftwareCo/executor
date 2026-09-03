@@ -1,6 +1,6 @@
 // oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -8,10 +8,13 @@ import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk
 
 import { defaultMcpResource } from "@executor-js/host-mcp";
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
+import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
 import {
   McpAgentSessionDOBase,
   type McpApprovalOwner,
+  type McpApprovalPrincipal,
+  type McpSessionResumeApprovalResult,
   type McpSessionModelResumeResult,
   type SessionMeta,
 } from "./agent-session-durable-object";
@@ -137,6 +140,17 @@ class MemoryStorage {
 }
 
 type HarnessSession = {
+  approvalResponses: Map<
+    string,
+    { readonly response: ResumeResponse; readonly orgWriteAccess: "allowed" | "denied" }
+  >;
+  approvalWaiters: Map<
+    string,
+    Deferred.Deferred<{
+      readonly response: ResumeResponse;
+      readonly orgWriteAccess: "allowed" | "denied";
+    }>
+  >;
   alarm: () => Promise<void>;
   ctx: MemoryStorage;
   dbHandle: { readonly end: () => void } | null;
@@ -158,6 +172,15 @@ type HarnessSession = {
     identity: McpApprovalOwner,
     response: ResumeResponse,
   ) => Promise<McpSessionModelResumeResult>;
+  resumeExecutionForApproval: (
+    executionId: string,
+    identity: McpApprovalPrincipal,
+    response: ResumeResponse,
+  ) => Promise<McpSessionResumeApprovalResult>;
+  waitForApprovalResponse: (executionId: string) => Effect.Effect<{
+    readonly response: ResumeResponse;
+    readonly orgWriteAccess: "allowed" | "denied";
+  } | null>;
   validateMcpSessionOwner: (identity: {
     readonly accountId: string;
     readonly organizationId: string;
@@ -248,6 +271,7 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
@@ -256,6 +280,8 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   await server.connect(new StaleCloseTransport());
 
   const session = Object.create(McpAgentSessionDOBase.prototype) as HarnessSession;
+  session.approvalResponses = new Map();
+  session.approvalWaiters = new Map();
   session.ctx = storage;
   session.dbHandle = { end: () => undefined };
   session.engine = makeEngine().engine;
@@ -279,6 +305,38 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   return session;
 };
 
+it("records a demoted browser approver's current role in a waiting decision", async () => {
+  const session = await makeHarnessSession();
+  const executionId = "exec-browser-demotion";
+  session.engine = {
+    ...makeEngine().engine,
+    getPausedExecution: (id) =>
+      Effect.succeed(
+        id === executionId
+          ? {
+              id,
+              elicitationContext: {
+                address: ToolAddress.make("executor.coreTools.policies.create"),
+                args: {},
+                request: FormElicitation.make({ message: "Approve?", requestedSchema: {} }),
+              },
+            }
+          : null,
+      ),
+  };
+
+  const waiting = Effect.runPromise(session.waitForApprovalResponse(executionId));
+  await Promise.resolve();
+  const result = await session.resumeExecutionForApproval(
+    executionId,
+    { accountId: "user-1", organizationId: "org-1", orgRole: "member" },
+    approval,
+  );
+
+  expect(result.status).toBe("ok");
+  await expect(waiting).resolves.toEqual({ response: approval, orgWriteAccess: "denied" });
+});
+
 // The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
 // in the rebuilt server's memory. These pin the storage round-trip that lets a
 // cold-restored session rebuild with it instead of silently downgrading every
@@ -294,6 +352,7 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
   const baseMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
@@ -326,6 +385,26 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
     await Effect.runPromise(session.persistAppsEnabled(false));
 
     expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: false });
+  });
+
+  it("loads persisted pre-role-model metadata through the fail-closed arm", async () => {
+    const legacyStored = {
+      organizationId: "org-1",
+      organizationName: "Org 1",
+      userId: "user-1",
+      orgRole: "admin",
+      resource: defaultMcpResource,
+    } as const;
+    const { session } = await makeCapabilitySession(legacyStored);
+
+    const loaded = await Effect.runPromise(session.loadSessionMeta());
+
+    expect(loaded).toMatchObject({
+      organizationId: "org-1",
+      orgRoleModel: "organization",
+      resource: defaultMcpResource,
+    });
+    expect(loaded).not.toHaveProperty("orgRole");
   });
 
   // `init` runs again on every cold restore and rebuilds meta from the bearer
@@ -393,12 +472,14 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
     organizationId: "org-1",
     organizationName: "Org One",
     organizationSlug: "org-one",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
 
   const token = {
     organizationId: "org-1",
+    orgRoleModel: "organization" as const,
     userId: "user-1",
     elicitationMode: "model" as const,
     resource: defaultMcpResource,
@@ -428,6 +509,7 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
         organizationId: t.organizationId,
         organizationName: stored.organizationName,
         organizationSlug: stored.organizationSlug,
+        orgRoleModel: stored.orgRoleModel,
         userId: t.userId,
         resource: defaultMcpResource,
       } satisfies SessionMeta);
@@ -470,6 +552,7 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
       return Effect.succeed({
         organizationId: t.organizationId,
         organizationName: "Freshly Resolved",
+        orgRoleModel: "organization",
         userId: t.userId,
         resource: defaultMcpResource,
       } satisfies SessionMeta);
@@ -716,6 +799,7 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
@@ -1019,6 +1103,7 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
   const residencySessionMeta = (organizationId: string): SessionMeta => ({
     organizationId,
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   });

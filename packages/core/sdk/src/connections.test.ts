@@ -60,6 +60,7 @@ const memoryProvider = (): CredentialProvider => {
 };
 
 const INTEG = IntegrationSlug.make("vercel");
+const COLLIDING_INTEG = IntegrationSlug.make("reserved-slug-collision");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 
 /** Wrap a test `FumaDb` so every transaction it opens is observable. The
@@ -112,6 +113,27 @@ const demoPlugin = definePlugin(() => ({
     }),
   invokeTool: ({ toolRow, credential }) =>
     Effect.succeed({ ran: toolRow.name, value: credential.value }),
+  describeAuthMethods: (integration) =>
+    String(integration.slug) === String(COLLIDING_INTEG)
+      ? [
+          {
+            id: "none",
+            label: "API key with a legacy colliding slug",
+            kind: "apikey",
+            template: "none",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+        ]
+      : [
+          {
+            id: String(TEMPLATE),
+            label: "API key",
+            kind: "apikey",
+            template: String(TEMPLATE),
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+          { id: "none", label: "No authentication", kind: "none", template: "none" },
+        ],
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -119,10 +141,22 @@ const demoPlugin = definePlugin(() => ({
         description: "Vercel",
         config: {},
       }),
+    seedCollidingIntegration: () =>
+      ctx.core.integrations.register({
+        slug: COLLIDING_INTEG,
+        description: "Legacy colliding auth method",
+        config: {},
+      }),
     resolveValue: (owner: "org" | "user", name: string) =>
       ctx.connections.resolveValue({
         owner,
         integration: INTEG,
+        name: ConnectionName.make(name),
+      }),
+    resolveCollidingValue: (owner: "org" | "user", name: string) =>
+      ctx.connections.resolveValue({
+        owner,
+        integration: COLLIDING_INTEG,
         name: ConnectionName.make(name),
       }),
   }),
@@ -347,6 +381,133 @@ describe("connections.create", () => {
     ),
   );
 
+  it.effect("a post-commit gap is fail-closed and a later runtime retries the stranded row", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstWriteEntered = yield* Deferred.make<void>();
+        const releaseFirstWrite = yield* Deferred.make<void>();
+        const store = new Map<string, string>([
+          ["connection:org:vercel:main:token", "orphaned-predecessor"],
+        ]);
+        let writes = 0;
+        let failNextDelete = false;
+        const provider: CredentialProvider = {
+          key: ProviderKey.make("memory"),
+          writable: true,
+          get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
+          set: (id, value) =>
+            Effect.gen(function* () {
+              writes += 1;
+              if (writes === 1) {
+                yield* Deferred.succeed(firstWriteEntered, undefined);
+                yield* Deferred.await(releaseFirstWrite);
+              }
+              store.set(String(id), value);
+            }),
+          delete: (id) =>
+            failNextDelete
+              ? Effect.sync(() => {
+                  failNextDelete = false;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new StorageError({ message: "old item cleanup refused", cause: undefined }),
+                    ),
+                  ),
+                )
+              : Effect.sync(() => void store.delete(String(id))),
+        };
+        const plugin = definePlugin(() => ({
+          id: "recoverable" as const,
+          credentialProviders: [provider],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.succeed({ tools: [{ name: ToolName.make("deploy"), description: "deploy" }] }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+            resolveValue: () =>
+              ctx.connections.resolveValue({
+                owner: "org",
+                integration: INTEG,
+                name: ConnectionName.make("main"),
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [plugin] as const });
+        const first = yield* createExecutor(config);
+        yield* first.recoverable.seed();
+
+        const infos: string[] = [];
+        const warnings: string[] = [];
+        const capture = Logger.make<unknown, void>((options) => {
+          const message = Inspectable.toStringUnknown(options.message, 0);
+          if (options.logLevel === "Info") infos.push(message);
+          if (options.logLevel === "Warn") warnings.push(message);
+        });
+        const logger = Logger.layer([capture]);
+
+        const firstFiber = yield* Effect.forkChild(
+          first.connections
+            .create({
+              owner: "org",
+              name: ConnectionName.make("main"),
+              integration: INTEG,
+              template: TEMPLATE,
+              values: {
+                token: "first-attempt",
+                "extra:attempt:foreign": "collision-shaped-base",
+              },
+            })
+            .pipe(Effect.provide(logger)),
+        );
+        yield* Deferred.await(firstWriteEntered);
+
+        // The committed row points at its own missing attempt item. It must not
+        // fall back to the deterministic predecessor key already in the store.
+        const gapRead = yield* first.recoverable.resolveValue().pipe(Effect.result);
+        expect(Result.isFailure(gapRead)).toBe(true);
+        expect(
+          Result.match(gapRead, {
+            onFailure: (failure) => failure.message,
+            onSuccess: () => "",
+          }),
+        ).toContain("is incomplete; retry");
+        expect(store.get("connection:org:vercel:main:token")).toBe("orphaned-predecessor");
+
+        // A fresh executor incarnation models restart after a crash that never
+        // runs the first hook. It recognizes the foreign missing attempt,
+        // atomically replaces the row with a new attempt, and succeeds.
+        const restarted = yield* createExecutor(config);
+        failNextDelete = true;
+        yield* restarted.connections
+          .create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+            values: {
+              token: "retried-value",
+              "extra:attempt:foreign": "collision-shaped-base",
+            },
+          })
+          .pipe(Effect.provide(logger));
+        expect(yield* restarted.recoverable.resolveValue()).toBe("retried-value");
+        expect(infos.some((line) => line.includes("stranded row detected"))).toBe(true);
+        expect(infos.some((line) => line.includes("stranded row replaced"))).toBe(true);
+        expect(warnings.some((line) => line.includes("replaced row cleanup failed"))).toBe(true);
+
+        // If the old process comes back, its unique write is inert and the row
+        // identity check reports that the attempt was superseded.
+        yield* Deferred.succeed(releaseFirstWrite, undefined);
+        expect(Exit.isFailure(yield* Fiber.await(firstFiber))).toBe(true);
+        expect(infos.some((line) => line.includes("credential write superseded"))).toBe(true);
+        expect(yield* restarted.recoverable.resolveValue()).toBe("retried-value");
+      }),
+    ),
+  );
+
   // When both creates observe absence, both reach the insert and the primary
   // key breaks the tie — the loser must still get the typed 409, not a raw
   // unique-constraint storage failure. The proxy blinds every connection-table
@@ -464,6 +625,37 @@ describe("connections.create", () => {
     }),
   );
 
+  it.effect("an external reference containing the old attempt marker is never replaced", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("byo"),
+        integration: INTEG,
+        template: TEMPLATE,
+        from: {
+          provider: ProviderKey.make("memory"),
+          id: ProviderItemId.make("vault:attempt:foreign:item"),
+        },
+      });
+
+      const duplicate = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("byo"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "must-not-replace",
+        }),
+      );
+
+      expect(Result.isFailure(duplicate)).toBe(true);
+      if (!Result.isFailure(duplicate)) return;
+      expect(duplicate.failure).toBeInstanceOf(ConnectionAlreadyExistsError);
+      expect(yield* executor.demo.resolveValue("org", "byo")).toBeNull();
+    }),
+  );
+
   it.effect("create on an unknown integration fails with IntegrationNotFoundError", () =>
     Effect.gen(function* () {
       const executor = yield* setup();
@@ -532,10 +724,10 @@ describe("connections.create", () => {
     }),
   );
 
-  // The no-auth template: public servers need no credential. The UI submits
-  // `values: {}` for them and the persisted row carries an empty `item_ids`
-  // map — that is the canonical shape (every migrated no-auth connection in
-  // prod has it), so it must create cleanly and keep its tools on refresh.
+  // A no-auth method needs no credential. SDK callers may submit `values: {}`;
+  // the dashboard's legacy shape is `values: { token: "" }`. Both canonicalize
+  // to an empty `item_ids` map (the shape of migrated no-auth connections), so
+  // creation and refresh must keep the connection's tools.
   it.effect('creates a no-auth (`template: "none"`) connection from an empty `values` map', () =>
     Effect.gen(function* () {
       const executor = yield* setup();
@@ -559,6 +751,79 @@ describe("connections.create", () => {
       });
       expect(refreshed.map((t) => String(t.name)).sort()).toEqual(["deploy", "list"]);
       expect((yield* executor.tools.list()).length).toBe(2);
+    }),
+  );
+
+  it.effect("normalizes a no-auth scalar placeholder to an empty credential binding", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("public-scalar"),
+        integration: INTEG,
+        template: AuthTemplateSlug.make("none"),
+        value: "",
+      });
+
+      expect(yield* executor.demo.resolveValue("org", "public-scalar")).toBeNull();
+    }),
+  );
+
+  it.effect("normalizes the dashboard's no-auth empty-value placeholder", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("public-dashboard"),
+        integration: INTEG,
+        template: AuthTemplateSlug.make("none"),
+        values: { token: "" },
+      });
+
+      expect(yield* executor.demo.resolveValue("org", "public-dashboard")).toBeNull();
+    }),
+  );
+
+  it.effect("rejects a real credential for a resolved no-auth method", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("public-with-secret"),
+          integration: INTEG,
+          template: AuthTemplateSlug.make("none"),
+          value: "must-not-be-dropped",
+        }),
+      );
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(result.failure).toMatchObject({
+        _tag: "InvalidConnectionInputError",
+        message: "A no-auth connection cannot accept credential inputs.",
+      });
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("preserves credentials for an API-key method with a colliding no-auth slug", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      yield* executor.demo.seedCollidingIntegration();
+      const integration = yield* executor.integrations.get(COLLIDING_INTEG);
+      expect(integration?.authMethods).toMatchObject([{ kind: "apikey", template: "none" }]);
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("legacy-api-key"),
+        integration: COLLIDING_INTEG,
+        template: AuthTemplateSlug.make("none"),
+        value: "preserved-secret",
+      });
+
+      expect(yield* executor.demo.resolveCollidingValue("org", "legacyApiKey")).toBe(
+        "preserved-secret",
+      );
     }),
   );
 
@@ -1051,8 +1316,8 @@ describe("connections.create credential-write compensation", () => {
         const rows = yield* executor.connections.list();
         expect(rows.length).toBe(1);
         expect(String(rows[0]?.name)).toBe("main");
-        expect(store.get("connection:org:vercel:main:first")).toBe("c-1");
-        expect(store.get("connection:org:vercel:main:second")).toBe("c-2");
+        expect([...store.values()]).toContain("c-1");
+        expect([...store.values()]).toContain("c-2");
       }),
     ),
   );
@@ -1144,8 +1409,8 @@ describe("connections.create credential-write compensation", () => {
         const rows = yield* executor.connections.list();
         expect(rows.length).toBe(1);
         expect(String(rows[0]?.name)).toBe("main");
-        expect(store.get("connection:org:vercel:main:first")).toBe("c-1");
-        expect(store.get("connection:org:vercel:main:second")).toBe("c-2");
+        expect([...store.values()]).toContain("c-1");
+        expect([...store.values()]).toContain("c-2");
         expect(infos.some((line) => line.includes("removed nothing"))).toBe(true);
       }),
     ),
@@ -1221,7 +1486,7 @@ describe("connections.create credential-write compensation", () => {
 
       // The unknown outcome skips ALL credential-item deletion: the item that
       // landed before the failed write is untouched.
-      expect(store.get("connection:org:vercel:main:first")).toBe("1");
+      expect([...store.entries()].find(([id]) => id.endsWith(":first"))?.[1]).toBe("1");
       // The log reports the unconfirmed state, not a stranded-row claim.
       expect(errors.some((line) => line.includes("could not confirm"))).toBe(true);
       expect(errors.every((line) => !line.includes("stranded a connection row"))).toBe(true);
@@ -1292,7 +1557,7 @@ describe("connections.create credential-write compensation", () => {
 
       // The unknown outcome skips ALL credential-item deletion: the item that
       // landed before the failed write is untouched.
-      expect(store.get("connection:org:vercel:main:first")).toBe("1");
+      expect([...store.entries()].find(([id]) => id.endsWith(":first"))?.[1]).toBe("1");
       // The log reports the unconfirmed state, not a stranded-row claim.
       expect(errors.some((line) => line.includes("could not confirm"))).toBe(true);
       expect(errors.every((line) => !line.includes("stranded a connection row"))).toBe(true);
@@ -2787,6 +3052,7 @@ describe("heal-on-use", () => {
       // exists, and healing from it would tell the user to stop reconnecting.
       yield* stamp({
         item_ids: { token: "vanished-item" },
+        credential_write: null,
         last_health: { status: "expired", checkedAt: Date.now() - STALE_MS, detail: "HTTP 401" },
       });
 

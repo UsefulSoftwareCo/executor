@@ -282,10 +282,10 @@ const txPlugin = (store: Map<string, string>) =>
     }),
   }))();
 
-// The client secret is keyed by (owner, slug) ALONE — the key outlives the row
-// it belonged to, which is what makes the deferred delete a claim that has to be
-// re-checked rather than replayed.
-const SECRET_ITEM = "oauth-client:user:acme-user:secret";
+// Client-secret references are versioned per registration attempt; tests read
+// the current terminal `:secret` slot without assuming its attempt id.
+const secretValue = (store: ReadonlyMap<string, string>): string | undefined =>
+  [...store.entries()].find(([itemId]) => itemId.endsWith(":secret"))?.[1];
 
 /** The registration used by the secret-lifecycle tests below, parameterised only
  *  by the secret so each one can prove which incarnation's secret survived. */
@@ -309,7 +309,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
-        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+        expect(secretValue(store)).toBe("user-secret");
 
         // A caller wraps the removal in its own transaction, then fails.
         const outcome = yield* Effect.exit(
@@ -326,7 +326,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
         const after = yield* executor.oauth.listClients();
         expect(after.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
         // ...so its secret must still be there, or it can never authenticate again.
-        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+        expect(secretValue(store)).toBe("user-secret");
       }),
     ),
   );
@@ -342,12 +342,12 @@ describe("removing a client defers the secret deletion to the outermost commit",
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
-        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+        expect(secretValue(store)).toBe("user-secret");
 
         yield* executor.demo.inTransaction(executor.oauth.removeClient("user", USER_CLIENT));
 
         expect(yield* executor.oauth.listClients()).toEqual([]);
-        expect(store.has(SECRET_ITEM)).toBe(false);
+        expect(secretValue(store)).toBeUndefined();
       }),
     ),
   );
@@ -363,11 +363,11 @@ describe("removing a client defers the secret deletion to the outermost commit",
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
-        expect(store.get(SECRET_ITEM)).toBe("user-secret");
+        expect(secretValue(store)).toBe("user-secret");
 
         yield* executor.oauth.removeClient("user", USER_CLIENT);
 
-        expect(store.has(SECRET_ITEM)).toBe(false);
+        expect(secretValue(store)).toBeUndefined();
       }),
     ),
   );
@@ -391,7 +391,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
           dataDir,
         });
         yield* a.executor.oauth.createClient(userClient("a-secret"));
-        expect(store.get(SECRET_ITEM)).toBe("a-secret");
+        expect(secretValue(store)).toBe("a-secret");
 
         const b = yield* makeTestWorkspaceHarness({
           plugins,
@@ -405,7 +405,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
         const clientsA = yield* a.executor.oauth.listClients();
         expect(clientsA.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
         // ...and so must its secret, which B never owned.
-        expect(store.get(SECRET_ITEM)).toBe("a-secret");
+        expect(secretValue(store)).toBe("a-secret");
       }),
     ),
   );
@@ -470,7 +470,7 @@ describe("removing a client does not delete a recreated client's secret", () => 
           clientId: "first-client",
           clientSecret: "first-secret",
         });
-        expect(store.get(SECRET_ITEM)).toBe("first-secret");
+        expect(secretValue(store)).toBe("first-secret");
 
         // The race, made deterministic: the removal and the re-registration of
         // the same slug commit together, so the deferred delete runs against a
@@ -493,7 +493,7 @@ describe("removing a client does not delete a recreated client's secret", () => 
         // The new incarnation is listed, and its secret survived...
         const after = yield* executor.oauth.listClients();
         expect(after.map((client) => String(client.slug))).toContain(String(USER_CLIENT));
-        expect(store.get(SECRET_ITEM)).toBe("second-secret");
+        expect([...store.values()]).toContain("second-secret");
 
         // ...and still authenticates: the server refuses a token request that
         // presents the wrong secret or none, so a connection can only be minted

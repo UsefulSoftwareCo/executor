@@ -27,7 +27,7 @@ import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { McpResource } from "@executor-js/host-mcp";
-import type { AnyPlugin, Executor, StorageFailure } from "@executor-js/sdk";
+import type { AnyPlugin, Executor, ExecutorConfig, StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
   type ExecutionEngine,
@@ -112,7 +112,12 @@ export const makeExecutionStack = <
   accountId: string,
   organizationId: string,
   organizationName: string,
-  options?: { readonly mcpResource?: McpResource },
+  options?: {
+    readonly mcpResource?: McpResource;
+    /** Workspace-settings permission for this binding (see
+     *  `ExecutorConfig.orgWrites`), derived from the acting member's role. */
+    readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+  },
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
   StorageFailure,
@@ -123,10 +128,17 @@ export const makeExecutionStack = <
       accountId,
       organizationId,
       organizationName,
-      { plugins: { mcpResource: options?.mcpResource } },
+      {
+        plugins: { mcpResource: options?.mcpResource },
+        ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+      },
+    ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
+    const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(
+      Effect.withSpan("executor.stack.code_executor"),
     );
-    const codeExecutor = yield* CodeExecutorProvider.asEffect();
-    const { decorate } = yield* EngineDecorator.asEffect();
+    const { decorate } = yield* EngineDecorator.asEffect().pipe(
+      Effect.withSpan("executor.stack.decorator"),
+    );
     const engine = yield* Effect.sync(() =>
       decorate(
         createExecutionEngine({ executor, codeExecutor }),

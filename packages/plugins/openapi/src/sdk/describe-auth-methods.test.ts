@@ -13,8 +13,8 @@ import { type Authentication } from "./types";
 // `describeOpenApiAuthMethods` projects the stored `authenticationTemplate[]`
 // into the catalog's plugin-agnostic `AuthMethodDescriptor[]` (server-side
 // mirror of the client's `authMethodsFromConfig`). OpenAPI also renders its own
-// accounts slot, so this is consistency work; a malformed/empty config yields
-// `[]` with no regression.
+// accounts slot, so this is consistency work; an empty valid config describes
+// genuine no-auth while malformed/foreign config still yields `[]`.
 // ---------------------------------------------------------------------------
 
 const recordWith = (templates: readonly Authentication[]): IntegrationRecord => ({
@@ -101,8 +101,15 @@ describe("describeOpenApiAuthMethods", () => {
     expect(methods.map((method) => method.label)).toEqual(["OAuth2 (user)"]);
   });
 
-  it("returns [] when no auth template is declared and for a foreign config", () => {
-    expect(describeOpenApiAuthMethods(recordWith([]))).toEqual([]);
+  it("projects no auth when no template is declared and returns [] for a foreign config", () => {
+    expect(describeOpenApiAuthMethods(recordWith([]))).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
     expect(
       describeOpenApiAuthMethods({
         slug: IntegrationSlug.make("x"),
@@ -112,7 +119,7 @@ describe("describeOpenApiAuthMethods", () => {
         canRemove: true,
         canRefresh: true,
         authMethods: [],
-        config: { not: "openapi" } as IntegrationConfig,
+        config: null,
       }),
     ).toEqual([]);
   });

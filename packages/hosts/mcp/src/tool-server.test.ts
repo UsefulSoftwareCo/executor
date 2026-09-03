@@ -1111,9 +1111,18 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
   });
 
   it("browser approval mode consumes a user-approved response and returns the resumed result", async () => {
-    const approved = new Map<string, { action: "accept"; content?: Record<string, unknown> }>();
+    const approved = new Map<
+      string,
+      {
+        response: { action: "accept"; content?: Record<string, unknown> };
+        orgWriteAccess: "allowed";
+      }
+    >();
     const waiter = await Effect.runPromise(
-      Deferred.make<{ action: "accept"; content?: Record<string, unknown> }>(),
+      Deferred.make<{
+        response: { action: "accept"; content?: Record<string, unknown> };
+        orgWriteAccess: "allowed";
+      }>(),
     );
     const engine = makeStubEngine({
       resume: (executionId, response) =>
@@ -1132,9 +1141,12 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
           name: "resume",
           arguments: { executionId: "exec_1" },
         });
-        const response = { action: "accept" as const, content: {} };
-        approved.set("exec_1", response);
-        await Effect.runPromise(Deferred.succeed(waiter, response));
+        const decision = {
+          response: { action: "accept" as const, content: {} },
+          orgWriteAccess: "allowed" as const,
+        };
+        approved.set("exec_1", decision);
+        await Effect.runPromise(Deferred.succeed(waiter, decision));
         const resumed = await waiting;
         expect(resumed.content).toEqual([{ type: "text", text: "resumed-after-browser" }]);
         expect(resumed.structuredContent).toMatchObject({
@@ -1967,7 +1979,11 @@ describe("MCP host server — hang-visibility tracing", () => {
       {
         elicitationMode: { mode: "browser", approvalUrl: (id) => `/approve/${id}` },
         browserApprovalStore: {
-          takeResponse: () => Effect.succeed({ action: "accept" as const }),
+          takeResponse: () =>
+            Effect.succeed({
+              response: { action: "accept" as const },
+              orgWriteAccess: "allowed" as const,
+            }),
         },
       },
     );

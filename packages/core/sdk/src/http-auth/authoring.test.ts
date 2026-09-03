@@ -94,4 +94,16 @@ describe("request-shaped authoring", () => {
       ),
     ).toBe(true);
   });
+
+  it('rejects the reserved no-auth slug "none" for an API-key method', () => {
+    const result = Schema.decodeUnknownExit(ApiKeyAuthTemplate)({
+      slug: "none",
+      type: "apiKey",
+      headers: { Authorization: [variable("token")] },
+    });
+
+    expect(String(result)).toContain(
+      'The auth template slug "none" is reserved for no-auth methods',
+    );
+  });
 });

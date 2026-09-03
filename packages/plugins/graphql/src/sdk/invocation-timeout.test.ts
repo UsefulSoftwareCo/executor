@@ -81,7 +81,7 @@ describe("GraphQL invocation timeout", () => {
         name: ConnectionName.make("main"),
         integration: IntegrationSlug.make("invocation_timeout"),
         template: AuthTemplateSlug.make("none"),
-        value: "unused",
+        values: {},
       });
 
       const startedAt = Date.now();
