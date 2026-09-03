@@ -91,6 +91,12 @@ const servePingApi = Effect.acquireRelease(
 const toolkitUrl = (baseUrl: string, slug: string): string =>
   new URL(`/mcp/toolkits/${slug}`, baseUrl).toString();
 
+const integrationsUrl = (baseUrl: string, slugs: readonly string[]): string =>
+  new URL(`/mcp/integrations/${slugs.join(",")}`, baseUrl).toString();
+
+const toolUrl = (baseUrl: string, toolId: string): string =>
+  new URL(`/mcp/tools/${toolId}`, baseUrl).toString();
+
 const connectionPattern = (integration: string, owner: "org" | "user", name: string): string =>
   `${integration}.${owner}.${name}.*`;
 
@@ -582,6 +588,266 @@ scenario(
       ),
     );
   }),
+);
+
+scenario(
+  "Toolkits · a workspace approval policy still gates a toolkit endpoint",
+  { timeout: 240_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const { client: makeClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeClient(api, identity);
+
+    const toolkitName = unique("gated-kit");
+    const createdPattern = `${unique("workspace-gated-policy")}.*`;
+    const gatedTool = "executor.coreTools.policies.create";
+
+    yield* Effect.gen(function* () {
+      // The toolkit grants the core tools and explicitly APPROVES the policy
+      // tool. The workspace, one level up, requires approval for the same
+      // tool. The toolkit must not be able to undo the workspace's gate.
+      const toolkit = yield* client.toolkits.create({
+        payload: { owner: "org", name: toolkitName },
+      });
+      yield* client.toolkits.createConnection({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: "executor.coreTools.*" },
+      });
+      yield* client.toolkits.createPolicy({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: gatedTool, action: "approve" },
+      });
+      yield* client.policies.create({
+        payload: { owner: "org", pattern: gatedTool, action: "require_approval" },
+      });
+
+      const session = mcp.session(identity, {
+        url: toolkitUrl(target.baseUrl, toolkit.slug),
+      });
+      const paused = yield* session.call("execute", {
+        code: createPolicyCode({ pattern: createdPattern, action: "block" }),
+      });
+      expect(paused.text, "the workspace gate pauses the toolkit call").toContain(
+        "Execution paused",
+      );
+      expect(paused.text, "the paused result carries an execution id").toContain("executionId:");
+
+      const beforeApproval = yield* client.policies.list();
+      expect(
+        beforeApproval.some((policy) => policy.pattern === createdPattern),
+        "no side effect lands while the approval is pending",
+      ).toBe(false);
+
+      const resumed = yield* session.approvePaused(paused.text);
+      expect(resumed.ok, `the approved call completes: ${resumed.text}`).toBe(true);
+      const afterApproval = yield* client.policies.list();
+      expect(
+        afterApproval.some((policy) => policy.pattern === createdPattern),
+        "the side effect lands only after approval",
+      ).toBe(true);
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const listed = yield* client.toolkits.list();
+          yield* Effect.forEach(
+            listed.toolkits.filter((toolkit) => toolkit.name === toolkitName),
+            (toolkit) => client.toolkits.remove({ params: { toolkitId: toolkit.id } }),
+            { discard: true },
+          );
+          const policies = yield* client.policies.list();
+          yield* Effect.forEach(
+            policies.filter(
+              (policy) => policy.pattern === createdPattern || policy.pattern === gatedTool,
+            ),
+            (policy) =>
+              client.policies.remove({
+                params: { policyId: policy.id },
+                payload: { owner: policy.owner },
+              }),
+            { discard: true },
+          );
+        }).pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
+
+scenario(
+  "Toolkits · a workspace block policy is enforced on a toolkit endpoint",
+  { timeout: 240_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const { client: makeClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeClient(api, identity);
+
+    const toolkitName = unique("blocked-kit");
+    const createdPattern = `${unique("workspace-blocked-policy")}.*`;
+    const gatedTool = "executor.coreTools.policies.create";
+
+    yield* Effect.gen(function* () {
+      const toolkit = yield* client.toolkits.create({
+        payload: { owner: "org", name: toolkitName },
+      });
+      yield* client.toolkits.createConnection({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: "executor.coreTools.*" },
+      });
+      yield* client.toolkits.createPolicy({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: gatedTool, action: "approve" },
+      });
+      yield* client.policies.create({
+        payload: { owner: "org", pattern: gatedTool, action: "block" },
+      });
+
+      const session = mcp.session(identity, {
+        url: toolkitUrl(target.baseUrl, toolkit.slug),
+      });
+      const blocked = yield* session.call("execute", {
+        code: createPolicyCode({ pattern: createdPattern, action: "block" }),
+      });
+      expect(blocked.text, "a blocked tool never pauses").not.toContain("Execution paused");
+      const policies = yield* client.policies.list();
+      expect(
+        policies.some((policy) => policy.pattern === createdPattern),
+        "the workspace block prevents the side effect through the toolkit",
+      ).toBe(false);
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const listed = yield* client.toolkits.list();
+          yield* Effect.forEach(
+            listed.toolkits.filter((toolkit) => toolkit.name === toolkitName),
+            (toolkit) => client.toolkits.remove({ params: { toolkitId: toolkit.id } }),
+            { discard: true },
+          );
+          const policies = yield* client.policies.list();
+          yield* Effect.forEach(
+            policies.filter(
+              (policy) => policy.pattern === createdPattern || policy.pattern === gatedTool,
+            ),
+            (policy) =>
+              client.policies.remove({
+                params: { policyId: policy.id },
+                payload: { owner: policy.owner },
+              }),
+            { discard: true },
+          );
+        }).pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
+
+scenario(
+  "Scoped MCP · integration and single-tool endpoints project the same catalog",
+  { timeout: 240_000 },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const mcp = yield* Mcp;
+      const { client: makeClient } = yield* Api;
+      const upstream = yield* servePingApi;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+
+      const granted = unique("scoped_ping");
+      const other = unique("other_ping");
+      const connection = "main";
+
+      yield* Effect.gen(function* () {
+        for (const slug of [granted, other]) {
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: pingSpec(upstream.url) },
+              slug: IntegrationSlug.make(slug),
+              baseUrl: upstream.url,
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: { "x-e2e-token": [{ type: "variable", name: "token" }] },
+                },
+              ],
+            },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name: ConnectionName.make(connection),
+              integration: IntegrationSlug.make(slug),
+              template: AuthTemplateSlug.make("apiKey"),
+              value: "unused-token",
+            },
+          });
+        }
+
+        // /mcp/integrations/<slug>: every tool of that integration, nothing else.
+        const integrationSession = mcp.session(identity, {
+          url: integrationsUrl(target.baseUrl, [granted]),
+        });
+        const grantedPaths = yield* executeJson(
+          integrationSession,
+          visibleConnectionPathsCode(granted),
+        );
+        expect(
+          grantedPaths.paths as string[],
+          "the integration endpoint exposes its tools",
+        ).toEqual([`${granted}.org.${connection}.ping.getPing`]);
+        const otherPaths = yield* executeJson(
+          integrationSession,
+          visibleConnectionPathsCode(other),
+        );
+        expect(otherPaths.paths as string[], "other integrations stay hidden").toEqual([]);
+        const call = yield* executeJson(
+          integrationSession,
+          callPingCode({ integration: granted, owner: "org", connection, id: "by-integration" }),
+        );
+        assertCallOk(call, "the integration endpoint can call its tool");
+        const otherCall = yield* executeJson(
+          integrationSession,
+          callPingCode({ integration: other, owner: "org", connection, id: "by-integration" }),
+        );
+        assertCallMissing(otherCall, "the integration endpoint blocks other integrations");
+
+        // /mcp/tools/<tool id>: exactly one tool, addressed across connections.
+        const toolSession = mcp.session(identity, {
+          url: toolUrl(target.baseUrl, `${granted}.org.${connection}.ping.getPing`),
+        });
+        const singlePaths = yield* executeJson(toolSession, visibleConnectionPathsCode(granted));
+        expect(singlePaths.paths as string[], "the tool endpoint exposes one tool").toEqual([
+          `${granted}.org.${connection}.ping.getPing`,
+        ]);
+        const singleCall = yield* executeJson(
+          toolSession,
+          callPingCode({ integration: granted, owner: "org", connection, id: "by-tool" }),
+        );
+        assertCallOk(singleCall, "the tool endpoint can call its one tool");
+
+        // Both are projections of the same catalog: the default endpoint still
+        // sees everything.
+        const everything = yield* executeJson(
+          mcp.session(identity),
+          visibleConnectionPathsCode(other),
+        );
+        expect(everything.paths as string[], "the default endpoint is unchanged").toEqual([
+          `${other}.org.${connection}.ping.getPing`,
+        ]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.forEach(
+            [granted, other],
+            (slug) => client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+            { discard: true },
+          ),
+        ),
+      );
+    }),
+  ),
 );
 
 scenario(

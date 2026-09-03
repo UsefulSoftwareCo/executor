@@ -5,9 +5,12 @@ import { IdentityProvider, isPlatformPrincipal } from "@executor-js/api/server";
 import {
   authenticated,
   McpAuthProvider,
+  mcpResourceFromPathname,
+  mcpResourcePath,
   unauthorized,
   type AuthOutcome,
   type McpDiscoveryRoute,
+  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
 
@@ -55,9 +58,14 @@ import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org
 // ---------------------------------------------------------------------------
 
 const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
-const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:toolkitSlug`;
+// One metadata doc per scoped MCP sub-resource kind (the default doc is the
+// bare well-known path itself, Better Auth's convention).
+const SCOPED_PROTECTED_RESOURCE_METADATA_PATHS = [
+  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:slug`,
+  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/integrations/:slugs`,
+  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/tools/:toolId`,
+] as const;
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
-const TOOLKIT_MCP_SEGMENT = "/mcp/toolkits/";
 
 const parseRoles = (role: string | null | undefined): ReadonlyArray<string> =>
   (role ?? "user")
@@ -91,25 +99,25 @@ const originalOrgScopedPathFor = (request: Request): string | null => {
   return header ? mcpResourcePathFromOriginalPath(header) : null;
 };
 
-/** The pathname to derive the toolkit slug / resource path from: the
- * org-scoped original when the client dialed org-scoped, else the request's
- * own (already-bare) path. */
-const effectivePathnameFor = (request: Request): string =>
-  originalOrgScopedPathFor(request) ?? new URL(request.url).pathname;
-
-const toolkitSlugFromRequest = (request: Request): string | null => {
-  const pathname = effectivePathnameFor(request);
-  const index = pathname.indexOf(TOOLKIT_MCP_SEGMENT);
-  if (index < 0) return null;
-  const slug = pathname.slice(index + TOOLKIT_MCP_SEGMENT.length).split("/", 1)[0];
-  return slug && slug.length > 0 ? slug : null;
+/**
+ * The scoped MCP resource a bare request names, read off its own path (the
+ * transport path or its metadata doc), or `null` for the default endpoint.
+ * The grammar is the shared one from host-mcp.
+ */
+const scopedResourceFor = (request: Request): McpResource | null => {
+  const pathname = new URL(request.url).pathname;
+  const bare = pathname.startsWith(PROTECTED_RESOURCE_METADATA_PATH)
+    ? pathname.slice(PROTECTED_RESOURCE_METADATA_PATH.length)
+    : pathname;
+  const resource = mcpResourceFromPathname(bare);
+  return resource === null || resource.kind === "default" ? null : resource;
 };
 
 const mcpResourcePathFor = (request: Request): string => {
   const orgScoped = originalOrgScopedPathFor(request);
   if (orgScoped) return orgScoped;
-  const toolkitSlug = toolkitSlugFromRequest(request);
-  return toolkitSlug ? `/mcp/toolkits/${toolkitSlug}` : "/mcp";
+  const scoped = scopedResourceFor(request);
+  return scoped ? mcpResourcePath(scoped) : "/mcp";
 };
 
 /**
@@ -123,9 +131,9 @@ const resourceMetadataUrlFor = (baseURL: string | undefined, request: Request): 
   const origin = baseURL && baseURL.length > 0 ? baseURL : new URL(request.url).origin;
   const orgScoped = originalOrgScopedPathFor(request);
   if (orgScoped) return `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${orgScoped}`;
-  const toolkitSlug = toolkitSlugFromRequest(request);
-  return toolkitSlug
-    ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/${toolkitSlug}`
+  const scoped = scopedResourceFor(request);
+  return scoped
+    ? `${origin}${PROTECTED_RESOURCE_METADATA_PATH}${mcpResourcePath(scoped)}`
     : `${origin}${PROTECTED_RESOURCE_METADATA_PATH}`;
 };
 
@@ -134,13 +142,15 @@ const resourceUrlFor = (baseURL: string | undefined, request: Request): string =
   return `${origin}${mcpResourcePathFor(request)}`;
 };
 
-const toolkitProtectedResourceMetadata = (
+// Better Auth's metadata plugin always advertises the bare `/mcp` resource;
+// a scoped endpoint must advertise ITS OWN path or the client's RFC 9728
+// same-origin check rejects the doc.
+const scopedProtectedResourceMetadata = (
   request: Request,
   response: Response,
   baseURL: string | undefined,
 ): Effect.Effect<Response> => {
-  const toolkitSlug = toolkitSlugFromRequest(request);
-  if (!toolkitSlug) return Effect.succeed(response);
+  if (scopedResourceFor(request) === null) return Effect.succeed(response);
   return Effect.promise(async () => {
     const body = (await response.json()) as Record<string, unknown>;
     const headers = new Headers(response.headers);
@@ -173,25 +183,16 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
       const challengeFor = (request: Request): string =>
         `Bearer resource_metadata="${resourceMetadataUrl(request)}"`;
 
+      const protectedResourceMetadata = (request: Request) =>
+        Effect.promise(() => prMetadata(request)).pipe(
+          Effect.flatMap((response) => scopedProtectedResourceMetadata(request, response, baseURL)),
+        );
       const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
-        {
-          path: PROTECTED_RESOURCE_METADATA_PATH,
-          handler: (request) =>
-            Effect.promise(() => prMetadata(request)).pipe(
-              Effect.flatMap((response) =>
-                toolkitProtectedResourceMetadata(request, response, baseURL),
-              ),
-            ),
-        },
-        {
-          path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
-          handler: (request) =>
-            Effect.promise(() => prMetadata(request)).pipe(
-              Effect.flatMap((response) =>
-                toolkitProtectedResourceMetadata(request, response, baseURL),
-              ),
-            ),
-        },
+        { path: PROTECTED_RESOURCE_METADATA_PATH, handler: protectedResourceMetadata },
+        ...SCOPED_PROTECTED_RESOURCE_METADATA_PATHS.map((path) => ({
+          path,
+          handler: protectedResourceMetadata,
+        })),
         {
           path: AUTHORIZATION_SERVER_METADATA_PATH,
           handler: (request) => Effect.promise(() => asMetadata(request)),

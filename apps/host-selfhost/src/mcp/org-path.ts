@@ -13,9 +13,24 @@
 // so the protected-resource metadata (./auth.ts) can echo the org-scoped form
 // back to a client that dialed org-scoped (RFC 9728 same-origin check).
 //
+// The MCP resource grammar (`/mcp`, `/mcp/toolkits/<slug>`, …) is the shared
+// one from `@executor-js/host-mcp`; this module only adds the org segment.
+//
 // Pure + Effect-free on purpose: the vite config imports it too.
 
+import { mcpResourceFromSegments, mcpResourcePath } from "@executor-js/host-mcp";
+
 const PRM_PREFIX = "/.well-known/oauth-protected-resource";
+
+const segmentsOf = (pathname: string): readonly string[] =>
+  pathname.split("/").filter((segment) => segment.length > 0);
+
+// `<seg>/<mcp resource path>` -> the bare resource path, or null.
+const stripOneSegment = (segments: readonly string[]): string | null => {
+  if (segments.length < 2) return null;
+  const resource = mcpResourceFromSegments(segments.slice(1));
+  return resource ? mcpResourcePath(resource) : null;
+};
 
 /**
  * Given a request pathname, return the bare MCP pathname it should route to
@@ -31,22 +46,12 @@ const PRM_PREFIX = "/.well-known/oauth-protected-resource";
  */
 export const stripMcpOrgSegment = (pathname: string): string | null => {
   if (pathname.startsWith(`${PRM_PREFIX}/`)) {
-    const rest = pathname
-      .slice(PRM_PREFIX.length + 1)
-      .split("/")
-      .filter((segment) => segment.length > 0);
-    if (rest.length === 2 && rest[1] === "mcp") return PRM_PREFIX;
-    if (rest.length === 4 && rest[1] === "mcp" && rest[2] === "toolkits") {
-      return `${PRM_PREFIX}/mcp/toolkits/${rest[3]}`;
-    }
-    return null;
+    const bare = stripOneSegment(segmentsOf(pathname.slice(PRM_PREFIX.length)));
+    if (bare === null) return null;
+    // The default doc lives at the bare prefix; scoped docs mirror their path.
+    return bare === "/mcp" ? PRM_PREFIX : `${PRM_PREFIX}${bare}`;
   }
-  const segments = pathname.split("/").filter((segment) => segment.length > 0);
-  if (segments.length === 2 && segments[1] === "mcp") return "/mcp";
-  if (segments.length === 4 && segments[1] === "mcp" && segments[2] === "toolkits") {
-    return `/mcp/toolkits/${segments[3]}`;
-  }
-  return null;
+  return stripOneSegment(segmentsOf(pathname));
 };
 
 /**
@@ -79,9 +84,7 @@ export const isRecognizedMcpOrgPath = (pathname: string): boolean =>
  */
 export const isMcpServingPath = (pathname: string): boolean => {
   const routed = stripMcpOrgSegment(pathname) ?? pathname;
-  if (routed === "/mcp" || routed === "/mcp/") return true;
-  const segments = routed.split("/").filter((segment) => segment.length > 0);
-  return segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits";
+  return mcpResourceFromSegments(segmentsOf(routed)) !== null;
 };
 
 /**

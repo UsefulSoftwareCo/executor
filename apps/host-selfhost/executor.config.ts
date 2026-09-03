@@ -26,14 +26,13 @@ import { resolveSecretKey } from "./src/config";
 // ---------------------------------------------------------------------------
 
 interface SelfHostPluginDeps {
-  readonly activeToolkitSlug?: string;
   /** Accepted for test-harness parity; the Microsoft Graph URL override moved
    *  into the OpenAPI provider presets, so the factory no longer reads it. */
   readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug }: SelfHostPluginDeps = {}) =>
+  plugins: (_deps: SelfHostPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -43,7 +42,7 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: process.env.EXECUTOR_ALLOW_STDIO_MCP === "true",
       }),
       graphqlHttpPlugin(),
-      toolkitsPlugin({ activeToolkitSlug }),
+      toolkitsPlugin(),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),
     ] as const,

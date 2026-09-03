@@ -155,7 +155,6 @@ import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
   isValidPattern,
-  matchPattern,
   positionForNewPattern,
   resolveEffectivePolicy,
   rowToToolPolicy,
@@ -180,9 +179,8 @@ import type {
   StaticIntegrationDecl,
   StaticToolDecl,
   StorageDeps,
-  ToolPolicyProvider,
-  ToolPolicyProviderRule,
   ToolInvocationCredential,
+  ToolProjectionSource,
 } from "./plugin";
 import {
   pluginStorageId,
@@ -223,6 +221,7 @@ import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome, isToolResult } from "./tool-result";
 import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
+import { resolveProjectedPolicy, type ToolProjection } from "./tool-projection";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
@@ -534,6 +533,17 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     options?: InvokeOptions,
   ) => Effect.Effect<unknown, ExecuteError>;
 
+  /**
+   * A narrowed view of this executor: the same tenant, subject, database,
+   * plugins, and workspace policies, serving only the tools the named
+   * projection exposes (a toolkit slug today). An unknown name yields a view
+   * that exposes nothing. Closing the view releases its plugins but never the
+   * shared database; close the parent for that.
+   */
+  readonly project: (
+    projection: string | ToolProjection,
+  ) => Effect.Effect<Executor<TPlugins>, StorageFailure>;
+
   readonly close: () => Effect.Effect<void, StorageFailure>;
 } & PluginExtensions<TPlugins>;
 
@@ -819,6 +829,14 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * every subject's connection rows, credential item ids included.
    */
   readonly platformView?: boolean;
+  /**
+   * Serve a narrowed view of the catalog (see `./tool-projection`). Applied on
+   * top of the workspace's tool policies on every read and invoke surface.
+   * Hosts do not set this directly; they call `executor.project(name)`, which
+   * resolves the name through the loaded projection source and rebuilds the
+   * view over the same database.
+   */
+  readonly projection?: string | ToolProjection;
   /**
    * Whether this binding may CONFIGURE workspace-level state: `owner: "org"`
    * rows (shared connections, org tool policies, org OAuth clients) and the
@@ -1952,6 +1970,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     });
     const rootDbUntyped = "db" in dbInput ? dbInput.db : dbInput;
     const closeDb = "db" in dbInput ? dbInput.close : undefined;
+
+    // A projected view rebuilds this executor over the SAME open handle: same
+    // plugin factories, same tenant/subject, one extra `projection` binding.
+    // The view is handed the bare `db` (never the `{ db, close }` wrapper) so
+    // closing it cannot close the parent's database.
+    const project = (
+      projection: string | ToolProjection,
+    ): Effect.Effect<Executor<TPlugins>, StorageFailure> =>
+      createExecutor<TPlugins>({ ...config, db: rootDbUntyped, projection });
     // Shared with every other execution stack built over this same handle —
     // see the gate's definition for what that does and does not cover.
     const refreshInFlight = refreshGateFor(rootDbUntyped);
@@ -2003,7 +2030,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Populated once, never mutated after startup.
     const staticTools = new Map<string, StaticTools>();
     const runtimes = new Map<string, PluginRuntime>();
-    let activeToolPolicyProvider: ToolPolicyProvider | null = null;
+    // The plugin-registered source of named projections, when one loaded.
+    let toolProjectionSource: ToolProjectionSource | null = null;
+    // Whether THIS executor view serves a projection. `undefined` is the full
+    // catalog (workspace policy only). A projected view shares every closure
+    // below and differs only in this one binding. A NAMED projection is
+    // re-read from its source on every operation, so an open session follows
+    // edits to the toolkit it serves; an inline projection is constant.
+    const projectionSelector = config.projection;
+    const emptyProjection: ToolProjection = { visible: [], rules: [] };
+    const resolveActiveProjection = (): Effect.Effect<ToolProjection | null, StorageFailure> => {
+      if (projectionSelector === undefined) return Effect.succeed(null);
+      if (typeof projectionSelector !== "string") return Effect.succeed(projectionSelector);
+      // An unknown name exposes nothing rather than everything: the URL named
+      // a capability set, and "no such set" must never widen to the catalog.
+      if (!toolProjectionSource) return Effect.succeed(emptyProjection);
+      return toolProjectionSource
+        .resolve(projectionSelector)
+        .pipe(Effect.map((projection) => projection ?? emptyProjection));
+    };
     // Credential providers keyed by `provider.key`, in registration order.
     const credentialProviders = new Map<string, CredentialProvider>();
     const credentialProviderOrder: string[] = [];
@@ -3161,11 +3206,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           ),
         );
-        // A scoped toolkit must not advertise providers it grants no tools from
+        // A projection must not advertise providers it grants no tools from
         // (mirrors `connectionsList`). Static integrations are system namespaces, not
         // user providers, so they stay; DB-backed integrations are filtered to
-        // those that contribute at least one visible tool under the active policy.
-        if (!activeToolPolicyProvider) return [...staticIntegrationList, ...dbIntegrations];
+        // those that contribute at least one visible tool under the projection.
+        if (projectionSelector === undefined) return [...staticIntegrationList, ...dbIntegrations];
         const visibleTools = yield* toolsList({ includeAnnotations: false });
         const visibleIntegrationSlugs = new Set(
           visibleTools.filter((tool) => !tool.static).map((tool) => String(tool.integration)),
@@ -4651,7 +4696,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
         });
         const connections = rows.map(rowToConnection);
-        if (!activeToolPolicyProvider) return connections;
+        if (projectionSelector === undefined) return connections;
 
         const visibleTools = yield* toolsList({ includeAnnotations: false });
         const visibleConnectionKeys = new Set(
@@ -5281,103 +5326,47 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
-    // Active policy source.
+    // Active policy rule set.
+    //
+    // One snapshot per operation (a single tools/list, tools/call, or
+    // execute): the workspace's `tool_policy` rows, read ONCE, plus the
+    // projection this view serves. Every tool in the operation resolves
+    // against that snapshot, so the list surface never pays a per-tool read.
+    // The projection is applied on top of the workspace answer, never
+    // instead of it — see `./tool-projection`.
     // ------------------------------------------------------------------
 
-    type ActivePolicyRuleSet =
-      | { readonly kind: "global"; readonly rows: readonly ToolPolicyRow[] }
-      | {
-          readonly kind: "provider";
-          readonly provider: ToolPolicyProvider;
-          readonly rules: readonly ToolPolicyProviderRule[] | null;
-        }
-      | {
-          readonly kind: "prepared";
-          readonly resolve: (input: {
-            readonly toolId: string;
-            readonly defaultRequiresApproval?: boolean;
-          }) => EffectivePolicy;
-        };
-
-    const compareProviderPolicyRule = (
-      a: ToolPolicyProviderRule,
-      b: ToolPolicyProviderRule,
-    ): number => {
-      if (a.position < b.position) return -1;
-      if (a.position > b.position) return 1;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    };
-
-    const resolveProviderPolicyFromRules = (
-      toolId: string,
-      rules: readonly ToolPolicyProviderRule[],
-    ): EffectivePolicy => {
-      for (const rule of [...rules].sort(compareProviderPolicyRule)) {
-        if (!matchPattern(rule.pattern, toolId)) continue;
-        return {
-          action: rule.action,
-          source: "user",
-          pattern: rule.pattern,
-          policyId: rule.id,
-        };
-      }
-      // Toolkit-style providers are capability allowlists. No matching rule
-      // means the tool is outside the capability boundary.
-      return {
-        action: "block",
-        source: "user",
-        pattern: "*",
-      };
-    };
+    interface ActivePolicyRuleSet {
+      readonly rows: readonly ToolPolicyRow[];
+      readonly projection: ToolProjection | null;
+    }
 
     const listActivePolicyRuleSet = (): Effect.Effect<ActivePolicyRuleSet, StorageFailure> =>
-      activeToolPolicyProvider
-        ? // Batched per-operation resolver: fetch all policy + connection state
-          // once, then resolve every tool in this operation against that
-          // snapshot. Avoids the per-tool resolve N+1 on the list surface.
-          activeToolPolicyProvider.prepare
-          ? activeToolPolicyProvider.prepare().pipe(
-              Effect.map((resolve) => ({
-                kind: "prepared" as const,
-                resolve,
-              })),
-            )
-          : activeToolPolicyProvider.resolve
-            ? Effect.succeed({
-                kind: "provider" as const,
-                provider: activeToolPolicyProvider,
-                rules: null,
-              })
-            : activeToolPolicyProvider.list().pipe(
-                Effect.map((rules) => ({
-                  kind: "provider" as const,
-                  provider: activeToolPolicyProvider!,
-                  rules,
-                })),
-              )
-        : core
-            .findMany("tool_policy", {})
-            .pipe(Effect.map((rows) => ({ kind: "global" as const, rows })));
+      Effect.all(
+        {
+          rows: core.findMany("tool_policy", {}),
+          projection: resolveActiveProjection(),
+        },
+        { concurrency: 2 },
+      );
 
     const resolvePolicyFromRuleSet = (
       toolId: string,
       ruleSet: ActivePolicyRuleSet,
       defaultRequiresApproval?: boolean,
-    ): Effect.Effect<EffectivePolicy, StorageFailure> =>
-      ruleSet.kind === "prepared"
-        ? Effect.succeed(ruleSet.resolve({ toolId, defaultRequiresApproval }))
-        : ruleSet.kind === "provider"
-          ? ruleSet.provider.resolve
-            ? ruleSet.provider.resolve({ toolId, defaultRequiresApproval })
-            : Effect.succeed(resolveProviderPolicyFromRules(toolId, ruleSet.rules ?? []))
-          : Effect.succeed(
-              resolveEffectivePolicy(
-                toolId,
-                ruleSet.rows,
-                ownerRankForRow,
-                defaultRequiresApproval,
-              ),
-            );
+    ): Effect.Effect<EffectivePolicy, StorageFailure> => {
+      const workspace = resolveEffectivePolicy(
+        toolId,
+        ruleSet.rows,
+        ownerRankForRow,
+        defaultRequiresApproval,
+      );
+      return Effect.succeed(
+        ruleSet.projection
+          ? resolveProjectedPolicy(ruleSet.projection, toolId, workspace, defaultRequiresApproval)
+          : workspace,
+      );
+    };
 
     // ------------------------------------------------------------------
     // Tools (read surface)
@@ -5949,7 +5938,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<EffectivePolicy, StorageFailure> =>
       Effect.gen(function* () {
         const parsed = parseToolAddress(String(address));
-        const policyRows = yield* core.findMany("tool_policy", {});
+        const policyRules = yield* listActivePolicyRuleSet();
         const toolId = parsed
           ? `${parsed.integration}.${parsed.owner}.${parsed.connection}.${parsed.tool}`
           : String(address);
@@ -5970,7 +5959,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             requiresApproval = annotations?.requiresApproval;
           }
         }
-        return resolveEffectivePolicy(toolId, policyRows, ownerRankForRow, requiresApproval);
+        return yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval);
       });
 
     // ------------------------------------------------------------------
@@ -6760,18 +6749,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         afterCommit: (effect: Effect.Effect<void>) => afterCommit(effect),
       };
 
-      if (plugin.toolPolicyProvider) {
-        const rawProvider = plugin.toolPolicyProvider(ctx);
-        const provider = Effect.isEffect(rawProvider) ? yield* rawProvider : rawProvider;
-        if (provider) {
-          if (activeToolPolicyProvider) {
-            return yield* new StorageError({
-              message: "Only one plugin can provide the active tool policy source.",
-              cause: undefined,
-            });
-          }
-          activeToolPolicyProvider = provider;
+      if (plugin.toolProjections) {
+        if (toolProjectionSource) {
+          return yield* new StorageError({
+            message: "Only one plugin can provide tool projections.",
+            cause: undefined,
+          });
         }
+        toolProjectionSource = plugin.toolProjections(ctx);
       }
 
       // Build extension FIRST so it's available as `self` for staticIntegrations.
@@ -7079,6 +7064,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       },
       pendingApprovals,
       execute,
+      project,
       close,
     };
 

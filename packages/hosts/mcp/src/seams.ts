@@ -94,25 +94,100 @@ export const principalOwns = (owner: Principal, principal: Principal): boolean =
 // ---------------------------------------------------------------------------
 // Shared MCP resource identity.
 //
-// The default `/mcp` endpoint and named sub-resources such as
-// `/mcp/toolkits/<slug>` share auth and transport machinery, but a serving
-// session belongs to the exact resource path that minted it. This keeps a
-// leaked/reused `mcp-session-id` from crossing from one exposed capability set
-// into another.
+// Every MCP endpoint is ONE executor seen through a projection. The default
+// `/mcp` serves the whole catalog; the named sub-resources serve a subset of
+// it through the same auth, transport, session store, and policy engine:
+//
+//   /mcp                                -> default   (all tools)
+//   /mcp/toolkits/<slug>                -> toolkit   (a saved toolkit)
+//   /mcp/integrations/<a>[,<b>...]      -> integrations (every tool of those
+//                                           integrations)
+//   /mcp/tools/<integration>.<tool>     -> tool      (one tool id)
+//
+// A serving session belongs to the exact resource that minted it, so a
+// leaked/reused `mcp-session-id` cannot cross from one exposed capability set
+// into another. Both the path grammar and the session key live HERE, once,
+// so no host re-derives them.
 // ---------------------------------------------------------------------------
 
 export type McpResource =
   | { readonly kind: "default" }
-  | { readonly kind: "toolkit"; readonly slug: string };
+  | { readonly kind: "toolkit"; readonly slug: string }
+  | { readonly kind: "integrations"; readonly slugs: readonly string[] }
+  | { readonly kind: "tool"; readonly toolId: string };
 
 export const defaultMcpResource: McpResource = { kind: "default" };
 
 // Tolerates a missing resource (null/undefined): sessions persisted before
-// scoped toolkits existed have no `resource` field, and every such session was
-// minted against the default `/mcp` endpoint, so a missing resource keys to
-// "default". Keeping this guard here means no caller can throw on legacy data.
-export const mcpResourceKey = (resource: McpResource | null | undefined): string =>
-  resource && resource.kind !== "default" ? `toolkit:${resource.slug}` : "default";
+// scoped resources existed have no `resource` field, and every such session
+// was minted against the default `/mcp` endpoint, so a missing resource keys
+// to "default". Keeping this guard here means no caller can throw on legacy
+// data. Sessions persisted with `kind: "toolkit"` keep their old key.
+export const mcpResourceKey = (resource: McpResource | null | undefined): string => {
+  if (!resource || resource.kind === "default") return "default";
+  if (resource.kind === "toolkit") return `toolkit:${resource.slug}`;
+  if (resource.kind === "integrations") return `integrations:${resource.slugs.join(",")}`;
+  return `tool:${resource.toolId}`;
+};
+
+const MCP_SEGMENT = "mcp";
+const TOOLKITS_SEGMENT = "toolkits";
+const INTEGRATIONS_SEGMENT = "integrations";
+const TOOLS_SEGMENT = "tools";
+
+const nonEmpty = (segment: string | undefined): segment is string =>
+  segment !== undefined && segment.length > 0;
+
+const decodeSegment = (segment: string): string | null => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: decodeURIComponent throws on a malformed escape; a bad segment is simply not a resource
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Parse the path segments AFTER any host prefix (org selector, discovery
+ * prefix) into the resource they name, or `null` when they are not an MCP
+ * resource path. `["mcp"]` is the default; `["mcp","toolkits","x"]` a toolkit;
+ * and so on. Trailing empty segments are tolerated (`/mcp/`).
+ */
+export const mcpResourceFromSegments = (segments: readonly string[]): McpResource | null => {
+  const parts = segments.filter(nonEmpty);
+  if (parts[0] !== MCP_SEGMENT) return null;
+  if (parts.length === 1) return defaultMcpResource;
+  if (parts.length !== 3) return null;
+  const value = decodeSegment(parts[2]!);
+  if (value === null || value.length === 0) return null;
+  if (parts[1] === TOOLKITS_SEGMENT) return { kind: "toolkit", slug: value };
+  if (parts[1] === INTEGRATIONS_SEGMENT) {
+    const slugs = value.split(",").filter((slug) => slug.length > 0);
+    return slugs.length > 0 ? { kind: "integrations", slugs } : null;
+  }
+  if (parts[1] === TOOLS_SEGMENT) return { kind: "tool", toolId: value };
+  return null;
+};
+
+/** Parse a bare pathname (`/mcp`, `/mcp/toolkits/<slug>`, …). */
+export const mcpResourceFromPathname = (pathname: string): McpResource | null =>
+  mcpResourceFromSegments(pathname.split("/"));
+
+/**
+ * The bare pathname that names `resource`: the inverse of
+ * {@link mcpResourceFromPathname}. Hosts prefix it with their org selector or
+ * discovery prefix; they never assemble the segments themselves.
+ */
+export const mcpResourcePath = (resource: McpResource): string => {
+  if (resource.kind === "default") return `/${MCP_SEGMENT}`;
+  if (resource.kind === "toolkit") {
+    return `/${MCP_SEGMENT}/${TOOLKITS_SEGMENT}/${encodeURIComponent(resource.slug)}`;
+  }
+  if (resource.kind === "integrations") {
+    return `/${MCP_SEGMENT}/${INTEGRATIONS_SEGMENT}/${resource.slugs.map(encodeURIComponent).join(",")}`;
+  }
+  return `/${MCP_SEGMENT}/${TOOLS_SEGMENT}/${encodeURIComponent(resource.toolId)}`;
+};
 
 // ---------------------------------------------------------------------------
 // AuthOutcome — the result of `McpAuthProvider.authenticate`.

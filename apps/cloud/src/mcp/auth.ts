@@ -12,6 +12,13 @@
 import { env } from "cloudflare:workers";
 import { Context, Effect, Layer, Predicate } from "effect";
 
+import {
+  defaultMcpResource,
+  mcpResourceFromPathname,
+  mcpResourcePath,
+  type McpResource,
+} from "@executor-js/host-mcp";
+
 import { createCachedRemoteJWKSet } from "../auth/jwks-cache";
 import { ApiKeyService } from "../auth/api-keys";
 import { BEARER_PREFIX } from "../auth/bearer";
@@ -50,7 +57,6 @@ const MCP_PATH = "/mcp";
 export const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 export const PROTECTED_RESOURCE_METADATA_URL = `${RESOURCE_ORIGIN}${PROTECTED_RESOURCE_METADATA_PATH}`;
 export const RESOURCE_URL = `${RESOURCE_ORIGIN}${MCP_PATH}`;
-const TOOLKIT_SEGMENT = "/toolkits/";
 
 // ---------------------------------------------------------------------------
 // Org-scoped MCP (the URL pins an org: `/org_xxx/mcp`)
@@ -69,39 +75,39 @@ export const MCP_ORGANIZATION_HEADER = "x-executor-mcp-organization";
 export const mcpOrganizationFromRequest = (request: Request): string | null =>
   request.headers.get(MCP_ORGANIZATION_HEADER);
 
-/** The toolkit slug selected by `/mcp/toolkits/:slug` or its metadata doc. */
-export const toolkitSlugFromRequest = (request: Request): string | null => {
+/**
+ * The MCP resource a request names, read off its (already org-stripped) path.
+ * Both the transport path (`/mcp/toolkits/<slug>`) and its metadata doc
+ * (`/.well-known/oauth-protected-resource/mcp/toolkits/<slug>`) resolve to the
+ * same resource. Defaults to the whole catalog for anything else.
+ */
+export const mcpResourceFromRequest = (request: Request): McpResource => {
   const pathname = new URL(request.url).pathname;
-  const index = pathname.indexOf(TOOLKIT_SEGMENT);
-  if (index < 0) return null;
-  const slug = pathname.slice(index + TOOLKIT_SEGMENT.length).split("/", 1)[0];
-  return slug && slug.length > 0 ? slug : null;
+  const bare = pathname.startsWith(PRM_PREFIX) ? pathname.slice(PRM_PREFIX.length) : pathname;
+  return mcpResourceFromPathname(bare) ?? defaultMcpResource;
 };
 
-const toolkitMcpPath = (toolkitSlug: string | null): string =>
-  toolkitSlug ? `${MCP_PATH}/toolkits/${toolkitSlug}` : MCP_PATH;
+const PRM_PREFIX = "/.well-known/oauth-protected-resource";
 
 /** The MCP resource URL for an org selector (`…/acme/mcp` slug or legacy
  *  `…/org_xxx/mcp` id — echoed verbatim so it matches the URL the client
  *  used), or the bare resource. */
 export const resourceUrlFor = (
   organizationSelector: string | null,
-  toolkitSlug: string | null = null,
+  resource: McpResource = defaultMcpResource,
 ): string =>
   organizationSelector
-    ? `${RESOURCE_ORIGIN}/${organizationSelector}${toolkitMcpPath(toolkitSlug)}`
-    : `${RESOURCE_ORIGIN}${toolkitMcpPath(toolkitSlug)}`;
+    ? `${RESOURCE_ORIGIN}/${organizationSelector}${mcpResourcePath(resource)}`
+    : `${RESOURCE_ORIGIN}${mcpResourcePath(resource)}`;
 
 /** The protected-resource-metadata URL for an org selector, or the bare one. */
 export const protectedResourceMetadataUrlFor = (
   organizationSelector: string | null,
-  toolkitSlug: string | null = null,
-): string => {
-  const toolkitSuffix = toolkitSlug ? `/toolkits/${toolkitSlug}` : "";
-  return organizationSelector
-    ? `${RESOURCE_ORIGIN}/.well-known/oauth-protected-resource/${organizationSelector}/mcp${toolkitSuffix}`
-    : `${PROTECTED_RESOURCE_METADATA_URL}${toolkitSuffix}`;
-};
+  resource: McpResource = defaultMcpResource,
+): string =>
+  organizationSelector
+    ? `${RESOURCE_ORIGIN}${PRM_PREFIX}/${organizationSelector}${mcpResourcePath(resource)}`
+    : `${RESOURCE_ORIGIN}${PRM_PREFIX}${mcpResourcePath(resource)}`;
 
 type McpUnauthorizedReason = "missing_bearer" | "invalid_token";
 
@@ -140,11 +146,11 @@ export const mcpUnauthorized = (
 export const bearerChallengeFor = (
   result: McpUnauthorizedResult,
   organizationId: string | null = null,
-  toolkitSlug: string | null = null,
+  resource: McpResource = defaultMcpResource,
 ): string =>
   bearerChallenge(
     { reason: result.reason, description: result.description },
-    protectedResourceMetadataUrlFor(organizationId, toolkitSlug),
+    protectedResourceMetadataUrlFor(organizationId, resource),
   );
 
 // ---------------------------------------------------------------------------

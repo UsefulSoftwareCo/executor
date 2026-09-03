@@ -1,6 +1,7 @@
 import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 
 import { withExecutionAnalytics } from "@executor-js/analytics";
+import { projectionForMcpResource } from "@executor-js/api/server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
@@ -8,7 +9,7 @@ import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
-import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
+import { disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // byte-identical to the one the API serves.
     const { executor, webBaseUrl } = await getExecutorBundle();
     // Both engines below serve MCP endpoints, so the wrap binds the "mcp"
-    // plane structurally; the toolkit-scoped engine additionally marks
-    // `toolkit` (the slug itself is a user label and never recorded).
+    // plane structurally; a projected engine additionally marks `toolkit`
+    // (the resource's own label is user data and never recorded).
     const engine = withExecutionAnalytics(
       createExecutionEngine({
         executor,
@@ -99,8 +100,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       { plane: "mcp", toolkit: false },
     );
     // The generative-UI surface, shared by every resource this daemon serves.
-    // Each toolkit gets its own executor, so `artifacts` is bound per resource
-    // below rather than hoisted with the rest.
+    // A scoped resource is a projection of the boot executor, so `artifacts`
+    // is bound per resource below rather than hoisted with the rest.
     //
     // Including the create-time smoke render, on the same terms as every other
     // host. This daemon is a dependency of `apps/cli`, whose build does not
@@ -126,7 +127,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         ...appsConfig,
       },
       createConfigForResource: async (resource) => {
-        if (resource.kind === "default") {
+        const projection = projectionForMcpResource(resource);
+        if (projection === undefined) {
           return {
             config: {
               engine,
@@ -136,17 +138,14 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             },
           };
         }
-        // Borrow the running server's DB handle: this process already holds the
-        // data dir's exclusive ownership lock, so opening it a second time here
-        // fails against ourselves. The toolkit executor differs only in its
-        // plugin set, and the borrowed handle stays open when it disposes.
-        const handle = await createExecutorHandle({
-          activeToolkitSlug: resource.slug,
-          borrowedDb: (await getExecutorBundle()).db,
-        });
-        const toolkitEngine = withExecutionAnalytics(
+        // A scoped resource is the boot executor seen through a projection:
+        // same database handle (this process holds the data dir's exclusive
+        // lock, so a second open would contend with ourselves), same plugins,
+        // same workspace policies, narrowed to what the resource exposes.
+        const projected = await Effect.runPromise(executor.project(projection));
+        const projectedEngine = withExecutionAnalytics(
           createExecutionEngine({
-            executor: handle.executor,
+            executor: projected,
             codeExecutor: makeQuickJsExecutor(),
           }),
           localAnalytics,
@@ -154,12 +153,12 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         );
         return {
           config: {
-            engine: toolkitEngine,
-            artifacts: handle.executor.artifacts,
-            connections: handle.executor.connections,
+            engine: projectedEngine,
+            artifacts: projected.artifacts,
+            connections: projected.connections,
             ...appsConfig,
           },
-          close: handle.dispose,
+          close: () => Effect.runPromise(Effect.ignore(projected.close())),
         };
       },
     });

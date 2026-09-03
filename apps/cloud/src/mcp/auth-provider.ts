@@ -48,9 +48,9 @@ import { CoreSharedServices } from "../auth/workos";
 import {
   bearerChallengeFor,
   mcpOrganizationFromRequest,
+  mcpResourceFromRequest,
   protectedResourceMetadataUrlFor,
   PROTECTED_RESOURCE_METADATA_PATH,
-  toolkitSlugFromRequest,
   McpAuth,
   McpAuthLive,
   McpOrganizationAuth,
@@ -66,7 +66,13 @@ import {
 } from "./oauth-metadata";
 
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
-const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;
+// One metadata doc per MCP sub-resource kind; the doc's `resource` mirrors the
+// path the client dialed (RFC 9728 same-origin check).
+const SCOPED_PROTECTED_RESOURCE_METADATA_PATHS = [
+  `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:slug`,
+  `${PROTECTED_RESOURCE_METADATA_PATH}/integrations/:slugs`,
+  `${PROTECTED_RESOURCE_METADATA_PATH}/tools/:toolId`,
+] as const;
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
@@ -125,29 +131,21 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
     const auth = yield* McpAuth;
     const orgAuth = yield* McpOrganizationAuth;
 
+    // The bare paths are the only ones mounted; `prepareMcpOrgScope` rewrites an
+    // org-scoped discovery doc onto them and pins the org in the header we read.
+    const protectedResourceMetadata = (request: Request) =>
+      Effect.succeed(
+        protectedResourceMetadataResponse(
+          mcpOrganizationFromRequest(request),
+          mcpResourceFromRequest(request),
+        ),
+      );
     const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
-      {
-        path: PROTECTED_RESOURCE_METADATA_PATH,
-        // The bare path is the only one mounted; `prepareMcpOrgScope` rewrites an
-        // org-scoped discovery doc onto it and pins the org in the header we read.
-        handler: (request) =>
-          Effect.succeed(
-            protectedResourceMetadataResponse(
-              mcpOrganizationFromRequest(request),
-              toolkitSlugFromRequest(request),
-            ),
-          ),
-      },
-      {
-        path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
-        handler: (request) =>
-          Effect.succeed(
-            protectedResourceMetadataResponse(
-              mcpOrganizationFromRequest(request),
-              toolkitSlugFromRequest(request),
-            ),
-          ),
-      },
+      { path: PROTECTED_RESOURCE_METADATA_PATH, handler: protectedResourceMetadata },
+      ...SCOPED_PROTECTED_RESOURCE_METADATA_PATHS.map((path) => ({
+        path,
+        handler: protectedResourceMetadata,
+      })),
       {
         path: AUTHORIZATION_SERVER_METADATA_PATH,
         handler: () => authorizationServerMetadataResponse,
@@ -157,7 +155,7 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
     const resourceMetadataUrl = (request: Request): string =>
       protectedResourceMetadataUrlFor(
         mcpOrganizationFromRequest(request),
-        toolkitSlugFromRequest(request),
+        mcpResourceFromRequest(request),
       );
 
     /**
@@ -252,7 +250,7 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
             bearerChallengeFor(
               result,
               mcpOrganizationFromRequest(request),
-              toolkitSlugFromRequest(request),
+              mcpResourceFromRequest(request),
             ),
           ),
         ),
