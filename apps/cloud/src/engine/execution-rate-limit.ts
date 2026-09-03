@@ -8,11 +8,13 @@
 // each MCP session lives in its own DO instance, so an in-memory counter
 // would be per-session and trivially bypassed by opening more sessions).
 //
-// Paid organizations are EXEMPT. The cap was sized for free-tier abuse but
-// applied to everyone, and on 2026-08-18 it blocked a paying customer
-// mid-workload — their agent gave up on Executor and routed around it. Paid
-// usage is what the balance gate and metered overage are for; this backstop
-// has no business capping it.
+// Every organization on a plan other than Free is EXEMPT. The cap was sized
+// for free-tier abuse but applied to everyone, and on 2026-08-18 it blocked a
+// paying customer mid-workload — their agent gave up on Executor and routed
+// around it. The first fix exempted only the plans sold today, and on
+// 2026-09-03 that capped an org on a grandfathered plan. Non-free usage is
+// what the balance gate and metered overage are for; this backstop has no
+// business capping it.
 //
 // The exemption is resolved ONLY once the counter reports an org over the cap,
 // so the common path (under the cap) costs the counter increment and nothing

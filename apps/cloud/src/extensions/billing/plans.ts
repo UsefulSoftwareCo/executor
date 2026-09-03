@@ -38,6 +38,31 @@ export const hasPaidOrganizationSubscription = (
   subscriptions: ReadonlyArray<OrganizationLimitSubscriptionSummary>,
 ): boolean => subscriptions.some(isPaidOrganizationSubscription);
 
+// ---------------------------------------------------------------------------
+// Execution rate-limit exemption.
+//
+// The hourly execution backstop exists for FREE-tier abuse, so the only orgs
+// it may cap are those with nothing but the Free plan. This is deliberately
+// NOT `hasPaidOrganizationSubscription`: that set names only the plans sold
+// today, and every other plan an org can legitimately hold — grandfathered
+// (`hobby`, `professional`), pay-as-you-go, or one added later and not yet
+// listed here — fell through to the cap. A paying customer blocked by an
+// abuse backstop is the worse failure, so the exemption is "anything but
+// Free" rather than "one of the plans we remembered to list".
+// ---------------------------------------------------------------------------
+
+export const FREE_AUTUMN_PLAN_ID = "free";
+
+export const hasNonFreeOrganizationSubscription = (
+  subscriptions: ReadonlyArray<OrganizationLimitSubscriptionSummary>,
+): boolean =>
+  subscriptions.some(
+    (subscription) =>
+      subscription.planId != null &&
+      subscription.planId !== FREE_AUTUMN_PLAN_ID &&
+      ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES.has(subscription.status ?? ""),
+  );
+
 export const shouldApplyFreeOrganizationLimit = (
   activeMemberships: ReadonlyArray<OrganizationLimitMembershipSummary>,
   paidOrganizationIds: ReadonlySet<string>,
