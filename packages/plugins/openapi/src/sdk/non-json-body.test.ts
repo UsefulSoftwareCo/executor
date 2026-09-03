@@ -447,7 +447,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
-    it.effect("application/vnd.api+json: object body keeps the declared content type", () =>
+  it.effect("application/vnd.api+json: object body keeps the declared content type", () =>
     Effect.gen(function* () {
       const { server, captured } = yield* startEchoServer({
         name: "createNote",
@@ -473,7 +473,7 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       });
 
       expect(captured.contentType).toBe("application/vnd.api+json");
-      expect(JSON.parse(captured.body.toString("utf8"))).toEqual({ name: "Acme" });
+      expect(decodeJsonNameBody(captured.body.toString("utf8"))).toEqual({ name: "Acme" });
     }),
   );
 

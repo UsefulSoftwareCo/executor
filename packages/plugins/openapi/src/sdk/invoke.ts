@@ -838,8 +838,7 @@ const applyRequestBody = (
   });
 
   if (isJsonContentType(contentType)) {
-    const text =
-      typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue);
+    const text = typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue);
     return sent(HttpClientRequest.bodyText(request, text, contentType));
   }
 
