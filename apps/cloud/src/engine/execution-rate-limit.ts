@@ -47,7 +47,7 @@ export const RATE_LIMIT_WINDOW_MS = 3_600_000;
 // against the largest customer is a losing game, so the number no longer tries
 // to describe them — paid orgs are exempt below, and this now has only
 // free-tier abuse to cover, which is what it was picked for.
-export const EXECUTIONS_PER_ORG_PER_HOUR = 1000;
+export const EXECUTIONS_PER_ORG_PER_HOUR = 10_000;
 // Counter DO slower than this => fail open rather than stall executions.
 const RATE_LIMIT_CHECK_TIMEOUT_MS = 2_000;
 // Exemption lookup slower than this => treat as unresolved.
