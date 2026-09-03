@@ -272,6 +272,7 @@ const makeEngine = (
 const sessionMeta = (input?: Partial<SessionMeta>): SessionMeta => ({
   organizationId: "org_1",
   organizationName: "Test Org",
+  orgRoleModel: "organization",
   userId: "acct_1",
   elicitationMode: "model",
   resource: defaultMcpResource,

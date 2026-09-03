@@ -1,6 +1,8 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import type { Cause } from "effect";
 
+import type { OrgWriteAccess } from "@executor-js/sdk";
+
 // ---------------------------------------------------------------------------
 // Provider-neutral MCP serving seams.
 //
@@ -36,7 +38,7 @@ import type { Cause } from "effect";
 // (provider) and serving (envelope).
 // ---------------------------------------------------------------------------
 
-export const Principal = Schema.Struct({
+const PrincipalFields = {
   accountId: Schema.String,
   organizationId: Schema.String,
   organizationName: Schema.String,
@@ -48,9 +50,42 @@ export const Principal = Schema.Struct({
   name: Schema.NullOr(Schema.String),
   avatarUrl: Schema.NullOr(Schema.String),
   roles: Schema.Array(Schema.String),
-});
+} as const;
+
+export const Principal = Schema.Union([
+  Schema.Struct({
+    ...PrincipalFields,
+    orgRoleModel: Schema.Literal("organization"),
+    /** Missing at a legacy boundary fails closed. */
+    orgRole: Schema.optional(Schema.Literals(["admin", "member"])),
+  }),
+  Schema.Struct({
+    ...PrincipalFields,
+    orgRoleModel: Schema.Literal("none"),
+    /** Reject contradictory role-bearing values on a role-less host. */
+    orgRole: Schema.optional(Schema.Never),
+  }),
+]);
 
 export type Principal = Schema.Schema.Type<typeof Principal>;
+
+/** Internal header overwritten by a trusted session store before MCP dispatch. */
+export const MCP_ORG_WRITE_ACCESS_HEADER = "x-executor-org-write-access";
+
+/** Derive the effective workspace-write access for one authenticated request. */
+export const orgWriteAccessForPrincipal = (principal: Principal): OrgWriteAccess =>
+  principal.orgRoleModel === "none" || principal.orgRole === "admin" ? "allowed" : "denied";
+
+/**
+ * Stamp request-bound workspace-write access for the MCP SDK request handler.
+ * Any client-supplied value is overwritten before the request reaches the
+ * transport.
+ */
+export const withOrgWriteAccess = (request: Request, access: OrgWriteAccess): Request => {
+  const headers = new Headers(request.headers);
+  headers.set(MCP_ORG_WRITE_ACCESS_HEADER, access);
+  return new Request(request, { headers });
+};
 
 /** Ownership is keyed on (accountId, organizationId) — a subset of the principal. */
 export const principalOwns = (owner: Principal, principal: Principal): boolean =>

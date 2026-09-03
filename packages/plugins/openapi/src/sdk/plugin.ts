@@ -18,6 +18,7 @@ import {
   type IntegrationConfig,
   type IntegrationPreset,
   type IntegrationRecord,
+  type OrgWriteDeniedError,
   type PluginCtx,
   type StorageFailure,
 } from "@executor-js/sdk/core";
@@ -50,7 +51,11 @@ import {
 } from "./spec-format";
 import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
-import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import {
+  ApiKeyAuthTemplate,
+  describeApiKeyAuthMethod,
+  describeNoneAuthMethod,
+} from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
@@ -170,6 +175,7 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationAlreadyExistsError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
   /** Re-resolve the integration's spec (from its stored source URL, or the
@@ -185,9 +191,10 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationNotFoundError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
-  readonly removeSpec: (slug: string) => Effect.Effect<void, StorageFailure>;
+  readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
   /** Read the integration's full opaque config, including its
    *  `authenticationTemplate`. Returns null when the integration is absent. */
@@ -199,7 +206,7 @@ export interface OpenApiPluginExtension {
   readonly configure: (
     slug: string,
     input: OpenApiConfigureInput,
-  ) => Effect.Effect<readonly Authentication[], StorageFailure>;
+  ) => Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,26 +607,26 @@ export const describeOpenApiAuthMethods = (
 ): readonly AuthMethodDescriptor[] => {
   const config = decodeOpenApiIntegrationConfig(record.config);
   if (!config) return [];
-  return (config.authenticationTemplate ?? []).map(
-    (template: Authentication): AuthMethodDescriptor => {
-      if (template.kind === "oauth2") {
-        return {
-          id: String(template.slug),
-          label: template.label ?? "OAuth2",
-          kind: "oauth",
-          template: String(template.slug),
-          oauth: {
-            authorizationUrl: template.authorizationUrl,
-            tokenUrl: template.tokenUrl,
-            resource: template.resource ?? null,
-            scopes: template.scopes,
-            supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
-          },
-        };
-      }
-      return describeApiKeyAuthMethod(template);
-    },
-  );
+  const templates = config.authenticationTemplate ?? [];
+  if (templates.length === 0) return [describeNoneAuthMethod("none")];
+  return templates.map((template: Authentication): AuthMethodDescriptor => {
+    if (template.kind === "oauth2") {
+      return {
+        id: String(template.slug),
+        label: template.label ?? "OAuth2",
+        kind: "oauth",
+        template: String(template.slug),
+        oauth: {
+          authorizationUrl: template.authorizationUrl,
+          tokenUrl: template.tokenUrl,
+          resource: template.resource ?? null,
+          scopes: template.scopes,
+          supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+        },
+      };
+    }
+    return describeApiKeyAuthMethod(template);
+  });
 };
 
 export const describeOpenApiIntegrationDisplay = (
@@ -800,6 +807,7 @@ export const openApiPlugin = definePlugin<
 
       const addSpec = (config: OpenApiSpecConfig) =>
         Effect.gen(function* () {
+          yield* ctx.core.integrations.authorizeWrite();
           // Resolve URL → text and parse BEFORE opening a transaction. Holding
           // `BEGIN` across a network fetch is the Hyperdrive deadlock path.
           const resolved = yield* resolveSpecForInput(config, httpClientLayer);
@@ -918,6 +926,7 @@ export const openApiPlugin = definePlugin<
           // content-addressed (re-puts are idempotent) and an aborted register
           // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
+          yield* ctx.core.integrations.authorizeWrite();
           yield* ctx.storage.putSpec(specHash, resolved.specText);
           if (sourceSpecHash) {
             yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
@@ -987,6 +996,7 @@ export const openApiPlugin = definePlugin<
           if (!record || !current) {
             return yield* new IntegrationNotFoundError({ slug });
           }
+          yield* ctx.core.integrations.authorizeWrite();
 
           // The new spec source: explicit input wins; otherwise re-fetch from
           // where the spec originally came from. A pasted-blob integration has
@@ -1041,6 +1051,7 @@ export const openApiPlugin = definePlugin<
           const specHash = yield* sha256Hex(resolved.specText);
           const sourceSpecHash =
             nextOverrides.length > 0 ? yield* sha256Hex(resolved.sourceSpecText) : undefined;
+          yield* ctx.core.integrations.authorizeWrite();
           yield* ctx.storage.putSpec(specHash, resolved.specText);
           if (sourceSpecHash) {
             yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
@@ -1194,7 +1205,7 @@ export const openApiPlugin = definePlugin<
         configure: (
           slug: string,
           input: OpenApiConfigureInput,
-        ): Effect.Effect<readonly Authentication[], StorageFailure> =>
+        ): Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure> =>
           ctx.transaction(
             Effect.gen(function* () {
               const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));

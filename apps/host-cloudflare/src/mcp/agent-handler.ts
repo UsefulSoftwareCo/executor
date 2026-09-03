@@ -3,6 +3,8 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  orgWriteAccessForPrincipal,
+  withOrgWriteAccess,
   type AuthOutcome,
   type McpResource,
   type Principal,
@@ -15,6 +17,7 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { sessionOrgRoleMetadata } from "@executor-js/cloudflare/mcp/role-metadata";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
@@ -80,6 +83,7 @@ const propsForPrincipal = (
     return {
       session: {
         organizationId: principal.organizationId,
+        ...sessionOrgRoleMetadata(principal),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
@@ -149,13 +153,16 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
 
     const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(
-      request,
-      {
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      },
-      resource,
+    const forwarded = withOrgWriteAccess(
+      withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      ),
+      orgWriteAccessForPrincipal(outcome.principal),
     );
     const target = resource.kind === "toolkit" ? serveToolkit : serveDefault;
     return target.fetch(forwarded, env, ctx);

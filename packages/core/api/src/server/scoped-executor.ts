@@ -253,7 +253,13 @@ export const makeScopedExecutor = <
   // `EngineStackIdentity` (the engine decorator still wants it); not part of the
   // v2 executor binding, which is `{ tenant, subject }` only.
   _organizationName: string,
-  options?: { readonly plugins?: PluginsProviderContext },
+  options?: {
+    readonly plugins?: PluginsProviderContext;
+    /** Workspace-settings permission for this binding (see
+     *  `ExecutorConfig.orgWrites`). Hosts derive it from the acting member's
+     *  role; omitted -> allowed (hosts with no role model). */
+    readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+  },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
     const { db, blobs } = yield* DbProvider.asEffect();
@@ -316,6 +322,7 @@ export const makeScopedExecutor = <
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
       ...(config.waitUntil !== undefined ? { waitUntil: config.waitUntil } : {}),
       onElicitation: "accept-all",
+      ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,

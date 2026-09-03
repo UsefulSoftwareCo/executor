@@ -16,6 +16,10 @@
       "types": "./src/mcp/agent-session-durable-object.ts",
       "default": "./src/mcp/agent-session-durable-object.ts"
     },
+    "./mcp/role-metadata": {
+      "types": "./src/mcp/role-metadata.ts",
+      "default": "./src/mcp/role-metadata.ts"
+    },
     "./mcp/durable-object-errors": {
       "types": "./src/mcp/durable-object-errors.ts",
       "default": "./src/mcp/durable-object-errors.ts"

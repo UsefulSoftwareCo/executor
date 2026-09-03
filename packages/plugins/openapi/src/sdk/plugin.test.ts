@@ -24,6 +24,7 @@ import {
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   ToolAddress,
+  makeInMemoryBlobStore,
 } from "@executor-js/sdk";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,6 +55,21 @@ const TOOL_ERROR_TYPESCRIPT =
 
 const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
   [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
+
+const recordingBlobStore = () => {
+  const base = makeInMemoryBlobStore();
+  let writes = 0;
+  return {
+    store: {
+      ...base,
+      put: (namespace: string, key: string, value: string) =>
+        Effect.sync(() => {
+          writes += 1;
+        }).pipe(Effect.andThen(base.put(namespace, key, value))),
+    },
+    writeCount: () => writes,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Define a test API with Effect HttpApi
@@ -1349,6 +1365,33 @@ paths:
         expect(connections.map((c) => String(c.name))).toEqual(["main"]);
       }),
     ),
+  );
+
+  it.effect("denies member updateSpec before writing an org blob", () =>
+    Effect.gen(function* () {
+      const blobs = recordingBlobStore();
+      const config = makeTestConfig({ plugins: testPlugins() });
+      const admin = yield* createExecutor({ ...config, blobs: blobs.store });
+      yield* admin.openapi.addSpec({
+        spec: { kind: "blob", value: testApiSpecText() },
+        slug: "guarded-update",
+      });
+      const writesBeforeDeniedUpdate = blobs.writeCount();
+      const member = yield* createExecutor({
+        ...config,
+        blobs: blobs.store,
+        orgWrites: "denied",
+      });
+
+      const error = yield* member.openapi
+        .updateSpec("guarded-update", {
+          spec: { kind: "blob", value: testApiSpecText() },
+        })
+        .pipe(Effect.flip);
+
+      expect(Predicate.isTagged(error, "OrgWriteDeniedError")).toBe(true);
+      expect(blobs.writeCount()).toBe(writesBeforeDeniedUpdate);
+    }),
   );
 
   it.effect("updateSpec accepts new inline content for blob-sourced integrations", () =>

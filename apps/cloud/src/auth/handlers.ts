@@ -120,6 +120,7 @@ const requireSelectedOrganization = Effect.gen(function* () {
   return {
     ...session,
     organizationId: org.id,
+    memberRole: org.memberRole,
   };
 });
 
@@ -698,6 +699,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               {
                 accountId: owner.accountId,
                 organizationId: owner.organizationId,
+                orgRole: owner.memberRole,
               },
               {
                 action: payload.action,

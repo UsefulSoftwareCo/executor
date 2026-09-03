@@ -4,6 +4,7 @@ import type { McpResource } from "@executor-js/host-mcp";
 import type {
   IncomingTraceHeaders,
   McpApprovalOwner,
+  McpApprovalPrincipal,
   McpSessionApprovalResult,
   McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
@@ -28,7 +29,7 @@ export interface McpSessionStub {
   ) => Promise<McpSessionApprovalResult>;
   readonly resumeExecutionForApproval: (
     executionId: string,
-    identity: McpApprovalOwner,
+    identity: McpApprovalPrincipal,
     response: ResumeResponse,
     incoming?: IncomingTraceHeaders,
   ) => Promise<McpSessionResumeApprovalResult>;

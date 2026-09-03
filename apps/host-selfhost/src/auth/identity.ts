@@ -2,7 +2,8 @@ import { Effect, Layer } from "effect";
 
 import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
 
-import { BetterAuth } from "./better-auth";
+import { isPrivileged } from "../admin/require-admin";
+import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 
 // ---------------------------------------------------------------------------
 // The self-host identity seam — the production implementation of the shared
@@ -27,6 +28,28 @@ const bearerToken = (headers: Headers): string | undefined => {
     : undefined;
 };
 
+/**
+ * Resolve workspace-write authority from the caller's current membership in
+ * the self-host instance organization. Both ordinary API/MCP requests and the
+ * browser-decision adapter use this exact lookup so a role change takes effect
+ * at the mutation decision, without trusting the global Better Auth user role.
+ * Lookup failures fail closed to member authority.
+ */
+export const resolveSelfHostOrgRole = (
+  betterAuth: BetterAuthHandle,
+  headers: Headers | Record<string, string>,
+  organizationId: string,
+): Effect.Effect<"admin" | "member"> =>
+  Effect.tryPromise(() =>
+    betterAuth.auth.api.getActiveMemberRole({
+      headers,
+      query: { organizationId },
+    }),
+  ).pipe(
+    Effect.orElseSucceed(() => null),
+    Effect.map((membership) => (membership && isPrivileged(membership.role) ? "admin" : "member")),
+  );
+
 // ---------------------------------------------------------------------------
 // The production IdentityProvider: resolve a request to a Better Auth session
 // and map it to a neutral Principal. Three credential shapes resolve here:
@@ -42,20 +65,26 @@ const bearerToken = (headers: Headers): string | undefined => {
 export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, BetterAuth> =
   Layer.effect(IdentityProvider)(
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
+      const betterAuth = yield* BetterAuth;
+      const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
             let resolved = yield* Effect.promise(() =>
               auth.api.getSession({ headers: request.headers }),
             );
+            // The credential shape that resolved the session — the SAME headers
+            // are what the membership-role lookup below must present.
+            let sessionHeaders: Headers | Record<string, string> = request.headers;
             if (!resolved) {
               const token = bearerToken(request.headers);
               if (token) {
+                const apiKeyHeaders = { "x-api-key": token };
                 resolved = yield* Effect.tryPromise({
-                  try: () => auth.api.getSession({ headers: { "x-api-key": token } }),
+                  try: () => auth.api.getSession({ headers: apiKeyHeaders }),
                   catch: () => "api-key session lookup failed",
                 }).pipe(Effect.orElseSucceed(() => null));
+                sessionHeaders = apiKeyHeaders;
               }
             }
             // No session resolved from any credential shape -> unauthenticated.
@@ -66,6 +95,16 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // session hook; API-key-minted sessions carry no active org, so we
             // default to the seeded org rather than rejecting with NoOrganization.
             const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
+            // The workspace role, resolved against the INSTANCE org exactly as
+            // the admin gate does (require-admin.ts): the explicit
+            // `organizationId` query keeps a caller-controlled active org from
+            // answering for an org they own elsewhere. FAIL CLOSED to "member"
+            // — an infra fault demotes rather than escalates.
+            const orgRole = yield* resolveSelfHostOrgRole(
+              betterAuth,
+              sessionHeaders,
+              resolvedOrganizationId,
+            );
             return {
               kind: "member" as const,
               accountId: resolved.user.id,
@@ -79,6 +118,8 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                 .split(",")
                 .map((role) => role.trim())
                 .filter((role) => role.length > 0),
+              orgRoleModel: "organization",
+              orgRole,
             };
           }),
       });

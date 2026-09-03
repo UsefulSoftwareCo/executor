@@ -23,6 +23,7 @@ import {
   IntegrationSlug,
   InternalError,
   InvalidConnectionInputError,
+  OrgWriteDeniedError,
   OAuthClientSlug,
   Owner,
   ProviderItemId,
@@ -200,6 +201,7 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
         ConnectionAlreadyExists,
         CredentialProviderNotRegistered,
         InvalidConnectionInput,
+        OrgWriteDeniedError,
       ],
     }),
   )
@@ -215,21 +217,21 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
       params: ConnectionParams,
       payload: UpdateConnectionPayload,
       success: ConnectionResponse,
-      error: [InternalError, ConnectionNotFound],
+      error: [InternalError, ConnectionNotFound, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/connections/:owner/:integration/:name", {
       params: ConnectionParams,
       success: Schema.Struct({ removed: Schema.Boolean }),
-      error: [InternalError, ConnectionNotFound],
+      error: [InternalError, ConnectionNotFound, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("refresh", "/connections/:owner/:integration/:name/refresh", {
       params: ConnectionParams,
       success: Schema.Array(ToolResponse),
-      error: [InternalError, ConnectionNotFound, IntegrationNotFound],
+      error: [InternalError, ConnectionNotFound, IntegrationNotFound, OrgWriteDeniedError],
     }),
   )
   // Run the integration's declared health check against a SAVED connection: is

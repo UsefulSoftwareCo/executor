@@ -291,6 +291,8 @@ const stackProbePrincipal: Principal = {
   name: "Request Scope",
   avatarUrl: null,
   roles: ["admin"],
+  orgRoleModel: "organization",
+  orgRole: "admin",
 };
 
 /**

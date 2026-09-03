@@ -246,6 +246,12 @@ export const makeExecutionStackMiddleware = <
             resolved.accountId,
             resolved.organizationId,
             resolved.organizationName,
+            {
+              orgWrites:
+                resolved.orgRoleModel === "none" || resolved.orgRole === "admin"
+                  ? "allowed"
+                  : "denied",
+            },
           ).pipe(
             Effect.provide(options.stackLayer, { local: true }),
             Effect.provideService(RequestWebOrigin, {
