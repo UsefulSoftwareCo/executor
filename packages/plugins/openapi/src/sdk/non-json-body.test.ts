@@ -447,6 +447,36 @@ describe("OpenAPI non-JSON request body dispatch", () => {
     }),
   );
 
+    it.effect("application/vnd.api+json: object body keeps the declared content type", () =>
+    Effect.gen(function* () {
+      const { server, captured } = yield* startEchoServer({
+        name: "createNote",
+        path: "/notes",
+        payload: JsonNameObject,
+        transformSpec: replaceRequestBodyContent("/notes", "post", {
+          "application/vnd.api+json": {
+            schema: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+              },
+            },
+          },
+        }),
+      });
+
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "notes-jsonapi" });
+
+      yield* executor.execute(conn.address("body.createNote"), {
+        body: { name: "Acme" },
+      });
+
+      expect(captured.contentType).toBe("application/vnd.api+json");
+      expect(JSON.parse(captured.body.toString("utf8"))).toEqual({ name: "Acme" });
+    }),
+  );
+
   it.effect("multipart/form-data: only encoder-supported file shapes are advertised", () =>
     Effect.gen(function* () {
       const { server } = yield* startEchoServer({
