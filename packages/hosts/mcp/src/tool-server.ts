@@ -900,6 +900,8 @@ const startMarker = (name: string, attributes: Record<string, unknown>): Effect.
 // user as an inline widget when the client renders MCP Apps, and as a link into
 // the web app when it doesn't. Both carry `artifactId`, because either way the
 // artifact was saved and can be reopened later.
+// `show-artifact` returns source on both channels; create/edit only confirm
+// saves.
 
 const renderRejectedResult = (reason: string): McpToolResult => ({
   content: [{ type: "text", text: `create-artifact rejected: ${reason}` }],
@@ -982,6 +984,24 @@ const bindingUnresolvedResult = (input: {
   },
   isError: true,
 });
+
+/** Format the stored source for the text result channel. */
+const artifactSourceText = (code: string): string => `Source:\n\`\`\`tsx\n${code}\n\`\`\``;
+
+/** Add source to both MCP result channels. */
+const withArtifactSource = (result: McpToolResult, code: string): McpToolResult => {
+  const source = artifactSourceText(code);
+  const content = result.content.map((block, index) =>
+    index === 0 && block.type === "text"
+      ? { type: "text" as const, text: `${block.text}\n\n${source}` }
+      : block,
+  );
+  return {
+    ...result,
+    content,
+    structuredContent: { ...result.structuredContent, code },
+  };
+};
 
 const renderedInAppResult = (input: {
   readonly code: string;
@@ -2042,11 +2062,14 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           .pipe(Effect.catchCause(() => Effect.succeed(null)));
         if (!artifact) return artifactNotFoundResult(id);
         yield* notifyArtifactUsage("viewed");
-        return deliverArtifact({
-          code: artifact.code,
-          artifactId: artifact.id,
-          title: artifact.title,
-        });
+        return withArtifactSource(
+          deliverArtifact({
+            code: artifact.code,
+            artifactId: artifact.id,
+            title: artifact.title,
+          }),
+          artifact.code,
+        );
       }).pipe(
         Effect.withSpan("mcp.host.tool.show_artifact", {
           attributes: { "mcp.tool.name": "show-artifact", "mcp.artifact.id": id },
@@ -2245,7 +2268,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             description: [
               "Re-render a saved UI artifact by id.",
               "Use `list-artifacts` first to find the id whose title or description matches what the user asked for.",
-              "Clients that cannot display MCP apps receive a link to the artifact instead.",
+              "Returns the artifact's current source. Clients that cannot display MCP apps also receive a link to the artifact; pass it to the user.",
             ].join("\n"),
             inputSchema: {
               id: z.string().trim().min(1).describe("The artifact id from `list-artifacts`."),
