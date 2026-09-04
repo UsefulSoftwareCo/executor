@@ -1393,14 +1393,20 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       return { existingSlug: null, registrationSlug: slug };
     });
 
-  const registerDynamicClient = (
+    const registerDynamicClient = (
     input: RegisterDynamicClientInput,
   ): Effect.Effect<
     OAuthClientSlug,
     OAuthRegisterDynamicError | OrgWriteDeniedError | StorageFailure
   > =>
     Effect.gen(function* () {
-      yield* deps.guardOrgWrite(input.owner);
+      if (input.owner === "user" && deps.subject === "local") {
+        return yield* new StorageError({
+          message:
+            'User-owned OAuth clients are not supported on single-workspace hosts. Use owner "org" instead.',
+          cause: undefined,
+        });
+      }
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
       // Resolved before the reuse decision: a persisted client registered with
       // a DIFFERENT callback must not be reused (strict servers 400 the

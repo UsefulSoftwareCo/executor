@@ -263,6 +263,25 @@ describe("oauth.start / oauth.complete", () => {
         }),
       ),
   );
+  it.effect("createClient rejects owner user when subject is local", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins, subject: "local" }),
+      );
+      const error = yield* Effect.flip(
+        executor.oauth.createClient({
+          owner: "user",
+          slug: "personal",
+          authorizationUrl: "https://example.com/authorize",
+          tokenUrl: "https://example.com/token",
+          grant: "authorization_code",
+          clientId: "id",
+          clientSecret: "secret",
+        }),
+      );
+      expect(String(error)).toContain("User-owned OAuth clients are not supported");
+    }),
+  );
 
   it.effect("persists HTTP Basic client auth for code exchange and refresh", () =>
     Effect.scoped(
