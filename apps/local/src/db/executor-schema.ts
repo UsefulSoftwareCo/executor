@@ -40,6 +40,7 @@ export const connection = sqliteTable(
     credential_write: text("credential_write"),
     identity_label: text("identity_label"),
     tools_manifest: text("tools_manifest"),
+    tools_rebuild: text("tools_rebuild"),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),

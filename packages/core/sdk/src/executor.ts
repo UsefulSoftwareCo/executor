@@ -3522,11 +3522,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? {
                 tools_synced_at: Date.now(),
                 tools_manifest: manifest,
+                tools_rebuild: null,
                 last_health: null,
                 updated_at: new Date(),
               }
-            : { tools_synced_at: Date.now(), tools_manifest: manifest };
+            : { tools_synced_at: Date.now(), tools_manifest: manifest, tools_rebuild: null };
         };
+        // This build's identity: stamped on every row it writes (`generation`)
+        // and claimed on the connection as the rebuild token. One id for both
+        // so a manifest names exactly the build whose rows it counts.
+        const buildId = crypto.randomUUID();
         // Every exit stamps the sync time — including the cleanup paths that
         // produce zero tools — so the stale-catalog check (`config_revised_at`
         // vs `tools_synced_at`) doesn't re-attempt this connection per read.
@@ -3535,22 +3540,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // statement of a rebuild and carries the catalog manifest, so on a
         // backend that commits statement by statement a reader can tell a
         // finished build from one still landing (see `tools.describeAll`).
+        // The final statement of a rebuild. Conditioned on this build still
+        // OWNING the connection (`tools_rebuild` is still its id): a competing
+        // build in another isolate that claimed after us has replaced or will
+        // replace our rows, so our manifest must not land — it would describe
+        // rows that are no longer there. The loser writes nothing; the
+        // connection stays stale-marked and the winner's stamp (or, if the
+        // winner dies, the next stale scan) settles it.
         const stampSynced = (row: ConnectionRow | null, manifest: CatalogManifest) =>
           core.updateMany("connection", {
-            where: connectionWhere,
+            where: (b: AnyCb) => b.and(connectionWhere(b), b("tools_rebuild", "=", buildId)),
             set: syncedSet(row, manifest),
           });
-        // The FIRST statement of every replacement: clear the sync stamp while
-        // keeping the previous manifest. On a backend that commits statement
-        // by statement (D1), a rebuild that dies after its deletes but before
-        // `stampSynced` leaves rows that no longer match the old manifest —
-        // refused by `tools.describeAll` — and, because the stamp is already
-        // null, the next stale-catalog scan rebuilds it instead of leaving it
-        // refused until someone refreshes by hand. Interactive backends roll
-        // the whole transaction back, so there this is a no-op.
+        // The FIRST statement of every replacement: claim the rebuild token
+        // and clear the sync stamp, keeping the previous manifest. On a
+        // backend that commits statement by statement (D1), a rebuild that
+        // dies after its deletes but before `stampSynced` leaves rows that no
+        // longer match the old manifest — refused by `tools.describeAll` —
+        // and, because the stamp is already null, the next stale-catalog scan
+        // rebuilds it instead of leaving it refused until someone refreshes by
+        // hand. Interactive backends roll the whole transaction back, so
+        // there this is a no-op.
         const markRebuilding = core.updateMany("connection", {
           where: connectionWhere,
-          set: { tools_synced_at: null },
+          set: { tools_synced_at: null, tools_rebuild: buildId },
         });
         // A failing sync must not bury a recorded dead grant's `expired`
         // verdict: this sync's own credential resolution is what discovers
@@ -3588,6 +3601,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                           fresh.tools_synced_at == null
                             ? b.isNull("tools_synced_at")
                             : b("tools_synced_at", "=", fresh.tools_synced_at),
+                          // Never re-stamp a connection another build has
+                          // claimed: that would hide its in-flight (or dead)
+                          // rebuild from the stale scan. This path writes no
+                          // rows, so it has no claim of its own to check.
+                          b.isNull("tools_rebuild"),
                         ),
                       set:
                         oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
@@ -3697,10 +3715,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         const now = new Date();
-        // One id per build, on every row it writes: how a reader joining tools
-        // to definitions proves both came from this build (see
+        // Every row this build writes carries its id: how a reader joining
+        // tools to definitions proves both came from this build (see
         // `tools.describeAll`). Opaque and collision-free, unlike `now`.
-        const generation = crypto.randomUUID();
+        const generation = buildId;
         const toolRows = result.tools.map((tool: ToolDef) => ({
           tenant: keys.tenant,
           owner: keys.owner,
@@ -5987,6 +6005,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               : Effect.succeed(snapshot),
           ),
           Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
+          // Recovery backstop. A catalog that is still inconsistent after the
+          // retries is not a rebuild landing mid-read; it is one that landed
+          // WRONG — a build that died, or lost its claim to a competing build
+          // that then died. Nothing else would rescan it (its stamp may be
+          // non-null), so stale-mark every connection in scope before
+          // surfacing: the next read rebuilds instead of refusing forever.
+          Effect.tapError(() =>
+            core
+              .updateMany("connection", {
+                where: (b: AnyCb) =>
+                  b.and(
+                    filter?.integration === undefined
+                      ? true
+                      : b("integration", "=", String(filter.integration)),
+                    filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+                    filter?.connection === undefined
+                      ? true
+                      : b("name", "=", String(filter.connection)),
+                  ),
+                set: { tools_synced_at: null },
+              })
+              .pipe(Effect.ignore),
+          ),
         );
         const policyRules = yield* listActivePolicyRuleSet();
         const defsByConnection = new Map<string, Map<string, unknown>>();

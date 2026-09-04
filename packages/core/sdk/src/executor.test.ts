@@ -952,6 +952,105 @@ describe("createExecutor", () => {
       }),
   );
 
+  // Two builds of one connection in two isolates, on a backend where every
+  // statement commits on its own. B claims the rebuild token after A has
+  // started; A finishes and tries to stamp; B then dies mid-replacement. A's
+  // stamp must NOT land (A no longer owns the connection), so the row keeps a
+  // null sync stamp and the stale scan rebuilds it — instead of A's manifest
+  // describing rows B has since torn out, refused forever. Modelled with a
+  // storage proxy that lets "B" claim the token between A's mark and A's
+  // stamp, then simulates B's death by deleting the rows and never stamping.
+  it.effect(
+    "a rebuild that lost its claim to a competing build does not stamp, and the row stays stale",
+    () =>
+      Effect.gen(function* () {
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const raceState: { armed: boolean } = { armed: false };
+        const wrap = (inner: FumaDb): FumaDb =>
+          new Proxy(inner, {
+            get(target, prop) {
+              if (prop === "withContext") {
+                return (context: unknown) =>
+                  wrap((target.withContext as (c: unknown) => FumaDb)(context));
+              }
+              if (prop === "transaction") {
+                return (run: (tx: FumaDb) => Promise<unknown>) =>
+                  (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                    (tx) => run(wrap(tx)),
+                  );
+              }
+              if (prop === "createMany") {
+                return async (table: unknown, rows: unknown) => {
+                  const out = await (
+                    target.createMany as (t: unknown, r: unknown) => Promise<unknown>
+                  )(table, rows);
+                  // After A has written its definitions (its last rows) and
+                  // before A stamps: B claims the connection, replaces the
+                  // rows, and dies.
+                  if (raceState.armed && table === "definition") {
+                    raceState.armed = false;
+                    await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                      "connection",
+                      {
+                        where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                          b("integration", "=", String(INTEG)),
+                        set: { tools_synced_at: null, tools_rebuild: "build-B" },
+                      },
+                    );
+                    await (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                      "definition",
+                      {
+                        where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                          b("integration", "=", String(INTEG)),
+                      },
+                    );
+                  }
+                  return out;
+                };
+              }
+              return Reflect.get(target, prop);
+            },
+          });
+        const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+        yield* executor.demo.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+        expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+        // "A" rebuilds; the proxy plays "B" in the middle of it.
+        raceState.armed = true;
+        yield* executor.connections.refresh({ owner: "org", integration: INTEG, name: CONN });
+        expect(raceState.armed, "B interleaved").toBe(false);
+
+        const [row] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        // A did not stamp: the token is still B's and the sync stamp is null,
+        // so the stale scan will rebuild this connection.
+        expect(row?.tools_rebuild, "A's stamp did not clear B's claim").toBe("build-B");
+        expect(row?.tools_synced_at, "the connection stays stale-marked").toBeNull();
+
+        // And the next read, which runs the stale scan, rebuilds and serves
+        // a whole catalog — never A's manifest over B's torn-out rows.
+        const served = yield* executor.tools.describeAll();
+        expect(served.map((tool) => tool.name).sort()).toEqual(["inspect", "run"]);
+        const [after] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(after?.tools_rebuild, "the recovering build released the token").toBeNull();
+        expect(after?.tools_manifest).not.toBeNull();
+      }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

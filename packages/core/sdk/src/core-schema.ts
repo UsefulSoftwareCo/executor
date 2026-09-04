@@ -242,6 +242,15 @@ export const coreTables = defineTables({
       // its stamp are refused the same way, and `tools_synced_at` is cleared
       // FIRST on every rebuild so such a death is also rescanned.
       tools_manifest: nullableJsonColumn("tools_manifest"),
+      // The rebuild OWNERSHIP token: the id of the build currently replacing
+      // this connection's catalog, or null when no build is in flight. A
+      // rebuild claims it as its first statement (together with clearing
+      // `tools_synced_at`) and its final stamp is conditioned on still holding
+      // it. Two builds in different isolates cannot both finish: whichever
+      // claims last owns the token, and the other's stamp finds it changed
+      // and writes nothing — so a manifest can never describe rows another
+      // build has since replaced. Cleared by the stamp that wins.
+      tools_rebuild: nullableTextColumn("tools_rebuild"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for
