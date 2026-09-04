@@ -1393,7 +1393,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       return { existingSlug: null, registrationSlug: slug };
     });
 
-    const registerDynamicClient = (
+  const registerDynamicClient = (
     input: RegisterDynamicClientInput,
   ): Effect.Effect<
     OAuthClientSlug,
