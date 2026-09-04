@@ -676,15 +676,17 @@ export function fromDrizzle(
         return statements;
       };
 
-      // How many rows the guard matched. Drizzle returns driver-specific
-      // shapes; normalize the common ones (`rowsAffected`, `changes`,
-      // `rowCount`, `meta.changes`) and treat unknown as "matched" so an
-      // exotic driver never turns every replace into a no-op.
+      // How many rows the guard matched. Drizzle hands back the driver's own
+      // result: libsql `rowsAffected`, better-sqlite3 `changes`, node-postgres
+      // `rowCount`, postgres.js `count` (a RowList), D1 `meta.changes`. A
+      // result with NONE of these is a driver this fence does not know, and
+      // a fence that cannot read its own guard is not a fence — so that is a
+      // hard error, never a silent "matched".
       const guardMatched = (result: unknown): boolean => {
         if (!plan.guard) return true;
         if (result && typeof result === "object") {
           const r = result as Record<string, unknown>;
-          for (const key of ["rowsAffected", "changes", "rowCount"]) {
+          for (const key of ["rowsAffected", "changes", "rowCount", "count"]) {
             if (typeof r[key] === "number") return (r[key] as number) > 0;
           }
           const meta = r["meta"];
@@ -692,19 +694,25 @@ export function fromDrizzle(
             return ((meta as Record<string, unknown>)["changes"] as number) > 0;
           }
         }
-        return true;
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: adapter refuses to fence on a driver whose update result it cannot read
+        throw new Error(
+          "[FumaDB Drizzle] replaceMany guard: the driver's update result carries no affected-row count.",
+        );
       };
 
       // D1: no interactive transactions, but the driver's native batch runs
-      // every statement in ONE transaction. The guard is the first statement;
-      // if it matched nothing, the rest still ran — so the fence is enforced
-      // by making the deletes/inserts themselves conditional is not possible
-      // here. Instead, batch the guard ALONE first (atomic, tells us whether
-      // we own the row), and only then batch the mutations. Between the two
-      // batches another writer can re-claim, but then ITS stamp is the one
-      // conditioned on ownership and ours will not land; the rows we wrote
-      // are attributed to nobody's manifest and refused until it finishes —
-      // exactly the fail-closed behaviour the reader is built for.
+      // every statement in ONE transaction. A batch cannot make its later
+      // statements conditional on an earlier one's row count, so the guard
+      // runs ALONE first (one statement, atomic, tells us whether we own the
+      // row) and only then do the deletes + inserts go through one batch.
+      // That is guard-then-batch, not one unit: between the two another
+      // writer can re-claim. What a reader sees at each step stays
+      // consistent — after our guard the row's manifest names OUR build
+      // while the table still holds the old rows, which the reader refuses
+      // (count/generation mismatch); once our batch lands, manifest and rows
+      // agree and are served; if a re-claimer's guard lands in between, its
+      // manifest over our rows is refused until its own batch lands. No
+      // half-built or mismatched catalog is ever served.
       const nativeBatch = db as unknown as {
         readonly batch?: (statements: readonly unknown[]) => Promise<unknown[]>;
       };

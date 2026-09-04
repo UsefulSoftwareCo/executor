@@ -3586,17 +3586,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         //   4. stamp — manifest + sync time, `tools_rebuild := null`,
         //      conditioned on still holding the claim from step 1
         //
-        // `replaceMany` runs 2–4 atomically on every backend (a driver
-        // transaction, or D1's native batch, which is one transaction), so a
-        // reader can never see a half-replaced catalog and a build can never
-        // stamp over rows another build wrote: the stamp's condition and the
-        // rows it describes commit together or not at all. Step 1 is its own
-        // statement on purpose — it is the durable "a rebuild is in flight"
-        // marker that survives a death anywhere after it and makes the stale
-        // scan rebuild the connection. Two builds racing: both claim; the one
-        // whose 2–4 commits first wins; the other's guard (step 4's condition)
-        // finds the token changed and its whole unit is discarded, rows
-        // included. Interactive backends make even step 1 part of the unit.
+        // On interactive backends `replaceMany` runs 2–4 as one transaction:
+        // the guard (4) goes first and a miss rolls everything back, so a
+        // build can never stamp over rows another build wrote. On D1 the
+        // guard runs alone, then 2–3 go through the driver's native batch
+        // (itself one transaction); the reader's manifest-vs-rows check keeps
+        // every intermediate state either whole or refused (see the adapter).
+        // Step 1 is its own statement on purpose — it is the durable "a
+        // rebuild is in flight" marker that survives a death anywhere after
+        // it and makes the stale scan rebuild the connection. Two builds
+        // racing: both claim; whichever's guard finds its own token wins;
+        // the other's guard misses and its unit is discarded, rows included.
         const replaceCatalog = (
           existingRow: ConnectionRow | null,
           toolRows: readonly Record<string, unknown>[],
@@ -5959,11 +5959,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             select: ["owner", "integration", "name", "tools_manifest"],
           }),
         });
-        const connectionKey = (row: {
+        type ConnectionTriple = {
           readonly owner: string;
           readonly integration: string;
           readonly connection: string;
-        }): string => `${row.owner}\u0000${row.integration}\u0000${row.connection}`;
+        };
+        // Slugs and names are opaque strings; a tuple encoding is the only
+        // key that cannot collide, and the original triple rides in a side
+        // map so recovery never has to parse a key back apart.
+        const connectionKey = (row: ConnectionTriple): string =>
+          JSON.stringify([row.owner, row.integration, row.connection]);
         // Per connection, the rows served must be exactly ONE finished build.
         // A build stamps every row it writes with one opaque `generation`, and
         // writes the connection's manifest — that generation plus the row
@@ -5998,16 +6003,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             readonly name: string;
             readonly tools_manifest: unknown;
           }>;
-        }): ReadonlyArray<{
-          readonly owner: string;
-          readonly integration: string;
-          readonly connection: string;
-        }> => {
+        }): ReadonlyArray<ConnectionTriple> => {
           type Tally = { readonly generations: Set<string | null>; count: number };
+          const triples = new Map<string, ConnectionTriple>();
+          const remember = (row: ConnectionTriple): string => {
+            const key = connectionKey(row);
+            if (!triples.has(key)) triples.set(key, row);
+            return key;
+          };
           const tally = (rows: ReadonlyArray<GenerationRow>): Map<string, Tally> => {
             const out = new Map<string, Tally>();
             for (const row of rows) {
-              const key = connectionKey(row);
+              const key = remember(row);
               const entry = out.get(key) ?? { generations: new Set<string | null>(), count: 0 };
               entry.generations.add(row.generation);
               entry.count += 1;
@@ -6020,22 +6027,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const manifests = new Map<string, CatalogManifest | null>();
           for (const row of snapshot.manifests) {
             manifests.set(
-              connectionKey({
-                owner: row.owner,
-                integration: row.integration,
-                connection: row.name,
-              }),
+              remember({ owner: row.owner, integration: row.integration, connection: row.name }),
               Option.getOrNull(decodeCatalogManifest(decodeJsonColumn(row.tools_manifest))),
             );
           }
           const keys = new Set([...tools.keys(), ...definitions.keys(), ...manifests.keys()]);
-          const mixed: { owner: string; integration: string; connection: string }[] = [];
+          const mixed: ConnectionTriple[] = [];
           for (const key of keys) {
-            const [owner, integration, connection] = key.split("\u0000") as [
-              string,
-              string,
-              string,
-            ];
             const t = tools.get(key);
             const d = definitions.get(key);
             const manifest = manifests.get(key) ?? null;
@@ -6049,7 +6047,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 (t.generations.size !== 1 || !t.generations.has(manifest.generation))) ||
               (d !== undefined &&
                 (d.generations.size !== 1 || !d.generations.has(manifest.generation)));
-            if (inconsistent) mixed.push({ owner, integration, connection });
+            if (inconsistent) mixed.push(triples.get(key)!);
           }
           return mixed;
         };
