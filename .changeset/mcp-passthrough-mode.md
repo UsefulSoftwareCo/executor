@@ -1,5 +1,6 @@
 ---
 "@executor-js/sdk": minor
+"@executor-js/fumadb": minor
 "@executor-js/plugin-openapi": patch
 "@executor-js/plugin-graphql": patch
 "@executor-js/plugin-mcp": patch

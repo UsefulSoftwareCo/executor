@@ -54,6 +54,10 @@ const addr = (tool: string): ToolAddress => ToolAddress.make(`tools.${INTEG}.org
 // resolveTools (with shared $defs), and supports ctx.transaction rollback.
 // ---------------------------------------------------------------------------
 
+/** Toggled by a test so the demo plugin's next discovery differs from what
+ *  is persisted. Module-level because the plugin closure is created once. */
+const demoDiscoversExtra = { value: false };
+
 const demoPlugin = definePlugin(() => ({
   id: "demo" as const,
   credentialProviders: [memoryProvider()],
@@ -68,6 +72,11 @@ const demoPlugin = definePlugin(() => ({
   resolveTools: () =>
     Effect.succeed({
       tools: [
+        // A test may flip this to make one discovery differ from the last
+        // persisted catalog (see the lost-claim rebuild test).
+        ...(demoDiscoversExtra.value
+          ? [{ name: ToolName.make("extra"), description: "extra" }]
+          : []),
         {
           name: ToolName.make("inspect"),
           description: "inspect",
@@ -1020,13 +1029,15 @@ describe("createExecutor", () => {
           config.db.findMany("tool", { where: (b) => b("integration", "=", String(INTEG)) }),
         );
 
-        // "A" rebuilds; the proxy plays "B" between A's claim and A's unit.
+        // "A" rebuilds — and discovers something NEW (`extra`) that the
+        // persisted catalog does not have, so a caller handed A's discovery
+        // instead of the persisted rows is distinguishable. The proxy plays
+        // "B" between A's claim and A's unit.
+        demoDiscoversExtra.value = true;
         raceState.armed = true;
-        const reported = yield* executor.connections.refresh({
-          owner: "org",
-          integration: INTEG,
-          name: CONN,
-        });
+        const reported = yield* executor.connections
+          .refresh({ owner: "org", integration: INTEG, name: CONN })
+          .pipe(Effect.ensuring(Effect.sync(() => void (demoDiscoversExtra.value = false))));
         expect(raceState.armed, "B interleaved").toBe(false);
         expect(raceState.applied, "A's fenced unit was discarded").toBe(false);
 
@@ -1040,9 +1051,14 @@ describe("createExecutor", () => {
         );
         // And A reported the persisted rows, not the ones it discovered and
         // failed to write — so its caller cannot disagree with the next list.
+        // A discovered `extra`; persisted has no `extra`; the report must not.
+        expect(
+          reported.map((tool) => String(tool.name)).sort(),
+          "refresh reports what is persisted",
+        ).toEqual(["inspect", "run"]);
         expect(
           reported.map((tool) => String(tool.address)).sort(),
-          "refresh reports what is persisted",
+          "refresh reports the persisted addresses",
         ).toEqual(
           rowsAfter
             .map((row) => `tools.${row.integration}.${row.owner}.${row.connection}.${row.name}`)

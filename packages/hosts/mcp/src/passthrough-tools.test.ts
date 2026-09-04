@@ -595,25 +595,34 @@ describe("passthrough mode server", () => {
 
   it("narrows to the requested integrations and says which were not connected", async () => {
     const { engine } = makeRecordingEngine();
+    // The filter is pushed into the READ: the port is asked once per slug and
+    // never for the whole workspace. Recording the calls is what proves it —
+    // a stub that merely honoured the filter would also pass an unfiltered
+    // read followed by host-side filtering.
+    const reads: (string | undefined)[] = [];
     await withClient(
       {
         engine,
         mode: "passthrough",
         passthroughIntegrations: ["linear", "notion"],
-        // The filter is pushed into the READ: the port is asked per slug, so
-        // a real catalog never describes tools the session will not serve.
         tools: {
-          describeAll: (filter) =>
-            Effect.succeed(
+          describeAll: (filter) => {
+            reads.push(filter?.integration === undefined ? undefined : String(filter.integration));
+            return Effect.succeed(
               CATALOG.filter(
                 (tool) =>
                   filter?.integration === undefined || tool.integration === filter.integration,
               ),
-            ),
+            );
+          },
         },
       },
       async (client) => {
         const listed = await client.listTools();
+        expect(reads.sort(), "one read per requested slug, none unfiltered").toEqual([
+          "linear",
+          "notion",
+        ]);
         expect(listed.tools.map((tool) => tool.name)).toEqual(["linear__issueCreate"]);
         const instructions = client.getInstructions() ?? "";
         expect(instructions).toContain("1 integration tool");
