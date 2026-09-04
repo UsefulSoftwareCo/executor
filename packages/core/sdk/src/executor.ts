@@ -3805,19 +3805,16 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        const applied = yield* persistCatalog(
+        // Whether this build's unit applied is deliberately NOT consulted:
+        // on D1 `applied: true` does not prove the rows are still the active
+        // catalog (see below), so both outcomes take the same validated read.
+        yield* persistCatalog(
           replaceCatalog(existingRow, toolRows, definitionRows, {
             generation,
             tools: toolRows.length,
             definitions: definitionRows.length,
           }),
         );
-        if (!applied) {
-          yield* Effect.logInfo("executor tool sync lost its claim to a newer build", {
-            integration: String(ref.integration),
-            connection: String(ref.name),
-          });
-        }
         // Report what is PERSISTED, never what this build discovered — and
         // only if what is persisted is one whole build, checked the way every
         // list checks it (manifest vs rows). That holds for the loser (it

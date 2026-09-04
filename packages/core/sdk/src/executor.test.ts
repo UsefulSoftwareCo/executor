@@ -915,6 +915,26 @@ describe("createExecutor", () => {
       );
       const outcome = yield* Effect.result(executor.tools.describeAll());
       expect(Result.isFailure(outcome), "a partial catalog is refused, not served").toBe(true);
+      // The refusal is not the end: it stale-marks exactly this connection,
+      // and the very next read's stale scan rebuilds it and serves it whole.
+      const [marked] = yield* Effect.promise(() =>
+        config.db.findMany("connection", { where: (b) => b("integration", "=", String(INTEG)) }),
+      );
+      expect(marked?.tools_synced_at, "the torn connection is stale-marked").toBeNull();
+      const recovered = yield* executor.tools.describeAll();
+      expect(
+        recovered.map((tool) => tool.name).sort(),
+        "the next read rebuilds and serves",
+      ).toEqual(["inspect", "run"]);
+      const inlined = recovered.find((tool) => tool.name === "inspect")?.inputSchema as {
+        $defs?: Record<string, unknown>;
+      };
+      expect(Object.keys(inlined.$defs ?? {}).sort(), "definitions are back").toEqual([
+        "Cat",
+        "Collar",
+        "Dog",
+        "Pet",
+      ]);
     }),
   );
 
