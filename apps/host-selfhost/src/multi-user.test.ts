@@ -121,7 +121,11 @@ const connectionAddresses = async (token: string): Promise<string[]> => {
   return body.map((c) => c.address);
 };
 
-const runCode = async (token: string, code: string) => {
+const runCode = async (
+  token: string,
+  code: string,
+  idempotencyKey: string = crypto.randomUUID(),
+) => {
   const res = await handler(
     new Request(`${BASE}/api/executions`, {
       method: "POST",
@@ -129,11 +133,18 @@ const runCode = async (token: string, code: string) => {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ idempotencyKey, code }),
     }),
   );
   return res;
 };
+
+const getExecution = (token: string, executionId: string) =>
+  handler(
+    new Request(`${BASE}/api/executions/${encodeURIComponent(executionId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  );
 
 test("multiple accounts share one org but isolate per-user connections", async () => {
   const alice = await signUp("alice@multi.test");
@@ -188,6 +199,31 @@ test("multiple accounts share one org but isolate per-user connections", async (
     true,
   );
   expect(bobConns.some((a) => a.includes(connectionName("alice-private")))).toBe(false);
+});
+
+test("completed execution receipts are isolated by authenticated owner", async () => {
+  const alice = await signUp("receipt-alice@multi.test");
+  const bob = await signUp("receipt-bob@multi.test");
+  const completed = await runCode(alice, "export default 21 * 2", "shared-request-key");
+  expect(completed.status).toBe(200);
+  const receipt = (await completed.json()) as { readonly executionId: string };
+
+  const aliceRead = await getExecution(alice, receipt.executionId);
+  expect(aliceRead.status).toBe(200);
+  expect(await aliceRead.json()).toMatchObject({ executionId: receipt.executionId, text: "42" });
+
+  const bobRead = await getExecution(bob, receipt.executionId);
+  expect(bobRead.status).toBe(404);
+  expect(await bobRead.json()).toMatchObject({ _tag: "ExecutionNotFoundError" });
+
+  const bobCompleted = await runCode(bob, "export default 21 * 2", "shared-request-key");
+  expect(bobCompleted.status).toBe(200);
+  const bobReceipt = (await bobCompleted.json()) as {
+    readonly status: string;
+    readonly executionId: string;
+  };
+  expect(bobReceipt.status).toBe("completed");
+  expect(bobReceipt.executionId).not.toBe(receipt.executionId);
 });
 
 test("each account can execute code in its own scoped sandbox", async () => {

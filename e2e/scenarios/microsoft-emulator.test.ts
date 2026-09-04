@@ -175,7 +175,10 @@ scenario(
           ).toContain("users.graphUserList");
 
           const executed = yield* client.executions.execute({
-            payload: { code: listUsersCode(integration) },
+            payload: {
+              idempotencyKey: crypto.randomUUID(),
+              code: listUsersCode(integration),
+            },
           });
           expect(executed.status, "the Graph tool execution completed").toBe("completed");
           if (executed.status !== "completed") return;

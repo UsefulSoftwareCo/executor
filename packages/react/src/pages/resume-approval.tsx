@@ -12,16 +12,24 @@ import { CopyButton } from "../components/copy-button";
 import { type ElicitationAction, useElicitationApproval } from "../components/elicitation-approval";
 import { Skeleton } from "../components/skeleton";
 
-type PausedExecutionInfo = { readonly text: string; readonly structured: unknown };
+type PausedExecutionInfo = {
+  readonly text: string;
+  readonly structured: unknown;
+  readonly executionId?: string;
+  readonly pauseSequence?: number;
+};
 type ResumeExecutionResult =
   | {
       readonly status: "completed";
+      readonly executionId?: string;
       readonly text: string;
       readonly structured: unknown;
       readonly isError: boolean;
     }
   | {
       readonly status: "paused";
+      readonly executionId?: string;
+      readonly pauseSequence?: number;
       readonly text: string;
       readonly structured: unknown;
     };
@@ -122,10 +130,20 @@ export function ResumeApprovalPage(props: { executionId: string }) {
   const doResume = useAtomSet(resumeExecution, { mode: "promiseExit" });
 
   const resume = useCallback(
-    (executionId: string, action: ElicitationAction, content?: Record<string, unknown>) =>
+    (
+      executionId: string,
+      action: ElicitationAction,
+      content?: Record<string, unknown>,
+      pauseSequence?: number,
+    ) =>
       doResume({
         params: { executionId },
-        payload: action === "accept" ? { action, content: content ?? {} } : { action },
+        payload: {
+          idempotencyKey: crypto.randomUUID(),
+          pauseSequence: pauseSequence ?? 0,
+          action,
+          ...(action === "accept" ? { content: content ?? {} } : {}),
+        },
       }),
     [doResume],
   );
@@ -140,6 +158,7 @@ export function ResumeApprovalPageView(props: {
     executionId: string,
     action: ElicitationAction,
     content?: Record<string, unknown>,
+    pauseSequence?: number,
   ) => Promise<Exit.Exit<ResumeExecutionResult, unknown>>;
   unavailableMessage?: string;
 }) {
@@ -171,7 +190,12 @@ export function ResumeApprovalPageView(props: {
       if (content === null) return;
 
       setStatus({ state: "submitting", action });
-      const exit = await resume(currentExecutionId, action, content);
+      const exit = await resume(
+        currentExecutionId,
+        action,
+        content,
+        displayedPaused?.pauseSequence,
+      );
 
       if (Exit.isFailure(exit)) {
         trackEvent("resume_approval_submitted", {
@@ -185,7 +209,8 @@ export function ResumeApprovalPageView(props: {
       }
 
       if (exit.value.status === "paused") {
-        const nextExecutionId = executionIdFromStructured(exit.value.structured);
+        const nextExecutionId =
+          exit.value.executionId ?? executionIdFromStructured(exit.value.structured);
         if (!nextExecutionId) {
           trackEvent("resume_approval_submitted", {
             action,
@@ -207,7 +232,12 @@ export function ResumeApprovalPageView(props: {
           success: true,
         });
         setCurrentExecutionId(nextExecutionId);
-        setNextPaused({ text: exit.value.text, structured: exit.value.structured });
+        setNextPaused({
+          text: exit.value.text,
+          structured: exit.value.structured,
+          executionId: nextExecutionId,
+          pauseSequence: exit.value.pauseSequence,
+        });
         setStatus({ state: "idle" });
         return;
       }
@@ -224,7 +254,7 @@ export function ResumeApprovalPageView(props: {
         text: exit.value.text || "The paused execution has been resumed.",
       });
     },
-    [approval, currentExecutionId, interaction, resume],
+    [approval, currentExecutionId, displayedPaused?.pauseSequence, interaction, resume],
   );
 
   const busy = status.state === "submitting";

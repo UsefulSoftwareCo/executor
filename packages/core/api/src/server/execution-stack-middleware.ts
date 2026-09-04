@@ -328,12 +328,12 @@ class PlatformEngineUnavailable extends Data.TaggedError("PlatformEngineUnavaila
 }> {}
 
 /**
- * The engine the platform branch provides. The one member a safe read can
- * actually reach — `getPausedExecution`, via `GET /executions/:id` — answers
- * null (a 404), honestly: the platform view owns no executions. The paused
- * counters answer the same empty story for any future reader. Everything else
- * (execute, resume, the MCP tool description) exists to satisfy the service
- * shape, sits behind the middleware's safe-request gate, and dies if reached.
+ * The engine the platform branch provides. Execution receipt reads use the
+ * owner-scoped executor store, where this subject-less view owns no executions,
+ * so no safe HTTP read reaches an engine member. The paused counters answer the
+ * same empty story for any future reader. Everything else (execute, resume, the
+ * MCP tool description) exists to satisfy the service shape, sits behind the
+ * middleware's safe-request gate, and dies if reached.
  */
 const readOnlyExecutionEngine: ExecutionEngine<Cause.YieldableError> = {
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome

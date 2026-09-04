@@ -123,6 +123,7 @@ scenario(
 
           const executed = yield* client.executions.execute({
             payload: {
+              idempotencyKey: crypto.randomUUID(),
               code: invokeByAddressCode(address!, { itemId: "2", doesNotExist: "nope" }),
               autoApprove: true,
             },

@@ -214,6 +214,7 @@ scenario(
 
       const execution = yield* client.executions.execute({
         payload: {
+          idempotencyKey: crypto.randomUUID(),
           code: [`const result = await ${address}({});`, "return result;"].join("\n"),
         },
       });

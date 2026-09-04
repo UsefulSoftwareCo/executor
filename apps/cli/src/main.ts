@@ -174,7 +174,6 @@ import {
   buildInvokeToolCode,
   buildListIntegrationsCode,
   buildSearchToolsCode,
-  extractExecutionId,
   extractPausedInteraction,
   extractExecutionResult,
   inspectToolPath,
@@ -984,12 +983,13 @@ const executeCode = (input: {
     const client = yield* makeApiClient(connection, input.target);
     const response = yield* client.executions.execute({
       payload: {
+        idempotencyKey: crypto.randomUUID(),
         code: input.code,
       },
     });
 
     if (response.status === "paused") {
-      const executionId = extractExecutionId(response.structured);
+      const executionId = response.executionId;
       return {
         connection,
         outcome: {
@@ -2087,14 +2087,24 @@ const resumeCommand = Command.make(
       const contentObj = yield* parseOptionalJsonObject(Option.getOrUndefined(content));
 
       const client = yield* makeApiClient(connection, target);
+      const execution = yield* client.executions.get({ params: { executionId } });
+      if (execution.status === "completed") {
+        console.log(execution.text);
+        return;
+      }
       const result = yield* client.executions.resume({
         params: { executionId },
-        payload: { action, content: contentObj },
+        payload: {
+          idempotencyKey: crypto.randomUUID(),
+          pauseSequence: execution.pauseSequence,
+          action,
+          content: contentObj,
+        },
       });
 
       if (result.status === "paused") {
         console.log(result.text);
-        const nextExecutionId = extractExecutionId(result.structured);
+        const nextExecutionId = result.executionId;
         if (nextExecutionId) {
           console.log("");
           console.log("Approval required:");

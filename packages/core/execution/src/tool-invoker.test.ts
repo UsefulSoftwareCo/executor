@@ -1731,6 +1731,36 @@ describe("pause/resume with multiple elicitations", () => {
   );
 
   it.effect(
+    "preserves a caller-supplied execution id across pauses",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
+        const executionId = "exec_stable_receipt";
+        const code = `
+          return await Promise.all([
+            tools.api.org.main.singleApproval({}),
+            tools.api.org.main.singleApproval({})
+          ]);
+        `;
+
+        const first = yield* engine.executeWithPause(code, { executionId });
+        expect(first.status).toBe("paused");
+        if (first.status !== "paused") return;
+        expect(first.execution.id).toBe(executionId);
+
+        const second = yield* engine.resume(executionId, { action: "accept" });
+        expect(second?.status).toBe("paused");
+        if (second?.status !== "paused") return;
+        expect(second.execution.id).toBe(executionId);
+
+        const completed = yield* engine.resume(executionId, { action: "accept" });
+        expect(completed?.status).toBe("completed");
+      }),
+    { timeout: 10000 },
+  );
+
+  it.effect(
     "a duplicate resume replays the delivered outcome instead of reporting a missing pause",
     () =>
       Effect.gen(function* () {

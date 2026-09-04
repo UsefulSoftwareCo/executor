@@ -136,7 +136,10 @@ scenario(
       // the exported span is the only place an operator can see it.
       for (const address of [okAddress, failAddress]) {
         const execution = yield* client.executions.execute({
-          payload: { code: `return await ${address}({});` },
+          payload: {
+            idempotencyKey: crypto.randomUUID(),
+            code: `return await ${address}({});`,
+          },
         });
         expect(execution.status, `the ${address} execution completes`).toBe("completed");
       }

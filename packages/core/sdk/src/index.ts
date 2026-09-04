@@ -219,6 +219,22 @@ export {
 } from "./artifact";
 export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
 
+// Durable execution identity and terminal readback.
+export {
+  ExecutionId,
+  ExecutionIdempotencyKey,
+  ExecutionPauseSequence,
+  RunningExecution,
+  PausedExecutionReceipt,
+  CompletedExecutionReceipt,
+  ExecutionReceipt,
+  RunningResumeReservation,
+  SettledResumeReservation,
+  ResumeReservation,
+  makeExecutionReceiptStore,
+  type ExecutionReceiptStore,
+} from "./execution-receipt";
+
 // Elicitation.
 export {
   ElicitationMeta,

@@ -123,3 +123,14 @@ describe("BlobStore.getMany", () => {
     }),
   );
 });
+
+describe("BlobStore.putIfAbsent", () => {
+  it.effect("keeps the first value", () =>
+    Effect.gen(function* () {
+      const store = makeInMemoryBlobStore();
+      expect(yield* store.putIfAbsent("ns", "key", "first")).toBe(true);
+      expect(yield* store.putIfAbsent("ns", "key", "second")).toBe(false);
+      expect(yield* store.get("ns", "key")).toBe("first");
+    }),
+  );
+});

@@ -65,9 +65,6 @@ function App() {
 }
 `;
 
-const pausedExecutionId = (structured: unknown): string | undefined =>
-  (structured as { readonly executionId?: string } | null)?.executionId;
-
 scenario(
   "Artifacts · a destructive action approved from an artifact runs after a human-scale delay",
   { timeout: 240_000 },
@@ -112,12 +109,12 @@ scenario(
       // The artifact fires its mutation. The tool gates itself, so the shell
       // gets a pause back and renders the approval modal.
       const paused = yield* client.executions.execute({
-        payload: { code, artifactId: artifact.id },
+        payload: { idempotencyKey: randomUUID(), code, artifactId: artifact.id },
       });
       expect(paused.status, "a destructive artifact action pauses for approval").toBe("paused");
       if (paused.status !== "paused") return; // narrowing only
 
-      const executionId = pausedExecutionId(paused.structured);
+      const executionId = paused.executionId;
       expect(executionId, "the pause carries an execution id to approve").toBeTruthy();
       if (!executionId) return; // narrowing only
 
@@ -135,7 +132,12 @@ scenario(
 
       const approved = yield* client.executions.resume({
         params: { executionId },
-        payload: { action: "accept", content: {} },
+        payload: {
+          idempotencyKey: randomUUID(),
+          pauseSequence: paused.pauseSequence,
+          action: "accept",
+          content: {},
+        },
       });
 
       expect(approved.status, "approving the action runs it to completion").toBe("completed");
@@ -193,17 +195,21 @@ scenario(
 
     yield* Effect.gen(function* () {
       const paused = yield* client.executions.execute({
-        payload: { code, artifactId: artifact.id },
+        payload: { idempotencyKey: randomUUID(), code, artifactId: artifact.id },
       });
       expect(paused.status, "the action pauses for approval").toBe("paused");
       if (paused.status !== "paused") return; // narrowing only
 
-      const executionId = pausedExecutionId(paused.structured);
+      const executionId = paused.executionId;
       if (!executionId) return; // narrowing only
 
       yield* client.executions.resume({
         params: { executionId },
-        payload: { action: "decline" },
+        payload: {
+          idempotencyKey: randomUUID(),
+          pauseSequence: paused.pauseSequence,
+          action: "decline",
+        },
       });
 
       const afterDecline = yield* client.policies.list();
@@ -215,7 +221,15 @@ scenario(
       // A declined approval is spent: the same id cannot be re-approved into a
       // run afterwards.
       yield* client.executions
-        .resume({ params: { executionId }, payload: { action: "accept", content: {} } })
+        .resume({
+          params: { executionId },
+          payload: {
+            idempotencyKey: randomUUID(),
+            pauseSequence: paused.pauseSequence,
+            action: "accept",
+            content: {},
+          },
+        })
         .pipe(Effect.ignore);
 
       const afterRetry = yield* client.policies.list();

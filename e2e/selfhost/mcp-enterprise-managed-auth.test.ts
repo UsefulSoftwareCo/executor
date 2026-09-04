@@ -300,7 +300,11 @@ scenario(
           ).toEqual([...SERVER_SCOPES].sort());
 
           const executed = yield* client.executions.execute({
-            payload: { code: callGetMeCode(String(integration), "main"), autoApprove: true },
+            payload: {
+              idempotencyKey: crypto.randomUUID(),
+              code: callGetMeCode(String(integration), "main"),
+              autoApprove: true,
+            },
           });
           expect(executed.status, "the tool call completed").toBe("completed");
           const outcome = JSON.parse(executed.text) as SandboxToolOutcome;

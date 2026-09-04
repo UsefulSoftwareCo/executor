@@ -262,7 +262,11 @@ scenario(
           const invoke = (address: string) =>
             Effect.gen(function* () {
               const executed = yield* client.executions.execute({
-                payload: { code: invokeByAddressCode(address, {}), autoApprove: true },
+                payload: {
+                  idempotencyKey: crypto.randomUUID(),
+                  code: invokeByAddressCode(address, {}),
+                  autoApprove: true,
+                },
               });
               expect(executed.status, "the sandbox execution completed").toBe("completed");
               return JSON.parse(executed.text) as ToolEnvelope;

@@ -478,7 +478,7 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    */
   readonly executeWithPause: (
     code: string,
-    options?: { readonly autoApprove?: boolean },
+    options?: { readonly autoApprove?: boolean; readonly executionId?: string },
   ) => Effect.Effect<ExecutionResult, E>;
 
   /**
@@ -599,7 +599,10 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         Effect.map((result): ExecutionResult => ({ status: "completed", result })),
       ),
       Queue.take(pauseQueue).pipe(
-        Effect.map((paused): ExecutionResult => ({ status: "paused", execution: paused })),
+        Effect.map((paused): ExecutionResult => {
+          pausedExecutions.set(paused.id, paused);
+          return { status: "paused", execution: paused };
+        }),
       ),
     );
 
@@ -611,7 +614,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    */
   const startPausableExecution = Effect.fn("mcp.execute")(function* (
     code: string,
-    options?: { readonly autoApprove?: boolean },
+    options?: { readonly autoApprove?: boolean; readonly executionId?: string },
   ) {
     yield* Effect.annotateCurrentSpan({
       "mcp.execute.mode": "pausable",
@@ -642,7 +645,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         // (Durable Object cold restores, redeploys), so a counter would
         // re-mint the same ids and let a stale client resume bind to a
         // different execution's pause.
-        const id = `exec_${crypto.randomUUID()}`;
+        const id = options?.executionId ?? `exec_${crypto.randomUUID()}`;
 
         const paused: InternalPausedExecution<E> = {
           id,
@@ -651,8 +654,6 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
           fiber: fiber!,
           pauseQueue,
         };
-        pausedExecutions.set(id, paused);
-
         yield* Queue.offer(pauseQueue, paused);
 
         // Suspend until resume() completes responseDeferred.
@@ -749,7 +750,19 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
-          recordSettledOutcome(executionId, exit);
+          // A caller-supplied id remains the identity of the whole execution,
+          // including later pauses. Do not cache an intermediate pause under
+          // that same id or the next resume would replay it forever. HTTP
+          // resume idempotency is persisted separately per pause sequence.
+          if (
+            !(
+              Exit.isSuccess(exit) &&
+              exit.value.status === "paused" &&
+              exit.value.execution.id === executionId
+            )
+          ) {
+            recordSettledOutcome(executionId, exit);
+          }
           pendingResumes.delete(executionId);
           yield* Deferred.done(inflight, exit);
         }),

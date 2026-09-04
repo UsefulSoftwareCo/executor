@@ -58,7 +58,11 @@ describe("createHttpShellHost", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain("/executions");
-    expect(calls[0]?.body).toStrictEqual({ code: "return await tools.a.b()", artifactId: "art_1" });
+    expect(calls[0]?.body).toStrictEqual({
+      idempotencyKey: expect.any(String),
+      code: "return await tools.a.b()",
+      artifactId: "art_1",
+    });
     expect(result.isError).toBeUndefined();
   });
 
@@ -70,11 +74,21 @@ describe("createHttpShellHost", () => {
 
     await host.callServerTool({
       name: "execute-action-resume",
-      arguments: { executionId: "exec_1", action: "accept", content: '{"note":"hi"}' },
+      arguments: {
+        executionId: "exec_1",
+        pauseSequence: 0,
+        action: "accept",
+        content: '{"note":"hi"}',
+      },
     });
 
     expect(calls[0]?.url).toContain("/executions/exec_1/resume");
-    expect(calls[0]?.body).toStrictEqual({ action: "accept", content: { note: "hi" } });
+    expect(calls[0]?.body).toStrictEqual({
+      idempotencyKey: expect.any(String),
+      pauseSequence: 0,
+      action: "accept",
+      content: { note: "hi" },
+    });
   });
 
   // The reported bug's user-visible half: the approval failed and the person
@@ -88,7 +102,7 @@ describe("createHttpShellHost", () => {
     await expect(
       host.callServerTool({
         name: "execute-action-resume",
-        arguments: { executionId: "exec_1", action: "accept", content: "{}" },
+        arguments: { executionId: "exec_1", pauseSequence: 0, action: "accept", content: "{}" },
       }),
     ).rejects.toThrow(APPROVAL_EXPIRED_MESSAGE);
   });
@@ -112,12 +126,21 @@ describe("createHttpShellHost", () => {
 
     await host.callServerTool({
       name: "execute-action-resume",
-      arguments: { executionId: "exec_1", action: "decline", content: "{not json" },
+      arguments: {
+        executionId: "exec_1",
+        pauseSequence: 0,
+        action: "decline",
+        content: "{not json",
+      },
     });
 
     // `content` is absent rather than null: an unparseable body is dropped, but
     // the decision still travels.
-    expect(calls[0]?.body).toStrictEqual({ action: "decline" });
+    expect(calls[0]?.body).toStrictEqual({
+      idempotencyKey: expect.any(String),
+      pauseSequence: 0,
+      action: "decline",
+    });
   });
 
   // The prod outage this file's fix addresses. An org-scoped host (cloud) fails
@@ -146,7 +169,12 @@ describe("createHttpShellHost", () => {
 
       await createHttpShellHost({ fetch }).callServerTool({
         name: "execute-action-resume",
-        arguments: { executionId: "exec_1", action: "accept", content: "{}" },
+        arguments: {
+          executionId: "exec_1",
+          pauseSequence: 0,
+          action: "accept",
+          content: "{}",
+        },
       });
 
       expect(calls[0]?.headers[EXECUTOR_ORG_HEADER]).toBe("acme");

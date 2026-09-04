@@ -1,6 +1,12 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 
+import {
+  ExecutionId,
+  ExecutionIdempotencyKey,
+  ExecutionPauseSequence,
+  ExecutionReceipt,
+} from "@executor-js/sdk";
 import { InternalError } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -8,6 +14,7 @@ import { InternalError } from "@executor-js/sdk/shared";
 // ---------------------------------------------------------------------------
 
 const ExecuteRequest = Schema.Struct({
+  idempotencyKey: ExecutionIdempotencyKey,
   code: Schema.String,
   // When true the caller is the human approver: approval-gated tools run to
   // completion instead of pausing. Set by the operator-facing Run/Test panel,
@@ -26,36 +33,30 @@ const ExecuteRequest = Schema.Struct({
   artifactId: Schema.optional(Schema.String),
 });
 
-const CompletedResult = Schema.Struct({
-  status: Schema.Literal("completed"),
-  text: Schema.String,
-  structured: Schema.Unknown,
-  isError: Schema.Boolean,
-});
-
-const PausedResult = Schema.Struct({
-  status: Schema.Literal("paused"),
-  text: Schema.String,
-  structured: Schema.Unknown,
-});
-
-const ExecuteResponse = Schema.Union([CompletedResult, PausedResult]);
-
 const ResumeRequest = Schema.Struct({
+  idempotencyKey: ExecutionIdempotencyKey,
+  pauseSequence: ExecutionPauseSequence,
   action: Schema.Literals(["accept", "decline", "cancel"]),
-  content: Schema.optional(Schema.Unknown),
-});
-
-const ResumeResponse = Schema.Union([CompletedResult, PausedResult]);
-
-const PausedExecutionInfo = Schema.Struct({
-  text: Schema.String,
-  structured: Schema.Unknown,
+  content: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
 const ExecutionNotFoundError = Schema.TaggedStruct("ExecutionNotFoundError", {
-  executionId: Schema.String,
+  executionId: ExecutionId,
 }).annotate({ httpApiStatus: 404 });
+
+const ExecutionInProgressError = Schema.TaggedStruct("ExecutionInProgressError", {
+  executionId: ExecutionId,
+}).annotate({ httpApiStatus: 409 });
+
+const ExecutionIdempotencyConflictError = Schema.TaggedStruct("ExecutionIdempotencyConflictError", {
+  executionId: ExecutionId,
+  idempotencyKey: ExecutionIdempotencyKey,
+}).annotate({ httpApiStatus: 409 });
+
+const ExecutionResumeConflictError = Schema.TaggedStruct("ExecutionResumeConflictError", {
+  executionId: ExecutionId,
+  pauseSequence: ExecutionPauseSequence,
+}).annotate({ httpApiStatus: 409 });
 
 /**
  * The approval window closed before the human answered.
@@ -67,7 +68,7 @@ const ExecutionNotFoundError = Schema.TaggedStruct("ExecutionNotFoundError", {
  * expired-approval state rather than an error.
  */
 const ApprovalExpiredError = Schema.TaggedStruct("ApprovalExpiredError", {
-  executionId: Schema.String,
+  executionId: ExecutionId,
 })
   .annotate({ httpApiStatus: 410 })
   .annotate({
@@ -99,7 +100,7 @@ const ArtifactActionError = Schema.TaggedStruct("ArtifactActionError", {
 // Params
 // ---------------------------------------------------------------------------
 
-const ExecutionParams = { executionId: Schema.String };
+const ExecutionParams = { executionId: ExecutionId };
 
 // ---------------------------------------------------------------------------
 // Group
@@ -107,24 +108,35 @@ const ExecutionParams = { executionId: Schema.String };
 
 export const ExecutionsApi = HttpApiGroup.make("executions")
   .add(
-    HttpApiEndpoint.get("getPaused", "/executions/:executionId", {
+    HttpApiEndpoint.get("get", "/executions/:executionId", {
       params: ExecutionParams,
-      success: PausedExecutionInfo,
-      error: [InternalError, ExecutionNotFoundError],
+      success: ExecutionReceipt,
+      error: [InternalError, ExecutionNotFoundError, ExecutionInProgressError],
     }),
   )
   .add(
     HttpApiEndpoint.post("execute", "/executions", {
       payload: ExecuteRequest,
-      success: ExecuteResponse,
-      error: [InternalError, ArtifactActionError],
+      success: ExecutionReceipt,
+      error: [
+        InternalError,
+        ArtifactActionError,
+        ExecutionInProgressError,
+        ExecutionIdempotencyConflictError,
+      ],
     }),
   )
   .add(
     HttpApiEndpoint.post("resume", "/executions/:executionId/resume", {
       params: ExecutionParams,
       payload: ResumeRequest,
-      success: ResumeResponse,
-      error: [InternalError, ExecutionNotFoundError, ApprovalExpiredError],
+      success: ExecutionReceipt,
+      error: [
+        InternalError,
+        ExecutionNotFoundError,
+        ApprovalExpiredError,
+        ExecutionInProgressError,
+        ExecutionResumeConflictError,
+      ],
     }),
   );

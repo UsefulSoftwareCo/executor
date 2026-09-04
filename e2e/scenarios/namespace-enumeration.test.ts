@@ -91,6 +91,7 @@ scenario(
         // surface an agent has.
         const executed = yield* client.executions.execute({
           payload: {
+            idempotencyKey: crypto.randomUUID(),
             code: `
 const integrations = await tools.executor.integrations.list({ limit: 50 });
 const mine = integrations.items.find((item) => item.id === ${JSON.stringify(slug)});

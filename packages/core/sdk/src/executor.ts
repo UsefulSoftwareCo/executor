@@ -31,6 +31,7 @@ import {
 } from "./fuma-runtime";
 import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartitions } from "./blob";
 import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
+import { makeExecutionReceiptStore, type ExecutionReceiptStore } from "./execution-receipt";
 import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
@@ -503,6 +504,9 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
    * when a general codemode pause is not.
    */
   readonly pendingApprovals: PendingApprovalStore;
+
+  /** Durable, owner-scoped execution state and terminal result receipts. */
+  readonly executionReceipts: ExecutionReceiptStore;
 
   readonly execute: (
     address: ToolAddress,
@@ -6164,15 +6168,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       user: subject != null ? `u:${tenant}:${subject}` : null,
     };
 
-    // Pending approvals file under the narrowest partition this executor has:
-    // a subject-bound executor keeps them private to that member, and a pure-org
-    // executor (no subject) files them at the org. Either way the partition IS
-    // the ownership check — another caller's executor reads a different
-    // namespace and simply does not see the record.
-    const pendingApprovals = makePendingApprovalStore(
-      blobs,
-      blobPartitions.user ?? blobPartitions.org,
-    );
+    // Durable execution state files under the narrowest partition this
+    // executor has. A subject-bound executor keeps approvals and receipts
+    // private to that member, while a pure-org executor files them at the org.
+    // The partition is the ownership check: another caller's executor reads a
+    // different namespace and does not see the record.
+    const executionPartition = blobPartitions.user ?? blobPartitions.org;
+    const pendingApprovals = makePendingApprovalStore(blobs, executionPartition);
+    const executionReceipts = makeExecutionReceiptStore(blobs, executionPartition);
 
     for (const plugin of plugins) {
       if (runtimes.has(plugin.id)) {
@@ -6581,6 +6584,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         setPreview: artifactsSetPreview,
       },
       pendingApprovals,
+      executionReceipts,
       execute,
       close,
     };

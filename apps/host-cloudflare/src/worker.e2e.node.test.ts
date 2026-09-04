@@ -112,13 +112,15 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
   });
 
   it("executes TypeScript via /api/executions (QuickJS on workerd)", async () => {
+    const request = { idempotencyKey: "worker-e2e", code: "export default 6 * 7" };
     const res = await worker.fetch("/api/executions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: "export default 6 * 7" }),
+      body: JSON.stringify(request),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
+      executionId: string;
       status: string;
       text: string;
       isError: boolean;
@@ -126,6 +128,18 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(body.status).toBe("completed");
     expect(body.isError).toBe(false);
     expect(body.text).toBe("42");
+
+    const replay = await worker.fetch("/api/executions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toStrictEqual(body);
+
+    const readback = await worker.fetch(`/api/executions/${body.executionId}`);
+    expect(readback.status).toBe(200);
+    expect(await readback.json()).toStrictEqual(body);
   }, 60_000);
 
   it("adds a LARGE OpenAPI source — exercises the R2 blob seam (~1MB spec) + createMany batching (>100 tools)", async () => {

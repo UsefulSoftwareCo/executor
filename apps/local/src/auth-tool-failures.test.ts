@@ -252,6 +252,7 @@ describe("local auth tool failures", () => {
       const execution = yield* run((client) =>
         client.executions.execute({
           payload: {
+            idempotencyKey: "auth-failure-test",
             code: [
               `const result = await tools.${integration}.org.${connection}.default.ping({});`,
               "return result;",

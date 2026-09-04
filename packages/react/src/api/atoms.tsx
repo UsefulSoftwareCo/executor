@@ -150,7 +150,7 @@ export const policiesAtom = ExecutorApiClient.query("policies", "list", {
 });
 
 export const pausedExecutionAtom = (executionId: string) =>
-  ExecutorApiClient.query("executions", "getPaused", {
+  ExecutorApiClient.query("executions", "get", {
     params: { executionId },
     timeToLive: "5 seconds",
   });

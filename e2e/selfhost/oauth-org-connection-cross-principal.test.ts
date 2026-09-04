@@ -221,7 +221,10 @@ scenario(
           const invoke = (client: typeof adminClient, who: string) =>
             Effect.gen(function* () {
               const execution = yield* client.executions.execute({
-                payload: { code: invokeByAddressCode(address!) },
+                payload: {
+                  idempotencyKey: crypto.randomUUID(),
+                  code: invokeByAddressCode(address!),
+                },
               });
               expect(execution.status, `${who}: the execution completes`).toBe("completed");
               if (execution.status !== "completed") return yield* Effect.die("not completed");

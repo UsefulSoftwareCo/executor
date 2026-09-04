@@ -9,6 +9,7 @@ export type ToolCallHost = {
 
 export type TrustedInteraction = {
   executionId: string;
+  pauseSequence?: number;
   interaction: {
     kind?: unknown;
     message?: unknown;
@@ -129,6 +130,7 @@ async function resolveToolResult(
       name: "execute-action-resume",
       arguments: {
         executionId: pending.executionId,
+        ...(pending.pauseSequence === undefined ? {} : { pauseSequence: pending.pauseSequence }),
         action: response.action,
         content: JSON.stringify(response.content ?? {}),
       },
@@ -150,7 +152,13 @@ function parseTrustedInteraction(
     !Array.isArray(structured.interaction)
       ? (structured.interaction as TrustedInteraction["interaction"])
       : {};
-  return { executionId: structured.executionId, interaction };
+  return {
+    executionId: structured.executionId,
+    ...(typeof structured.pauseSequence === "number"
+      ? { pauseSequence: structured.pauseSequence }
+      : {}),
+    interaction,
+  };
 }
 
 /**

@@ -29,12 +29,19 @@ import {
 /** The wire shape of `POST /executions` and `POST /executions/:id/resume`. */
 type ExecutionResponse =
   | {
+      readonly executionId: string;
       readonly status: "completed";
       readonly text: string;
       readonly structured: unknown;
       readonly isError: boolean;
     }
-  | { readonly status: "paused"; readonly text: string; readonly structured: unknown };
+  | {
+      readonly executionId: string;
+      readonly pauseSequence: number;
+      readonly status: "paused";
+      readonly text: string;
+      readonly structured: unknown;
+    };
 
 /** The subset of `CallToolResult` the shell reads back. */
 export interface ShellToolResult {
@@ -75,7 +82,11 @@ export const APPROVAL_EXPIRED_MESSAGE = "This approval expired. Trigger the acti
 const toShellToolResult = (response: ExecutionResponse): ShellToolResult => ({
   content: [{ type: "text", text: response.text }],
   structuredContent: isRecord(response.structured)
-    ? response.structured
+    ? {
+        ...response.structured,
+        executionId: response.executionId,
+        ...(response.status === "paused" ? { pauseSequence: response.pauseSequence } : {}),
+      }
     : { result: response.structured },
   isError: response.status === "completed" && response.isError ? true : undefined,
 });
@@ -211,6 +222,7 @@ export const createHttpShellHost = (options?: {
         const artifactId = input.artifactId;
         return toShellToolResult(
           (await post("/executions", {
+            idempotencyKey: crypto.randomUUID(),
             code,
             ...(typeof artifactId === "string" ? { artifactId } : {}),
           })) as ExecutionResponse,
@@ -219,6 +231,7 @@ export const createHttpShellHost = (options?: {
 
       if (name === "execute-action-resume") {
         const executionId = input.executionId;
+        const pauseSequence = input.pauseSequence;
         const action = input.action;
         if (typeof executionId !== "string") {
           // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
@@ -228,8 +241,14 @@ export const createHttpShellHost = (options?: {
           // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
           throw new Error("Invalid resume action.");
         }
+        if (typeof pauseSequence !== "number") {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: see above
+          throw new Error("Missing pause sequence.");
+        }
         return toShellToolResult(
           (await post(`/executions/${encodeURIComponent(executionId)}/resume`, {
+            idempotencyKey: crypto.randomUUID(),
+            pauseSequence,
             action,
             content: parseResumeContent(input.content),
           })) as ExecutionResponse,

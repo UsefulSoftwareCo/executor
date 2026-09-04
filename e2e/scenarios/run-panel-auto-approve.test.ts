@@ -80,7 +80,9 @@ scenario(
     yield* Effect.gen(function* () {
       // Baseline: without autoApprove the gated tool pauses (the panel's old
       // dead-end), and the side effect must not have happened.
-      const gated = yield* client.executions.execute({ payload: { code } });
+      const gated = yield* client.executions.execute({
+        payload: { idempotencyKey: crypto.randomUUID(), code },
+      });
       expect(gated.status, "a gated tool pauses without autoApprove").toBe("paused");
 
       const beforeApproval = yield* client.policies.list();
@@ -91,10 +93,17 @@ scenario(
 
       // Release the paused fiber so it does not linger waiting on a response.
       if (gated.status === "paused") {
-        const executionId = (gated.structured as { readonly executionId?: string }).executionId;
+        const executionId = gated.executionId;
         if (executionId) {
           yield* client.executions
-            .resume({ params: { executionId }, payload: { action: "cancel" } })
+            .resume({
+              params: { executionId },
+              payload: {
+                idempotencyKey: crypto.randomUUID(),
+                pauseSequence: gated.pauseSequence,
+                action: "cancel",
+              },
+            })
             .pipe(Effect.ignore);
         }
       }
@@ -102,7 +111,7 @@ scenario(
       // With autoApprove the operator IS the approver: the same call runs to
       // completion and the side effect lands.
       const approved = yield* client.executions.execute({
-        payload: { code, autoApprove: true },
+        payload: { idempotencyKey: crypto.randomUUID(), code, autoApprove: true },
       });
       expect(approved.status, "autoApprove runs the gated tool to completion").toBe("completed");
       if (approved.status !== "completed") return; // narrowing only

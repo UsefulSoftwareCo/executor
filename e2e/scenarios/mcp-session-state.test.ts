@@ -112,7 +112,11 @@ scenario(
         yield* server.clearRequests;
 
         const executed = yield* client.executions.execute({
-          payload: { code: selectThenReadCode(slug), autoApprove: true },
+          payload: {
+            idempotencyKey: crypto.randomUUID(),
+            code: selectThenReadCode(slug),
+            autoApprove: true,
+          },
         });
         expect(executed.status, "the two-call execution completed").toBe("completed");
 

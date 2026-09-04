@@ -176,6 +176,7 @@ scenario(
       const execution = completed(
         yield* client.executions.execute({
           payload: {
+            idempotencyKey: crypto.randomUUID(),
             code: [
               `const result = await ${address}({ message: "hello", suffix: "world" });`,
               "return result;",
@@ -285,6 +286,7 @@ scenario(
       const execution = completed(
         yield* client.executions.execute({
           payload: {
+            idempotencyKey: crypto.randomUUID(),
             code: [`const result = await ${address}({});`, "return result;"].join("\n"),
           },
         }),
@@ -342,6 +344,7 @@ scenario(
       const execution = completed(
         yield* client.executions.execute({
           payload: {
+            idempotencyKey: crypto.randomUUID(),
             code: [`const result = await ${address}({ name: "Ada" });`, "return result;"].join(
               "\n",
             ),

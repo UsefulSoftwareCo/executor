@@ -1,30 +1,50 @@
+import { Clock, Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { Effect } from "effect";
-import { Schema } from "effect";
 
-import { ExecutorApi } from "../api";
+import { capture, captureEngineError } from "@executor-js/api";
 import { formatExecuteResult, formatPausedExecution } from "@executor-js/execution";
 import { resolveArtifactAction } from "@executor-js/host-mcp/artifact-action";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "@executor-js/host-mcp/tool-call-code";
-import { PENDING_APPROVAL_TTL_MS } from "@executor-js/sdk";
+import {
+  CompletedExecutionReceipt,
+  PENDING_APPROVAL_TTL_MS,
+  PausedExecutionReceipt,
+  RunningResumeReservation,
+  SettledResumeReservation,
+  sha256Hex,
+  StorageError,
+  type ExecutionIdempotencyKey,
+  type ExecutionReceipt,
+  type PausedExecutionReceipt as PausedReceipt,
+  type RunningExecution,
+} from "@executor-js/sdk";
+
+import { ExecutorApi } from "../api";
 import { ExecutionEngineService, ExecutorService } from "../services";
-import { capture, captureEngineError } from "@executor-js/api";
 
 class ExecutionNotFoundError extends Schema.TaggedErrorClass<ExecutionNotFoundError>()(
   "ExecutionNotFoundError",
-  {
-    executionId: Schema.String,
-  },
+  { executionId: Schema.String },
 ) {}
 
-/**
- * An artifact-originated execution that could not be resolved into a call.
- *
- * Carries the same vocabulary the MCP host's `execute-action` returns
- * (`invalid_action_code`, `artifact_unavailable`, `binding_unresolved`) so the
- * shell sees one contract whichever transport it reached the server through,
- * and the binding UI that ships with sharing can key off `role`/`integration`.
- */
+class ExecutionInProgressError extends Schema.TaggedErrorClass<ExecutionInProgressError>()(
+  "ExecutionInProgressError",
+  { executionId: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+class ExecutionIdempotencyConflictError extends Schema.TaggedErrorClass<ExecutionIdempotencyConflictError>()(
+  "ExecutionIdempotencyConflictError",
+  { executionId: Schema.String, idempotencyKey: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+class ExecutionResumeConflictError extends Schema.TaggedErrorClass<ExecutionResumeConflictError>()(
+  "ExecutionResumeConflictError",
+  { executionId: Schema.String, pauseSequence: Schema.Number },
+  { httpApiStatus: 409 },
+) {}
+
 class ArtifactActionError extends Schema.TaggedErrorClass<ArtifactActionError>()(
   "ArtifactActionError",
   {
@@ -40,19 +60,9 @@ class ArtifactActionError extends Schema.TaggedErrorClass<ArtifactActionError>()
   }
 }
 
-/**
- * An approval that expired before the human answered.
- *
- * Distinct from `ExecutionNotFoundError` (an id that was never ours) so the
- * shell can tell the user their approval window closed and the action can simply
- * be triggered again — nothing ran. 410 Gone, because the resource existed and
- * deliberately no longer does.
- */
 class ApprovalExpiredError extends Schema.TaggedErrorClass<ApprovalExpiredError>()(
   "ApprovalExpiredError",
-  {
-    executionId: Schema.String,
-  },
+  { executionId: Schema.String },
   { httpApiStatus: 410 },
 ) {
   override get message(): string {
@@ -60,13 +70,21 @@ class ApprovalExpiredError extends Schema.TaggedErrorClass<ApprovalExpiredError>
   }
 }
 
-/**
- * Parse and bind one artifact-originated call, or fail with something the shell
- * can render inside the component that made it.
- *
- * The artifact is read through the request's own scoped executor, so an id that
- * isn't this caller's simply doesn't resolve.
- */
+const jsonEncode = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+const digest = (value: unknown) =>
+  jsonEncode(value).pipe(
+    Effect.mapError(
+      (cause) =>
+        new StorageError({
+          message: "Execution receipt value is not JSON serializable",
+          cause,
+        }),
+    ),
+    Effect.flatMap(sha256Hex),
+    Effect.map((hash) => `sha256:${hash}`),
+  );
+
 const resolveArtifactCode = (
   code: string,
   artifactId: string,
@@ -98,14 +116,6 @@ const resolveArtifactCode = (
     });
   });
 
-/**
- * Record a paused artifact call so a later request can honour the approval.
- *
- * Best-effort by design: the in-memory pause is still live and still the fast
- * path, so a storage hiccup here must not turn a working approval into a failed
- * execution. It degrades to exactly the behaviour we had before this record
- * existed.
- */
 const recordPendingApproval = (approval: {
   readonly executionId: string;
   readonly artifactId: string;
@@ -119,22 +129,10 @@ const recordPendingApproval = (approval: {
       .pipe(Effect.catchCause(() => Effect.void));
   });
 
-/**
- * Honour an approval whose paused fiber is no longer reachable.
- *
- * The record is read through the caller's OWN scoped executor, so an execution
- * id that is not this caller's reads as absent — the same-query ownership rule
- * the artifact path already uses. It is consumed on read, so one approval
- * authorizes exactly one invocation.
- *
- * A non-accept answer discards the record and reports the decline, which is the
- * same observable outcome as declining a live pause: nothing runs.
- */
 const resumeFromPendingApproval = (executionId: string, action: "accept" | "decline" | "cancel") =>
   Effect.gen(function* () {
     const executor = yield* ExecutorService;
     const engine = yield* ExecutionEngineService;
-
     const approval = yield* executor.pendingApprovals
       .consume(executionId)
       .pipe(Effect.catchCause(() => Effect.succeed(null)));
@@ -144,87 +142,169 @@ const resumeFromPendingApproval = (executionId: string, action: "accept" | "decl
       return {
         status: "completed" as const,
         text: `Approval ${action === "decline" ? "declined" : "cancelled"}. Nothing ran.`,
-        structured: { status: "declined", executionId, address: approval.address },
+        structured: {
+          status: "declined",
+          executionId,
+          address: approval.address,
+        },
         isError: false,
       };
     }
 
-    // The human approved, so run the recorded call with the gate satisfied.
-    // `code` is the address the server itself resolved at pause time, so this
-    // runs exactly the call that was described in the approval prompt.
     const outcome = yield* captureEngineError(
-      engine.executeWithPause(approval.code, { autoApprove: true }),
+      engine.executeWithPause(approval.code, {
+        autoApprove: true,
+        executionId,
+      }),
     );
-
     if (outcome.status === "completed") {
       const formatted = formatExecuteResult(outcome.result);
-      return {
-        status: "completed" as const,
-        text: formatted.text,
-        structured: formatted.structured,
-        isError: formatted.isError,
-      };
+      return { status: "completed" as const, ...formatted };
     }
-
-    // `autoApprove` accepts every gate inline, so a second pause is not
-    // reachable here; surface it rather than silently dropping the call.
     const formatted = formatPausedExecution(outcome.execution);
-    return {
-      status: "paused" as const,
-      text: formatted.text,
-      structured: formatted.structured,
-    };
+    return { status: "paused" as const, ...formatted };
   });
+
+const completedReceipt = (
+  execution: RunningExecution | PausedReceipt,
+  formatted: {
+    readonly text: string;
+    readonly structured: unknown;
+    readonly isError: boolean;
+  },
+) =>
+  Effect.gen(function* () {
+    const resultHash = yield* digest(formatted);
+    const completedAt = yield* Clock.currentTimeMillis;
+    return CompletedExecutionReceipt.make({
+      executionId: execution.executionId,
+      idempotencyKey: execution.idempotencyKey,
+      requestHash: execution.requestHash,
+      startedAt: execution.startedAt,
+      status: "completed",
+      ...formatted,
+      resultHash,
+      completedAt,
+    });
+  });
+
+const pausedReceipt = (
+  execution: RunningExecution | PausedReceipt,
+  formatted: { readonly text: string; readonly structured: unknown },
+  pauseSequence: number,
+) => {
+  const structured =
+    typeof formatted.structured === "object" &&
+    formatted.structured !== null &&
+    !Array.isArray(formatted.structured)
+      ? { ...formatted.structured, pauseSequence }
+      : formatted.structured;
+  return PausedExecutionReceipt.make({
+    executionId: execution.executionId,
+    idempotencyKey: execution.idempotencyKey,
+    requestHash: execution.requestHash,
+    startedAt: execution.startedAt,
+    status: "paused",
+    text: formatted.text,
+    structured,
+    pauseSequence,
+  });
+};
+
+const replayOrConflict = (
+  execution: RunningExecution | ExecutionReceipt,
+  idempotencyKey: ExecutionIdempotencyKey,
+  requestHash: string,
+) => {
+  if (execution.idempotencyKey !== idempotencyKey || execution.requestHash !== requestHash) {
+    return Effect.fail(
+      new ExecutionIdempotencyConflictError({
+        executionId: execution.executionId,
+        idempotencyKey,
+      }),
+    );
+  }
+  if (execution.status === "running") {
+    return Effect.fail(new ExecutionInProgressError({ executionId: execution.executionId }));
+  }
+  return Effect.succeed(execution);
+};
 
 export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions", (handlers) =>
   handlers
-    .handle("getPaused", ({ params: path }) =>
+    .handle("get", ({ params: path }) =>
       capture(
         Effect.gen(function* () {
-          const engine = yield* ExecutionEngineService;
-          const paused = yield* captureEngineError(engine.getPausedExecution(path.executionId));
-
-          if (!paused) {
-            return yield* new ExecutionNotFoundError({ executionId: path.executionId });
+          const executor = yield* ExecutorService;
+          const execution = yield* executor.executionReceipts.get(path.executionId);
+          if (execution === null) {
+            return yield* new ExecutionNotFoundError({
+              executionId: path.executionId,
+            });
           }
-
-          return formatPausedExecution(paused);
+          if (execution.status === "running") {
+            return yield* new ExecutionInProgressError({
+              executionId: path.executionId,
+            });
+          }
+          if (execution.status === "paused") {
+            const resume = yield* executor.executionReceipts.getResume(
+              execution.executionId,
+              execution.pauseSequence,
+            );
+            if (resume?.status === "running") {
+              return yield* new ExecutionInProgressError({
+                executionId: path.executionId,
+              });
+            }
+          }
+          return execution;
         }),
       ),
     )
     .handle("execute", ({ payload }) =>
       capture(
         Effect.gen(function* () {
+          const executor = yield* ExecutorService;
           const engine = yield* ExecutionEngineService;
-          // An artifact-originated request is not arbitrary code. It is parsed
-          // against the shell proxy's one grammar and rewritten through the
-          // artifact's connection bindings, exactly as `execute-action` does in
-          // the MCP host — the console's artifact page must not be a wider door
-          // onto the same iframe.
           const code =
             payload.artifactId === undefined
               ? payload.code
               : yield* resolveArtifactCode(payload.code, payload.artifactId);
-          const outcome = yield* captureEngineError(
-            engine.executeWithPause(code, { autoApprove: payload.autoApprove }),
-          );
-
-          if (outcome.status === "completed") {
-            const formatted = formatExecuteResult(outcome.result);
-            return {
-              status: "completed" as const,
-              text: formatted.text,
-              structured: formatted.structured,
-              isError: formatted.isError,
-            };
+          const requestHash = yield* digest({
+            code: payload.code,
+            autoApprove: payload.autoApprove,
+            artifactId: payload.artifactId,
+          });
+          const startedAt = yield* Clock.currentTimeMillis;
+          const reservation = yield* executor.executionReceipts.reserve({
+            idempotencyKey: payload.idempotencyKey,
+            requestHash,
+            startedAt,
+          });
+          if (!reservation.created) {
+            return yield* replayOrConflict(
+              reservation.execution,
+              payload.idempotencyKey,
+              requestHash,
+            );
           }
 
-          // The pause is a live fiber in THIS engine, which on a host that
-          // builds an engine per request is gone the moment this response is
-          // written. Record the resolved call so the approval can be honoured by
-          // whichever instance serves the resume. Artifact calls only: a general
-          // codemode pause can sit anywhere inside arbitrary code and is not
-          // reconstructible from one address.
+          const outcome = yield* captureEngineError(
+            engine.executeWithPause(code, {
+              autoApprove: payload.autoApprove,
+              executionId: reservation.execution.executionId,
+            }),
+          );
+          if (outcome.status === "completed") {
+            const receipt = yield* completedReceipt(
+              reservation.execution,
+              formatExecuteResult(outcome.result),
+            );
+            yield* executor.executionReceipts.put(receipt);
+            return receipt;
+          }
+
           if (payload.artifactId !== undefined) {
             yield* recordPendingApproval({
               executionId: outcome.execution.id,
@@ -233,52 +313,154 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
               address: String(outcome.execution.elicitationContext.address),
             });
           }
-
-          const formatted = formatPausedExecution(outcome.execution);
-          return {
-            status: "paused" as const,
-            text: formatted.text,
-            structured: formatted.structured,
-          };
+          const receipt = pausedReceipt(
+            reservation.execution,
+            formatPausedExecution(outcome.execution),
+            0,
+          );
+          yield* executor.executionReceipts.put(receipt);
+          return receipt;
         }),
       ),
     )
     .handle("resume", ({ params: path, payload }) =>
       capture(
         Effect.gen(function* () {
+          const executor = yield* ExecutorService;
           const engine = yield* ExecutionEngineService;
+          const execution = yield* executor.executionReceipts.get(path.executionId);
+          if (execution === null) {
+            return yield* new ExecutionNotFoundError({
+              executionId: path.executionId,
+            });
+          }
+          if (execution.status === "running") {
+            return yield* new ExecutionInProgressError({
+              executionId: path.executionId,
+            });
+          }
+
+          const requestHash = yield* digest({
+            action: payload.action,
+            content: payload.content,
+          });
+          const prior = yield* executor.executionReceipts.getResume(
+            path.executionId,
+            payload.pauseSequence,
+          );
+          if (prior !== null) {
+            if (
+              prior.idempotencyKey !== payload.idempotencyKey ||
+              prior.requestHash !== requestHash
+            ) {
+              return yield* new ExecutionResumeConflictError({
+                executionId: path.executionId,
+                pauseSequence: payload.pauseSequence,
+              });
+            }
+            if (prior.status === "settled") return prior.response;
+            if (
+              execution.status === "completed" ||
+              (execution.status === "paused" && execution.pauseSequence > payload.pauseSequence)
+            ) {
+              const settled = SettledResumeReservation.make({
+                ...prior,
+                status: "settled",
+                response: execution,
+                completedAt: yield* Clock.currentTimeMillis,
+              });
+              yield* executor.executionReceipts.settleResume(settled);
+              return execution;
+            }
+            return yield* new ExecutionInProgressError({
+              executionId: path.executionId,
+            });
+          }
+
+          if (execution.status === "completed") return execution;
+          if (execution.pauseSequence !== payload.pauseSequence) {
+            return yield* new ExecutionResumeConflictError({
+              executionId: path.executionId,
+              pauseSequence: payload.pauseSequence,
+            });
+          }
+
+          const resumeStartedAt = yield* Clock.currentTimeMillis;
+          const reservation = RunningResumeReservation.make({
+            status: "running",
+            executionId: path.executionId,
+            pauseSequence: payload.pauseSequence,
+            idempotencyKey: payload.idempotencyKey,
+            requestHash,
+            startedAt: resumeStartedAt,
+          });
+          const reserved = yield* executor.executionReceipts.reserveResume(reservation);
+          if (!reserved.created) {
+            if (
+              reserved.reservation.idempotencyKey !== payload.idempotencyKey ||
+              reserved.reservation.requestHash !== requestHash
+            ) {
+              return yield* new ExecutionResumeConflictError({
+                executionId: path.executionId,
+                pauseSequence: payload.pauseSequence,
+              });
+            }
+            if (reserved.reservation.status === "settled") return reserved.reservation.response;
+            return yield* new ExecutionInProgressError({
+              executionId: path.executionId,
+            });
+          }
+
           const result = yield* captureEngineError(
             engine.resume(path.executionId, {
               action: payload.action,
-              content: payload.content as Record<string, unknown> | undefined,
+              content: payload.content,
             }),
           );
-
-          // No live pause: either this resume landed on a different engine
-          // instance than the pause did (the normal case on a host that builds
-          // an engine per request), or the window really has closed.
-          if (!result) {
-            const honoured = yield* resumeFromPendingApproval(path.executionId, payload.action);
-            if (honoured) return honoured;
-            return yield* new ApprovalExpiredError({ executionId: path.executionId });
+          const recovered =
+            result ?? (yield* resumeFromPendingApproval(path.executionId, payload.action));
+          if (!recovered) {
+            yield* executor.executionReceipts.discardResume(
+              path.executionId,
+              payload.pauseSequence,
+            );
+            return yield* new ApprovalExpiredError({
+              executionId: path.executionId,
+            });
           }
 
-          if (result.status === "completed") {
-            const formatted = formatExecuteResult(result.result);
-            return {
-              status: "completed" as const,
-              text: formatted.text,
-              structured: formatted.structured,
-              isError: formatted.isError,
-            };
-          }
-
-          const formatted = formatPausedExecution(result.execution);
-          return {
-            status: "paused" as const,
-            text: formatted.text,
-            structured: formatted.structured,
-          };
+          const response =
+            recovered.status === "completed"
+              ? yield* completedReceipt(
+                  execution,
+                  "result" in recovered
+                    ? formatExecuteResult(recovered.result)
+                    : {
+                        text: recovered.text,
+                        structured: recovered.structured,
+                        isError: recovered.isError,
+                      },
+                )
+              : pausedReceipt(
+                  execution,
+                  "execution" in recovered
+                    ? formatPausedExecution(recovered.execution)
+                    : {
+                        text: recovered.text,
+                        structured: recovered.structured,
+                      },
+                  execution.pauseSequence + 1,
+                );
+          yield* executor.executionReceipts.put(response);
+          yield* executor.executionReceipts.settleResume(
+            SettledResumeReservation.make({
+              ...reservation,
+              status: "settled",
+              response,
+              completedAt: yield* Clock.currentTimeMillis,
+            }),
+          );
+          return response;
         }),
       ),
     ),

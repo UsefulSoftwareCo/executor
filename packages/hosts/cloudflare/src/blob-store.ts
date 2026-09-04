@@ -57,6 +57,16 @@ export const makeR2BlobStore = (bucket: R2Bucket): BlobStore => ({
       },
       catch: storeError("put"),
     }),
+  putIfAbsent: (namespace, key, value) =>
+    Effect.tryPromise({
+      try: async () => {
+        const result = await bucket.put(objectName(namespace, key), value, {
+          onlyIf: { etagDoesNotMatch: "*" },
+        });
+        return result !== null;
+      },
+      catch: storeError("putIfAbsent"),
+    }),
   delete: (namespace, key) =>
     Effect.tryPromise({
       try: () => bucket.delete(objectName(namespace, key)),

@@ -43,7 +43,7 @@ export type ExecutionEngine = {
   ) => Promise<ExecuteResult>;
   readonly executeWithPause: (
     code: string,
-    options?: { readonly autoApprove?: boolean },
+    options?: { readonly autoApprove?: boolean; readonly executionId?: string },
   ) => Promise<ExecutionResult>;
   readonly resume: (
     executionId: string,

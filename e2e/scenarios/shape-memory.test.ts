@@ -122,7 +122,11 @@ scenario(
 
           const describe = Effect.gen(function* () {
             const executed = yield* client.executions.execute({
-              payload: { code: describeCode(String(slug)), autoApprove: true },
+              payload: {
+                idempotencyKey: crypto.randomUUID(),
+                code: describeCode(String(slug)),
+                autoApprove: true,
+              },
             });
             expect(executed.status, executed.text).toBe("completed");
             return JSON.parse(executed.text) as DescribeOutcome;
@@ -137,6 +141,7 @@ scenario(
           // One real call against the live upstream teaches the shape.
           const invoked = yield* client.executions.execute({
             payload: {
+              idempotencyKey: crypto.randomUUID(),
               code: `
 const result = await tools.${slug}.org.main.issues.listIssues({});
 return { ok: result.ok };

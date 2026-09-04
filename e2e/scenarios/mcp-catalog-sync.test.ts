@@ -220,7 +220,11 @@ scenario(
         // The catalog mutates DURING this call; the notification arrives on
         // the same connection the call rides.
         const executed = yield* client.executions.execute({
-          payload: { code: invokeToolCode(slug, "main", "rename_greet", {}), autoApprove: true },
+          payload: {
+            idempotencyKey: crypto.randomUUID(),
+            code: invokeToolCode(slug, "main", "rename_greet", {}),
+            autoApprove: true,
+          },
         });
         expect(executed.status, "the mutating call completed").toBe("completed");
         const outcome = JSON.parse(executed.text) as SandboxToolOutcome;
@@ -307,6 +311,7 @@ scenario(
         // blindly.
         const executed = yield* client.executions.execute({
           payload: {
+            idempotencyKey: crypto.randomUUID(),
             code: invokeToolCode(slug, "main", mutable.initialToolName, { name: "world" }),
             autoApprove: true,
           },
