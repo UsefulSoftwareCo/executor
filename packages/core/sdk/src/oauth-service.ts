@@ -1477,19 +1477,25 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // tenant's org rows + this subject's own user rows, so no explicit filter is
   // needed. The `client_secret` column is deliberately never projected.
   // -----------------------------------------------------------------------
-  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> => {
-    // First-party apps lead the list: config-resolved, visible to every caller,
-    // and projected exactly like stored rows — clientId only, never the secret.
-    // Owner is reported as "org" (the widest visibility the summary shape can
-    // express); the flow itself ignores owner for first-party slugs.
-    //
-    // `unlisted` apps are withheld here and ONLY here: listing is what offers an
-    // app for a NEW connection, so this is the whole of "stop offering it".
-    // `loadClient` still resolves them, keeping every existing connection's
-    // refresh and reconnect intact.
-    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()]
-      .filter((config) => config.unlisted !== true)
-      .map((config) => ({
+  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> =>
+    Effect.gen(function* () {
+      // First-party apps lead the list: config-resolved, filtered by host policy,
+      // and projected exactly like stored rows — clientId only, never the secret.
+      // Owner is reported as "org" (the widest visibility the summary shape can
+      // express); the flow itself ignores owner for first-party slugs.
+      //
+      // `unlisted` apps are withheld here and ONLY here: listing is what offers an
+      // app for a NEW connection, so this is the whole of "stop offering it".
+      // `loadClient` still resolves them, keeping every existing connection's
+      // refresh and reconnect intact.
+      const listed = yield* Effect.filter([...firstPartyBySlug.values()], (config) =>
+        config.unlisted === true
+          ? Effect.succeed(false)
+          : config.isListed === undefined
+            ? Effect.succeed(true)
+            : config.isListed({ userId: deps.subject, organizationId: deps.tenant }),
+      );
+      const firstPartySummaries: readonly OAuthClientSummary[] = listed.map((config) => ({
         owner: "org",
         slug: firstPartyOAuthClientSlug(config.name),
         grant: "authorization_code",
@@ -1506,49 +1512,49 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
         },
       }));
-    return deps.fuma
-      .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
-      .pipe(
-        Effect.flatMap((rows) =>
-          Effect.forEach(rows, (row) => {
-            const grant = parseGrant(row.grant);
-            // EXPLICIT — a row with an unknown grant is corrupt; surface it
-            // loudly rather than silently displaying it as authorization_code.
-            if (grant === null) {
-              return Effect.fail(
-                new StorageError({
-                  message: `oauth_client ${String(row.slug)} has an unknown grant: ${String(row.grant)}`,
-                  cause: undefined,
-                }),
+      return yield* deps.fuma
+        .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
+        .pipe(
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) => {
+              const grant = parseGrant(row.grant);
+              // EXPLICIT — a row with an unknown grant is corrupt; surface it
+              // loudly rather than silently displaying it as authorization_code.
+              if (grant === null) {
+                return Effect.fail(
+                  new StorageError({
+                    message: `oauth_client ${String(row.slug)} has an unknown grant: ${String(row.grant)}`,
+                    cause: undefined,
+                  }),
+                );
+              }
+              const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
+                row.token_endpoint_auth_method,
               );
-            }
-            const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
-              row.token_endpoint_auth_method,
-            );
-            if (tokenEndpointAuthMethod === null) {
-              return Effect.fail(
-                new StorageError({
-                  message: `oauth_client ${String(row.slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
-                  cause: undefined,
-                }),
-              );
-            }
-            return Effect.succeed({
-              owner: String(row.owner) as Owner,
-              slug: OAuthClientSlug.make(String(row.slug)),
-              grant,
-              authorizationUrl: String(row.authorization_url),
-              tokenUrl: String(row.token_url),
-              resource: row.resource == null ? null : String(row.resource),
-              clientId: String(row.client_id),
-              ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
-              origin: parseOAuthClientOrigin(row),
-            } satisfies OAuthClientSummary);
-          }),
-        ),
-        Effect.map((stored) => [...firstPartySummaries, ...stored]),
-      );
-  };
+              if (tokenEndpointAuthMethod === null) {
+                return Effect.fail(
+                  new StorageError({
+                    message: `oauth_client ${String(row.slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
+                    cause: undefined,
+                  }),
+                );
+              }
+              return Effect.succeed({
+                owner: String(row.owner) as Owner,
+                slug: OAuthClientSlug.make(String(row.slug)),
+                grant,
+                authorizationUrl: String(row.authorization_url),
+                tokenUrl: String(row.token_url),
+                resource: row.resource == null ? null : String(row.resource),
+                clientId: String(row.client_id),
+                ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
+                origin: parseOAuthClientOrigin(row),
+              } satisfies OAuthClientSummary);
+            }),
+          ),
+          Effect.map((stored) => [...firstPartySummaries, ...stored]),
+        );
+    });
 
   // -----------------------------------------------------------------------
   // Load an oauth_client row by (owner, slug).
