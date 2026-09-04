@@ -775,6 +775,38 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("tools.describeAll inlines only the reachable input definitions per tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+      });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: {
+          provider: ProviderKey.make("memory"),
+          id: ProviderItemId.make("v"),
+        },
+      });
+
+      const all = yield* executor.tools.describeAll();
+      const inspect = all.find((tool) => tool.name === "inspect");
+      const run = all.find((tool) => tool.name === "run");
+      expect(inspect).toBeDefined();
+      expect(run).toBeDefined();
+      // The INPUT schema's transitive `$ref` closure rides along under `$defs`,
+      // so the schema is self-contained on the wire. `Owner` is only reachable
+      // from the output schema and `Unused` from nothing, so neither appears.
+      const inlined = inspect?.inputSchema as { $defs?: Record<string, unknown> };
+      expect(Object.keys(inlined.$defs ?? {}).sort()).toEqual(["Cat", "Collar", "Dog", "Pet"]);
+      // A tool with no declared input carries no schema at all.
+      expect(run?.inputSchema).toBeUndefined();
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

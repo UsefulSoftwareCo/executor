@@ -71,6 +71,7 @@ export const makeMcpBuildServer =
           engine,
           artifacts: executor.artifacts,
           connections: executor.connections,
+          tools: executor.tools,
           ...(hostOptions?.loadAppShellHtml
             ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
             : {}),
@@ -88,6 +89,9 @@ export const makeMcpBuildServer =
           ...(options ?? {}),
         }).pipe(
           Effect.withSpan("mcp.server.create"),
+          // A passthrough session with no catalog is a build failure like any
+          // other: the client gets the same retryable envelope.
+          Effect.mapError((cause) => new McpEngineBuildError({ cause })),
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),

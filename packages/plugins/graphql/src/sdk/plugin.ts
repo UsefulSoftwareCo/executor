@@ -570,6 +570,7 @@ const annotationsFor = (binding: OperationBinding): ToolAnnotations => {
     return {
       requiresApproval: true,
       approvalDescription: `mutation ${binding.fieldName}`,
+      readOnly: false,
     };
   }
   return {};

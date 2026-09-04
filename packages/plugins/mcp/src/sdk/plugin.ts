@@ -543,9 +543,13 @@ const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
     ...(entry._meta ? { _meta: entry._meta } : {}),
   };
+  const readOnly = entry.annotations?.readOnlyHint;
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,
     ...(destructive ? { approvalDescription: entry.annotations?.title ?? entry.toolName } : {}),
+    // Carry the upstream read-only hint through verbatim: a passthrough MCP
+    // surface re-advertises it, and only the upstream server knows.
+    ...(typeof readOnly === "boolean" ? { readOnly } : {}),
     mcp: stamp,
   };
   return {

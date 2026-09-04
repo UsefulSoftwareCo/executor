@@ -773,3 +773,67 @@ describe("approve / require_approval interaction with annotations", () => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// tools.describeAll — the one-pass projection the passthrough MCP surface
+// serves: every visible tool with its resolved policy, in a single read of the
+// catalog + rule set. The fixture plugin marks `vercel.delete` as requiring
+// approval by annotation; user rules layer on top exactly as they do for
+// `tools.list` and `execute`.
+// ---------------------------------------------------------------------------
+
+describe("executor.tools.describeAll", () => {
+  it.effect("returns every visible tool with the effective policy folded in", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const all = yield* executor.tools.describeAll();
+      const byAddress = new Map(all.map((tool) => [String(tool.address), tool]));
+      expect([...byAddress.keys()].sort()).toEqual([
+        String(addr(GITHUB, "list")),
+        String(addr(VERCEL, "delete")),
+        String(addr(VERCEL, "deploy")),
+      ]);
+      // Plugin default: `delete` requires approval, `deploy` does not.
+      expect(byAddress.get(String(addr(VERCEL, "delete")))?.policy).toBe("require_approval");
+      expect(byAddress.get(String(addr(VERCEL, "deploy")))?.policy).toBe("approve");
+      expect(byAddress.get(String(addr(GITHUB, "list")))?.policy).toBe("approve");
+      // The projection carries the routing triple a name mangler needs.
+      const deploy = byAddress.get(String(addr(VERCEL, "deploy")))!;
+      expect(deploy.integration).toBe("vercel");
+      expect(deploy.owner).toBe("org");
+      expect(deploy.connection).toBe(String(CONN));
+      expect(deploy.name).toBe("deploy");
+    }),
+  );
+
+  it.effect("omits blocked tools and honours require_approval / approve rules", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*.*.deploy",
+        action: "require_approval",
+      });
+      // An explicit approve overrides the plugin's requiresApproval default.
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*.*.delete",
+        action: "approve",
+      });
+      const all = yield* executor.tools.describeAll();
+      const byName = new Map(all.map((tool) => [`${tool.integration}.${tool.name}`, tool.policy]));
+      expect(byName.has("github.list")).toBe(false);
+      expect(byName.get("vercel.deploy")).toBe("require_approval");
+      expect(byName.get("vercel.delete")).toBe("approve");
+    }),
+  );
+
+  it.effect("narrows by integration like tools.list", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const only = yield* executor.tools.describeAll({ integration: GITHUB });
+      expect(only.map((tool) => tool.name)).toEqual(["list"]);
+    }),
+  );
+});

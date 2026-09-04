@@ -199,10 +199,10 @@ import {
   ORG_SUBJECT,
   type ExecutorOwnerPolicyContext,
 } from "./owner-policy";
-import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
+import { ToolSchemaView, type IntegrationDetectionResult, type ToolProjection } from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
-import { collectReferencedDefinitions } from "./schema-refs";
+import { collectReferencedDefinitions, reattachDefs } from "./schema-refs";
 import {
   refreshAccessToken,
   exchangeClientCredentials,
@@ -469,6 +469,19 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   readonly tools: {
     readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
     readonly schema: (address: ToolAddress) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
+    /**
+     * Every visible dynamic tool with its self-contained input schema and
+     * resolved policy, in ONE pass: the tool rows, the shared `$defs`, and the
+     * policy rule set are each read once, then joined in memory. Built for
+     * surfaces that must advertise the whole catalog at once (the passthrough
+     * MCP mode), where a per-tool `schema()` round-trip would be an N+1 over
+     * thousands of rows. Blocked tools are omitted; static (plugin
+     * configuration) tools are omitted too — they are codemode affordances,
+     * not integration tools.
+     */
+    readonly describeAll: (
+      filter?: ToolListFilter,
+    ) => Effect.Effect<readonly ToolProjection[], StorageFailure>;
   };
 
   readonly providers: {
@@ -5758,6 +5771,91 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
       });
 
+    const toolsDescribeAll = (
+      filter?: ToolListFilter,
+    ): Effect.Effect<readonly ToolProjection[], StorageFailure> =>
+      Effect.gen(function* () {
+        if (toolsSyncGraceMs === null) {
+          yield* syncStaleConnectionTools;
+        } else {
+          yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
+        }
+        const integrationWhere = (b: AnyCb) =>
+          b.and(
+            filter?.integration === undefined
+              ? true
+              : b("integration", "=", String(filter.integration)),
+            filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+            filter?.connection === undefined
+              ? true
+              : b("connection", "=", String(filter.connection)),
+          );
+        // Unlike `toolsList`, this read NEEDS `input_schema`: it is the schema
+        // the surface advertises. `output_schema` stays out — nothing here
+        // serves it, and it is the other half of the per-row weight.
+        const rows = yield* core.findMany("tool", {
+          where: integrationWhere,
+          select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
+        });
+        const policyRules = yield* listActivePolicyRuleSet();
+
+        // Shared definitions, loaded once and keyed per connection: `$ref`s are
+        // connection-local (`#/$defs/<name>` resolves against the producing
+        // connection's `definition` rows), so the join key is the same
+        // (owner, integration, connection) triple the tool row carries.
+        const definitionRows = yield* core.findMany("definition", {
+          where: integrationWhere,
+        });
+        const defsByConnection = new Map<string, Map<string, unknown>>();
+        for (const def of definitionRows) {
+          const key = `${def.owner}\u0000${def.integration}\u0000${def.connection}`;
+          let bucket = defsByConnection.get(key);
+          if (!bucket) {
+            bucket = new Map();
+            defsByConnection.set(key, bucket);
+          }
+          bucket.set(def.name, decodeJsonColumn(def.schema));
+        }
+        const EMPTY_DEFS: ReadonlyMap<string, unknown> = new Map();
+
+        const projections: ToolProjection[] = [];
+        for (const row of rows) {
+          const tool = rowToTool(row);
+          if (!matchesToolFilter(tool, filter)) continue;
+          const effective = yield* resolvePolicyFromRuleSet(
+            normalizedPolicyId(tool),
+            policyRules,
+            tool.annotations?.requiresApproval,
+          );
+          if (effective.action === "block") continue;
+          // The rule set already folded the plugin default in (`liftPlugin`),
+          // and an explicit user `approve` overrides it — the same answer
+          // `approvalRequired` gives on the invoke path.
+          const policy =
+            effective.action === "require_approval"
+              ? ("require_approval" as const)
+              : ("approve" as const);
+          const defs =
+            defsByConnection.get(`${row.owner}\u0000${row.integration}\u0000${row.connection}`) ??
+            EMPTY_DEFS;
+          const inputSchema =
+            tool.inputSchema === undefined ? undefined : reattachDefs(tool.inputSchema, defs);
+          const readOnly = tool.annotations?.readOnly;
+          projections.push({
+            address: tool.address,
+            integration: String(tool.integration),
+            owner: tool.owner,
+            connection: String(tool.connection),
+            name: String(tool.name),
+            description: tool.description,
+            ...(inputSchema === undefined ? {} : { inputSchema }),
+            policy,
+            ...(typeof readOnly === "boolean" ? { readOnly } : {}),
+          });
+        }
+        return projections;
+      }).pipe(Effect.withSpan("executor.tools.describe_all"));
+
     // ------------------------------------------------------------------
     // Providers
     // ------------------------------------------------------------------
@@ -7056,6 +7154,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       tools: {
         list: toolsList,
         schema: toolSchema,
+        describeAll: toolsDescribeAll,
       },
       providers: {
         list: providersList,

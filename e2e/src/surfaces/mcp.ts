@@ -100,6 +100,11 @@ export interface McpCallResult {
 export interface McpToolDef {
   readonly name: string;
   readonly description: string;
+  /** The advertised MCP annotations (`readOnlyHint`, `destructiveHint`, …),
+   *  for scenarios that assert on what a harness's native approval reads. */
+  readonly annotations?: Record<string, unknown>;
+  /** The advertised input JSON Schema, verbatim. */
+  readonly inputSchema?: unknown;
 }
 
 /** How a connection surfaces a paused (approval-gated) execution. `browser` is
@@ -172,6 +177,11 @@ export interface McpSurface {
        *  `search_<integration>` tools (`?search_tools=true`). Omitted means
        *  the product default: none. */
       readonly searchTools?: boolean;
+      /** `passthrough` serves every visible integration tool directly
+       *  (`?mode=passthrough`). Omitted means the product default: codemode. */
+      readonly mode?: "codemode" | "passthrough";
+      /** Passthrough only: `?integrations=a,b`. */
+      readonly integrations?: readonly string[];
       readonly url?: string;
     },
   ) => McpSession;
@@ -315,6 +325,10 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
       ...(options?.elicitationMode ? [`elicitation_mode=${options.elicitationMode}`] : []),
       ...(options?.artifacts === false ? ["artifacts=false"] : []),
       ...(options?.searchTools === true ? ["search_tools=true"] : []),
+      ...(options?.mode === "passthrough" ? ["mode=passthrough"] : []),
+      ...(options?.integrations && options.integrations.length > 0
+        ? [`integrations=${encodeURIComponent(options.integrations.join(","))}`]
+        : []),
     ].join("&");
     const sessionUrl = sessionQuery ? `${mcpUrl}?${sessionQuery}` : mcpUrl;
 
@@ -358,6 +372,10 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
             return listed.tools.map((tool) => ({
               name: tool.name,
               description: tool.description ?? "",
+              ...(tool.annotations
+                ? { annotations: tool.annotations as Record<string, unknown> }
+                : {}),
+              inputSchema: tool.inputSchema,
             }));
           }),
         call,
@@ -408,14 +426,37 @@ export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => (
         return defs.map((tool: { name: string }) => tool.name);
       });
 
+    // mcporter's `listTools` projects annotations away, so read the raw
+    // client it holds: the same connection (and cached OAuth), the full tool
+    // definition.
     const describeTools = () =>
       Effect.promise(async (): Promise<ReadonlyArray<McpToolDef>> => {
-        const defs = await (await runtime()).listTools(serverName, callOptions);
-        connected = true;
-        return defs.map((tool: { name: string; description?: string }) => ({
-          name: tool.name,
-          description: tool.description ?? "",
-        }));
+        const rt = await runtime();
+        if (!connected) {
+          await rt.listTools(serverName, callOptions);
+          connected = true;
+        }
+        const context = await rt.connect(serverName, {
+          allowCachedAuth: true,
+          oauthSessionOptions: callOptions.oauthSessionOptions,
+        });
+        const out: McpToolDef[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await context.client.listTools(cursor ? { cursor } : undefined);
+          for (const tool of page.tools) {
+            out.push({
+              name: tool.name,
+              description: tool.description ?? "",
+              ...(tool.annotations
+                ? { annotations: tool.annotations as Record<string, unknown> }
+                : {}),
+              inputSchema: tool.inputSchema,
+            });
+          }
+          cursor = page.nextCursor ?? undefined;
+        } while (cursor);
+        return out;
       });
 
     const call = (name: string, args: Record<string, unknown> = {}) =>

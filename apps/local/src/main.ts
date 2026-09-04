@@ -123,6 +123,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         engine,
         artifacts: executor.artifacts,
         connections: executor.connections,
+        tools: executor.tools,
         ...appsConfig,
       },
       createConfigForResource: async (resource) => {
@@ -132,6 +133,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
               engine,
               artifacts: executor.artifacts,
               connections: executor.connections,
+              tools: executor.tools,
               ...appsConfig,
             },
           };
@@ -157,6 +159,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             engine: toolkitEngine,
             artifacts: handle.executor.artifacts,
             connections: handle.executor.connections,
+            tools: handle.executor.tools,
             ...appsConfig,
           },
           close: handle.dispose,

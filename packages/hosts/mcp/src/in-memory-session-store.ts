@@ -11,7 +11,10 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readPassthroughIntegrations,
   readSearchToolsEnabled,
+  readToolMode,
+  type McpToolMode,
 } from "./browser-approval";
 import {
   makeInProcessBrowserApprovalStore,
@@ -31,7 +34,7 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import type { BrowserApprovalStore } from "./tool-server";
+import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -115,13 +118,17 @@ export interface McpBuildServerOptions {
   /** Whether this session serves the per-integration `search_<integration>`
    *  tools. False unless the client connected with `?search_tools=true`. */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface (`?mode=`): codemode (default) or passthrough. */
+  readonly mode?: McpToolMode;
+  /** Passthrough only: the `?integrations=` filter. */
+  readonly passthroughIntegrations?: readonly string[];
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
 export type McpBuildServer = (
   principal: Principal,
   options?: McpBuildServerOptions,
-) => Effect.Effect<BuiltMcpServer, McpEngineBuildError>;
+) => Effect.Effect<BuiltMcpServer, McpEngineBuildError | McpPassthroughUnavailableError>;
 
 export interface InMemoryMcpSessionStore {
   /** The `McpSessionStore` seam value to hand to `inMemoryMcpSessionsLayer`. */
@@ -395,15 +402,27 @@ export const makeInMemoryMcpSessionStore = (
     request: Request,
     sessionId: () => string | null,
   ): McpBuildServerOptions => {
-    const artifactsEnabled = readArtifactsEnabled(request);
+    // `?artifacts=` is only forwarded when the URL spells it out, so the
+    // factory can apply the mode's own default (on for codemode, off for
+    // passthrough) to an absent value.
+    const artifactsEnabled = new URL(request.url).searchParams.has("artifacts")
+      ? readArtifactsEnabled(request)
+      : undefined;
     const searchToolsEnabled = readSearchToolsEnabled(request);
+    const toolMode = readToolMode(request);
+    const passthroughIntegrations = readPassthroughIntegrations(request);
+    const surface = {
+      ...(artifactsEnabled === undefined ? {} : { artifactsEnabled }),
+      searchToolsEnabled,
+      mode: toolMode,
+      ...(passthroughIntegrations ? { passthroughIntegrations } : {}),
+    };
     const mode = readElicitationMode(request);
     if (mode !== "browser") {
-      return { artifactsEnabled, searchToolsEnabled, elicitationMode: { mode } };
+      return { ...surface, elicitationMode: { mode } };
     }
     return {
-      artifactsEnabled,
-      searchToolsEnabled,
+      ...surface,
       elicitationMode: {
         mode: "browser",
         // Prefer the pinned public origin; fall back to the request URL (correct
@@ -468,9 +487,12 @@ export const makeInMemoryMcpSessionStore = (
         }),
       ),
       // A build failure has nowhere typed to go in the envelope; render a 500.
-      Effect.catchTag("McpEngineBuildError", () =>
-        Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
-      ),
+      Effect.catchTags({
+        McpEngineBuildError: () =>
+          Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
+        McpPassthroughUnavailableError: () =>
+          Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
+      }),
     );
   };
 
