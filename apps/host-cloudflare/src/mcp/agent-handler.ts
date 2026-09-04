@@ -86,9 +86,7 @@ const propsForPrincipal = (
         ...sessionOrgRoleMetadata(principal),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
-        ...(new URL(request.url).searchParams.has("artifacts")
-          ? { artifactsEnabled: readArtifactsEnabled(request) }
-          : {}),
+        artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
         toolMode: readToolMode(request),
         ...(readPassthroughIntegrations(request)

@@ -5793,19 +5793,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Unlike `toolsList`, this read NEEDS `input_schema`: it is the schema
         // the surface advertises. `output_schema` stays out — nothing here
         // serves it, and it is the other half of the per-row weight.
-        const rows = yield* core.findMany("tool", {
-          where: integrationWhere,
-          select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
-        });
+        //
+        // Tool rows and their shared `$defs` are read in ONE transaction: a
+        // detached stale-sync rebuild replaces both tables atomically, and two
+        // separate reads could otherwise pair an old schema's `$ref` with a
+        // refreshed definition of the same name.
+        const { rows, definitionRows } = yield* core.transaction(
+          Effect.all({
+            rows: core.findMany("tool", {
+              where: integrationWhere,
+              select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
+            }),
+            // Shared definitions, keyed per connection below: `$ref`s are
+            // connection-local (`#/$defs/<name>` resolves against the producing
+            // connection's `definition` rows), so the join key is the same
+            // (owner, integration, connection) triple the tool row carries.
+            definitionRows: core.findMany("definition", { where: integrationWhere }),
+          }),
+        );
         const policyRules = yield* listActivePolicyRuleSet();
-
-        // Shared definitions, loaded once and keyed per connection: `$ref`s are
-        // connection-local (`#/$defs/<name>` resolves against the producing
-        // connection's `definition` rows), so the join key is the same
-        // (owner, integration, connection) triple the tool row carries.
-        const definitionRows = yield* core.findMany("definition", {
-          where: integrationWhere,
-        });
         const defsByConnection = new Map<string, Map<string, unknown>>();
         for (const def of definitionRows) {
           const key = `${def.owner}\u0000${def.integration}\u0000${def.connection}`;
@@ -6233,6 +6239,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             address,
             args,
             request,
+            source: "tool",
           });
           if (response.action !== "accept") {
             return yield* new ElicitationDeclinedError({
@@ -6274,7 +6281,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           message: `${message}\n\nArguments:\n${approvalArgumentPreview(args)}`,
           requestedSchema: { type: "object", properties: {} },
         });
-        const response = yield* handler({ address, args, request });
+        const response = yield* handler({ address, args, request, source: "policy" });
         if (response.action !== "accept") {
           return yield* new ElicitationDeclinedError({
             address,

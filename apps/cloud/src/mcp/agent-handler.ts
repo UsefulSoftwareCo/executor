@@ -189,11 +189,7 @@ const propsForPrincipal = (
         ...sessionOrgRoleMetadata(principal),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
-        // Forwarded only when spelled out, so the factory applies the tool
-        // mode's own default to an absent `?artifacts=`.
-        ...(new URL(request.url).searchParams.has("artifacts")
-          ? { artifactsEnabled: readArtifactsEnabled(request) }
-          : {}),
+        artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
         toolMode: readToolMode(request),
         ...(readPassthroughIntegrations(request)

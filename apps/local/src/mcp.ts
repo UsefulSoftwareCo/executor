@@ -231,10 +231,7 @@ export const createMcpRequestHandler = (
           createExecutorMcpServer({
             ...resourceConfig.config,
             browserApprovalStore: approvals.store,
-            // Only an explicit `?artifacts=` overrides the mode's default.
-            ...(new URL(request.url).searchParams.has("artifacts")
-              ? { artifactsEnabled: readArtifactsEnabled(request) }
-              : {}),
+            artifactsEnabled: readArtifactsEnabled(request),
             searchToolsEnabled: readSearchToolsEnabled(request),
             mode: readToolMode(request),
             ...(passthroughIntegrations ? { passthroughIntegrations } : {}),

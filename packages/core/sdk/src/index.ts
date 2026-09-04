@@ -231,6 +231,7 @@ export {
   type ElicitationRequest,
   type ElicitationHandler,
   type ElicitationContext,
+  type ElicitationSource,
   type OnElicitation,
   type InvokeOptions,
 } from "./elicitation";

@@ -178,8 +178,17 @@ export const assignPassthroughNames = (
  * see it as one execution.
  */
 export const passthroughCallCode = (address: string, args: unknown): string => {
-  const path = address.startsWith("tools.") ? address : `tools.${address}`;
-  return `return await ${path}(${JSON.stringify(args ?? {})});`;
+  // Every segment is a JSON string literal in bracket notation, never a bare
+  // identifier: the tool segment is customer-controlled (an OpenAPI spec may
+  // set `x-executor-toolPath`), so it must be data in the generated source,
+  // not syntax. `tools["a"]["b"]` resolves through the sandbox proxy exactly
+  // as `tools.a.b` does.
+  const bare = address.startsWith("tools.") ? address.slice("tools.".length) : address;
+  const accessor = bare
+    .split(".")
+    .map((segment) => `[${JSON.stringify(segment)}]`)
+    .join("");
+  return `return await tools${accessor}(${JSON.stringify(args ?? {})});`;
 };
 
 /**

@@ -402,17 +402,12 @@ export const makeInMemoryMcpSessionStore = (
     request: Request,
     sessionId: () => string | null,
   ): McpBuildServerOptions => {
-    // `?artifacts=` is only forwarded when the URL spells it out, so the
-    // factory can apply the mode's own default (on for codemode, off for
-    // passthrough) to an absent value.
-    const artifactsEnabled = new URL(request.url).searchParams.has("artifacts")
-      ? readArtifactsEnabled(request)
-      : undefined;
+    const artifactsEnabled = readArtifactsEnabled(request);
     const searchToolsEnabled = readSearchToolsEnabled(request);
     const toolMode = readToolMode(request);
     const passthroughIntegrations = readPassthroughIntegrations(request);
     const surface = {
-      ...(artifactsEnabled === undefined ? {} : { artifactsEnabled }),
+      artifactsEnabled,
       searchToolsEnabled,
       mode: toolMode,
       ...(passthroughIntegrations ? { passthroughIntegrations } : {}),

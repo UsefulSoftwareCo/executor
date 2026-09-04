@@ -40,7 +40,6 @@ import type {
   ElicitationHandler,
   ElicitationContext,
   ElicitationRequest,
-  FormElicitation,
   SaveArtifactInput,
   ToolFileValue,
   ToolListFilter,
@@ -203,9 +202,10 @@ type SharedMcpServerConfig = {
    * The tool surface this connection serves. `codemode` (the default) is the
    * `execute` tool plus `skills`/`resume` and the artifact surface.
    * `passthrough` (`?mode=passthrough`) registers every visible integration
-   * tool as its own MCP tool and serves NONE of `execute`, `skills`, or
-   * `resume`: policy is folded into each tool's annotations at list time and
-   * the client's own approval flow takes it from there. Requires `tools`.
+   * tool as its own MCP tool and serves NONE of `execute`, `skills`, `resume`,
+   * or the artifact tools (`artifactsEnabled` is ignored): policy is folded
+   * into each tool's annotations at list time and the client's own approval
+   * flow takes it from there. Requires `tools`.
    */
   readonly mode?: McpToolMode;
   /**
@@ -414,17 +414,6 @@ const elicitationRequestTag = (request: ElicitationRequest): ElicitationRequest[
     Match.tag("FormElicitation", () => "FormElicitation" as const),
     Match.exhaustive,
   );
-
-/** The executor's approval gate asks for consent with a form that collects
- *  nothing: `{ type: "object", properties: {} }` (or a bare `{}`). Anything
- *  with a declared field is a tool asking the user for input. */
-const isApprovalOnlyForm = (request: FormElicitation): boolean => {
-  const schema = request.requestedSchema;
-  const properties = schema.properties;
-  const declaresFields = isRecord(properties) && Object.keys(properties).length > 0;
-  const requiresFields = Array.isArray(schema.required) && schema.required.length > 0;
-  return !declaresFields && !requiresFields;
-};
 
 const requestedSchemaIsNonEmpty = (request: ElicitationRequest): boolean =>
   Match.value(request).pipe(
@@ -722,6 +711,38 @@ const toPassthroughResult = (outcome: FormattedExecuteInput): McpToolResult => {
       status: "error",
       error: value.error,
       logs: outcome.logs ?? [],
+    },
+    isError: true,
+  };
+};
+
+/**
+ * A passthrough tool asked the user for something and the connected client
+ * advertises no elicitation capability, so nobody could answer. Say exactly
+ * that, and carry the request — a reconnect/OAuth URL is the usual content —
+ * so the model can relay it and the user can act outside the client.
+ */
+const elicitationUnsupportedResult = (
+  toolName: string,
+  request: ElicitationRequest,
+): McpToolResult => {
+  const url = elicitationRequestUrl(request);
+  const lines = [
+    `Tool ${toolName} needs input from the user, but this MCP client does not support elicitation, so the call could not complete.`,
+    `Request: ${request.message}`,
+    ...(url ? [`Open this URL to continue, then retry the call: ${url}`] : []),
+  ];
+  return {
+    content: [{ type: "text", text: `Error: ${lines.join("\n")}` }],
+    structuredContent: {
+      status: "error",
+      error: {
+        code: "elicitation_unsupported",
+        message: lines[0]!,
+        request: request.message,
+        ...(url ? { url } : {}),
+      },
+      logs: [],
     },
     isError: true,
   };
@@ -1330,12 +1351,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     // Artifacts are on unless this connection opted out (`?artifacts=false`).
     // One flag decides the whole surface: the tools, the shell resource, and
     // the skills catalog below.
-    // Passthrough is a plain tool surface: artifacts are OFF there unless the
-    // connection spelled out `?artifacts=true`, the reverse of codemode's
-    // default. `config.artifactsEnabled` is what the host read off the URL, so
-    // an explicit true survives; an absent value takes the mode's default.
+    // Passthrough is a plain tool surface and serves NO artifact tools, whatever
+    // the URL says: the artifact tools are codemode affordances (they run
+    // sandboxed component code), and the SDK's `registerTool` path would try to
+    // install the same `tools/list` + `tools/call` handlers passthrough owns.
+    // The two surfaces are exclusive by construction, not merged.
     const artifactsEnabled =
-      config.artifactsEnabled ?? (config.mode === "passthrough" ? false : true);
+      config.mode === "passthrough" ? false : (config.artifactsEnabled ?? true);
     const skillCatalog: readonly Skill[] = skillCatalogFor({ artifacts: artifactsEnabled });
     // Per-integration search tools are off unless this connection opted in
     // (`?search_tools=true`).
@@ -1803,28 +1825,37 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         });
         const { url: supportsUrl } = getElicitationSupport(server);
         const native = makeMcpElicitationHandler(server, extra.requestId, debugLog);
-        const onElicitation: ElicitationHandler = (ctx) =>
-          Match.value(ctx.request).pipe(
-            // The harness already prompted (or chose not to) from the
-            // annotations; a second server-side gate would double-prompt.
-            Match.tag("FormElicitation", (req) =>
-              isApprovalOnlyForm(req)
-                ? Effect.succeed({ action: "accept" as const, content: {} })
-                : // A real form (a tool asking for input) still needs a human.
-                  // Forward it natively when the client can take it; otherwise
-                  // decline, which the invoker turns into a clear failure.
-                  getElicitationSupport(server).form
-                  ? native(ctx)
-                  : Effect.succeed({ action: "decline" as const }),
-            ),
-            Match.tag("UrlElicitation", () =>
-              supportsUrl ? native(ctx) : Effect.succeed({ action: "decline" as const }),
-            ),
-            Match.exhaustive,
-          );
+        const { form: supportsForm } = getElicitationSupport(server);
+        // Set when the tool asked the user for something this client cannot
+        // relay. The handler has no error channel (a non-accept is a decline
+        // to the executor), so the request is kept here and the whole call is
+        // reported as unanswerable below — with what was asked, URL included —
+        // instead of as "declined by the user", which nobody did.
+        let unanswerable: ElicitationRequest | undefined;
+        const onElicitation: ElicitationHandler = (ctx) => {
+          // The executor's OWN approval gate is the only thing accepted
+          // inline: the harness already prompted (or chose not to) from the
+          // advertised annotations, so a second server-side gate would
+          // double-prompt. Provenance is stamped by the executor, not read
+          // off the request shape — a tool-raised prompt with an empty schema
+          // can still carry terms of its own (a permanent site grant), and
+          // must reach a human or fail, never be answered for them.
+          if (ctx.source === "policy") {
+            return Effect.succeed({ action: "accept" as const, content: {} });
+          }
+          // Anything the tool itself asked for goes to the client natively
+          // when it can take it; the native bridge already turns a URL
+          // request into a form for form-only clients.
+          if (supportsForm || (supportsUrl && ctx.request._tag === "UrlElicitation")) {
+            return native(ctx);
+          }
+          unanswerable = ctx.request;
+          return Effect.succeed({ action: "decline" as const });
+        };
         const outcome = yield* engine.execute(passthroughCallCode(address, args), {
           onElicitation,
         });
+        if (unanswerable) return elicitationUnsupportedResult(tool.name, unanswerable);
         return toPassthroughResult(outcome);
       }).pipe(
         Effect.withSpan("mcp.host.tool.execute", {

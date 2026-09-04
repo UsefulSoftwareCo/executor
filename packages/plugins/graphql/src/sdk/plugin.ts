@@ -573,7 +573,8 @@ const annotationsFor = (binding: OperationBinding): ToolAnnotations => {
       readOnly: false,
     };
   }
-  return {};
+  // A query is the read side of GraphQL by definition.
+  return { readOnly: true };
 };
 
 // ---------------------------------------------------------------------------

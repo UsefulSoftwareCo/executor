@@ -201,13 +201,42 @@ describe("passthrough annotations", () => {
     expect(passthroughAnnotations({ name: "x", policy: "approve" }).readOnlyHint).toBe(false);
   });
 
-  it("emits exactly one awaited tool call with a JSON-literal argument", () => {
+  it("emits exactly one awaited tool call with every segment as a string literal", () => {
     expect(passthroughCallCode("tools.github.org.main.issues.create", { title: "hi" })).toBe(
-      'return await tools.github.org.main.issues.create({"title":"hi"});',
+      'return await tools["github"]["org"]["main"]["issues"]["create"]({"title":"hi"});',
     );
     expect(passthroughCallCode("linear.org.main.issueCreate", undefined)).toBe(
-      "return await tools.linear.org.main.issueCreate({});",
+      'return await tools["linear"]["org"]["main"]["issueCreate"]({});',
     );
+  });
+
+  it("keeps a hostile tool segment as data, never as code", () => {
+    // An OpenAPI spec controls its tool paths (`x-executor-toolPath`), so a
+    // segment can contain anything. It must land inside a JSON string.
+    const hostile = "x(await tools.victim.org.main.destroy({}))";
+    const code = passthroughCallCode(`tools.evil.org.main.${hostile}`, {});
+    expect(code).toBe(
+      `return await tools["evil"]["org"]["main"]["x(await tools"]["victim"]["org"]["main"]["destroy({}))"]({});`,
+    );
+    // Structural proof the payload never escapes a string literal: the source
+    // is exactly `return await tools` + N bracket-quoted segments + one call.
+    // Every quoted segment round-trips through JSON.parse to the raw text, so
+    // whatever the segment contains is data to the interpreter.
+    const shape = /^return await tools((?:\["(?:[^"\\]|\\.)*"\])+)\((\{.*\})\);$/s.exec(code);
+    expect(shape).not.toBeNull();
+    const segments = [...shape![1]!.matchAll(/\["((?:[^"\\]|\\.)*)"\]/g)].map((m) =>
+      JSON.parse(`"${m[1]}"`),
+    );
+    expect(segments).toEqual([
+      "evil",
+      "org",
+      "main",
+      "x(await tools",
+      "victim",
+      "org",
+      "main",
+      "destroy({}))",
+    ]);
   });
 });
 
@@ -316,7 +345,7 @@ describe("passthrough mode server", () => {
           arguments: { title: "hello" },
         });
         expect(recording.executed).toEqual([
-          'return await tools.github.org.main.issues.create({"title":"hello"});',
+          'return await tools["github"]["org"]["main"]["issues"]["create"]({"title":"hello"});',
         ]);
         expect(recording.pausedCalls()).toBe(0);
         // The tool's `data` is the result: nothing sits between the tool and
@@ -356,52 +385,144 @@ describe("passthrough mode server", () => {
     );
   });
 
-  it("accepts the approval gate inline but forwards a real input form", async () => {
-    // An engine whose tool raises an elicitation: first the executor's
-    // approval-only form (no fields), then a real form asking for a value.
+  /** An engine whose tool raises the given elicitations in order and records
+   *  each answer. `source` is what the executor stamps: `policy` for its own
+   *  approval gate, `tool` for anything the tool asked for itself. */
+  const elicitingEngine = (
+    requests: ReadonlyArray<{ readonly source: "policy" | "tool"; readonly request: any }>,
+    seen: string[],
+  ): ExecutionEngine => ({
+    ...makeRecordingEngine().engine,
+    execute: (_code, options) =>
+      Effect.gen(function* () {
+        for (const { source, request } of requests) {
+          const answer = yield* options.onElicitation({
+            address: CATALOG[0]!.address,
+            args: {},
+            request,
+            source,
+          });
+          seen.push(`${source}:${answer.action}`);
+          if (answer.action !== "accept") {
+            return { result: { ok: false, error: { code: "declined", message: "declined" } } };
+          }
+        }
+        return { result: { ok: true, data: null } };
+      }),
+  });
+
+  const approvalGate = {
+    _tag: "FormElicitation" as const,
+    message: "Approve github.org.main.issues.create?",
+    requestedSchema: { type: "object", properties: {} },
+  };
+
+  it("accepts the executor's own approval gate inline", async () => {
     const seen: string[] = [];
-    const engine: ExecutionEngine = {
-      ...makeRecordingEngine().engine,
-      execute: (_code, options) =>
-        Effect.gen(function* () {
-          const approval = yield* options.onElicitation({
-            address: CATALOG[0]!.address,
-            args: {},
-            request: {
-              _tag: "FormElicitation",
-              message: "Approve?",
-              requestedSchema: { type: "object", properties: {} },
-            },
-          });
-          seen.push(`approval:${approval.action}`);
-          const form = yield* options.onElicitation({
-            address: CATALOG[0]!.address,
-            args: {},
-            request: {
-              _tag: "FormElicitation",
-              message: "Which project?",
-              requestedSchema: {
-                type: "object",
-                properties: { project: { type: "string" } },
-                required: ["project"],
-              },
-            },
-          });
-          seen.push(`form:${form.action}`);
-          return { result: { ok: true, data: null } };
-        }),
-    };
     await withClient(
       {
-        engine,
+        engine: elicitingEngine([{ source: "policy", request: approvalGate }], seen),
         mode: "passthrough",
         tools: { describeAll: () => Effect.succeed(CATALOG) },
       },
       async (client) => {
-        await client.callTool({ name: "github__issues_create", arguments: { title: "x" } });
-        // The test client advertises no elicitation capability, so the real
-        // form is declined rather than silently accepted with no data.
-        expect(seen).toEqual(["approval:accept", "form:decline"]);
+        const result = await client.callTool({
+          name: "github__issues_create",
+          arguments: { title: "x" },
+        });
+        expect(seen).toEqual(["policy:accept"]);
+        expect(result.isError ?? false).toBe(false);
+      },
+    );
+  });
+
+  it("never auto-accepts a tool-raised prompt, even one with an empty schema", async () => {
+    // Same wire shape as the approval gate, but raised by the TOOL: a
+    // per-site grant whose terms live in `meta`. Provenance, not shape,
+    // decides. With no elicitation capability on the client, the call fails
+    // and says so — it is not silently granted.
+    const seen: string[] = [];
+    const siteGrant = {
+      _tag: "FormElicitation" as const,
+      message: "Allow Browser use to access example.com?",
+      requestedSchema: {},
+      meta: { persist: "always", origin: "https://example.com" },
+    };
+    await withClient(
+      {
+        engine: elicitingEngine([{ source: "tool", request: siteGrant }], seen),
+        mode: "passthrough",
+        tools: { describeAll: () => Effect.succeed(CATALOG) },
+      },
+      async (client) => {
+        const result = await client.callTool({
+          name: "github__issues_create",
+          arguments: { title: "x" },
+        });
+        expect(seen).toEqual(["tool:decline"]);
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "error",
+          error: { code: "elicitation_unsupported", request: siteGrant.message },
+        });
+      },
+    );
+  });
+
+  it("reports an unanswerable URL request with the URL, not as a user decline", async () => {
+    const seen: string[] = [];
+    const reconnect = {
+      _tag: "UrlElicitation" as const,
+      message: "Reconnect GitHub",
+      url: "https://example.test/oauth/start",
+      elicitationId: "elic_1",
+    };
+    await withClient(
+      {
+        engine: elicitingEngine([{ source: "tool", request: reconnect }], seen),
+        mode: "passthrough",
+        tools: { describeAll: () => Effect.succeed(CATALOG) },
+      },
+      async (client) => {
+        const result = await client.callTool({
+          name: "github__issues_create",
+          arguments: { title: "x" },
+        });
+        expect(seen).toEqual(["tool:decline"]);
+        expect(result.isError).toBe(true);
+        const text = (result.content as Array<{ text?: string }>)[0]?.text ?? "";
+        expect(text).toContain("does not support elicitation");
+        expect(text).toContain("https://example.test/oauth/start");
+        expect(text).not.toContain("declined by the user");
+        expect(result.structuredContent).toMatchObject({
+          error: { code: "elicitation_unsupported", url: reconnect.url },
+        });
+      },
+    );
+  });
+
+  it("serves no artifact tools in passthrough even when artifacts are requested", async () => {
+    const { engine } = makeRecordingEngine();
+    await withClient(
+      {
+        engine,
+        mode: "passthrough",
+        artifactsEnabled: true,
+        loadAppShellHtml: async () => "<html></html>",
+        artifacts: {
+          list: () => Effect.succeed([]),
+          get: () => Effect.die("unused"),
+          save: () => Effect.die("unused"),
+        },
+        tools: { describeAll: () => Effect.succeed(CATALOG) },
+      },
+      async (client) => {
+        const names = (await client.listTools()).tools.map((tool) => tool.name);
+        expect(names.sort()).toEqual([
+          "github__issues_create",
+          "github__issues_list",
+          "linear__issueCreate",
+        ]);
       },
     );
   });

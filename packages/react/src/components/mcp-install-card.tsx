@@ -327,13 +327,16 @@ export function McpInstallCard(props: { className?: string }) {
           <div className="min-w-0">
             <div className="text-xs font-medium text-foreground">Artifacts</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {artifacts
-                ? "Generated UI components are saved to your workspace."
-                : "Disabled: this connection serves no artifact tools."}
+              {toolMode === "passthrough"
+                ? "Not available when tools are exposed directly."
+                : artifacts
+                  ? "Generated UI components are saved to your workspace."
+                  : "Disabled: this connection serves no artifact tools."}
             </div>
           </div>
           <Switch
-            checked={artifacts}
+            checked={toolMode === "passthrough" ? false : artifacts}
+            disabled={toolMode === "passthrough"}
             onCheckedChange={(next) => {
               setPreferences((current) => ({ ...current, artifacts: next }));
               trackEvent("mcp_install_artifacts_toggled", { artifacts: next });

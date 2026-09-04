@@ -48,11 +48,21 @@ export const ElicitationResponse = Schema.Struct({
 });
 export type ElicitationResponse = typeof ElicitationResponse.Type;
 
+/** Who raised an elicitation. `"policy"` is the executor's own approval gate
+ *  (`enforceApproval`): a consent-only form whose terms are exactly "run this
+ *  tool with these arguments". `"tool"` is anything the tool itself asked for
+ *  mid-call, which may carry its own terms (a permanent site grant, a scope
+ *  choice) even when the schema is empty. A host that has already obtained
+ *  consent for the tool call may auto-accept the former and must never
+ *  auto-accept the latter. Absent means unknown, which reads as `"tool"`. */
+export type ElicitationSource = "policy" | "tool";
+
 /** Handler input — the tool address being invoked, its args, and the request. */
 export interface ElicitationContext {
   readonly address: ToolAddress;
   readonly args: unknown;
   readonly request: ElicitationRequest;
+  readonly source?: ElicitationSource;
 }
 
 /** Host-provided handler the SDK calls when a tool suspends for input. */

@@ -385,13 +385,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         artifacts: executor.artifacts,
         connections: executor.connections,
         tools: executor.tools,
-        // Artifacts default per tool mode (on for codemode, off for
-        // passthrough); only an explicit `?artifacts=` is carried, and a
-        // session persisted without a value restores to that default, same
-        // as a fresh connection whose URL says nothing about it.
-        ...(sessionMeta.artifactsEnabled === undefined
-          ? {}
-          : { artifactsEnabled: sessionMeta.artifactsEnabled }),
+        // Artifacts are on by default, opt-out per connection. A session
+        // persisted without a value restores to the default, same as a fresh
+        // connection whose URL says nothing about `?artifacts=`.
+        artifactsEnabled: sessionMeta.artifactsEnabled ?? true,
         // Per-integration search tools are off by default, opt-in per
         // connection (`?search_tools=true`). Same restore rule as artifacts.
         searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
