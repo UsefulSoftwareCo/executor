@@ -907,6 +907,12 @@ const validateExecutorDbTables = (required: FumaTables, actual: FumaTables): voi
   });
 };
 
+/** How many times `tools.describeAll` re-reads a catalog whose tool rows and
+ *  definitions came from different rebuild generations. One rebuild landing
+ *  mid-read needs one retry; the bound only exists so a pathological
+ *  rebuild storm fails loudly instead of spinning. */
+const DESCRIBE_ALL_GENERATION_RETRIES = 3;
+
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
 
@@ -5794,27 +5800,63 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // the surface advertises. `output_schema` stays out — nothing here
         // serves it, and it is the other half of the per-row weight.
         //
-        // Tool rows and their shared `$defs` are read in ONE transaction: a
-        // detached stale-sync rebuild replaces both tables atomically, and two
-        // separate reads could otherwise pair an old schema's `$ref` with a
-        // refreshed definition of the same name.
-        const { rows, definitionRows } = yield* core.transaction(
-          Effect.all({
-            rows: core.findMany("tool", {
-              where: integrationWhere,
-              select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
-            }),
-            // Shared definitions, keyed per connection below: `$ref`s are
-            // connection-local (`#/$defs/<name>` resolves against the producing
-            // connection's `definition` rows), so the join key is the same
-            // (owner, integration, connection) triple the tool row carries.
-            definitionRows: core.findMany("definition", { where: integrationWhere }),
+        // Tool rows and their shared `$defs` must come from the SAME catalog
+        // generation: a detached stale-sync rebuild replaces both tables for a
+        // connection, and two reads that straddle it would pair an old
+        // schema's `$ref` with a refreshed definition of the same name. A
+        // transaction alone does not promise that on every backend (Postgres
+        // runs READ COMMITTED, D1 has no interactive transactions), so the
+        // join is checked, not assumed: a rebuild stamps every row it writes
+        // with one `created_at`, which is the generation marker. When the two
+        // reads disagree for a connection, they are re-read; a bounded number
+        // of attempts covers a rebuild landing mid-read without ever serving a
+        // mixed generation.
+        const readCatalog = Effect.all({
+          rows: core.findMany("tool", {
+            where: integrationWhere,
+            select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
           }),
+          // Shared definitions, keyed per connection below: `$ref`s are
+          // connection-local (`#/$defs/<name>` resolves against the producing
+          // connection's `definition` rows), so the join key is the same
+          // (owner, integration, connection) triple the tool row carries.
+          definitionRows: core.findMany("definition", { where: integrationWhere }),
+        });
+        const connectionKey = (row: {
+          readonly owner: string;
+          readonly integration: string;
+          readonly connection: string;
+        }): string => `${row.owner}\u0000${row.integration}\u0000${row.connection}`;
+        const generationOf = (value: unknown): number =>
+          value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+        const { rows, definitionRows } = yield* readCatalog.pipe(
+          Effect.flatMap((snapshot) => {
+            // Per connection: the generation the tool rows carry vs the one
+            // the definition rows carry. A connection with no definitions has
+            // nothing to disagree about.
+            const toolGeneration = new Map<string, number>();
+            for (const row of snapshot.rows) {
+              toolGeneration.set(connectionKey(row), generationOf(row.created_at));
+            }
+            for (const def of snapshot.definitionRows) {
+              const expected = toolGeneration.get(connectionKey(def));
+              if (expected !== undefined && expected !== generationOf(def.created_at)) {
+                return Effect.fail(
+                  new StorageError({
+                    message: "tool catalog changed between reads",
+                    cause: undefined,
+                  }),
+                );
+              }
+            }
+            return Effect.succeed(snapshot);
+          }),
+          Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
         );
         const policyRules = yield* listActivePolicyRuleSet();
         const defsByConnection = new Map<string, Map<string, unknown>>();
         for (const def of definitionRows) {
-          const key = `${def.owner}\u0000${def.integration}\u0000${def.connection}`;
+          const key = connectionKey(def);
           let bucket = defsByConnection.get(key);
           if (!bucket) {
             bucket = new Map();
@@ -5841,9 +5883,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             effective.action === "require_approval"
               ? ("require_approval" as const)
               : ("approve" as const);
-          const defs =
-            defsByConnection.get(`${row.owner}\u0000${row.integration}\u0000${row.connection}`) ??
-            EMPTY_DEFS;
+          const defs = defsByConnection.get(connectionKey(row)) ?? EMPTY_DEFS;
           const inputSchema =
             tool.inputSchema === undefined ? undefined : reattachDefs(tool.inputSchema, defs);
           const readOnly = tool.annotations?.readOnly;

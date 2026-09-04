@@ -201,42 +201,33 @@ describe("passthrough annotations", () => {
     expect(passthroughAnnotations({ name: "x", policy: "approve" }).readOnlyHint).toBe(false);
   });
 
-  it("emits exactly one awaited tool call with every segment as a string literal", () => {
+  it("emits exactly one awaited tool call with the whole address as one string literal", () => {
     expect(passthroughCallCode("tools.github.org.main.issues.create", { title: "hi" })).toBe(
-      'return await tools["github"]["org"]["main"]["issues"]["create"]({"title":"hi"});',
+      'return await tools["github.org.main.issues.create"]({"title":"hi"});',
     );
     expect(passthroughCallCode("linear.org.main.issueCreate", undefined)).toBe(
-      'return await tools["linear"]["org"]["main"]["issueCreate"]({});',
+      'return await tools["linear.org.main.issueCreate"]({});',
+    );
+    // `then` is reserved by every sandbox proxy; as part of one key it is
+    // just text, so such a tool stays callable.
+    expect(passthroughCallCode("tools.svc.org.main.items.then", {})).toBe(
+      'return await tools["svc.org.main.items.then"]({});',
     );
   });
 
   it("keeps a hostile tool segment as data, never as code", () => {
     // An OpenAPI spec controls its tool paths (`x-executor-toolPath`), so a
     // segment can contain anything. It must land inside a JSON string.
-    const hostile = "x(await tools.victim.org.main.destroy({}))";
+    const hostile = 'x"](await tools.victim.org.main.destroy({}))["';
     const code = passthroughCallCode(`tools.evil.org.main.${hostile}`, {});
-    expect(code).toBe(
-      `return await tools["evil"]["org"]["main"]["x(await tools"]["victim"]["org"]["main"]["destroy({}))"]({});`,
-    );
-    // Structural proof the payload never escapes a string literal: the source
-    // is exactly `return await tools` + N bracket-quoted segments + one call.
-    // Every quoted segment round-trips through JSON.parse to the raw text, so
-    // whatever the segment contains is data to the interpreter.
-    const shape = /^return await tools((?:\["(?:[^"\\]|\\.)*"\])+)\((\{.*\})\);$/s.exec(code);
+    // Structural proof the payload never escapes the string literal: the
+    // source is exactly `return await tools[<one JSON string>](<JSON>);`, and
+    // that one string round-trips through JSON.parse to the raw address.
+    const shape = /^return await tools\[("(?:[^"\\]|\\.)*")\]\((\{.*\})\);$/s.exec(code);
     expect(shape).not.toBeNull();
-    const segments = [...shape![1]!.matchAll(/\["((?:[^"\\]|\\.)*)"\]/g)].map((m) =>
-      JSON.parse(`"${m[1]}"`),
-    );
-    expect(segments).toEqual([
-      "evil",
-      "org",
-      "main",
-      "x(await tools",
-      "victim",
-      "org",
-      "main",
-      "destroy({}))",
-    ]);
+    expect(JSON.parse(shape![1]!)).toBe(`evil.org.main.${hostile}`);
+    // And the call's argument is the JSON we passed, untouched by the address.
+    expect(JSON.parse(shape![2]!)).toEqual({});
   });
 });
 
@@ -345,7 +336,7 @@ describe("passthrough mode server", () => {
           arguments: { title: "hello" },
         });
         expect(recording.executed).toEqual([
-          'return await tools["github"]["org"]["main"]["issues"]["create"]({"title":"hello"});',
+          'return await tools["github.org.main.issues.create"]({"title":"hello"});',
         ]);
         expect(recording.pausedCalls()).toBe(0);
         // The tool's `data` is the result: nothing sits between the tool and
