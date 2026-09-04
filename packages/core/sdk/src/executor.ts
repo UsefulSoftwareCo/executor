@@ -3813,12 +3813,36 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
         // A build that lost its claim persisted nothing; what it discovered
-        // is not the catalog. Report what IS persisted — the winner's rows, or
-        // nothing if the winner is still landing — so a caller never sees
-        // tools the next list will contradict.
+        // is not the catalog. Report what IS persisted — but only if it is a
+        // whole build, checked the way every list checks it (manifest vs
+        // rows). A raw row scan could, on D1, catch the winner between its
+        // committed manifest and its row batch and hand back a catalog the
+        // next list refuses. While the winner is still landing the loser
+        // reports an EMPTY catalog rather than a wrong one; the caller's next
+        // list (or the stale scan) picks up the winner's finished build. This
+        // cannot go through `describeAll`: that runs the stale sync, which
+        // would re-enter this very connection's in-flight production.
         if (!applied) {
-          const persisted = yield* core.findMany("tool", { where });
-          return persisted.map((row) => rowToTool(row as ConnectionToolRow));
+          const [rows, definitionRows, connectionRow] = yield* Effect.all([
+            core.findMany("tool", { where, select: [...TOOL_INVOCATION_COLUMNS, "generation"] }),
+            core.findMany("definition", { where }),
+            findConnectionRow(ref),
+          ]);
+          const manifest = connectionRow
+            ? Option.getOrNull(
+                decodeCatalogManifest(decodeJsonColumn(connectionRow.tools_manifest)),
+              )
+            : null;
+          if (
+            !manifest ||
+            rows.length !== manifest.tools ||
+            definitionRows.length !== manifest.definitions ||
+            rows.some((row) => row.generation !== manifest.generation) ||
+            definitionRows.some((row) => row.generation !== manifest.generation)
+          ) {
+            return [];
+          }
+          return rows.map((row) => rowToTool(row));
         }
 
         return result.tools.map((tool: ToolDef) =>

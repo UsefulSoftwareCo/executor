@@ -1049,9 +1049,10 @@ describe("createExecutor", () => {
         expect(rowsAfter.map((row) => row.generation).sort(), "A did not replace the rows").toEqual(
           rowsBefore.map((row) => row.generation).sort(),
         );
-        // And A reported the persisted rows, not the ones it discovered and
-        // failed to write — so its caller cannot disagree with the next list.
-        // A discovered `extra`; persisted has no `extra`; the report must not.
+        // And A reported the persisted rows, VALIDATED against the manifest,
+        // not the ones it discovered and failed to write — so its caller
+        // cannot disagree with the next list. A discovered `extra`; persisted
+        // has no `extra`; the report must not.
         expect(
           reported.map((tool) => String(tool.name)).sort(),
           "refresh reports what is persisted",
@@ -1084,6 +1085,77 @@ describe("createExecutor", () => {
         expect(after?.tools_rebuild, "the recovering build released the token").toBeNull();
         expect(after?.tools_manifest).not.toBeNull();
       }),
+  );
+
+  // D1 commits the winner's manifest before its row batch. A loser that
+  // reads the rows in that window must NOT report the previous build's rows
+  // as if they were current: `describeAll` refuses that state (manifest names
+  // the new generation, rows carry the old), so the loser reports nothing.
+  it.effect("a lost claim reports nothing while the winner's rows have not landed", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const raceState: { armed: boolean } = { armed: false };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "replaceMany") {
+              return async (plan: unknown) => {
+                if (raceState.armed) {
+                  raceState.armed = false;
+                  // B claims AND has already committed its manifest for a
+                  // generation whose rows are not in the table yet — the D1
+                  // guard-then-batch window.
+                  await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                    "connection",
+                    {
+                      where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                        b("integration", "=", String(INTEG)),
+                      set: {
+                        tools_synced_at: null,
+                        tools_rebuild: "build-B",
+                        tools_manifest: { generation: "gen-B", tools: 2, definitions: 6 },
+                      },
+                    },
+                  );
+                }
+                return (target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>)(plan);
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+      raceState.armed = true;
+      const reported = yield* executor.connections.refresh({
+        owner: "org",
+        integration: INTEG,
+        name: CONN,
+      });
+      expect(raceState.armed, "B interleaved").toBe(false);
+      // The rows in the table are the OLD build's; the manifest is B's. That
+      // is not a servable catalog, and the loser must not pretend it is.
+      expect(reported, "nothing is reported while the winner lands").toEqual([]);
+    }),
   );
 
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
