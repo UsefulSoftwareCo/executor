@@ -1257,6 +1257,61 @@ describe("createExecutor", () => {
     }),
   );
 
+  // A toolkit endpoint is a policy projection: connections it does not
+  // grant can never contribute a tool. A torn (or simply unrebuildable)
+  // catalog on one of THOSE must not fail the read for the connection the
+  // toolkit does grant. Modelled with a provider that blocks everything but
+  // `main`, and a torn manifest on `other`.
+  it.effect("tools.describeAll ignores a torn catalog on a connection the projection blocks", () =>
+    Effect.gen(function* () {
+      const mainOnly = definePlugin(() => ({
+        id: "main-only" as const,
+        storage: () => ({}),
+        toolPolicyProvider: () => ({
+          list: () =>
+            Effect.succeed([
+              {
+                id: "grant-main",
+                pattern: `${INTEG}.org.${CONN}.*`,
+                action: "approve" as const,
+                position: "a0",
+              },
+            ]),
+        }),
+      }))();
+      const config = makeTestConfig({ plugins: [demoPlugin, mainOnly] as const });
+      const executor = yield* createExecutor(config);
+      yield* executor.demo.seed();
+      for (const name of [CONN, ConnectionName.make("other")]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+      }
+      const before = yield* executor.tools.describeAll();
+      expect(before.map((tool) => String(tool.connection)).sort(), "only main is served").toEqual([
+        "main",
+        "main",
+      ]);
+
+      // Tear `other`: its manifest says N definitions, none are there, and it
+      // is stamped synced so the stale scan will not quietly repair it.
+      yield* Effect.promise(() =>
+        config.db.deleteMany("definition", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("connection", "=", "other")),
+        }),
+      );
+      const served = yield* executor.tools.describeAll();
+      expect(served.map((tool) => String(tool.connection)).sort(), "main still served").toEqual([
+        "main",
+        "main",
+      ]);
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

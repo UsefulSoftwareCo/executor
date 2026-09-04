@@ -6091,13 +6091,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
           return mixed;
         };
+        // A connection the active policy projection can never serve (a
+        // toolkit that does not grant it) must not fail this read: its
+        // catalog may be torn, unrebuildable, or simply someone else's. The
+        // rule set answers "could any tool of this connection be visible?"
+        // by resolving the connection-wide wildcard id; `block` means no.
+        // Connections that CAN contribute stay under strict validation.
+        const policyRulesForScope = yield* listActivePolicyRuleSet();
+        const outOfScope = (triple: ConnectionTriple): Effect.Effect<boolean, StorageFailure> =>
+          activeToolPolicyProvider === null
+            ? Effect.succeed(false)
+            : resolvePolicyFromRuleSet(
+                `${triple.integration}.${triple.owner}.${triple.connection}.*`,
+                policyRulesForScope,
+                undefined,
+              ).pipe(Effect.map((policy) => policy.action === "block"));
         const { rows, definitionRows } = yield* readCatalog.pipe(
-          Effect.flatMap((snapshot) => {
-            const mixed = mixedGenerations(snapshot);
-            return mixed.length === 0
-              ? Effect.succeed(snapshot)
-              : Effect.fail(new CatalogMismatch({ connections: mixed }));
-          }),
+          Effect.flatMap((snapshot) =>
+            Effect.gen(function* () {
+              const mixed: ConnectionTriple[] = [];
+              for (const triple of mixedGenerations(snapshot)) {
+                if (!(yield* outOfScope(triple))) mixed.push(triple);
+              }
+              return mixed.length === 0
+                ? snapshot
+                : yield* Effect.fail(new CatalogMismatch({ connections: mixed }));
+            }),
+          ),
           Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
           // Recovery backstop. A catalog that is still inconsistent after the
           // retries is not a rebuild landing mid-read; it is one that landed
@@ -6134,7 +6154,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           ),
         );
-        const policyRules = yield* listActivePolicyRuleSet();
+        const policyRules = policyRulesForScope;
         const defsByConnection = new Map<string, Map<string, unknown>>();
         for (const def of definitionRows) {
           const key = connectionKey(def);

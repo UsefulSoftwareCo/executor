@@ -28,6 +28,15 @@ import { deserialize, serialize } from "../../schema/serialize";
 import type { KyselyConfig } from "../../shared/config";
 import type { SQLProvider } from "../../shared/providers";
 
+/** Thrown inside a `replaceMany` transaction to abort it when the guard
+ *  matched no row; caught at the boundary and reported as `applied: false`. */
+class ReplaceGuardMiss extends Error {
+  constructor() {
+    super("replaceMany guard matched no row");
+    this.name = "ReplaceGuardMiss";
+  }
+}
+
 function fullSQLName(column: AnyColumn) {
   return `${column.table.names.sql}.${column.names.sql}`;
 }
@@ -507,6 +516,49 @@ export function fromKysely(
         query = query.where((eb) => buildWhere(where, eb, provider));
       }
       await query.execute();
+    },
+    replaceMany(plan) {
+      // Every Kysely dialect has interactive transactions, so the whole plan
+      // is one transaction: the guard update first, and a guard that matched
+      // no row aborts it (rollback) before any delete or insert runs.
+      return kysely
+        .transaction()
+        .execute(async (tx) => {
+          if (plan.guard) {
+            let update = tx
+              .updateTable(plan.guard.table.names.sql)
+              .set(encodeValues(plan.guard.set, plan.guard.table, false));
+            if (plan.guard.where) {
+              const where = plan.guard.where;
+              update = update.where((eb) => buildWhere(where, eb, provider));
+            }
+            const result = await update.executeTakeFirst();
+            if (Number(result.numUpdatedRows) === 0) {
+              // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: abort the driver transaction so nothing after a failed guard commits
+              throw new ReplaceGuardMiss();
+            }
+          }
+          for (const del of plan.deletes) {
+            let query = tx.deleteFrom(del.table.names.sql);
+            if (del.where) {
+              const where = del.where;
+              query = query.where((eb) => buildWhere(where, eb, provider));
+            }
+            await query.execute();
+          }
+          for (const ins of plan.inserts) {
+            if (ins.values.length === 0) continue;
+            await tx
+              .insertInto(ins.table.names.sql)
+              .values(ins.values.map((v) => encodeValues(v, ins.table, true)))
+              .execute();
+          }
+          return { applied: true as const };
+        })
+        .catch((error: unknown) => {
+          if (error instanceof ReplaceGuardMiss) return { applied: false as const };
+          throw error;
+        });
     },
     transaction(run) {
       return kysely.transaction().execute((ctx) => {
