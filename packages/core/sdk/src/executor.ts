@@ -3662,6 +3662,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         const now = new Date();
+        // One id per build, on every row it writes: how a reader joining tools
+        // to definitions proves both came from this build (see
+        // `tools.describeAll`). Opaque and collision-free, unlike `now`.
+        const generation = crypto.randomUUID();
         const toolRows = result.tools.map((tool: ToolDef) => ({
           tenant: keys.tenant,
           owner: keys.owner,
@@ -3674,6 +3678,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           input_schema: tool.inputSchema ?? null,
           output_schema: tool.outputSchema ?? null,
           annotations: tool.annotations ?? null,
+          generation,
           created_at: now,
           updated_at: now,
         }));
@@ -3687,6 +3692,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           plugin_id: integrationRow.plugin_id,
           name,
           schema,
+          generation,
           created_at: now,
         }));
 
@@ -5814,7 +5820,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const readCatalog = Effect.all({
           rows: core.findMany("tool", {
             where: integrationWhere,
-            select: [...TOOL_INVOCATION_COLUMNS, "input_schema"],
+            select: [...TOOL_INVOCATION_COLUMNS, "input_schema", "generation"],
           }),
           // Shared definitions, keyed per connection below: `$ref`s are
           // connection-local (`#/$defs/<name>` resolves against the producing
@@ -5827,30 +5833,74 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           readonly integration: string;
           readonly connection: string;
         }): string => `${row.owner}\u0000${row.integration}\u0000${row.connection}`;
-        const generationOf = (value: unknown): number =>
-          value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
+        // Per connection, both halves must come from ONE build. A build stamps
+        // every row it writes with the same opaque `generation`, so the proof
+        // is: the tool rows carry exactly one generation, the definition rows
+        // carry exactly one, and they are equal. That also catches the windows
+        // a non-transactional backend (D1 auto-commits each statement) can
+        // expose mid-rebuild — tools deleted but not reinserted (zero tool
+        // generations while definitions still carry the old one), or
+        // definitions deleted but not reinserted (tools carry the NEW
+        // generation, definitions carry none) — because a build with
+        // definitions always writes both. A connection whose build wrote no
+        // definitions legitimately has tools and no definition rows; only a
+        // definition-bearing build can be caught half-written, and it is,
+        // by the mismatch. Rows from before the column existed carry null on
+        // both sides and compare equal, which is exactly right: they were
+        // written together.
+        const mixedGenerations = (snapshot: {
+          readonly rows: ReadonlyArray<{
+            readonly owner: string;
+            readonly integration: string;
+            readonly connection: string;
+            readonly generation: string | null;
+          }>;
+          readonly definitionRows: ReadonlyArray<{
+            readonly owner: string;
+            readonly integration: string;
+            readonly connection: string;
+            readonly generation: string | null;
+          }>;
+        }): boolean => {
+          const toolGenerations = new Map<string, Set<string | null>>();
+          for (const row of snapshot.rows) {
+            const key = connectionKey(row);
+            (toolGenerations.get(key) ?? toolGenerations.set(key, new Set()).get(key)!).add(
+              row.generation,
+            );
+          }
+          const definitionGenerations = new Map<string, Set<string | null>>();
+          for (const def of snapshot.definitionRows) {
+            const key = connectionKey(def);
+            (
+              definitionGenerations.get(key) ?? definitionGenerations.set(key, new Set()).get(key)!
+            ).add(def.generation);
+          }
+          for (const [key, tools] of toolGenerations) {
+            if (tools.size !== 1) return true;
+            const defs = definitionGenerations.get(key);
+            if (defs === undefined) continue;
+            if (defs.size !== 1) return true;
+            if ([...tools][0] !== [...defs][0]) return true;
+          }
+          // Definitions whose tools are absent: a build that wrote definitions
+          // also wrote tools, so this is the tools-deleted window.
+          for (const key of definitionGenerations.keys()) {
+            if (!toolGenerations.has(key)) return true;
+          }
+          return false;
+        };
         const { rows, definitionRows } = yield* readCatalog.pipe(
-          Effect.flatMap((snapshot) => {
-            // Per connection: the generation the tool rows carry vs the one
-            // the definition rows carry. A connection with no definitions has
-            // nothing to disagree about.
-            const toolGeneration = new Map<string, number>();
-            for (const row of snapshot.rows) {
-              toolGeneration.set(connectionKey(row), generationOf(row.created_at));
-            }
-            for (const def of snapshot.definitionRows) {
-              const expected = toolGeneration.get(connectionKey(def));
-              if (expected !== undefined && expected !== generationOf(def.created_at)) {
-                return Effect.fail(
+          Effect.flatMap((snapshot) =>
+            mixedGenerations(snapshot)
+              ? Effect.fail(
                   new StorageError({
                     message: "tool catalog changed between reads",
                     cause: undefined,
                   }),
-                );
-              }
-            }
-            return Effect.succeed(snapshot);
-          }),
+                )
+              : Effect.succeed(snapshot),
+          ),
           Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
         );
         const policyRules = yield* listActivePolicyRuleSet();

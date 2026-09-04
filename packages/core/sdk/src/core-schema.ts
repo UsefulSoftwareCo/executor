@@ -336,6 +336,14 @@ export const coreTables = defineTables({
       input_schema: nullableJsonColumn("input_schema"),
       output_schema: nullableJsonColumn("output_schema"),
       annotations: nullableJsonColumn("annotations"),
+      // One opaque id per catalog (re)build, shared by every tool AND
+      // definition row that build wrote for the connection. A reader that
+      // must join the two tables (`tools.describeAll`) compares it to prove
+      // both halves came from the same build — a wall-clock stamp cannot
+      // (SQLite stores it at second resolution; two builds can share it).
+      // Nullable only for rows written before the column existed; the next
+      // rebuild stamps them.
+      generation: nullableTextColumn("generation"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -356,6 +364,8 @@ export const coreTables = defineTables({
       // rows (22001) — that drift broke cloud migration 0013 once already.
       name: textColumn("name"),
       schema: jsonColumn("schema"),
+      /** Same value as the `tool` rows written by the same build; see there. */
+      generation: nullableTextColumn("generation"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "integration", "connection", "name"],
@@ -449,10 +459,12 @@ export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
 export type ToolRow = FumaRow<CoreSchema["tool"]>;
 /** The tool-row projection the invoke/list hot paths load: everything except
- *  the heavy `input_schema`/`output_schema` JSON, which only `tools.schema`
- *  (describe) needs. Plugin `invokeTool` receives this shape — operation
- *  details ride in plugin storage or `annotations`, not the row schemas. */
-export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema">;
+ *  the heavy `input_schema`/`output_schema` JSON (which only `tools.schema`
+ *  needs) and the build `generation` marker (which only the
+ *  tools-to-definitions join in `tools.describeAll` reads). Plugin
+ *  `invokeTool` receives this shape — operation details ride in plugin
+ *  storage or `annotations`, not the row schemas. */
+export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema" | "generation">;
 /** The columns backing {@link ToolInvocationRow}, for `select` projections. */
 export const TOOL_INVOCATION_COLUMNS = [
   "tenant",

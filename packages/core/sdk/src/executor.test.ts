@@ -807,6 +807,78 @@ describe("createExecutor", () => {
     }),
   );
 
+  // The tools-to-definitions join in `describeAll` must never serve one
+  // build's schemas with another build's `$defs`. On a backend with no
+  // interactive transactions (D1) a rebuild is visible statement by statement,
+  // so the read is proven consistent by the `generation` stamp each build
+  // writes on every row, not by a transaction. Modelled here by a storage
+  // proxy that lets a rebuild commit BETWEEN the tool read and the definition
+  // read, exactly the interleaving a snapshot would have hidden.
+  it.effect("tools.describeAll never joins tool rows to definitions from another build", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      // Fires once: after the tool read of a describeAll, before its
+      // definition read, run the armed rebuild to completion.
+      const race: { rebuild: (() => Promise<void>) | null } = { rebuild: null };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "findMany") {
+              return async (table: unknown, query: unknown) => {
+                const result = await (
+                  target.findMany as (t: unknown, q: unknown) => Promise<unknown>
+                )(table, query);
+                if (table === "tool" && race.rebuild) {
+                  const rebuild = race.rebuild;
+                  race.rebuild = null;
+                  await rebuild();
+                }
+                return result;
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      const before = yield* executor.tools.describeAll();
+      const beforeInspect = before.find((tool) => tool.name === "inspect");
+      expect(beforeInspect, "the seeded build is served whole").toBeDefined();
+
+      // Arm: a full rebuild of the same connection lands between the two reads.
+      race.rebuild = () =>
+        Effect.runPromise(
+          executor.connections.refresh({ owner: "org", integration: INTEG, name: CONN }),
+        ).then(() => undefined);
+      const after = yield* executor.tools.describeAll();
+      expect(race.rebuild, "the rebuild ran mid-read").toBeNull();
+
+      // Whatever was served is ONE build: the same reachable `$defs` as a
+      // clean read, never an old schema against new (or missing) definitions.
+      const inspect = after.find((tool) => tool.name === "inspect");
+      expect(inspect, "the tool is still served").toBeDefined();
+      const inlined = inspect?.inputSchema as { $defs?: Record<string, unknown> };
+      expect(Object.keys(inlined.$defs ?? {}).sort()).toEqual(["Cat", "Collar", "Dog", "Pet"]);
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

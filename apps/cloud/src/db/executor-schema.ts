@@ -156,6 +156,7 @@ export const tool = pgTable(
     input_schema: json("input_schema"),
     output_schema: json("output_schema"),
     annotations: json("annotations"),
+    generation: text("generation"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
@@ -186,6 +187,7 @@ export const definition = pgTable(
     plugin_id: text("plugin_id").notNull(),
     name: text("name").notNull(),
     schema: json("schema").notNull(),
+    generation: text("generation"),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
       .primaryKey()
