@@ -229,11 +229,13 @@ export const coreTables = defineTables({
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
       // The catalog MANIFEST: which build is active for this connection and
       // how many tool + definition rows it wrote, as JSON
-      // `{ generation, tools, definitions }`. Written LAST by every rebuild,
-      // after all rows are in. A reader joining tools to definitions
-      // (`tools.describeAll`) accepts the rows only when every one carries
-      // this generation and the counts match — which is what proves the
-      // catalog is whole on a backend that commits each statement on its own
+      // `{ generation, tools, definitions }`. Written by every rebuild in the
+      // same transaction as its rows where the engine has one; on D1 it may
+      // commit BEFORE the row batch. Either way a reader joining tools to
+      // definitions (`tools.describeAll`) accepts the rows only when every
+      // one carries this generation and the counts match exactly — that
+      // agreement, not commit order, is what proves the catalog is whole on
+      // a backend that commits each statement on its own
       // (D1) and across isolates the per-executor write lock cannot see.
       // Null for connections built before the manifest existed. A null
       // manifest means "no proven-whole catalog": `tools.describeAll` refuses

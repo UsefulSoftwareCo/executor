@@ -112,15 +112,26 @@ export const preferredToolName = (
  * fact (HTTP method, GraphQL kind, upstream hint); absent means unknown, which
  * must read as `false` — advertising read-only for a tool nobody vouched for
  * would let a harness skip a prompt it should show.
+ *
+ * Approval DOMINATES read-only. The MCP spec says `destructiveHint` is only
+ * meaningful when `readOnlyHint` is false, so a client may skip its prompt
+ * for any read-only tool. A tool a policy says needs approval must therefore
+ * never be advertised read-only, whatever the plugin knows about it — the
+ * server accepts its own approval gate on the strength of this advertisement
+ * (see the passthrough call path), so the advertisement is what the user's
+ * consent rests on.
  */
 export const passthroughAnnotations = (
   projection: Pick<ToolProjection, "policy" | "readOnly" | "name">,
-): PassthroughAnnotations => ({
-  title: projection.name,
-  readOnlyHint: projection.readOnly === true,
-  destructiveHint: projection.policy === "require_approval",
-  openWorldHint: true,
-});
+): PassthroughAnnotations => {
+  const requiresApproval = projection.policy === "require_approval";
+  return {
+    title: projection.name,
+    readOnlyHint: !requiresApproval && projection.readOnly === true,
+    destructiveHint: requiresApproval,
+    openWorldHint: true,
+  };
+};
 
 /**
  * Assign a unique MCP name to every projection. Deterministic for a given

@@ -384,13 +384,12 @@ export interface ORMAdapter<S extends AnySchema = AnySchema> {
   ) => Promise<void>;
 
   /**
-   * Run a set of deletes and inserts as ONE atomic unit, with an optional
-   * guard: a conditional update that must match at least one row for the
-   * rest to apply. On engines without interactive transactions (Cloudflare
-   * D1) adapters implement this with the driver's native batch, which D1
-   * executes as one transaction; elsewhere it is an ordinary transaction.
-   * The guard makes the whole unit fenced: an adapter that cannot express
-   * "apply only if the guard matched" atomically must reject the guard.
+   * Run a set of deletes and inserts, with an optional guard: a conditional
+   * update that must match at least one row for the rest to apply. With
+   * interactive transactions the whole plan is one transaction. Without them
+   * (Cloudflare D1) the guard is its own committed statement, followed by the
+   * deletes + inserts in one native batch — see `AbstractQuery.replaceMany`
+   * for the exact guarantee a caller gets on such engines.
    */
   replaceMany?: (
     plan: {

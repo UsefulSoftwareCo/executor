@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type * as Cause from "effect/Cause";
@@ -88,6 +88,11 @@ const withClient = async <E extends Cause.YieldableError>(
     await serverTransport.close();
   }
 };
+
+const decodeJsonString = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.String));
+const decodeJsonRecord = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 
 const CATALOG: readonly ToolProjection[] = [
   projection({
@@ -201,6 +206,15 @@ describe("passthrough annotations", () => {
     expect(passthroughAnnotations({ name: "x", policy: "approve" }).readOnlyHint).toBe(false);
   });
 
+  it("approval dominates read-only: a gated GET is not advertised read-only", () => {
+    // The MCP spec lets a client skip its prompt for a read-only tool, and
+    // the server accepts its own gate on the strength of the advertisement —
+    // so a require_approval tool must never be advertised read-only.
+    expect(
+      passthroughAnnotations({ name: "x", policy: "require_approval", readOnly: true }),
+    ).toEqual({ title: "x", readOnlyHint: false, destructiveHint: true, openWorldHint: true });
+  });
+
   it("emits exactly one awaited tool call with the whole address as one string literal", () => {
     expect(passthroughCallCode("tools.github.org.main.issues.create", { title: "hi" })).toBe(
       'return await tools["github.org.main.issues.create"]({"title":"hi"});',
@@ -222,12 +236,12 @@ describe("passthrough annotations", () => {
     const code = passthroughCallCode(`tools.evil.org.main.${hostile}`, {});
     // Structural proof the payload never escapes the string literal: the
     // source is exactly `return await tools[<one JSON string>](<JSON>);`, and
-    // that one string round-trips through JSON.parse to the raw address.
+    // that one string decodes back to the raw address.
     const shape = /^return await tools\[("(?:[^"\\]|\\.)*")\]\((\{.*\})\);$/s.exec(code);
     expect(shape).not.toBeNull();
-    expect(JSON.parse(shape![1]!)).toBe(`evil.org.main.${hostile}`);
+    expect(decodeJsonString(shape![1]!)).toBe(`evil.org.main.${hostile}`);
     // And the call's argument is the JSON we passed, untouched by the address.
-    expect(JSON.parse(shape![2]!)).toEqual({});
+    expect(decodeJsonRecord(shape![2]!)).toEqual({});
   });
 });
 

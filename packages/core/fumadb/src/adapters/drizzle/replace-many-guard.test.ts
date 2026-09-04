@@ -113,12 +113,13 @@ test("postgres.js `count: 1` is a guard hit: deletes and inserts run in the same
   ]);
 });
 
-test("node-postgres `rowCount`, libsql `rowsAffected`, better-sqlite3 `changes`, D1 `meta.changes` are all read", async () => {
+test("node-postgres `rowCount`, libsql `rowsAffected`, better-sqlite3 `changes`, D1 `meta.changes`, mysql2 `[header].affectedRows` are all read", async () => {
   for (const updateResult of [
     { rowCount: 0 },
     { rowsAffected: 0 },
     { changes: 0 },
     { meta: { changes: 0 } },
+    [{ affectedRows: 0, fieldCount: 0 }, []],
   ]) {
     const { db } = createFakePgDb({ updateResult });
     expect(await replace(db), JSON.stringify(updateResult)).toEqual({ applied: false });
@@ -128,6 +129,7 @@ test("node-postgres `rowCount`, libsql `rowsAffected`, better-sqlite3 `changes`,
     { rowsAffected: 1 },
     { changes: 1 },
     { meta: { changes: 1 } },
+    [{ affectedRows: 1, fieldCount: 0 }, []],
   ]) {
     const { db } = createFakePgDb({ updateResult });
     expect(await replace(db), JSON.stringify(updateResult)).toEqual({ applied: true });

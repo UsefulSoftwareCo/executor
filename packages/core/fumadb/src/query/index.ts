@@ -226,11 +226,18 @@ export interface AbstractQuery<S extends AnySchema> {
       }) => Promise<void>;
 
   /**
-   * Delete + insert across tables as ONE atomic unit, optionally fenced by a
-   * guard update that must match a row for any of it to apply. Atomic on
-   * every engine, including those without interactive transactions (the
-   * adapter uses the driver's native batch there). Returns whether the guard
+   * Delete + insert across tables, optionally fenced by a guard update that
+   * must match a row for the rest to apply. Returns whether the guard
    * matched; with no guard, always `applied: true`.
+   *
+   * Atomicity depends on the engine. With interactive transactions the whole
+   * plan — guard included — is one transaction: a guard miss or any failure
+   * rolls everything back. WITHOUT them (Cloudflare D1) the guard is its own
+   * committed statement and the deletes + inserts follow in one native batch
+   * (itself atomic): if the batch fails or the process dies between the two,
+   * the guard's update stays. Callers on such engines must be able to tell a
+   * guard-without-rows state apart on read (the executor's tool catalog does
+   * so with a per-connection manifest checked against row counts).
    */
   replaceMany: (plan: {
     readonly guard?: {

@@ -5942,11 +5942,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // connection's `definition` rows), so the join key is the same
           // (owner, integration, connection) triple the tool row carries.
           definitionRows: core.findMany("definition", { where: integrationWhere }),
-          // Each connection's manifest: the build that finished last and the
-          // row counts it wrote. Read AFTER the rows on purpose: a rebuild
-          // writes rows first and the manifest last, so a manifest that names
-          // a generation guarantees every row of that generation had landed
-          // before it was written.
+          // Each connection's manifest: the build that last claimed it and
+          // the row counts it wrote. On D1 the manifest can commit before the
+          // row batch, so nothing about read order proves anything here; the
+          // proof below is exact generation + count agreement between the
+          // manifest and the rows actually present.
           manifests: core.findMany("connection", {
             where: (b: AnyCb) =>
               b.and(
@@ -5972,8 +5972,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Per connection, the rows served must be exactly ONE finished build.
         // A build stamps every row it writes with one opaque `generation`, and
         // writes the connection's manifest — that generation plus the row
-        // counts — as its LAST statement. So with a manifest the proof is
-        // complete: every tool row and every definition row carries the
+        // counts — with them (one transaction) or, on D1, just before them.
+        // Commit order proves nothing; agreement does. With a manifest the
+        // proof is complete: every tool row and every definition row carries the
         // manifest's generation, and there are exactly as many of each as it
         // says. That holds on a backend that commits each statement on its
         // own (D1): a read that lands mid-rebuild sees either the old

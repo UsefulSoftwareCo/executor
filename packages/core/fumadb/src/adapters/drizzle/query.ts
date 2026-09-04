@@ -678,12 +678,20 @@ export function fromDrizzle(
 
       // How many rows the guard matched. Drizzle hands back the driver's own
       // result: libsql `rowsAffected`, better-sqlite3 `changes`, node-postgres
-      // `rowCount`, postgres.js `count` (a RowList), D1 `meta.changes`. A
-      // result with NONE of these is a driver this fence does not know, and
-      // a fence that cannot read its own guard is not a fence — so that is a
-      // hard error, never a silent "matched".
+      // `rowCount`, postgres.js `count` (a RowList), D1 `meta.changes`, and
+      // mysql2 a `[ResultSetHeader, FieldPacket[]]` tuple whose header
+      // carries `affectedRows`. A result with NONE of these is a driver this
+      // fence does not know, and a fence that cannot read its own guard is
+      // not a fence — so that is a hard error, never a silent "matched".
       const guardMatched = (result: unknown): boolean => {
         if (!plan.guard) return true;
+        const header =
+          Array.isArray(result) && result.length > 0 && result[0] && typeof result[0] === "object"
+            ? (result[0] as Record<string, unknown>)
+            : undefined;
+        if (header && typeof header["affectedRows"] === "number") {
+          return (header["affectedRows"] as number) > 0;
+        }
         if (result && typeof result === "object") {
           const r = result as Record<string, unknown>;
           for (const key of ["rowsAffected", "changes", "rowCount", "count"]) {

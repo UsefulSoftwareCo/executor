@@ -879,11 +879,11 @@ describe("createExecutor", () => {
     }),
   );
 
-  // On D1 every statement of a rebuild commits on its own, so a reader can
-  // land after the definitions were deleted and before they were reinserted
-  // (or after only some tool batches landed). The connection's manifest —
-  // written LAST — is what lets `describeAll` tell that apart from a finished
-  // build. Modelled here by deleting the definitions out from under a stamped
+  // On D1 the manifest and the row batch are separate commits, so a reader
+  // can land with a manifest whose rows are not (all) there. The manifest's
+  // exact generation + row counts are what let `describeAll` tell that apart
+  // from a finished build. Modelled here by deleting the definitions out from
+  // under a stamped
   // catalog: the row counts no longer match the manifest.
   it.effect("tools.describeAll refuses a catalog whose rows do not match its manifest", () =>
     Effect.gen(function* () {
