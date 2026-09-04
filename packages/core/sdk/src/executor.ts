@@ -913,6 +913,23 @@ const validateExecutorDbTables = (required: FumaTables, actual: FumaTables): voi
  *  rebuild storm fails loudly instead of spinning. */
 const DESCRIBE_ALL_GENERATION_RETRIES = 3;
 
+/** What a finished catalog build leaves on its connection row (see the
+ *  `tools_manifest` column): the active build and the row counts it wrote. */
+const CatalogManifest = Schema.Struct({
+  /** Null for a build that wrote no rows at all (every row it would have
+   *  written is absent, so there is no generation to match). */
+  generation: Schema.NullOr(Schema.String),
+  tools: Schema.Number,
+  definitions: Schema.Number,
+});
+type CatalogManifest = typeof CatalogManifest.Type;
+const decodeCatalogManifest = Schema.decodeUnknownOption(CatalogManifest);
+const emptyCatalogManifest = (): CatalogManifest => ({
+  generation: null,
+  tools: 0,
+  definitions: 0,
+});
+
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
 
@@ -3499,25 +3516,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("integration", "=", String(ref.integration)),
             b("name", "=", String(ref.name)),
           );
-        const syncedSet = (row: ConnectionRow | null) => {
+        const syncedSet = (row: ConnectionRow | null, manifest: CatalogManifest) => {
           const health = row ? Option.getOrNull(decodeLastHealth(row.last_health)) : null;
           return isToolSyncHealth(health)
             ? {
                 tools_synced_at: Date.now(),
+                tools_manifest: manifest,
                 last_health: null,
                 updated_at: new Date(),
               }
-            : { tools_synced_at: Date.now() };
+            : { tools_synced_at: Date.now(), tools_manifest: manifest };
         };
         // Every exit stamps the sync time — including the cleanup paths that
         // produce zero tools — so the stale-catalog check (`config_revised_at`
         // vs `tools_synced_at`) doesn't re-attempt this connection per read.
         // Successful syncs also clear stale sync-failure health records, while
-        // preserving genuine health-check outcomes.
-        const stampSynced = (row: ConnectionRow | null) =>
+        // preserving genuine health-check outcomes. The stamp is the LAST
+        // statement of a rebuild and carries the catalog manifest, so on a
+        // backend that commits statement by statement a reader can tell a
+        // finished build from one still landing (see `tools.describeAll`).
+        const stampSynced = (row: ConnectionRow | null, manifest: CatalogManifest) =>
           core.updateMany("connection", {
             where: connectionWhere,
-            set: syncedSet(row),
+            set: syncedSet(row, manifest),
           });
         // A failing sync must not bury a recorded dead grant's `expired`
         // verdict: this sync's own credential resolution is what discovers
@@ -3588,7 +3609,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow);
+              yield* stampSynced(existingRow, emptyCatalogManifest());
             }),
           );
           return [];
@@ -3600,7 +3621,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.gen(function* () {
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow);
+              yield* stampSynced(existingRow, emptyCatalogManifest());
             }),
           );
           return [];
@@ -3702,7 +3723,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             yield* core.deleteMany("definition", { where });
             yield* core.createMany("tool", toolRows);
             yield* core.createMany("definition", definitionRows);
-            yield* stampSynced(existingRow);
+            yield* stampSynced(existingRow, {
+              generation,
+              tools: toolRows.length,
+              definitions: definitionRows.length,
+            });
           }),
         );
 
@@ -5813,10 +5838,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // transaction alone does not promise that on every backend (Postgres
         // runs READ COMMITTED, D1 has no interactive transactions), so the
         // join is checked, not assumed: a rebuild stamps every row it writes
-        // with one `created_at`, which is the generation marker. When the two
-        // reads disagree for a connection, they are re-read; a bounded number
-        // of attempts covers a rebuild landing mid-read without ever serving a
-        // mixed generation.
+        // with the opaque `generation` id of the build, and the build's last
+        // statement records that id plus the row counts on the connection
+        // (`tools_manifest`). When a read does not match, it is re-read; a
+        // bounded number of attempts covers a rebuild landing mid-read without
+        // ever serving a mixed or partial catalog.
         const readCatalog = Effect.all({
           rows: core.findMany("tool", {
             where: integrationWhere,
@@ -5827,66 +5853,110 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // connection's `definition` rows), so the join key is the same
           // (owner, integration, connection) triple the tool row carries.
           definitionRows: core.findMany("definition", { where: integrationWhere }),
+          // Each connection's manifest: the build that finished last and the
+          // row counts it wrote. Read AFTER the rows on purpose: a rebuild
+          // writes rows first and the manifest last, so a manifest that names
+          // a generation guarantees every row of that generation had landed
+          // before it was written.
+          manifests: core.findMany("connection", {
+            where: (b: AnyCb) =>
+              b.and(
+                filter?.integration === undefined
+                  ? true
+                  : b("integration", "=", String(filter.integration)),
+                filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+                filter?.connection === undefined ? true : b("name", "=", String(filter.connection)),
+              ),
+            select: ["owner", "integration", "name", "tools_manifest"],
+          }),
         });
         const connectionKey = (row: {
           readonly owner: string;
           readonly integration: string;
           readonly connection: string;
         }): string => `${row.owner}\u0000${row.integration}\u0000${row.connection}`;
-        // Per connection, both halves must come from ONE build. A build stamps
-        // every row it writes with the same opaque `generation`, so the proof
-        // is: the tool rows carry exactly one generation, the definition rows
-        // carry exactly one, and they are equal. That also catches the windows
-        // a non-transactional backend (D1 auto-commits each statement) can
-        // expose mid-rebuild — tools deleted but not reinserted (zero tool
-        // generations while definitions still carry the old one), or
-        // definitions deleted but not reinserted (tools carry the NEW
-        // generation, definitions carry none) — because a build with
-        // definitions always writes both. A connection whose build wrote no
-        // definitions legitimately has tools and no definition rows; only a
-        // definition-bearing build can be caught half-written, and it is,
-        // by the mismatch. Rows from before the column existed carry null on
-        // both sides and compare equal, which is exactly right: they were
-        // written together.
+        // Per connection, the rows served must be exactly ONE finished build.
+        // A build stamps every row it writes with one opaque `generation`, and
+        // writes the connection's manifest — that generation plus the row
+        // counts — as its LAST statement. So with a manifest the proof is
+        // complete: every tool row and every definition row carries the
+        // manifest's generation, and there are exactly as many of each as it
+        // says. That holds on a backend that commits each statement on its
+        // own (D1): a read that lands mid-rebuild sees either the old
+        // manifest with some rows already replaced (generation mismatch), or
+        // fewer rows than the manifest counts (still inserting), or the new
+        // manifest with everything in place. A competing writer in another
+        // isolate, which the per-executor write lock cannot serialize, is
+        // caught the same way: whatever it leaves behind does not match the
+        // manifest that was written last. A connection with no manifest
+        // (built before the column existed) falls back to the weaker check —
+        // all rows of one generation, both tables agreeing — until its next
+        // rebuild stamps it.
+        type GenerationRow = {
+          readonly owner: string;
+          readonly integration: string;
+          readonly connection: string;
+          readonly generation: string | null;
+        };
         const mixedGenerations = (snapshot: {
-          readonly rows: ReadonlyArray<{
+          readonly rows: ReadonlyArray<GenerationRow>;
+          readonly definitionRows: ReadonlyArray<GenerationRow>;
+          readonly manifests: ReadonlyArray<{
             readonly owner: string;
             readonly integration: string;
-            readonly connection: string;
-            readonly generation: string | null;
-          }>;
-          readonly definitionRows: ReadonlyArray<{
-            readonly owner: string;
-            readonly integration: string;
-            readonly connection: string;
-            readonly generation: string | null;
+            readonly name: string;
+            readonly tools_manifest: unknown;
           }>;
         }): boolean => {
-          const toolGenerations = new Map<string, Set<string | null>>();
-          for (const row of snapshot.rows) {
-            const key = connectionKey(row);
-            (toolGenerations.get(key) ?? toolGenerations.set(key, new Set()).get(key)!).add(
-              row.generation,
+          type Tally = { readonly generations: Set<string | null>; count: number };
+          const tally = (rows: ReadonlyArray<GenerationRow>): Map<string, Tally> => {
+            const out = new Map<string, Tally>();
+            for (const row of rows) {
+              const key = connectionKey(row);
+              const entry = out.get(key) ?? { generations: new Set<string | null>(), count: 0 };
+              entry.generations.add(row.generation);
+              entry.count += 1;
+              out.set(key, entry);
+            }
+            return out;
+          };
+          const tools = tally(snapshot.rows);
+          const definitions = tally(snapshot.definitionRows);
+          const manifests = new Map<string, CatalogManifest | null>();
+          for (const row of snapshot.manifests) {
+            manifests.set(
+              connectionKey({
+                owner: row.owner,
+                integration: row.integration,
+                connection: row.name,
+              }),
+              Option.getOrNull(decodeCatalogManifest(decodeJsonColumn(row.tools_manifest))),
             );
           }
-          const definitionGenerations = new Map<string, Set<string | null>>();
-          for (const def of snapshot.definitionRows) {
-            const key = connectionKey(def);
-            (
-              definitionGenerations.get(key) ?? definitionGenerations.set(key, new Set()).get(key)!
-            ).add(def.generation);
-          }
-          for (const [key, tools] of toolGenerations) {
-            if (tools.size !== 1) return true;
-            const defs = definitionGenerations.get(key);
-            if (defs === undefined) continue;
-            if (defs.size !== 1) return true;
-            if ([...tools][0] !== [...defs][0]) return true;
-          }
-          // Definitions whose tools are absent: a build that wrote definitions
-          // also wrote tools, so this is the tools-deleted window.
-          for (const key of definitionGenerations.keys()) {
-            if (!toolGenerations.has(key)) return true;
+          const keys = new Set([...tools.keys(), ...definitions.keys(), ...manifests.keys()]);
+          for (const key of keys) {
+            const t = tools.get(key);
+            const d = definitions.get(key);
+            const manifest = manifests.get(key) ?? null;
+            if (manifest) {
+              // Strong check: exact generation and exact counts on both sides.
+              if ((t?.count ?? 0) !== manifest.tools) return true;
+              if ((d?.count ?? 0) !== manifest.definitions) return true;
+              if (t && (t.generations.size !== 1 || !t.generations.has(manifest.generation))) {
+                return true;
+              }
+              if (d && (d.generations.size !== 1 || !d.generations.has(manifest.generation))) {
+                return true;
+              }
+              continue;
+            }
+            // Weak check (no manifest yet): one generation per table, agreeing.
+            if (t && t.generations.size !== 1) return true;
+            if (d && d.generations.size !== 1) return true;
+            if (t && d && [...t.generations][0] !== [...d.generations][0]) return true;
+            // Definitions with no tools: a build that writes definitions also
+            // writes tools, so this is a half-replaced catalog.
+            if (d && !t) return true;
           }
           return false;
         };

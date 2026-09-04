@@ -879,6 +879,36 @@ describe("createExecutor", () => {
     }),
   );
 
+  // On D1 every statement of a rebuild commits on its own, so a reader can
+  // land after the definitions were deleted and before they were reinserted
+  // (or after only some tool batches landed). The connection's manifest —
+  // written LAST — is what lets `describeAll` tell that apart from a finished
+  // build. Modelled here by deleting the definitions out from under a stamped
+  // catalog: the row counts no longer match the manifest.
+  it.effect("tools.describeAll refuses a catalog whose rows do not match its manifest", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor(config);
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      const whole = yield* executor.tools.describeAll();
+      expect(whole.length).toBeGreaterThan(0);
+
+      // The half-written window: definitions gone, manifest still says N.
+      yield* Effect.promise(() =>
+        config.db.deleteMany("definition", { where: (b) => b("integration", "=", String(INTEG)) }),
+      );
+      const outcome = yield* Effect.result(executor.tools.describeAll());
+      expect(Result.isFailure(outcome), "a partial catalog is refused, not served").toBe(true);
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

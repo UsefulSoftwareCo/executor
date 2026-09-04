@@ -2936,6 +2936,13 @@ const mcpCommand = Command.make(
   ({ scope, elicitationMode, noArtifacts, searchTools, toolMode, integrations }) =>
     Effect.gen(function* () {
       applyScope(scope);
+      if (toolMode === "passthrough" && searchTools) {
+        return yield* Effect.fail(
+          new Error(
+            "--search-tools is a codemode option; passthrough already lists every tool. Drop --search-tools or --mode passthrough.",
+          ),
+        );
+      }
       yield* runStdioMcpSession({
         elicitationMode,
         artifacts: !noArtifacts,

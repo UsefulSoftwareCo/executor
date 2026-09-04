@@ -144,7 +144,11 @@ export const buildMcpHttpEndpoint = (input: {
     params.push(["elicitation_mode", input.elicitationMode]);
   }
   if (input.artifacts === false) params.push(["artifacts", "false"]);
-  if (input.searchTools === true) params.push(["search_tools", "true"]);
+  // Search tools and artifacts are codemode affordances; passthrough serves
+  // neither, so the URL never claims them alongside it.
+  if (input.searchTools === true && input.toolMode !== "passthrough") {
+    params.push(["search_tools", "true"]);
+  }
   if (input.toolMode === "passthrough") params.push(["mode", "passthrough"]);
   if (params.length === 0) return endpoint;
 
@@ -207,7 +211,7 @@ export const buildMcpInstallCommand = (input: {
   if (input.artifacts === false) {
     innerArgs.push("--no-artifacts");
   }
-  if (input.searchTools === true) {
+  if (input.searchTools === true && input.toolMode !== "passthrough") {
     innerArgs.push("--search-tools");
   }
   if (input.toolMode === "passthrough") {
@@ -348,13 +352,16 @@ export function McpInstallCard(props: { className?: string }) {
           <div className="min-w-0">
             <div className="text-xs font-medium text-foreground">Integration search tools</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {searchTools
-                ? "One search tool per connected integration, so agents see your integrations as tool names."
-                : "Disabled: agents discover tools through search inside execute."}
+              {toolMode === "passthrough"
+                ? "Not needed when tools are exposed directly: every tool is already on the list."
+                : searchTools
+                  ? "One search tool per connected integration, so agents see your integrations as tool names."
+                  : "Disabled: agents discover tools through search inside execute."}
             </div>
           </div>
           <Switch
-            checked={searchTools}
+            checked={toolMode === "passthrough" ? false : searchTools}
+            disabled={toolMode === "passthrough"}
             onCheckedChange={(next) => {
               setPreferences((current) => ({ ...current, searchTools: next }));
               trackEvent("mcp_install_search_tools_toggled", { search_tools: next });

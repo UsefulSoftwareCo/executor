@@ -195,7 +195,9 @@ type SharedMcpServerConfig = {
    * the `execute` description lists). The tools exist to carry the namespaces
    * into the model's context as tool names; each call routes through the same
    * execution flow as `tools.search({ namespace })` inside `execute`, so the
-   * results match what code-side search returns.
+   * results match what code-side search returns. Codemode only: passthrough
+   * ignores it (its whole catalog is already on the tool list, and search
+   * results point at an `execute` tool passthrough does not serve).
    */
   readonly searchToolsEnabled?: boolean;
   /**
@@ -742,6 +744,25 @@ const elicitationUnsupportedResult = (
         request: request.message,
         ...(url ? { url } : {}),
       },
+      logs: [],
+    },
+    isError: true,
+  };
+};
+
+/**
+ * A passthrough tool this session advertised as not needing approval now
+ * does (a policy was added after the list was built), and the client cannot
+ * take a native approval prompt. The call is refused — never run without the
+ * approval the new policy demands — and the fix is a fresh tool list.
+ */
+const policyTightenedResult = (toolName: string): McpToolResult => {
+  const message = `Tool ${toolName} now requires the user's approval, but this session advertised it as not requiring approval. Reconnect to refresh the tool list, then call it again so your client can ask for approval.`;
+  return {
+    content: [{ type: "text", text: `Error: ${message}` }],
+    structuredContent: {
+      status: "error",
+      error: { code: "approval_required_after_list", message },
       logs: [],
     },
     isError: true,
@@ -1832,16 +1853,30 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         // reported as unanswerable below — with what was asked, URL included —
         // instead of as "declined by the user", which nobody did.
         let unanswerable: ElicitationRequest | undefined;
+        // Set when the executor's approval gate fired for a tool this session
+        // advertised as NOT needing approval, and the client cannot take a
+        // native prompt: policy tightened after the list was built.
+        let policyTightened = false;
         const onElicitation: ElicitationHandler = (ctx) => {
-          // The executor's OWN approval gate is the only thing accepted
-          // inline: the harness already prompted (or chose not to) from the
-          // advertised annotations, so a second server-side gate would
-          // double-prompt. Provenance is stamped by the executor, not read
-          // off the request shape — a tool-raised prompt with an empty schema
-          // can still carry terms of its own (a permanent site grant), and
-          // must reach a human or fail, never be answered for them.
+          // The executor's OWN approval gate is accepted inline ONLY when the
+          // tool was advertised as needing approval: the harness prompted (or
+          // chose not to) from that annotation, so a second server-side gate
+          // would double-prompt. If policy has since tightened — the session
+          // still advertises `destructiveHint: false` but the executor now
+          // requires approval — the client never had the chance to ask, so
+          // the gate goes to the client natively, or fails the call when it
+          // cannot, with a message that says to reconnect for the new list.
+          // Provenance is stamped by the executor, not read off the request
+          // shape — a tool-raised prompt with an empty schema can still carry
+          // terms of its own (a permanent site grant), and must reach a human
+          // or fail, never be answered for them.
           if (ctx.source === "policy") {
-            return Effect.succeed({ action: "accept" as const, content: {} });
+            if (tool.projection.policy === "require_approval") {
+              return Effect.succeed({ action: "accept" as const, content: {} });
+            }
+            if (supportsForm) return native(ctx);
+            policyTightened = true;
+            return Effect.succeed({ action: "decline" as const });
           }
           // Anything the tool itself asked for goes to the client natively
           // when it can take it; the native bridge already turns a URL
@@ -1855,6 +1890,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         const outcome = yield* engine.execute(passthroughCallCode(address, args), {
           onElicitation,
         });
+        if (policyTightened) return policyTightenedResult(tool.name);
         if (unanswerable) return elicitationUnsupportedResult(tool.name, unanswerable);
         return toPassthroughResult(outcome);
       }).pipe(

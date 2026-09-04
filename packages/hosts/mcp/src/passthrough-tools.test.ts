@@ -427,6 +427,34 @@ describe("passthrough mode server", () => {
     );
   });
 
+  it("refuses a call when policy tightened after the list and the client cannot prompt", async () => {
+    // `issues.list` was advertised `destructiveHint: false`. An admin then
+    // adds a require_approval rule; the executor now raises its approval gate
+    // on invoke. The session never told the client to ask, so the gate must
+    // NOT be accepted on the client's behalf: with no elicitation capability
+    // the call fails closed and says to reconnect.
+    const seen: string[] = [];
+    await withClient(
+      {
+        engine: elicitingEngine([{ source: "policy", request: approvalGate }], seen),
+        mode: "passthrough",
+        tools: { describeAll: () => Effect.succeed(CATALOG) },
+      },
+      async (client) => {
+        const listed = await client.listTools();
+        const list = listed.tools.find((tool) => tool.name === "github__issues_list");
+        expect(list?.annotations?.destructiveHint).toBe(false);
+        const result = await client.callTool({ name: "github__issues_list", arguments: {} });
+        expect(seen).toEqual(["policy:decline"]);
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          status: "error",
+          error: { code: "approval_required_after_list" },
+        });
+      },
+    );
+  });
+
   it("never auto-accepts a tool-raised prompt, even one with an empty schema", async () => {
     // Same wire shape as the approval gate, but raised by the TOOL: a
     // per-site grant whose terms live in `meta`. Provenance, not shape,

@@ -134,6 +134,13 @@
       "when": 1788505381630,
       "tag": "0018_tool_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788506387005,
+      "tag": "0019_connection_tools_manifest",
+      "breakpoints": true
     }
   ]
 }

@@ -227,6 +227,18 @@ export const coreTables = defineTables({
       // Epoch ms of the last tool (re)production for this connection. Stale
       // vs the integration's `config_revised_at` → re-produced on next read.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      // The catalog MANIFEST: which build is active for this connection and
+      // how many tool + definition rows it wrote, as JSON
+      // `{ generation, tools, definitions }`. Written LAST by every rebuild,
+      // after all rows are in. A reader joining tools to definitions
+      // (`tools.describeAll`) accepts the rows only when every one carries
+      // this generation and the counts match — which is what proves the
+      // catalog is whole on a backend that commits each statement on its own
+      // (D1) and across isolates the per-executor write lock cannot see.
+      // Null for connections built before the manifest existed; such a
+      // catalog is served on the (weaker) same-generation check alone until
+      // its next rebuild stamps it.
+      tools_manifest: nullableJsonColumn("tools_manifest"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for
