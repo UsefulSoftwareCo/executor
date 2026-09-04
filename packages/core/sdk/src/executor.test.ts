@@ -1158,6 +1158,85 @@ describe("createExecutor", () => {
     }),
   );
 
+  // The D1 race the guard-then-batch protocol cannot prevent: A's guard
+  // commits (A "won"), B claims + guards + lands its rows, THEN A's delayed
+  // batch lands rows A under manifest B. A got `applied: true` and must still
+  // not report its discovery: the persisted state is manifest B over rows A,
+  // which every list refuses. A reports nothing and stale-marks the row so
+  // the next read rebuilds. Modelled by rewriting the manifest to B's after
+  // A's `replaceMany` returns.
+  it.effect("a build whose rows landed under another build's manifest reports nothing", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const raceState: { armed: boolean } = { armed: false };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "replaceMany") {
+              return async (plan: unknown) => {
+                const out = await (
+                  target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>
+                )(plan);
+                if (raceState.armed && out.applied) {
+                  raceState.armed = false;
+                  // B's manifest overwrites A's after A's rows are in.
+                  await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                    "connection",
+                    {
+                      where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                        b("integration", "=", String(INTEG)),
+                      set: {
+                        tools_synced_at: Date.now(),
+                        tools_rebuild: null,
+                        tools_manifest: { generation: "gen-B", tools: 2, definitions: 6 },
+                      },
+                    },
+                  );
+                }
+                return out;
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+      raceState.armed = true;
+      const reported = yield* executor.connections.refresh({
+        owner: "org",
+        integration: INTEG,
+        name: CONN,
+      });
+      expect(raceState.armed, "B overwrote the manifest after A's rows landed").toBe(false);
+      expect(reported, "A reports nothing: its rows sit under B's manifest").toEqual([]);
+      const [row] = yield* Effect.promise(() =>
+        config.db.findMany("connection", {
+          where: (b) => b("integration", "=", String(INTEG)),
+        }),
+      );
+      expect(row?.tools_synced_at, "the connection is stale-marked for the next read").toBeNull();
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

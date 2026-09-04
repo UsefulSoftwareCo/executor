@@ -3812,59 +3812,47 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             definitions: definitionRows.length,
           }),
         );
-        // A build that lost its claim persisted nothing; what it discovered
-        // is not the catalog. Report what IS persisted — but only if it is a
-        // whole build, checked the way every list checks it (manifest vs
-        // rows). A raw row scan could, on D1, catch the winner between its
-        // committed manifest and its row batch and hand back a catalog the
-        // next list refuses. While the winner is still landing the loser
-        // reports an EMPTY catalog rather than a wrong one; the caller's next
-        // list (or the stale scan) picks up the winner's finished build. This
-        // cannot go through `describeAll`: that runs the stale sync, which
-        // would re-enter this very connection's in-flight production.
         if (!applied) {
-          const [rows, definitionRows, connectionRow] = yield* Effect.all([
-            core.findMany("tool", { where, select: [...TOOL_INVOCATION_COLUMNS, "generation"] }),
-            core.findMany("definition", { where }),
-            findConnectionRow(ref),
-          ]);
-          const manifest = connectionRow
-            ? Option.getOrNull(
-                decodeCatalogManifest(decodeJsonColumn(connectionRow.tools_manifest)),
-              )
-            : null;
-          if (
-            !manifest ||
-            rows.length !== manifest.tools ||
-            definitionRows.length !== manifest.definitions ||
-            rows.some((row) => row.generation !== manifest.generation) ||
-            definitionRows.some((row) => row.generation !== manifest.generation)
-          ) {
-            return [];
-          }
-          return rows.map((row) => rowToTool(row));
+          yield* Effect.logInfo("executor tool sync lost its claim to a newer build", {
+            integration: String(ref.integration),
+            connection: String(ref.name),
+          });
         }
-
-        return result.tools.map((tool: ToolDef) =>
-          rowToTool(
-            {
-              tenant: keys.tenant,
-              owner: keys.owner,
-              subject: keys.subject,
-              integration: String(ref.integration),
-              connection: String(ref.name),
-              plugin_id: integrationRow.plugin_id,
-              name: String(tool.name),
-              description: tool.description ?? "",
-              input_schema: tool.inputSchema ?? null,
-              output_schema: tool.outputSchema ?? null,
-              annotations: tool.annotations ?? null,
-              created_at: now,
-              updated_at: now,
-            } as ConnectionToolRow,
-            tool.annotations,
-          ),
-        );
+        // Report what is PERSISTED, never what this build discovered — and
+        // only if what is persisted is one whole build, checked the way every
+        // list checks it (manifest vs rows). That holds for the loser (it
+        // wrote nothing) and for the apparent winner alike: on D1 the guard
+        // commits before the row batch, so a build can see `applied: true`
+        // and still have its rows land AFTER a later build's manifest, leaving
+        // manifest B over rows A. Returning this build's local discovery
+        // there would hand the caller a catalog the next list refuses. When
+        // the persisted state is not whole, stale-mark the connection so the
+        // next read rebuilds it, and report an empty catalog rather than a
+        // wrong one. This cannot go through `describeAll`: that runs the
+        // stale sync, which would re-enter this very connection's in-flight
+        // production.
+        const [rows, persistedDefinitions, connectionRow] = yield* Effect.all([
+          core.findMany("tool", { where, select: [...TOOL_INVOCATION_COLUMNS, "generation"] }),
+          core.findMany("definition", { where }),
+          findConnectionRow(ref),
+        ]);
+        const manifest = connectionRow
+          ? Option.getOrNull(decodeCatalogManifest(decodeJsonColumn(connectionRow.tools_manifest)))
+          : null;
+        const whole =
+          manifest !== null &&
+          rows.length === manifest.tools &&
+          persistedDefinitions.length === manifest.definitions &&
+          rows.every((row) => row.generation === manifest.generation) &&
+          persistedDefinitions.every((row) => row.generation === manifest.generation);
+        if (!whole) {
+          yield* core.updateMany("connection", {
+            where: connectionWhere,
+            set: { tools_synced_at: null },
+          });
+          return [];
+        }
+        return rows.map((row) => rowToTool(row));
       });
 
     type ToolProductionError = IntegrationNotFoundError | StorageFailure;
