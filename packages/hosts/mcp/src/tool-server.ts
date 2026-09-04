@@ -26,6 +26,7 @@ import * as z from "zod/v4";
 
 import {
   CurrentOrgWriteAccess,
+  IntegrationSlug,
   isToolFile,
   isToolResult,
   makeOrgWriteAccessState,
@@ -1250,15 +1251,27 @@ const loadPassthroughTools = (
         reason: "passthrough mode requested but the host provided no tool catalog",
       });
     }
-    const projections = yield* port.describeAll().pipe(
-      Effect.mapError(
-        (cause) =>
-          new McpPassthroughUnavailableError({
-            reason: `tool catalog read failed: ${formatBoundaryError(cause).message}`,
-          }),
-      ),
-    );
-    const scoped = filterPassthroughIntegrations(projections, config.passthroughIntegrations);
+    // `?integrations=` narrows the READ, not just the result: a catalog
+    // that is torn for an unrelated integration must not fail a session that
+    // never asked for it, and no work is spent describing tools that will be
+    // dropped. One read per requested slug; the whole workspace otherwise.
+    const requested = config.passthroughIntegrations;
+    const read = (filter?: { readonly integration: IntegrationSlug }) =>
+      port.describeAll(filter).pipe(
+        Effect.mapError(
+          (cause) =>
+            new McpPassthroughUnavailableError({
+              reason: `tool catalog read failed: ${formatBoundaryError(cause).message}`,
+            }),
+        ),
+      );
+    const projections =
+      requested && requested.length > 0
+        ? (yield* Effect.forEach(requested, (slug) =>
+            read({ integration: IntegrationSlug.make(slug) }),
+          )).flat()
+        : yield* read();
+    const scoped = filterPassthroughIntegrations(projections, requested);
     return assignPassthroughNames(scoped);
   }).pipe(Effect.withSpan("mcp.host.passthrough.load"));
 
@@ -1881,7 +1894,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           // Anything the tool itself asked for goes to the client natively
           // when it can take it; the native bridge already turns a URL
           // request into a form for form-only clients.
-          if (supportsForm || (supportsUrl && ctx.request._tag === "UrlElicitation")) {
+          if (supportsForm || (supportsUrl && Predicate.isTagged(ctx.request, "UrlElicitation"))) {
             return native(ctx);
           }
           unanswerable = ctx.request;

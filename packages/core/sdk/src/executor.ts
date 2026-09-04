@@ -3805,13 +3805,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* persistCatalog(
+        const applied = yield* persistCatalog(
           replaceCatalog(existingRow, toolRows, definitionRows, {
             generation,
             tools: toolRows.length,
             definitions: definitionRows.length,
           }),
         );
+        // A build that lost its claim persisted nothing; what it discovered
+        // is not the catalog. Report what IS persisted — the winner's rows, or
+        // nothing if the winner is still landing — so a caller never sees
+        // tools the next list will contradict.
+        if (!applied) {
+          const persisted = yield* core.findMany("tool", { where });
+          return persisted.map((row) => rowToTool(row as ConnectionToolRow));
+        }
 
         return result.tools.map((tool: ToolDef) =>
           rowToTool(

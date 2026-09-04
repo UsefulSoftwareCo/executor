@@ -1022,7 +1022,11 @@ describe("createExecutor", () => {
 
         // "A" rebuilds; the proxy plays "B" between A's claim and A's unit.
         raceState.armed = true;
-        yield* executor.connections.refresh({ owner: "org", integration: INTEG, name: CONN });
+        const reported = yield* executor.connections.refresh({
+          owner: "org",
+          integration: INTEG,
+          name: CONN,
+        });
         expect(raceState.armed, "B interleaved").toBe(false);
         expect(raceState.applied, "A's fenced unit was discarded").toBe(false);
 
@@ -1033,6 +1037,16 @@ describe("createExecutor", () => {
         );
         expect(rowsAfter.map((row) => row.generation).sort(), "A did not replace the rows").toEqual(
           rowsBefore.map((row) => row.generation).sort(),
+        );
+        // And A reported the persisted rows, not the ones it discovered and
+        // failed to write — so its caller cannot disagree with the next list.
+        expect(
+          reported.map((tool) => String(tool.address)).sort(),
+          "refresh reports what is persisted",
+        ).toEqual(
+          rowsAfter
+            .map((row) => `tools.${row.integration}.${row.owner}.${row.connection}.${row.name}`)
+            .sort(),
         );
         const [row] = yield* Effect.promise(() =>
           config.db.findMany("connection", {

@@ -600,7 +600,17 @@ describe("passthrough mode server", () => {
         engine,
         mode: "passthrough",
         passthroughIntegrations: ["linear", "notion"],
-        tools: { describeAll: () => Effect.succeed(CATALOG) },
+        // The filter is pushed into the READ: the port is asked per slug, so
+        // a real catalog never describes tools the session will not serve.
+        tools: {
+          describeAll: (filter) =>
+            Effect.succeed(
+              CATALOG.filter(
+                (tool) =>
+                  filter?.integration === undefined || tool.integration === filter.integration,
+              ),
+            ),
+        },
       },
       async (client) => {
         const listed = await client.listTools();
