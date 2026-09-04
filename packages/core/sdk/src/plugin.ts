@@ -138,6 +138,24 @@ export interface ToolPolicyProvider {
     }) => EffectivePolicy,
     StorageFailure
   >;
+  /**
+   * Prepared connection-scope predicate: can ANY tool of this connection be
+   * visible through this provider? Providers that are capability allowlists
+   * over connection patterns (toolkits) answer from real pattern overlap —
+   * a grant of `acme.org.main.issues.*` means yes for `acme/org/main` even
+   * though the connection-wide wildcard id would not match it. Core uses
+   * this to leave a connection's catalog out of a consistency check when
+   * nothing under it could ever be served; a provider that does not
+   * implement it keeps every connection under strict validation.
+   */
+  readonly prepareConnectionScope?: () => Effect.Effect<
+    (connection: {
+      readonly integration: string;
+      readonly owner: string;
+      readonly name: string;
+    }) => boolean,
+    StorageFailure
+  >;
 }
 
 // ---------------------------------------------------------------------------

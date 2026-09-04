@@ -1260,8 +1260,10 @@ describe("createExecutor", () => {
   // A toolkit endpoint is a policy projection: connections it does not
   // grant can never contribute a tool. A torn (or simply unrebuildable)
   // catalog on one of THOSE must not fail the read for the connection the
-  // toolkit does grant. Modelled with a provider that blocks everything but
-  // `main`, and a torn manifest on `other`.
+  // toolkit does grant. Only a provider that can PROVE it (a prepared
+  // connection-scope predicate) gets to exclude a connection; a bare
+  // rule-list provider keeps every connection strict. Modelled with a
+  // provider that grants only `main`, and a torn manifest on `other`.
   it.effect("tools.describeAll ignores a torn catalog on a connection the projection blocks", () =>
     Effect.gen(function* () {
       const mainOnly = definePlugin(() => ({
@@ -1277,6 +1279,10 @@ describe("createExecutor", () => {
                 position: "a0",
               },
             ]),
+          prepareConnectionScope: () =>
+            Effect.succeed(
+              (connection: { readonly name: string }) => connection.name === String(CONN),
+            ),
         }),
       }))();
       const config = makeTestConfig({ plugins: [demoPlugin, mainOnly] as const });
@@ -1310,6 +1316,54 @@ describe("createExecutor", () => {
         "main",
       ]);
     }),
+  );
+
+  // The inverse: a provider with no connection-scope predicate cannot prove
+  // anything about `other`, so its torn catalog fails the read — strict by
+  // default, never silently lenient.
+  it.effect(
+    "tools.describeAll stays strict under a provider without a connection-scope predicate",
+    () =>
+      Effect.gen(function* () {
+        const mainOnlyNoScope = definePlugin(() => ({
+          id: "main-only-noscope" as const,
+          storage: () => ({}),
+          toolPolicyProvider: () => ({
+            list: () =>
+              Effect.succeed([
+                {
+                  id: "grant-main",
+                  pattern: `${INTEG}.org.${CONN}.*`,
+                  action: "approve" as const,
+                  position: "a0",
+                },
+              ]),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [demoPlugin, mainOnlyNoScope] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.demo.seed();
+        for (const name of [CONN, ConnectionName.make("other")]) {
+          yield* executor.connections.create({
+            owner: "org",
+            name,
+            integration: INTEG,
+            template: TEMPLATE,
+            from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+          });
+        }
+        yield* executor.tools.describeAll();
+        yield* Effect.promise(() =>
+          config.db.deleteMany("definition", {
+            where: (b) =>
+              b.and(b("integration", "=", String(INTEG)), b("connection", "=", "other")),
+          }),
+        );
+        const outcome = yield* Effect.result(executor.tools.describeAll());
+        expect(Result.isFailure(outcome), "without proof, a torn connection fails the read").toBe(
+          true,
+        );
+      }),
   );
 
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>

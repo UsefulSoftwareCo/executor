@@ -542,6 +542,52 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       };
     });
 
+  // Can any tool of this connection be visible through the toolkit? True
+  // when any granting pattern (a connection grant, or a legacy policy that
+  // acts as one) is UNDER the connection — i.e. begins with
+  // `<integration>.<owner>.<name>` followed by `.` or is exactly that prefix
+  // with a trailing wildcard — or is the universal `*`. A pattern rooted
+  // elsewhere can never match a tool id of this connection, whatever its
+  // remaining segments say.
+  const prepareConnectionScopeForSlug = (
+    slug: string,
+  ): Effect.Effect<
+    (connection: {
+      readonly integration: string;
+      readonly owner: string;
+      readonly name: string;
+    }) => boolean,
+    StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const toolkit = yield* getBySlugEntry(slug);
+      if (!toolkit) return () => false;
+      const isOrg = toolkit.owner === "org";
+      const policies = yield* listPoliciesForRecord(toolkit.data.id);
+      const connections = yield* listConnectionsForRecord(toolkit.data.id);
+      const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
+      const grants = [
+        ...connections.map((connection) => connection.pattern),
+        ...policies.filter((policy) => legacyPolicyIds.has(policy.id)).map((p) => p.pattern),
+      ];
+      return (connection: {
+        readonly integration: string;
+        readonly owner: string;
+        readonly name: string;
+      }) => {
+        if (isOrg && connection.owner === "user") return false;
+        const root = `${connection.integration}.${connection.owner}.${connection.name}`;
+        return grants.some((pattern) => {
+          if (pattern === "*") return true;
+          // A grant under the connection root, or a segment-wildcarded grant
+          // that still matches the root's three segments.
+          if (pattern === root || pattern.startsWith(`${root}.`)) return true;
+          const head = pattern.split(".").slice(0, 3).join(".");
+          return matchPattern(`${head}.*`, `${root}.x`);
+        });
+      };
+    });
+
   return {
     list,
     create,
@@ -561,6 +607,7 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
     policyRulesForSlug,
     resolvePolicyForSlug,
     preparePolicyResolverForSlug,
+    prepareConnectionScopeForSlug,
   };
 };
 
@@ -674,7 +721,10 @@ const ToolkitsHandlers = HttpApiBuilder.group(ExecutorApiWithToolkits, "toolkits
 const makePolicyProvider = (
   extension: Pick<
     ToolkitsExtension,
-    "policyRulesForSlug" | "resolvePolicyForSlug" | "preparePolicyResolverForSlug"
+    | "policyRulesForSlug"
+    | "resolvePolicyForSlug"
+    | "preparePolicyResolverForSlug"
+    | "prepareConnectionScopeForSlug"
   >,
   slug: string,
 ): ToolPolicyProvider => ({
@@ -684,6 +734,7 @@ const makePolicyProvider = (
   // Preferred path: core calls this once per operation, so the toolkit's
   // policies + connections are fetched once instead of once per tool.
   prepare: () => extension.preparePolicyResolverForSlug(slug),
+  prepareConnectionScope: () => extension.prepareConnectionScopeForSlug(slug),
 });
 
 export const toolkitsPlugin = definePlugin((options: ToolkitsPluginOptions = {}) => {

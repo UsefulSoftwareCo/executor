@@ -199,4 +199,47 @@ describe("toolkitsPlugin", () => {
       ).toContain("google_docs.org.* approve");
     }),
   );
+
+  // "Can any tool of this connection be visible?" must come from real grant
+  // overlap. A grant NARROWER than the connection (`github.org.main.issues.*`)
+  // still makes the connection servable, even though the connection-wide
+  // wildcard id `github.org.main.*` would not match that pattern — which is
+  // exactly the trap a synthetic-id probe falls into.
+  it.effect("prepareConnectionScope answers from grant overlap, not a synthetic wildcard id", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+      });
+      const toolkit = yield* executor.toolkits.create({ owner: "org", name: "Narrow Kit" });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "github.org.main.issues.*",
+      });
+      const canServe = yield* executor.toolkits.prepareConnectionScopeForSlug(toolkit.slug);
+
+      // The narrowly granted connection IS servable.
+      expect(canServe({ integration: "github", owner: "org", name: "main" })).toBe(true);
+      // Sibling connections and other integrations are not.
+      expect(canServe({ integration: "github", owner: "org", name: "other" })).toBe(false);
+      expect(canServe({ integration: "linear", owner: "org", name: "main" })).toBe(false);
+      // An org toolkit never serves a personal connection.
+      expect(canServe({ integration: "github", owner: "user", name: "main" })).toBe(false);
+
+      // Segment wildcards in the grant head still resolve.
+      const wide = yield* executor.toolkits.create({ owner: "org", name: "Wide Kit" });
+      yield* executor.toolkits.createConnection(wide.id, { pattern: "github.*.*.issues.*" });
+      const canServeWide = yield* executor.toolkits.prepareConnectionScopeForSlug(wide.slug);
+      expect(canServeWide({ integration: "github", owner: "org", name: "anything" })).toBe(true);
+      expect(canServeWide({ integration: "linear", owner: "org", name: "main" })).toBe(false);
+
+      // The universal grant serves everything the owner model allows.
+      const all = yield* executor.toolkits.create({ owner: "org", name: "All Kit" });
+      yield* executor.toolkits.createConnection(all.id, { pattern: "*" });
+      const canServeAll = yield* executor.toolkits.prepareConnectionScopeForSlug(all.slug);
+      expect(canServeAll({ integration: "linear", owner: "org", name: "main" })).toBe(true);
+
+      // An unknown toolkit serves nothing.
+      const none = yield* executor.toolkits.prepareConnectionScopeForSlug("no-such-kit");
+      expect(none({ integration: "github", owner: "org", name: "main" })).toBe(false);
+    }),
+  );
 });

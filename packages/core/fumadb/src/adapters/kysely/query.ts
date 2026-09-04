@@ -28,6 +28,16 @@ import { deserialize, serialize } from "../../schema/serialize";
 import type { KyselyConfig } from "../../shared/config";
 import type { SQLProvider } from "../../shared/providers";
 
+/** Row cap per insert statement in `replaceMany`, before the parameter
+ *  budget is applied. */
+const REPLACE_MANY_INSERT_BATCH_ROWS = 500;
+
+/** Conservative bound-parameter budget per statement for each provider. MSSQL
+ *  caps at 2100; SQLite's historical floor is 999; Postgres and MySQL allow
+ *  far more, but the same floor keeps a wide table from overflowing anywhere. */
+const replaceManyParameterBudget = (provider: SQLProvider): number =>
+  provider === "mssql" ? 2000 : 999;
+
 /** Thrown inside a `replaceMany` transaction to abort it when the guard
  *  matched no row; caught at the boundary and reported as `applied: false`. */
 class ReplaceGuardMiss extends Error {
@@ -548,10 +558,24 @@ export function fromKysely(
           }
           for (const ins of plan.inserts) {
             if (ins.values.length === 0) continue;
-            await tx
-              .insertInto(ins.table.names.sql)
-              .values(ins.values.map((v) => encodeValues(v, ins.table, true)))
-              .execute();
+            const encoded = ins.values.map((v) => encodeValues(v, ins.table, true));
+            // Engines cap bound parameters per statement (MSSQL 2100, older
+            // SQLite 999): chunk so `rows * columns` stays under the budget,
+            // all inside this one transaction.
+            const columnsPerRow = Math.max(1, Object.keys(encoded[0]!).length);
+            const rowsPerStatement = Math.max(
+              1,
+              Math.min(
+                REPLACE_MANY_INSERT_BATCH_ROWS,
+                Math.floor(replaceManyParameterBudget(provider) / columnsPerRow),
+              ),
+            );
+            for (let i = 0; i < encoded.length; i += rowsPerStatement) {
+              await tx
+                .insertInto(ins.table.names.sql)
+                .values(encoded.slice(i, i + rowsPerStatement))
+                .execute();
+            }
           }
           return { applied: true as const };
         })
