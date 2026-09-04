@@ -384,6 +384,27 @@ export interface ORMAdapter<S extends AnySchema = AnySchema> {
   ) => Promise<void>;
 
   /**
+   * Run a set of deletes and inserts as ONE atomic unit, with an optional
+   * guard: a conditional update that must match at least one row for the
+   * rest to apply. On engines without interactive transactions (Cloudflare
+   * D1) adapters implement this with the driver's native batch, which D1
+   * executes as one transaction; elsewhere it is an ordinary transaction.
+   * The guard makes the whole unit fenced: an adapter that cannot express
+   * "apply only if the guard matched" atomically must reject the guard.
+   */
+  replaceMany?: (
+    plan: {
+      readonly guard?: {
+        readonly table: AnyTable;
+        readonly where: Condition | undefined;
+        readonly set: Record<string, unknown>;
+      };
+      readonly deletes: readonly { readonly table: AnyTable; readonly where: Condition | undefined }[];
+      readonly inserts: readonly { readonly table: AnyTable; readonly values: Record<string, unknown>[] }[];
+    },
+  ) => Promise<{ readonly applied: boolean }>;
+
+  /**
    * Override this to support native transaction, otherwise use soft transaction.
    */
   transaction: <T>(
@@ -609,6 +630,41 @@ export function toORM<S extends AnySchema>(
       );
       if (constrainedWhere === false) return;
       return internal.updateMany(table, { set, where: constrainedWhere });
+    },
+    async replaceMany(plan) {
+      if (!internal.replaceMany) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: public query rejects an adapter without atomic replace
+        throw new Error("[FumaDB] This adapter does not support replaceMany.");
+      }
+      let guard: { table: AnyTable; where: Condition | undefined; set: Record<string, unknown> } | undefined;
+      if (plan.guard) {
+        const table = toTable(plan.guard.table);
+        let conditions = plan.guard.where ? buildCondition(table.columns, plan.guard.where) : undefined;
+        if (conditions === true) conditions = undefined;
+        if (conditions === false) return { applied: false };
+        const constrained = await applyUpdatePolicies(table, conditions, plan.guard.set, context, "update");
+        if (constrained === false) return { applied: false };
+        guard = { table, where: constrained, set: plan.guard.set };
+      }
+      const deletes: { table: AnyTable; where: Condition | undefined }[] = [];
+      for (const del of plan.deletes) {
+        const table = toTable(del.table);
+        let conditions = del.where ? buildCondition(table.columns, del.where) : undefined;
+        if (conditions === true) conditions = undefined;
+        if (conditions === false) continue;
+        const constrained = await applyDeletePolicies(table, conditions, context);
+        if (constrained === false) continue;
+        deletes.push({ table, where: constrained });
+      }
+      const inserts: { table: AnyTable; values: Record<string, unknown>[] }[] = [];
+      for (const ins of plan.inserts) {
+        const table = toTable(ins.table);
+        for (const value of ins.values) {
+          await runCreatePolicies(table, value, context);
+        }
+        if (ins.values.length > 0) inserts.push({ table, values: [...ins.values] });
+      }
+      return internal.replaceMany({ ...(guard ? { guard } : {}), deletes, inserts });
     },
     async transaction(run) {
       return internal.transaction((transactionInstance) =>

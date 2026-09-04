@@ -1,5 +1,6 @@
 import {
   Cause,
+  Data,
   Deferred,
   Duration,
   Effect,
@@ -930,6 +931,16 @@ const emptyCatalogManifest = (): CatalogManifest => ({
   definitions: 0,
 });
 
+/** `tools.describeAll` found connections whose rows are not one finished
+ *  build. Carries exactly which, so recovery can stale-mark those alone. */
+class CatalogMismatch extends Data.TaggedError("CatalogMismatch")<{
+  readonly connections: ReadonlyArray<{
+    readonly owner: string;
+    readonly integration: string;
+    readonly connection: string;
+  }>;
+}> {}
+
 const storageFailureFromUnknown = (message: string, cause: unknown): StorageFailure =>
   isStorageFailure(cause) ? cause : new StorageError({ message, cause });
 
@@ -1305,6 +1316,18 @@ type LooseStorageDb = {
     },
   ) => Promise<void>;
   readonly deleteMany: (tableName: string, options?: unknown) => Promise<void>;
+  readonly replaceMany: (plan: {
+    readonly guard?: {
+      readonly table: string;
+      readonly where?: unknown;
+      readonly set: Record<string, unknown>;
+    };
+    readonly deletes: readonly { readonly table: string; readonly where?: unknown }[];
+    readonly inserts: readonly {
+      readonly table: string;
+      readonly values: readonly Record<string, unknown>[];
+    }[];
+  }) => Promise<{ readonly applied: boolean }>;
   readonly findFirst: (
     tableName: string,
     options?: unknown,
@@ -1362,6 +1385,21 @@ const makeCoreDb = (fuma: ReturnType<typeof makeFumaClient>) => ({
     fuma.use(`${tableName}.deleteMany`, (db) =>
       asLooseStorageDb(db).deleteMany(tableName, options),
     ),
+  /** Delete + insert across tables as one atomic unit, fenced by an optional
+   *  guard update. See `AbstractQuery.replaceMany`. */
+  replaceMany: (plan: {
+    readonly guard?: {
+      readonly table: CoreTableName;
+      readonly where?: CoreWhere;
+      readonly set: Record<string, unknown>;
+    };
+    readonly deletes: readonly { readonly table: CoreTableName; readonly where?: CoreWhere }[];
+    readonly inserts: readonly {
+      readonly table: CoreTableName;
+      readonly values: readonly Record<string, unknown>[];
+    }[];
+  }): Effect.Effect<{ readonly applied: boolean }, StorageFailure> =>
+    fuma.use("replaceMany", (db) => asLooseStorageDb(db).replaceMany(plan)),
   findFirst: <TName extends CoreTableName, const TOptions extends CoreFindFirstOptions<TName>>(
     tableName: TName,
     options: TOptions,
@@ -3540,31 +3578,59 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // statement of a rebuild and carries the catalog manifest, so on a
         // backend that commits statement by statement a reader can tell a
         // finished build from one still landing (see `tools.describeAll`).
-        // The final statement of a rebuild. Conditioned on this build still
-        // OWNING the connection (`tools_rebuild` is still its id): a competing
-        // build in another isolate that claimed after us has replaced or will
-        // replace our rows, so our manifest must not land — it would describe
-        // rows that are no longer there. The loser writes nothing; the
-        // connection stays stale-marked and the winner's stamp (or, if the
-        // winner dies, the next stale scan) settles it.
-        const stampSynced = (row: ConnectionRow | null, manifest: CatalogManifest) =>
-          core.updateMany("connection", {
-            where: (b: AnyCb) => b.and(connectionWhere(b), b("tools_rebuild", "=", buildId)),
-            set: syncedSet(row, manifest),
+        // Replace this connection's catalog as ONE fenced atomic unit:
+        //
+        //   1. claim — `tools_rebuild := buildId`, `tools_synced_at := null`
+        //   2. delete every tool + definition row
+        //   3. insert this build's rows
+        //   4. stamp — manifest + sync time, `tools_rebuild := null`,
+        //      conditioned on still holding the claim from step 1
+        //
+        // `replaceMany` runs 2–4 atomically on every backend (a driver
+        // transaction, or D1's native batch, which is one transaction), so a
+        // reader can never see a half-replaced catalog and a build can never
+        // stamp over rows another build wrote: the stamp's condition and the
+        // rows it describes commit together or not at all. Step 1 is its own
+        // statement on purpose — it is the durable "a rebuild is in flight"
+        // marker that survives a death anywhere after it and makes the stale
+        // scan rebuild the connection. Two builds racing: both claim; the one
+        // whose 2–4 commits first wins; the other's guard (step 4's condition)
+        // finds the token changed and its whole unit is discarded, rows
+        // included. Interactive backends make even step 1 part of the unit.
+        const replaceCatalog = (
+          existingRow: ConnectionRow | null,
+          toolRows: readonly Record<string, unknown>[],
+          definitionRows: readonly Record<string, unknown>[],
+          manifest: CatalogManifest,
+        ) =>
+          Effect.gen(function* () {
+            yield* core.updateMany("connection", {
+              where: connectionWhere,
+              set: { tools_synced_at: null, tools_rebuild: buildId },
+            });
+            const { applied } = yield* core.replaceMany({
+              guard: {
+                table: "connection",
+                where: (b: AnyCb) => b.and(connectionWhere(b), b("tools_rebuild", "=", buildId)),
+                set: syncedSet(existingRow, manifest),
+              },
+              deletes: [
+                { table: "tool", where },
+                { table: "definition", where },
+              ],
+              inserts: [
+                { table: "tool", values: toolRows },
+                { table: "definition", values: definitionRows },
+              ],
+            });
+            if (!applied) {
+              yield* Effect.logInfo("executor tool sync lost its claim to a newer build", {
+                integration: String(ref.integration),
+                connection: String(ref.name),
+              });
+            }
+            return applied;
           });
-        // The FIRST statement of every replacement: claim the rebuild token
-        // and clear the sync stamp, keeping the previous manifest. On a
-        // backend that commits statement by statement (D1), a rebuild that
-        // dies after its deletes but before `stampSynced` leaves rows that no
-        // longer match the old manifest — refused by `tools.describeAll` —
-        // and, because the stamp is already null, the next stale-catalog scan
-        // rebuilds it instead of leaving it refused until someone refreshes by
-        // hand. Interactive backends roll the whole transaction back, so
-        // there this is a no-op.
-        const markRebuilding = core.updateMany("connection", {
-          where: connectionWhere,
-          set: { tools_synced_at: null, tools_rebuild: buildId },
-        });
         // A failing sync must not bury a recorded dead grant's `expired`
         // verdict: this sync's own credential resolution is what discovers
         // invalid_grant (refresh → recorder), so by failure time the row
@@ -3604,7 +3670,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                           // Never re-stamp a connection another build has
                           // claimed: that would hide its in-flight (or dead)
                           // rebuild from the stale scan. This path writes no
-                          // rows, so it has no claim of its own to check.
+                          // rows, so it has no claim of its own to check. A
+                          // claim whose build died stays until a build
+                          // finishes; while it does, a down upstream is
+                          // re-dialed per read rather than throttled — the
+                          // cost of never hiding a torn catalog.
                           b.isNull("tools_rebuild"),
                         ),
                       set:
@@ -3635,27 +3705,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           existingRow.template !== String(NO_AUTH_TEMPLATE) &&
           Object.keys(connectionItemIds(existingRow)).length === 0
         ) {
-          yield* persistCatalog(
-            Effect.gen(function* () {
-              yield* markRebuilding;
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow, emptyCatalogManifest());
-            }),
-          );
+          yield* persistCatalog(replaceCatalog(existingRow, [], [], emptyCatalogManifest()));
           return [];
         }
 
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
-          yield* persistCatalog(
-            Effect.gen(function* () {
-              yield* markRebuilding;
-              yield* core.deleteMany("tool", { where });
-              yield* core.deleteMany("definition", { where });
-              yield* stampSynced(existingRow, emptyCatalogManifest());
-            }),
-          );
+          yield* persistCatalog(replaceCatalog(existingRow, [], [], emptyCatalogManifest()));
           return [];
         }
 
@@ -3750,17 +3806,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }));
 
         yield* persistCatalog(
-          Effect.gen(function* () {
-            yield* markRebuilding;
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
-            yield* stampSynced(existingRow, {
-              generation,
-              tools: toolRows.length,
-              definitions: definitionRows.length,
-            });
+          replaceCatalog(existingRow, toolRows, definitionRows, {
+            generation,
+            tools: toolRows.length,
+            definitions: definitionRows.length,
           }),
         );
 
@@ -5939,6 +5988,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           readonly connection: string;
           readonly generation: string | null;
         };
+        // The connections whose rows do not form exactly one finished build.
         const mixedGenerations = (snapshot: {
           readonly rows: ReadonlyArray<GenerationRow>;
           readonly definitionRows: ReadonlyArray<GenerationRow>;
@@ -5948,7 +5998,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             readonly name: string;
             readonly tools_manifest: unknown;
           }>;
-        }): boolean => {
+        }): ReadonlyArray<{
+          readonly owner: string;
+          readonly integration: string;
+          readonly connection: string;
+        }> => {
           type Tally = { readonly generations: Set<string | null>; count: number };
           const tally = (rows: ReadonlyArray<GenerationRow>): Map<string, Tally> => {
             const out = new Map<string, Tally>();
@@ -5975,58 +6029,71 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             );
           }
           const keys = new Set([...tools.keys(), ...definitions.keys(), ...manifests.keys()]);
+          const mixed: { owner: string; integration: string; connection: string }[] = [];
           for (const key of keys) {
+            const [owner, integration, connection] = key.split("\u0000") as [
+              string,
+              string,
+              string,
+            ];
             const t = tools.get(key);
             const d = definitions.get(key);
             const manifest = manifests.get(key) ?? null;
-            // No manifest: nothing proves these rows are whole. Refuse.
-            if (!manifest) return true;
-            // Exact generation and exact counts on both sides.
-            if ((t?.count ?? 0) !== manifest.tools) return true;
-            if ((d?.count ?? 0) !== manifest.definitions) return true;
-            if (t && (t.generations.size !== 1 || !t.generations.has(manifest.generation))) {
-              return true;
-            }
-            if (d && (d.generations.size !== 1 || !d.generations.has(manifest.generation))) {
-              return true;
-            }
+            const inconsistent =
+              // No manifest: nothing proves these rows are whole.
+              !manifest ||
+              // Exact generation and exact counts on both sides.
+              (t?.count ?? 0) !== manifest.tools ||
+              (d?.count ?? 0) !== manifest.definitions ||
+              (t !== undefined &&
+                (t.generations.size !== 1 || !t.generations.has(manifest.generation))) ||
+              (d !== undefined &&
+                (d.generations.size !== 1 || !d.generations.has(manifest.generation)));
+            if (inconsistent) mixed.push({ owner, integration, connection });
           }
-          return false;
+          return mixed;
         };
         const { rows, definitionRows } = yield* readCatalog.pipe(
-          Effect.flatMap((snapshot) =>
-            mixedGenerations(snapshot)
-              ? Effect.fail(
+          Effect.flatMap((snapshot) => {
+            const mixed = mixedGenerations(snapshot);
+            return mixed.length === 0
+              ? Effect.succeed(snapshot)
+              : Effect.fail(new CatalogMismatch({ connections: mixed }));
+          }),
+          Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
+          // Recovery backstop. A catalog that is still inconsistent after the
+          // retries is not a rebuild landing mid-read; it is one that landed
+          // WRONG — a build that died mid-claim, or rows a dead build left
+          // behind. Nothing else would rescan it (its stamp may be non-null),
+          // so stale-mark EXACTLY the inconsistent connections before
+          // surfacing: the next read rebuilds those, and only those. Ordinary
+          // storage failures are not catalog damage and trigger nothing.
+          Effect.catchTag("CatalogMismatch", (mismatch) =>
+            Effect.forEach(
+              mismatch.connections,
+              (key) =>
+                core
+                  .updateMany("connection", {
+                    where: (b: AnyCb) =>
+                      b.and(
+                        byOwner(key.owner as Owner)(b),
+                        b("integration", "=", key.integration),
+                        b("name", "=", key.connection),
+                      ),
+                    set: { tools_synced_at: null },
+                  })
+                  .pipe(Effect.ignore),
+              { discard: true },
+            ).pipe(
+              Effect.flatMap(() =>
+                Effect.fail(
                   new StorageError({
                     message: "tool catalog changed between reads",
                     cause: undefined,
                   }),
-                )
-              : Effect.succeed(snapshot),
-          ),
-          Effect.retry({ times: DESCRIBE_ALL_GENERATION_RETRIES }),
-          // Recovery backstop. A catalog that is still inconsistent after the
-          // retries is not a rebuild landing mid-read; it is one that landed
-          // WRONG — a build that died, or lost its claim to a competing build
-          // that then died. Nothing else would rescan it (its stamp may be
-          // non-null), so stale-mark every connection in scope before
-          // surfacing: the next read rebuilds instead of refusing forever.
-          Effect.tapError(() =>
-            core
-              .updateMany("connection", {
-                where: (b: AnyCb) =>
-                  b.and(
-                    filter?.integration === undefined
-                      ? true
-                      : b("integration", "=", String(filter.integration)),
-                    filter?.owner === undefined ? true : b("owner", "=", filter.owner),
-                    filter?.connection === undefined
-                      ? true
-                      : b("name", "=", String(filter.connection)),
-                  ),
-                set: { tools_synced_at: null },
-              })
-              .pipe(Effect.ignore),
+                ),
+              ),
+            ),
           ),
         );
         const policyRules = yield* listActivePolicyRuleSet();

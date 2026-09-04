@@ -224,4 +224,27 @@ export interface AbstractQuery<S extends AnySchema> {
           eb: ConditionBuilder<S["tables"][TableName]["columns"]>
         ) => Condition | boolean;
       }) => Promise<void>;
+
+  /**
+   * Delete + insert across tables as ONE atomic unit, optionally fenced by a
+   * guard update that must match a row for any of it to apply. Atomic on
+   * every engine, including those without interactive transactions (the
+   * adapter uses the driver's native batch there). Returns whether the guard
+   * matched; with no guard, always `applied: true`.
+   */
+  replaceMany: (plan: {
+    readonly guard?: {
+      readonly table: keyof S["tables"];
+      readonly where?: (eb: ConditionBuilder<AnyTable["columns"]>) => Condition | boolean;
+      readonly set: Record<string, unknown>;
+    };
+    readonly deletes: readonly {
+      readonly table: keyof S["tables"];
+      readonly where?: (eb: ConditionBuilder<AnyTable["columns"]>) => Condition | boolean;
+    }[];
+    readonly inserts: readonly {
+      readonly table: keyof S["tables"];
+      readonly values: readonly Record<string, unknown>[];
+    }[];
+  }) => Promise<{ readonly applied: boolean }>;
 }

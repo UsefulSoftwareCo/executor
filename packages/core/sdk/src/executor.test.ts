@@ -952,20 +952,22 @@ describe("createExecutor", () => {
       }),
   );
 
-  // Two builds of one connection in two isolates, on a backend where every
-  // statement commits on its own. B claims the rebuild token after A has
-  // started; A finishes and tries to stamp; B then dies mid-replacement. A's
-  // stamp must NOT land (A no longer owns the connection), so the row keeps a
-  // null sync stamp and the stale scan rebuilds it — instead of A's manifest
-  // describing rows B has since torn out, refused forever. Modelled with a
-  // storage proxy that lets "B" claim the token between A's mark and A's
-  // stamp, then simulates B's death by deleting the rows and never stamping.
+  // Two builds of one connection in two isolates. A claims the rebuild
+  // token; B claims it after A (so B owns the connection); A's fenced
+  // replacement then runs. Its guard is "tools_rebuild is still A", which
+  // no longer holds, so the WHOLE unit — deletes, inserts, stamp — must be
+  // discarded, leaving B's claim and a null sync stamp for the stale scan to
+  // settle. Modelled with a storage proxy that lets "B" re-claim between A's
+  // claim and A's `replaceMany`, then simulates B dying by never stamping.
   it.effect(
-    "a rebuild that lost its claim to a competing build does not stamp, and the row stays stale",
+    "a rebuild that lost its claim to a competing build writes nothing, and the row stays stale",
     () =>
       Effect.gen(function* () {
         const config = makeTestConfig({ plugins: [demoPlugin] as const });
-        const raceState: { armed: boolean } = { armed: false };
+        const raceState: { armed: boolean; applied: boolean | undefined } = {
+          armed: false,
+          applied: undefined,
+        };
         const wrap = (inner: FumaDb): FumaDb =>
           new Proxy(inner, {
             get(target, prop) {
@@ -979,15 +981,10 @@ describe("createExecutor", () => {
                     (tx) => run(wrap(tx)),
                   );
               }
-              if (prop === "createMany") {
-                return async (table: unknown, rows: unknown) => {
-                  const out = await (
-                    target.createMany as (t: unknown, r: unknown) => Promise<unknown>
-                  )(table, rows);
-                  // After A has written its definitions (its last rows) and
-                  // before A stamps: B claims the connection, replaces the
-                  // rows, and dies.
-                  if (raceState.armed && table === "definition") {
+              if (prop === "replaceMany") {
+                return async (plan: unknown) => {
+                  // A has claimed; before A's fenced unit runs, B claims.
+                  if (raceState.armed) {
                     raceState.armed = false;
                     await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
                       "connection",
@@ -997,14 +994,11 @@ describe("createExecutor", () => {
                         set: { tools_synced_at: null, tools_rebuild: "build-B" },
                       },
                     );
-                    await (target.deleteMany as (t: unknown, q: unknown) => Promise<unknown>)(
-                      "definition",
-                      {
-                        where: (b: { (c: string, op: string, v: unknown): unknown }) =>
-                          b("integration", "=", String(INTEG)),
-                      },
-                    );
                   }
+                  const out = (await (
+                    target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>
+                  )(plan)) as { applied: boolean };
+                  raceState.applied = out.applied;
                   return out;
                 };
               }
@@ -1020,25 +1014,36 @@ describe("createExecutor", () => {
           template: TEMPLATE,
           from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
         });
-        expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+        const before = yield* executor.tools.describeAll();
+        expect(before.length).toBeGreaterThan(0);
+        const rowsBefore = yield* Effect.promise(() =>
+          config.db.findMany("tool", { where: (b) => b("integration", "=", String(INTEG)) }),
+        );
 
-        // "A" rebuilds; the proxy plays "B" in the middle of it.
+        // "A" rebuilds; the proxy plays "B" between A's claim and A's unit.
         raceState.armed = true;
         yield* executor.connections.refresh({ owner: "org", integration: INTEG, name: CONN });
         expect(raceState.armed, "B interleaved").toBe(false);
+        expect(raceState.applied, "A's fenced unit was discarded").toBe(false);
 
+        // Nothing of A's landed: the rows are still the earlier build's, the
+        // token is B's, and the sync stamp is null for the stale scan.
+        const rowsAfter = yield* Effect.promise(() =>
+          config.db.findMany("tool", { where: (b) => b("integration", "=", String(INTEG)) }),
+        );
+        expect(rowsAfter.map((row) => row.generation).sort(), "A did not replace the rows").toEqual(
+          rowsBefore.map((row) => row.generation).sort(),
+        );
         const [row] = yield* Effect.promise(() =>
           config.db.findMany("connection", {
             where: (b) => b("integration", "=", String(INTEG)),
           }),
         );
-        // A did not stamp: the token is still B's and the sync stamp is null,
-        // so the stale scan will rebuild this connection.
-        expect(row?.tools_rebuild, "A's stamp did not clear B's claim").toBe("build-B");
+        expect(row?.tools_rebuild, "A's unit did not clear B's claim").toBe("build-B");
         expect(row?.tools_synced_at, "the connection stays stale-marked").toBeNull();
 
-        // And the next read, which runs the stale scan, rebuilds and serves
-        // a whole catalog — never A's manifest over B's torn-out rows.
+        // The next read runs the stale scan, rebuilds, and serves one whole
+        // catalog with the token released.
         const served = yield* executor.tools.describeAll();
         expect(served.map((tool) => tool.name).sort()).toEqual(["inspect", "run"]);
         const [after] = yield* Effect.promise(() =>

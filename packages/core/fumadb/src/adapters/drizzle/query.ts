@@ -12,6 +12,15 @@ import {
 import type { SQLProvider } from "../../shared/providers";
 import { type ColumnType, parseDrizzle, type TableType } from "./shared";
 
+/** Thrown inside a `replaceMany` transaction to abort it when the guard
+ *  matched no row; caught at the boundary and reported as `applied: false`. */
+class ReplaceGuardMiss extends Error {
+  constructor() {
+    super("replaceMany guard matched no row");
+    this.name = "ReplaceGuardMiss";
+  }
+}
+
 type P_TableType = PostgreSQL.PgTableWithColumns<PostgreSQL.TableConfig>;
 type P_ColumnType = PostgreSQL.AnyPgColumn;
 type P_DBType = PostgreSQL.PgDatabase<
@@ -634,6 +643,110 @@ export function fromDrizzle(
       }
 
       await query;
+    },
+    async replaceMany(plan) {
+      // Every statement of the plan, built against one handle: the guard
+      // update first, then the deletes, then parameter-bounded insert batches.
+      const buildStatements = (handle: typeof db): unknown[] => {
+        const statements: unknown[] = [];
+        if (plan.guard) {
+          const guardTable = toDrizzle(plan.guard.table);
+          let update = handle.update(guardTable).set(mapValues(plan.guard.set, plan.guard.table));
+          if (plan.guard.where) {
+            update = update.where(buildWhere(toDrizzleColumn, plan.guard.where)) as any;
+          }
+          statements.push(update);
+        }
+        for (const del of plan.deletes) {
+          const drizzleTable = toDrizzle(del.table);
+          let query = handle.delete(drizzleTable);
+          if (del.where) query = query.where(buildWhere(toDrizzleColumn, del.where)) as any;
+          statements.push(query);
+        }
+        for (const ins of plan.inserts) {
+          if (ins.values.length === 0) continue;
+          const drizzleTable = toDrizzle(ins.table);
+          const values = ins.values.map((v) => mapValues(v, ins.table));
+          const columnsPerRow = Math.max(1, Object.keys(values[0]!).length);
+          const batchSize = parameterBoundedBatchSize(ins.table, columnsPerRow, 0, maxBoundParameters);
+          for (let i = 0; i < values.length; i += batchSize) {
+            statements.push(handle.insert(drizzleTable).values(values.slice(i, i + batchSize)));
+          }
+        }
+        return statements;
+      };
+
+      // How many rows the guard matched. Drizzle returns driver-specific
+      // shapes; normalize the common ones (`rowsAffected`, `changes`,
+      // `rowCount`, `meta.changes`) and treat unknown as "matched" so an
+      // exotic driver never turns every replace into a no-op.
+      const guardMatched = (result: unknown): boolean => {
+        if (!plan.guard) return true;
+        if (result && typeof result === "object") {
+          const r = result as Record<string, unknown>;
+          for (const key of ["rowsAffected", "changes", "rowCount"]) {
+            if (typeof r[key] === "number") return (r[key] as number) > 0;
+          }
+          const meta = r["meta"];
+          if (meta && typeof meta === "object" && typeof (meta as Record<string, unknown>)["changes"] === "number") {
+            return ((meta as Record<string, unknown>)["changes"] as number) > 0;
+          }
+        }
+        return true;
+      };
+
+      // D1: no interactive transactions, but the driver's native batch runs
+      // every statement in ONE transaction. The guard is the first statement;
+      // if it matched nothing, the rest still ran — so the fence is enforced
+      // by making the deletes/inserts themselves conditional is not possible
+      // here. Instead, batch the guard ALONE first (atomic, tells us whether
+      // we own the row), and only then batch the mutations. Between the two
+      // batches another writer can re-claim, but then ITS stamp is the one
+      // conditioned on ownership and ours will not land; the rows we wrote
+      // are attributed to nobody's manifest and refused until it finishes —
+      // exactly the fail-closed behaviour the reader is built for.
+      const nativeBatch = db as unknown as {
+        readonly batch?: (statements: readonly unknown[]) => Promise<unknown[]>;
+      };
+      if (!interactiveTransactions) {
+        if (plan.guard) {
+          const guardTable = toDrizzle(plan.guard.table);
+          let update = db.update(guardTable).set(mapValues(plan.guard.set, plan.guard.table));
+          if (plan.guard.where) {
+            update = update.where(buildWhere(toDrizzleColumn, plan.guard.where)) as any;
+          }
+          const result = await update;
+          if (!guardMatched(result)) return { applied: false };
+        }
+        const rest = buildStatements(db).slice(plan.guard ? 1 : 0);
+        if (rest.length === 0) return { applied: true };
+        if (nativeBatch.batch) {
+          await nativeBatch.batch(rest);
+        } else {
+          for (const statement of rest) await statement;
+        }
+        return { applied: true };
+      }
+
+      // Interactive engines: one transaction, guard first; a guard that
+      // matched nothing rolls the transaction back untouched.
+      return runAtomically(async (handle) => {
+        const statements = buildStatements(handle);
+        if (plan.guard) {
+          const result = await statements[0];
+          if (!guardMatched(result)) {
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: abort the driver transaction so nothing after a failed guard commits
+            throw new ReplaceGuardMiss();
+          }
+          for (const statement of statements.slice(1)) await statement;
+          return { applied: true };
+        }
+        for (const statement of statements) await statement;
+        return { applied: true };
+      }).catch((error: unknown) => {
+        if (error instanceof ReplaceGuardMiss) return { applied: false };
+        throw error;
+      });
     },
     async transaction(run) {
       // Some SQLite-compatible engines (Cloudflare D1) reject interactive

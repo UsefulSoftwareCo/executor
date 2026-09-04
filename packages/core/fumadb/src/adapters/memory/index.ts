@@ -222,6 +222,27 @@ export function memoryAdapter(options: MemoryAdapterOptions = {}): FumaDBAdapter
           const rows = tableRows(db, table);
           db[table.ormName] = rows.filter((row) => !matchesCondition(row, v.where));
         },
+        async replaceMany(plan) {
+          // In-memory: apply the guard, and only if it matched a row apply the
+          // deletes and inserts. Synchronous over one object, so atomic by
+          // construction.
+          if (plan.guard) {
+            let matched = 0;
+            for (const row of tableRows(db, plan.guard.table)) {
+              if (!matchesCondition(row, plan.guard.where)) continue;
+              Object.assign(row, cloneValue(plan.guard.set));
+              matched += 1;
+            }
+            if (matched === 0) return { applied: false };
+          }
+          for (const del of plan.deletes) {
+            await this.deleteMany(del.table, { where: del.where });
+          }
+          for (const ins of plan.inserts) {
+            await this.createMany(ins.table, ins.values);
+          }
+          return { applied: true };
+        },
         async transaction<T>(run: (transactionInstance: AbstractQuery<AnySchema>) => Promise<T>) {
           const snapshot = cloneValue(db);
           try {
