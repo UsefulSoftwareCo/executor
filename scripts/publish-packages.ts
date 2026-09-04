@@ -31,6 +31,7 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/kernel/core",
   "packages/kernel/runtime-quickjs",
   "packages/core/sdk",
+  "packages/core/api",
   "packages/core/config",
   "packages/core/execution",
   "packages/core/cli",
@@ -103,8 +104,8 @@ type MutablePackageJson = {
  * Resolves `workspace:*` dependencies between public packages to concrete
  * versions before packing. Returns a restore function that reverts package.json.
  *
- * Workspace-only `@executor-js/*` peer deps (e.g. `@executor-js/api`,
- * `@executor-js/react`) that aren't in `publishable` are stripped from
+ * Workspace-only `@executor-js/*` peer deps (e.g. `@executor-js/react`) that
+ * aren't in `publishable` are stripped from
  * `peerDependencies` (and `peerDependenciesMeta`) entirely — they don't
  * exist on npm, so leaving them in the packed manifest would emit
  * install-time warnings for unresolvable packages.
@@ -126,7 +127,7 @@ const applyWorkspaceVersions = async (
         mutated = true;
       } else if (isInternalScope(key) && !publishable.has(key)) {
         // Workspace-only `@executor-js/*` regular dep that we don't
-        // publish (e.g. `@executor-js/api`). Strip it: it's not in the
+        // publish (e.g. `@executor-js/react`). Strip it: it's not in the
         // shipped runtime entries (those imports live in
         // `src/api/*` / `src/react/*` which don't make it into the
         // packed dist), and leaving it in would 404 at install time.
@@ -141,8 +142,8 @@ const applyWorkspaceVersions = async (
   /**
    * Peer-deps variant of `renameDepBlock`: resolve workspace specifiers for
    * publishable peers, but DROP non-publishable `@executor-js/*` peers.
-   * They reference workspace-only packages (`@executor-js/api`,
-   * `@executor-js/react`) that don't exist on npm, so leaving them in
+   * They reference workspace-only packages (`@executor-js/react`) that don't
+   * exist on npm, so leaving them in
    * the packed manifest emits install-time warnings for unresolvable
    * packages. Non-`@executor-js` peers (`react`, `@tanstack/*`,
    * `@effect-atom/*`, etc.) are real npm packages and pass through

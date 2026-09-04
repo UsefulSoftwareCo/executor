@@ -1,29 +1,57 @@
 {
   "name": "@executor-js/api",
   "version": "1.4.70",
-  "private": true,
+  "homepage": "https://github.com/UsefulSoftwareCo/executor/tree/main/packages/core/api",
+  "bugs": {
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UsefulSoftwareCo/executor.git",
+    "directory": "packages/core/api"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
     "./server": "./src/server.ts"
   },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        }
+      }
+    }
+  },
   "scripts": {
+    "build": "tsup",
     "typecheck": "tsgo --noEmit",
     "typecheck:slow": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@executor-js/execution": "workspace:*",
-    "@executor-js/host-mcp": "workspace:*",
-    "@executor-js/sdk": "workspace:*",
-    "effect": "catalog:"
+    "@executor-js/sdk": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/host-mcp": "workspace:*",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
+    "effect": "catalog:",
+    "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

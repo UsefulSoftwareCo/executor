@@ -149,6 +149,7 @@ jobs:
           './apps/cli/dist/executor'
           './packages/core/storage-core'
           './packages/core/sdk'
+          './packages/core/api'
           './packages/core/config'
           './packages/core/execution'
           './packages/core/cli'

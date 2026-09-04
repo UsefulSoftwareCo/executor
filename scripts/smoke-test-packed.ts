@@ -37,6 +37,7 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/kernel/core",
   "packages/kernel/runtime-quickjs",
   "packages/core/sdk",
+  "packages/core/api",
   "packages/core/config",
   "packages/core/execution",
   "packages/core/cli",
@@ -52,7 +53,10 @@ const PUBLIC_PACKAGE_DIRS = [
 type PackageJson = {
   name: string;
   version: string;
+  catalog?: Record<string, string>;
+  dependencies?: Record<string, string>;
   exports?: Record<string, unknown>;
+  peerDependencies?: Record<string, string>;
 };
 
 const readPackageJson = async (pkgDir: string): Promise<PackageJson> => {
@@ -109,6 +113,7 @@ type Tarballs = ReadonlyMap<string, string>;
 const smokeTestPackage = async (
   pkgDir: string,
   tarballs: Tarballs,
+  catalog: Readonly<Record<string, string>>,
   failures: SmokeFailure[],
 ): Promise<void> => {
   const pkg = await readPackageJson(pkgDir);
@@ -135,7 +140,17 @@ const smokeTestPackage = async (
       version: "0.0.0",
       private: true,
       type: "module",
-      dependencies: { [pkg.name]: `file:${tarballPath}` },
+      dependencies: {
+        [pkg.name]: `file:${tarballPath}`,
+        ...(pkg.name === "@executor-js/api" && pkg.peerDependencies?.effect
+          ? {
+              effect:
+                pkg.peerDependencies.effect === "catalog:"
+                  ? catalog.effect
+                  : pkg.peerDependencies.effect,
+            }
+          : {}),
+      },
       overrides,
     };
     await writeFile(join(tmp, "package.json"), `${JSON.stringify(fixture, null, 2)}\n`);
@@ -156,6 +171,25 @@ const smokeTestPackage = async (
     // Read the installed manifest — that's the real published view
     // (publishConfig.exports applied, workspace specifiers resolved).
     const installedPkg = await readPackageJson(join(tmp, "node_modules", ...pkg.name.split("/")));
+    if (pkg.name === "@executor-js/api") {
+      if (installedPkg.dependencies?.["@executor-js/host-mcp"] !== undefined) {
+        failures.push({
+          pkg: pkg.name,
+          subpath: "<install>",
+          reason: "published client manifest retains private @executor-js/host-mcp",
+        });
+        return;
+      }
+      const publishedSubpaths = Object.keys(installedPkg.exports ?? {});
+      if (publishedSubpaths.length !== 1 || publishedSubpaths[0] !== "./client") {
+        failures.push({
+          pkg: pkg.name,
+          subpath: "<install>",
+          reason: `published API surface is ${publishedSubpaths.join(", ") || "empty"}`,
+        });
+        return;
+      }
+    }
     const subpaths = subpathsToTest(installedPkg);
     if (subpaths.length === 0) {
       failures.push({
@@ -211,7 +245,141 @@ const smokeTestPackage = async (
   }
 };
 
+/**
+ * Exercise the API tarball as an external consumer actually receives it: the
+ * API itself is the only local tarball, and npm resolves every encoded runtime
+ * dependency from the registry. The batch smoke above intentionally replaces
+ * the full workspace graph with local tarballs; that is useful, but it can hide
+ * a client import that relies on an SDK export which has not been published.
+ */
+const smokeTestApiCleanDependencyGraph = async (
+  tarballs: Tarballs,
+  catalog: Readonly<Record<string, string>>,
+  failures: SmokeFailure[],
+): Promise<void> => {
+  const packageName = "@executor-js/api";
+  const tarballPath = tarballs.get(packageName);
+  if (!tarballPath) {
+    failures.push({ pkg: packageName, subpath: "<clean-install>", reason: "no tarball produced" });
+    return;
+  }
+
+  const tmp = await mkdtemp(join(tmpdir(), "executor-api-clean-smoke-"));
+  try {
+    const fixture = {
+      name: "executor-api-clean-smoke-fixture",
+      version: "0.0.0",
+      private: true,
+      type: "module",
+      dependencies: {
+        [packageName]: `file:${tarballPath}`,
+        effect: catalog.effect,
+        typescript: catalog.typescript,
+      },
+    };
+    await writeFile(join(tmp, "package.json"), `${JSON.stringify(fixture, null, 2)}\n`);
+    await writeFile(
+      join(tmp, "consumer.ts"),
+      [
+        'import { makeExecutorApiClient } from "@executor-js/api/client";',
+        'import type { ExecutorApiClient } from "@executor-js/api/client";',
+        "void makeExecutorApiClient;",
+        "const client: ExecutorApiClient | undefined = undefined;",
+        "void client;",
+        "",
+      ].join("\n"),
+    );
+
+    const install = await $`npm install --no-audit --no-fund --legacy-peer-deps`
+      .cwd(tmp)
+      .quiet()
+      .nothrow();
+    if (install.exitCode !== 0) {
+      failures.push({
+        pkg: packageName,
+        subpath: "<clean-install>",
+        reason: install.stderr.toString().trim().split("\n").slice(-3).join("\n"),
+      });
+      return;
+    }
+
+    const installedApi = await readPackageJson(
+      join(tmp, "node_modules", ...packageName.split("/")),
+    );
+    const sdkVersion = installedApi.dependencies?.["@executor-js/sdk"];
+    if (!sdkVersion) {
+      failures.push({
+        pkg: packageName,
+        subpath: "<clean-install>",
+        reason: "packed manifest has no encoded @executor-js/sdk dependency",
+      });
+      return;
+    }
+
+    const lock = JSON.parse(await readFile(join(tmp, "package-lock.json"), "utf8")) as {
+      readonly packages?: Readonly<Record<string, { readonly resolved?: string }>>;
+    };
+    const sdkResolution = lock.packages?.["node_modules/@executor-js/sdk"]?.resolved;
+    if (!sdkResolution?.startsWith("https://registry.npmjs.org/")) {
+      failures.push({
+        pkg: packageName,
+        subpath: "<clean-install>",
+        reason: `SDK did not resolve from the public registry: ${sdkResolution ?? "missing"}`,
+      });
+      return;
+    }
+
+    const installedApiRoot = join(tmp, "node_modules", ...packageName.split("/"));
+    const clientSource = await readFile(join(installedApiRoot, "dist", "client.js"), "utf8");
+    if (/\bfrom\s+["']@executor-js\//u.test(clientSource)) {
+      failures.push({
+        pkg: packageName,
+        subpath: "<clean-import>",
+        reason: "runtime client still imports a workspace package instead of its bundled schemas",
+      });
+      return;
+    }
+
+    const probe =
+      await $`node --input-type=module --eval ${`await import(${JSON.stringify(`${packageName}/client`)});`}`
+        .cwd(tmp)
+        .quiet()
+        .nothrow();
+    if (probe.exitCode !== 0) {
+      const stderr = probe.stderr.toString();
+      const missingExportMatch = stderr.match(MISSING_EXPORT_RE);
+      const reason = missingExportMatch
+        ? `published '${missingExportMatch[1]}' does not export '${missingExportMatch[2]}'`
+        : firstMeaningfulLine(stderr);
+      failures.push({ pkg: packageName, subpath: "<clean-import>", reason });
+      console.log(`  FAIL ${packageName}/client — ${reason}`);
+      return;
+    }
+
+    const typecheck =
+      await $`npm exec --no -- tsc --noEmit --module ESNext --moduleResolution Bundler --target ESNext --skipLibCheck consumer.ts`
+        .cwd(tmp)
+        .quiet()
+        .nothrow();
+    if (typecheck.exitCode !== 0) {
+      failures.push({
+        pkg: packageName,
+        subpath: "<clean-types>",
+        reason: firstMeaningfulLine(
+          `${typecheck.stdout.toString()}\n${typecheck.stderr.toString()}`,
+        ),
+      });
+      return;
+    }
+
+    console.log(`  ok  ${packageName}/client (clean registry graph + types, SDK ${sdkVersion})`);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+};
+
 const main = async () => {
+  const rootPackage = await readPackageJson(repoRoot);
   console.log("[smoke] packing public packages via publish-packages.ts --dry-run");
   await $`bun run scripts/publish-packages.ts --dry-run`.cwd(repoRoot);
 
@@ -233,8 +401,10 @@ const main = async () => {
     }
     const pkg = await readPackageJson(pkgDir);
     console.log(`[smoke] ${pkg.name}`);
-    await smokeTestPackage(pkgDir, tarballs, failures);
+    await smokeTestPackage(pkgDir, tarballs, rootPackage.catalog ?? {}, failures);
   }
+  console.log("[smoke] @executor-js/api clean dependency graph");
+  await smokeTestApiCleanDependencyGraph(tarballs, rootPackage.catalog ?? {}, failures);
 
   if (failures.length === 0) {
     console.log("[smoke] all packages OK");
