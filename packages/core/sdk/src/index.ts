@@ -388,6 +388,7 @@ export {
   type OwnerBinding,
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
+  type PreparedToolPolicy,
   type IntegrationRecord,
   type StaticIntegrationDecl,
   type StaticToolDecl,

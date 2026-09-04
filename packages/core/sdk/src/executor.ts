@@ -177,6 +177,7 @@ import type {
   OwnerBinding,
   PluginCtx,
   PluginExtensions,
+  PreparedToolPolicy,
   ResolveToolsResult,
   StaticIntegrationDecl,
   StaticToolDecl,
@@ -5440,13 +5441,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           readonly provider: ToolPolicyProvider;
           readonly rules: readonly ToolPolicyProviderRule[] | null;
         }
-      | {
-          readonly kind: "prepared";
-          readonly resolve: (input: {
-            readonly toolId: string;
-            readonly defaultRequiresApproval?: boolean;
-          }) => EffectivePolicy;
-        };
+      | { readonly kind: "prepared"; readonly prepared: PreparedToolPolicy };
 
     const compareProviderPolicyRule = (
       a: ToolPolicyProviderRule,
@@ -5486,9 +5481,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // snapshot. Avoids the per-tool resolve N+1 on the list surface.
           activeToolPolicyProvider.prepare
           ? activeToolPolicyProvider.prepare().pipe(
-              Effect.map((resolve) => ({
+              Effect.map((prepared) => ({
                 kind: "prepared" as const,
-                resolve,
+                prepared,
               })),
             )
           : activeToolPolicyProvider.resolve
@@ -5514,7 +5509,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       defaultRequiresApproval?: boolean,
     ): Effect.Effect<EffectivePolicy, StorageFailure> =>
       ruleSet.kind === "prepared"
-        ? Effect.succeed(ruleSet.resolve({ toolId, defaultRequiresApproval }))
+        ? Effect.succeed(ruleSet.prepared.resolve({ toolId, defaultRequiresApproval }))
         : ruleSet.kind === "provider"
           ? ruleSet.provider.resolve
             ? ruleSet.provider.resolve({ toolId, defaultRequiresApproval })
@@ -6098,11 +6093,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // not from a synthetic id a narrower grant would fail to match —
         // gets to exclude a connection; otherwise every connection stays
         // under strict validation.
+        // The scope predicate and the per-tool resolver come from ONE
+        // prepared snapshot, so a grant that changes between reads cannot
+        // make them disagree.
         const policyRulesForScope = yield* listActivePolicyRuleSet();
         const canServeConnection =
-          activeToolPolicyProvider?.prepareConnectionScope === undefined
-            ? null
-            : yield* activeToolPolicyProvider.prepareConnectionScope();
+          policyRulesForScope.kind === "prepared"
+            ? (policyRulesForScope.prepared.canServeConnection ?? null)
+            : null;
         const { rows, definitionRows } = yield* readCatalog.pipe(
           Effect.flatMap((snapshot) => {
             const mixed = mixedGenerations(snapshot).filter(

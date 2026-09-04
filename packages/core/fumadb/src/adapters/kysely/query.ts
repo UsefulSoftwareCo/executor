@@ -562,7 +562,9 @@ export function fromKysely(
             // Engines cap bound parameters per statement (MSSQL 2100, older
             // SQLite 999): chunk so `rows * columns` stays under the budget,
             // all inside this one transaction.
-            const columnsPerRow = Math.max(1, Object.keys(encoded[0]!).length);
+            // Kysely builds a multi-row INSERT over the UNION of every row's
+            // columns, so the widest row sets the per-row parameter count.
+            const columnsPerRow = Math.max(1, ...encoded.map((row) => Object.keys(row).length));
             const rowsPerStatement = Math.max(
               1,
               Math.min(

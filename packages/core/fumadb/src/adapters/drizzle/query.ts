@@ -667,7 +667,9 @@ export function fromDrizzle(
           if (ins.values.length === 0) continue;
           const drizzleTable = toDrizzle(ins.table);
           const values = ins.values.map((v) => mapValues(v, ins.table));
-          const columnsPerRow = Math.max(1, Object.keys(values[0]!).length);
+          // Drizzle builds a multi-row INSERT over the UNION of every row's
+          // columns, so the widest row sets the per-row parameter count.
+          const columnsPerRow = Math.max(1, ...values.map((row) => Object.keys(row).length));
           const batchSize = parameterBoundedBatchSize(ins.table, columnsPerRow, 0, maxBoundParameters);
           for (let i = 0; i < values.length; i += batchSize) {
             statements.push(handle.insert(drizzleTable).values(values.slice(i, i + batchSize)));

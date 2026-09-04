@@ -4,6 +4,7 @@ import { Data, Effect, Inspectable, Logger, Predicate, Result, Scheduler } from 
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
+import { matchPattern } from "./policies";
 import { StorageError, type FumaDb } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
@@ -1279,10 +1280,16 @@ describe("createExecutor", () => {
                 position: "a0",
               },
             ]),
-          prepareConnectionScope: () =>
-            Effect.succeed(
-              (connection: { readonly name: string }) => connection.name === String(CONN),
-            ),
+          // One snapshot yields both the resolver and the scope predicate.
+          prepare: () =>
+            Effect.succeed({
+              resolve: ({ toolId }: { readonly toolId: string }) =>
+                matchPattern(`${INTEG}.org.${CONN}.*`, toolId)
+                  ? { action: "approve" as const, source: "user" as const }
+                  : { action: "block" as const, source: "user" as const },
+              canServeConnection: (connection: { readonly name: string }) =>
+                connection.name === String(CONN),
+            }),
         }),
       }))();
       const config = makeTestConfig({ plugins: [demoPlugin, mainOnly] as const });
