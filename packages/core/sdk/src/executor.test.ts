@@ -909,6 +909,49 @@ describe("createExecutor", () => {
     }),
   );
 
+  // A catalog written before the manifest column existed has rows and no
+  // manifest — exactly what a rebuild that died before its stamp leaves too.
+  // Nothing proves it whole, so it is not served; and because a null manifest
+  // marks the connection stale, the read that trips on it is the read that
+  // rebuilds and stamps it. Modelled by wiping the manifest under a live
+  // catalog.
+  it.effect(
+    "tools.describeAll refuses a catalog with no manifest and the next read rebuilds it",
+    () =>
+      Effect.gen(function* () {
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.demo.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+        expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+        // Pre-upgrade shape: rows present, manifest absent, stamp present.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+            set: { tools_manifest: null },
+          }),
+        );
+        // `describeAll` runs the stale scan first, which sees the null manifest
+        // and rebuilds — so the served catalog is the freshly stamped one, and
+        // the manifest is back.
+        const served = yield* executor.tools.describeAll();
+        expect(served.map((tool) => tool.name).sort()).toEqual(["inspect", "run"]);
+        const [row] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(row?.tools_manifest, "the rebuild stamped a manifest").not.toBeNull();
+      }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

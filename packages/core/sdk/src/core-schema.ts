@@ -235,9 +235,12 @@ export const coreTables = defineTables({
       // this generation and the counts match — which is what proves the
       // catalog is whole on a backend that commits each statement on its own
       // (D1) and across isolates the per-executor write lock cannot see.
-      // Null for connections built before the manifest existed; such a
-      // catalog is served on the (weaker) same-generation check alone until
-      // its next rebuild stamps it.
+      // Null for connections built before the manifest existed. A null
+      // manifest means "no proven-whole catalog": `tools.describeAll` refuses
+      // the connection, and the stale-catalog scan treats it as needing a
+      // rebuild, which stamps it. Rows written by a rebuild that died before
+      // its stamp are refused the same way, and `tools_synced_at` is cleared
+      // FIRST on every rebuild so such a death is also rescanned.
       tools_manifest: nullableJsonColumn("tools_manifest"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through

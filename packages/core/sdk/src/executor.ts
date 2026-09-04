@@ -3540,6 +3540,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             where: connectionWhere,
             set: syncedSet(row, manifest),
           });
+        // The FIRST statement of every replacement: clear the sync stamp while
+        // keeping the previous manifest. On a backend that commits statement
+        // by statement (D1), a rebuild that dies after its deletes but before
+        // `stampSynced` leaves rows that no longer match the old manifest —
+        // refused by `tools.describeAll` — and, because the stamp is already
+        // null, the next stale-catalog scan rebuilds it instead of leaving it
+        // refused until someone refreshes by hand. Interactive backends roll
+        // the whole transaction back, so there this is a no-op.
+        const markRebuilding = core.updateMany("connection", {
+          where: connectionWhere,
+          set: { tools_synced_at: null },
+        });
         // A failing sync must not bury a recorded dead grant's `expired`
         // verdict: this sync's own credential resolution is what discovers
         // invalid_grant (refresh → recorder), so by failure time the row
@@ -3607,6 +3619,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         ) {
           yield* persistCatalog(
             Effect.gen(function* () {
+              yield* markRebuilding;
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
               yield* stampSynced(existingRow, emptyCatalogManifest());
@@ -3619,6 +3632,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // No dynamic tools — clear any existing rows and return empty.
           yield* persistCatalog(
             Effect.gen(function* () {
+              yield* markRebuilding;
               yield* core.deleteMany("tool", { where });
               yield* core.deleteMany("definition", { where });
               yield* stampSynced(existingRow, emptyCatalogManifest());
@@ -3719,6 +3733,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         yield* persistCatalog(
           Effect.gen(function* () {
+            yield* markRebuilding;
             yield* core.deleteMany("tool", { where });
             yield* core.deleteMany("definition", { where });
             yield* core.createMany("tool", toolRows);
@@ -5501,11 +5516,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ? null
           : Math.max(cutoff ?? Number.MIN_SAFE_INTEGER, latestRevision ?? Number.MIN_SAFE_INTEGER);
 
+      // A connection with no catalog manifest (built before the manifest
+      // existed) is stale too: `tools.describeAll` refuses it until a rebuild
+      // stamps one, so the read that first sees it is the read that fixes it.
       const connections = yield* core.findMany("connection", {
         where: (b: AnyCb) =>
           staleBefore === null
-            ? b.isNull("tools_synced_at")
-            : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
+            ? b.or(b.isNull("tools_synced_at"), b.isNull("tools_manifest"))
+            : b.or(
+                b.isNull("tools_synced_at"),
+                b.isNull("tools_manifest"),
+                b("tools_synced_at", "<", staleBefore),
+              ),
       });
       // Each rebuild is an independent upstream listing, so they run together
       // rather than one after another: a host with many stale remote-catalog
@@ -5531,7 +5553,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ? null
             : Number(integrationRow.config_revised_at);
 
-        const staleMarked = syncedAt === null;
+        const staleMarked = syncedAt === null || connection.tools_manifest == null;
         const configRevised = revisedTime !== null && (syncedAt ?? 0) < revisedTime;
         const expired =
           cutoff !== null &&
@@ -5888,10 +5910,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // manifest with everything in place. A competing writer in another
         // isolate, which the per-executor write lock cannot serialize, is
         // caught the same way: whatever it leaves behind does not match the
-        // manifest that was written last. A connection with no manifest
-        // (built before the column existed) falls back to the weaker check —
-        // all rows of one generation, both tables agreeing — until its next
-        // rebuild stamps it.
+        // manifest that was written last. A connection with NO manifest has
+        // no proof at all — it was built before the manifest existed, or its
+        // last rebuild died before stamping — and is refused outright; the
+        // stale-catalog scan treats a null manifest as stale, so the rebuild
+        // that stamps it is already underway by the time this is retried.
         type GenerationRow = {
           readonly owner: string;
           readonly integration: string;
@@ -5938,25 +5961,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             const t = tools.get(key);
             const d = definitions.get(key);
             const manifest = manifests.get(key) ?? null;
-            if (manifest) {
-              // Strong check: exact generation and exact counts on both sides.
-              if ((t?.count ?? 0) !== manifest.tools) return true;
-              if ((d?.count ?? 0) !== manifest.definitions) return true;
-              if (t && (t.generations.size !== 1 || !t.generations.has(manifest.generation))) {
-                return true;
-              }
-              if (d && (d.generations.size !== 1 || !d.generations.has(manifest.generation))) {
-                return true;
-              }
-              continue;
+            // No manifest: nothing proves these rows are whole. Refuse.
+            if (!manifest) return true;
+            // Exact generation and exact counts on both sides.
+            if ((t?.count ?? 0) !== manifest.tools) return true;
+            if ((d?.count ?? 0) !== manifest.definitions) return true;
+            if (t && (t.generations.size !== 1 || !t.generations.has(manifest.generation))) {
+              return true;
             }
-            // Weak check (no manifest yet): one generation per table, agreeing.
-            if (t && t.generations.size !== 1) return true;
-            if (d && d.generations.size !== 1) return true;
-            if (t && d && [...t.generations][0] !== [...d.generations][0]) return true;
-            // Definitions with no tools: a build that writes definitions also
-            // writes tools, so this is a half-replaced catalog.
-            if (d && !t) return true;
+            if (d && (d.generations.size !== 1 || !d.generations.has(manifest.generation))) {
+              return true;
+            }
           }
           return false;
         };
