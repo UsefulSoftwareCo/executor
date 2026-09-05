@@ -1,9 +1,47 @@
 import { BoxIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { IntegrationPlugin } from "@executor-js/sdk/client";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { getDomain } from "tldts";
 
-import { EXECUTOR_ICON_SCHEME, resolveExecutorIcon } from "./preset-icon";
+import {
+  getExecutorApiBaseUrl,
+  getExecutorServerAuthorizationHeader,
+} from "../api/server-connection";
+import { cn } from "../lib/utils";
+
+// ---------------------------------------------------------------------------
+
+const EXECUTOR_ICON_SCHEME = "executor:";
+
+const IconResponse = Schema.Struct({ icon: Schema.NullOr(Schema.String) });
+const decodeIconResponse = Schema.decodeUnknownOption(IconResponse);
+
+const resolvedExecutorIcons = new Map<string, Promise<string | null>>();
+
+/** Resolves an authenticated local icon path once per browser session. */
+const resolveExecutorIcon = (path: string): Promise<string | null> => {
+  const cached = resolvedExecutorIcons.get(path);
+  if (cached) return cached;
+  const authorization = getExecutorServerAuthorizationHeader();
+  const request = Effect.runPromise(
+    Effect.tryPromise(async () => {
+      const response = await fetch(`${getExecutorApiBaseUrl()}${path}`, {
+        headers: authorization === null ? {} : { authorization },
+      });
+      if (!response.ok) return null;
+      const body: unknown = await response.json();
+      return Option.match(decodeIconResponse(body), {
+        onNone: () => null,
+        onSome: ({ icon }) => icon,
+      });
+    }).pipe(Effect.orElseSucceed(() => null)),
+  );
+  resolvedExecutorIcons.set(path, request);
+  return request;
+};
 
 // ---------------------------------------------------------------------------
 // IntegrationFavicon — renders a small favicon derived from an integration URL.
@@ -128,13 +166,15 @@ export function integrationPresetIconUrl(
 }
 
 // Resolution cascade for the rendered favicon: first non-null, non-failed of an
-// explicit preset icon, the bundled local icon for a known integration id, then
-// the integrations.sh logo proxy derived from the integration URL (which owns
-// its own upstream fallbacks). The built-in executor integration has no preset
-// icon and no URL, so it resolves ONLY through the integrationId branch: callers
-// that drop integrationId fall through to the neutral BoxIcon placeholder.
+// explicit preset icon, its explicit fallback image, the bundled local icon for
+// a known integration id, then the integrations.sh logo proxy derived from the
+// integration URL (which owns its own upstream fallbacks). The built-in executor
+// integration has no preset icon and no URL, so it resolves ONLY through the
+// integrationId branch: callers that drop integrationId fall through to the
+// neutral BoxIcon placeholder.
 export function integrationFaviconSrc(args: {
   icon?: string | null;
+  fallbackSrc?: string | null;
   integrationId?: string;
   url?: string;
   size: number;
@@ -144,6 +184,7 @@ export function integrationFaviconSrc(args: {
   return (
     [
       args.icon ?? null,
+      args.fallbackSrc ?? null,
       integrationLocalIconUrl(args.integrationId),
       integrationFaviconUrl(args.url, args.size),
     ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
@@ -152,21 +193,32 @@ export function integrationFaviconSrc(args: {
 
 export function IntegrationFavicon({
   icon,
+  fallbackSrc,
   integrationId,
   url,
   size = 16,
+  className,
 }: {
   icon?: string | null;
+  fallbackSrc?: string | null;
   integrationId?: string;
   url?: string;
   size?: number;
+  className?: string;
 }) {
   const [failedSrcs, setFailedSrcs] = useState<readonly string[]>([]);
   // `executor:`-scheme icons (served by the local API behind the bearer gate,
   // e.g. a Codex plugin's own icon) resolve asynchronously to a data URI; a
   // null resolution marks the candidate failed so the cascade continues.
   const [executorIcons, setExecutorIcons] = useState<Readonly<Record<string, string>>>({});
-  const cascadeSrc = integrationFaviconSrc({ icon, integrationId, url, size, failedSrcs });
+  const cascadeSrc = integrationFaviconSrc({
+    icon,
+    fallbackSrc,
+    integrationId,
+    url,
+    size,
+    failedSrcs,
+  });
   const isExecutorSrc = cascadeSrc?.startsWith(EXECUTOR_ICON_SCHEME) ?? false;
 
   useEffect(() => {
@@ -194,7 +246,7 @@ export function IntegrationFavicon({
     return (
       <BoxIcon
         aria-hidden
-        className="shrink-0 text-muted-foreground"
+        className={cn("shrink-0 text-muted-foreground", className)}
         style={{ width: size, height: size }}
       />
     );
@@ -214,7 +266,7 @@ export function IntegrationFavicon({
           current.includes(failedCandidate) ? current : [...current, failedCandidate],
         )
       }
-      className="shrink-0 rounded-sm"
+      className={cn("shrink-0 rounded-sm object-contain", className)}
       style={{ width: size, height: size }}
     />
   );

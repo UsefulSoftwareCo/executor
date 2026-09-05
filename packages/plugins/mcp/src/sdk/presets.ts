@@ -37,7 +37,7 @@ export type McpPreset = McpRemotePreset | McpStdioPreset;
 // use", …). `command` is deliberately empty: the real spawn recipe is
 // machine-specific and comes from the server-side scanner
 // (`codex-plugins.ts`); picking one of these opens the focused Codex add
-// screen. The icon uses the `executor:` scheme (see preset-icon.tsx): the
+// screen. The icon uses the `executor:` scheme (see integration-favicon.tsx): the
 // plugin's own icon is a machine-local file, so it is served by the local API
 // and resolved with the auth header — a static URL cannot reach it.
 const codexPluginPresets: readonly McpStdioPreset[] = CURATED_CODEX_PLUGINS.map((plugin) => ({
