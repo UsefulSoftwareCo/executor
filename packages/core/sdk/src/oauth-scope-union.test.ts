@@ -159,11 +159,14 @@ const serveMetadataServer = (config: {
  *  given server as its resource, returning the executor ready to `oauth.start`.
  *  The shared setup for the discovery cases below; case (h) inlines its own (no
  *  `resource`) because the absent resource IS the case under test. */
-const setupMcpScopeClient = (server: {
-  readonly authorizationEndpoint: string;
-  readonly tokenEndpoint: string;
-  readonly mcpResourceUrl: string;
-}) =>
+const setupMcpScopeClient = (
+  server: {
+    readonly authorizationEndpoint: string;
+    readonly tokenEndpoint: string;
+    readonly mcpResourceUrl: string;
+  },
+  options: { readonly authorizationEndpoint?: string } = {},
+) =>
   Effect.gen(function* () {
     const plugins = [memoryCredentialsPlugin(), makeMcpScopePlugin({ scopes: null })] as const;
     const { executor } = yield* makeTestWorkspaceHarness({ plugins });
@@ -171,7 +174,7 @@ const setupMcpScopeClient = (server: {
     yield* executor.oauth.createClient({
       owner: "org",
       slug: CLIENT,
-      authorizationUrl: server.authorizationEndpoint,
+      authorizationUrl: options.authorizationEndpoint ?? server.authorizationEndpoint,
       tokenUrl: server.tokenEndpoint,
       grant: "authorization_code",
       clientId: "test-client",
@@ -403,6 +406,35 @@ describe("oauth.start integration-driven scopes", () => {
           ]);
         }),
       ),
+  );
+
+  it.effect("requests Vercel offline_access so authorization-code connections can refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMetadataServer({
+          prm: { scopesSupported: ["openid"] },
+        });
+        const executor = yield* setupMcpScopeClient(server, {
+          authorizationEndpoint: "https://vercel.com/oauth/authorize",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "openid",
+          "offline_access",
+        ]);
+      }),
+    ),
   );
 
   it.effect(

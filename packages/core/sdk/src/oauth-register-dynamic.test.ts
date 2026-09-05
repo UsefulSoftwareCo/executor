@@ -373,6 +373,39 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
+  it.effect("registers Vercel clients with offline_access for refresh tokens", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "offline_access"],
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.registerDynamicClient({
+          owner: "org",
+          slug: CLIENT,
+          issuer: "https://vercel.com",
+          registrationEndpoint: server.registrationEndpoint,
+          authorizationUrl: "https://vercel.com/oauth/authorize",
+          tokenUrl: server.tokenEndpoint,
+          resource: "https://mcp.vercel.com/",
+          scopes: ["openid"],
+          tokenEndpointAuthMethodsSupported: ["none"],
+          clientName: "Executor",
+          redirectUri: FLOW_REDIRECT_URI,
+          originIntegration: INTEG,
+        });
+
+        const requests = yield* server.requests;
+        const registration = requests.find(
+          (request) => request.path === "/register" && request.method === "POST",
+        );
+        expect(registration?.body).toContain('"scope":"openid offline_access"');
+      }),
+    ),
+  );
+
   it.effect("reuses a legacy DCR row once its origin_issuer is backfilled", () =>
     Effect.scoped(
       Effect.gen(function* () {
