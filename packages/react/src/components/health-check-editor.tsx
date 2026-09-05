@@ -22,9 +22,11 @@ import {
 import { healthCheckWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
 import { HEALTH_STATUS_LABEL, HEALTH_TEXT_CLASS } from "../lib/health-display";
+import { formatHealthCheckArgs, parseHealthCheckArgs } from "../lib/health-check-args";
 import { Button } from "./button";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { Input } from "./input";
+import { Textarea } from "./textarea";
 import { Label } from "./label";
 import { NativeSelect, NativeSelectOption } from "./native-select";
 import {
@@ -70,11 +72,14 @@ export interface HealthCheckLivePreview {
   }>;
 }
 
-/** "GET /users/me" style label for a candidate, with a writes marker so a
- *  mutating operation picked as a health check reads as the hazard it is. */
+export const isUnsupportedHealthCheck = (candidate: HealthCheckCandidate | null): boolean =>
+  candidate?.destructive === true && candidate.method.toLowerCase() !== "post";
+
+/** POST may be a read operation in an HTTP RPC API, but needs a warning. */
 const candidateLabel = (candidate: HealthCheckCandidate): string => {
   const head = `${candidate.method.toUpperCase()} ${candidate.operation}`;
-  return candidate.destructive ? `${head} (writes)` : head;
+  if (candidate.method.toLowerCase() === "post") return `${head} (may change data)`;
+  return isUnsupportedHealthCheck(candidate) ? `${head} (unsupported for health checks)` : head;
 };
 
 /** The summary line for the configured spec: the operation, prefixed with its
@@ -137,8 +142,8 @@ function HealthCheckConfigFields(props: {
     [selected],
   );
 
-  const requiredParams = useMemo(
-    () => (selected?.parameters ?? []).filter((p) => p.required),
+  const pinnedParams = useMemo(
+    () => (selected?.parameters ?? []).filter((p) => p.required || p.location === "body"),
     [selected],
   );
 
@@ -158,40 +163,65 @@ function HealthCheckConfigFields(props: {
         {selected?.summary ? (
           <p className="text-xs text-muted-foreground">{selected.summary}</p>
         ) : null}
-        {selected?.destructive ? (
+        {selected?.method.toLowerCase() === "post" ? (
+          <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">
+            POST requests can change data. Health checks run automatically and repeatedly; choose an
+            operation that only reads data.
+          </p>
+        ) : isUnsupportedHealthCheck(selected) ? (
           <p className="text-xs text-destructive">
-            This operation writes data. Prefer a read-only (GET) operation for a health check.
+            This method is not supported for health checks. Pick a GET, HEAD, OPTIONS, or read-only
+            POST operation.
           </p>
         ) : null}
       </div>
 
-      {requiredParams.length > 0 ? (
+      {pinnedParams.length > 0 ? (
         <div className="space-y-3">
           <div className="space-y-0.5">
-            <p className="text-sm font-medium">Required arguments</p>
+            <p className="text-sm font-medium">Pinned arguments</p>
             <p className="text-xs text-muted-foreground">
               Pinned into every probe. An identity endpoint often needs a fixed value here (for
               example <span className="font-mono">resourceName</span> ={" "}
               <span className="font-mono">people/me</span>).
             </p>
           </div>
-          {requiredParams.map((param) => (
+          {pinnedParams.map((param) => (
             <div key={param.name} className="space-y-1.5">
               <Label htmlFor={`${idPrefix}-arg-${param.name}`}>
                 {param.name}
                 <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                  ({param.location})
+                  ({param.location}
+                  {param.required ? ", required" : ", optional"})
                 </span>
               </Label>
-              <Input
-                id={`${idPrefix}-arg-${param.name}`}
-                value={args[param.name] ?? ""}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  props.onArgChange(param.name, e.target.value)
-                }
-                placeholder={param.description ?? `Value for ${param.name}`}
-                disabled={disabled}
-              />
+              {param.location === "body" ? (
+                <>
+                  <Textarea
+                    id={`${idPrefix}-arg-${param.name}`}
+                    value={args[param.name] ?? ""}
+                    onChange={(e) => props.onArgChange(param.name, e.target.value)}
+                    placeholder='{"pageSize": 1}'
+                    aria-label="Request body (JSON)"
+                    aria-invalid={!parseHealthCheckArgs(args).ok}
+                    disabled={disabled}
+                    className="font-mono text-xs"
+                  />
+                  {!parseHealthCheckArgs(args).ok ? (
+                    <p className="text-xs text-destructive">Enter a valid JSON request body.</p>
+                  ) : null}
+                </>
+              ) : (
+                <Input
+                  id={`${idPrefix}-arg-${param.name}`}
+                  value={args[param.name] ?? ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    props.onArgChange(param.name, e.target.value)
+                  }
+                  placeholder={param.description ?? `Value for ${param.name}`}
+                  disabled={disabled}
+                />
+              )}
               {param.description ? (
                 <p className="text-xs text-muted-foreground">{param.description}</p>
               ) : null}
@@ -253,12 +283,11 @@ function HealthCheckLivePreviewBlock(props: {
     const slug = (template || preview.templates[0]?.template) as AuthTemplateSlug | undefined;
     if (slug === undefined) return;
     const identity = identityField.trim();
-    const argEntries = Object.entries(args)
-      .map(([key, v]) => [key, v.trim()] as const)
-      .filter(([, v]) => v.length > 0);
+    const parsedArgs = parseHealthCheckArgs(args);
+    if (!parsedArgs.ok) return;
     const spec: HealthCheckSpec = {
       operation,
-      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+      ...(Object.keys(parsedArgs.args).length > 0 ? { args: parsedArgs.args } : {}),
       ...(identity.length > 0 ? { identityField: identity } : {}),
     };
     setRunning(true);
@@ -382,7 +411,7 @@ function HealthCheckEditorSheet(props: {
   const [operation, setOperation] = useState("");
   const [identityField, setIdentityField] = useState("");
   // Pinned argument values keyed by parameter name; stored as strings (the form
-  // input value) and trimmed/dropped when empty at save.
+  // input value); JSON bodies are parsed before save and preview.
   const [args, setArgs] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
@@ -391,16 +420,7 @@ function HealthCheckEditorSheet(props: {
     if (!open) return;
     setOperation(spec?.operation ?? candidates[0]?.operation ?? "");
     setIdentityField(spec?.identityField ?? "");
-    setArgs(
-      spec?.args
-        ? Object.fromEntries(
-            Object.entries(spec.args).map(([key, value]) => [
-              key,
-              value == null ? "" : String(value),
-            ]),
-          )
-        : {},
-    );
+    setArgs(formatHealthCheckArgs(spec?.args));
   }, [open, spec, candidates]);
 
   const selected = useMemo(
@@ -413,6 +433,7 @@ function HealthCheckEditorSheet(props: {
     [selected],
   );
   const missingRequired = requiredParams.some((p) => (args[p.name] ?? "").trim().length === 0);
+  const parsedArgs = parseHealthCheckArgs(args);
 
   const onOperationChange = (next: string) => {
     setOperation(next);
@@ -426,15 +447,12 @@ function HealthCheckEditorSheet(props: {
     setArgs((prev) => ({ ...prev, [name]: value }));
 
   const handleSave = async () => {
-    if (operation.length === 0) return;
+    if (operation.length === 0 || !parsedArgs.ok) return;
     setSaving(true);
     const identity = identityField.trim();
-    const argEntries = Object.entries(args)
-      .map(([key, value]) => [key, value.trim()] as const)
-      .filter(([, value]) => value.length > 0);
     const nextSpec: HealthCheckSpec = {
       operation,
-      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+      ...(Object.keys(parsedArgs.args).length > 0 ? { args: parsedArgs.args } : {}),
       ...(identity.length > 0 ? { identityField: identity } : {}),
     };
     const exit = await doSet({
@@ -503,7 +521,9 @@ function HealthCheckEditorSheet(props: {
               operation={operation}
               identityField={identityField}
               args={args}
-              disabled={saving}
+              disabled={
+                saving || !parsedArgs.ok || missingRequired || isUnsupportedHealthCheck(selected)
+              }
             />
           ) : null}
         </div>
@@ -511,7 +531,13 @@ function HealthCheckEditorSheet(props: {
         <SheetFooter>
           <Button
             onClick={() => void handleSave()}
-            disabled={saving || operation.length === 0 || missingRequired}
+            disabled={
+              saving ||
+              operation.length === 0 ||
+              missingRequired ||
+              !parsedArgs.ok ||
+              isUnsupportedHealthCheck(selected)
+            }
           >
             {saving ? "Saving..." : "Save"}
           </Button>
@@ -597,3 +623,4 @@ export function HealthCheckEditor(props: {
 // Re-exported so the add-integration screen can compose the same operation +
 // identity form without the sheet/live-preview chrome.
 export { HealthCheckConfigFields };
+export { parseHealthCheckArgs } from "../lib/health-check-args";
