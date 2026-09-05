@@ -170,8 +170,7 @@ function HealthCheckConfigFields(props: {
           </p>
         ) : isUnsupportedHealthCheck(selected) ? (
           <p className="text-xs text-destructive">
-            This method is not supported for health checks. Pick a GET, HEAD, OPTIONS, or read-only
-            POST operation.
+            This method is not supported for health checks. Pick a read-only operation.
           </p>
         ) : null}
       </div>

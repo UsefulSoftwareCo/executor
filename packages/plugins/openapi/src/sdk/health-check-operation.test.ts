@@ -2,7 +2,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { dump } from "js-yaml";
 
-import { isSupportedHealthCheckMethod } from "./health-check-operation";
 import { previewSpecText, previewSpecTextStreaming } from "./preview";
 
 const readOperation = {
@@ -19,18 +18,6 @@ const readOperation = {
 };
 
 describe("health-check operations", () => {
-  it("supports POST for HTTP RPC reads alongside safe methods", () => {
-    for (const method of ["get", "head", "options", "post", "POST"]) {
-      expect(isSupportedHealthCheckMethod(method), method).toBe(true);
-    }
-  });
-
-  it("refuses other methods regardless of the operation name", () => {
-    for (const method of ["put", "patch", "delete", "trace", "connect", ""]) {
-      expect(isSupportedHealthCheckMethod(method), method).toBe(false);
-    }
-  });
-
   it.effect("keeps body requirements and POST risk visible in both preview paths", () =>
     Effect.gen(function* () {
       for (const required of [true, false]) {

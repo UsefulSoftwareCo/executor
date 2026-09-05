@@ -53,7 +53,7 @@ import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
 import { OperationBinding } from "./types";
-import { getHealthCheckParameters, isSupportedHealthCheckMethod } from "./health-check-operation";
+import { getHealthCheckParameters } from "./health-check-operation";
 
 const STRINGIFIED_BODY_CAP = 1024;
 const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
@@ -906,11 +906,15 @@ export const checkHealthOpenApi = (input: {
       } satisfies HealthCheckResult;
     }
 
-    if (!isSupportedHealthCheckMethod(binding.method)) {
+    // HTTP RPC reads can use POST; the editor warns users before enabling them.
+    if (
+      REQUIRE_APPROVAL.has(binding.method.toLowerCase()) &&
+      binding.method.toLowerCase() !== "post"
+    ) {
       return {
         status: "unknown",
         checkedAt,
-        detail: `Health check operation "${spec.operation}" uses ${binding.method.toUpperCase()} and is not supported for health checks. Pick a GET, HEAD, OPTIONS, or read-only POST operation.`,
+        detail: `Health check operation "${spec.operation}" uses ${binding.method.toUpperCase()} and is not supported for health checks. Pick a read-only operation.`,
       } satisfies HealthCheckResult;
     }
 
