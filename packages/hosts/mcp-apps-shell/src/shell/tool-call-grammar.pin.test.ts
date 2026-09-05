@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { parseToolCallCode } from "@executor-js/host-mcp/tool-call-code";
+import { formatToolCallCode, parseToolCallCode } from "@executor-js/host-mcp/tool-call-code";
 
 import { toolCallCode } from "./proxy";
 
@@ -29,6 +29,11 @@ describe("execute-action tool-call grammar", () => {
       label: "a single-segment system tool",
       path: ["search"],
       args: [{ query: "github issues", limit: 12 }],
+    },
+    {
+      label: "a hyphenated integration slug",
+      path: ["cloudflare-bindings", "d1_database_query"],
+      args: [{ database_id: "db", sql: "SELECT 1" }],
     },
     {
       label: "an argument with a $ in an identifier-ish key",
@@ -81,6 +86,12 @@ describe("execute-action tool-call grammar", () => {
       expect(parsed?.args).toEqual(args[0] ?? {});
     });
   }
+
+  it("formats a resolved hyphenated integration safely", () => {
+    expect(formatToolCallCode(["cloudflare-bindings", "org", "default", "query"], {})).toBe(
+      'return await tools["cloudflare-bindings"].org.default.query({})',
+    );
+  });
 
   it("refuses to emit a path that would not parse", () => {
     expect(() => toolCallCode([], [])).toThrow("Invalid tool path.");
