@@ -56,3 +56,20 @@ Executor:
 
 Once a client is connected, every integration you add to Executor appears in that
 agent automatically.
+
+## Scoped endpoints
+
+Every endpoint is the same executor seen through a narrower lens. The default
+`/mcp` endpoint serves the whole catalog. Append a scope to serve a subset:
+
+| Endpoint                               | Exposes                              |
+| -------------------------------------- | ------------------------------------ |
+| `/mcp`                                 | Every tool                           |
+| `/mcp/toolkits/<slug>`                 | A saved toolkit                      |
+| `/mcp/integrations/<slug>[,<slug>...]` | Every tool of the named integrations |
+| `/mcp/tools/<tool id>`                 | One tool, addressed by its full id   |
+
+A scope can only narrow what the workspace already allows. Workspace
+[policies](/concepts/policies) apply on every endpoint, and a toolkit's own rules
+layer on top of them: a toolkit can require approval for a tool the workspace
+allows, but it cannot approve a tool the workspace blocks or gates.

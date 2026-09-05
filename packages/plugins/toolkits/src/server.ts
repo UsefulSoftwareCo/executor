@@ -7,15 +7,14 @@ import {
   isValidPattern,
   matchPattern,
   Schema,
-  type EffectivePolicy,
   type Owner,
   type PluginCtx,
   type PluginStorageFacade,
   type PluginStorageCollectionFacade,
   type StorageFailure,
   type ToolPolicyAction,
-  type ToolPolicyProvider,
-  type ToolPolicyProviderRule,
+  type ToolProjection,
+  type ToolProjectionSource,
 } from "@executor-js/sdk/core";
 import { addGroup, capture } from "@executor-js/api";
 import { generateKeyBetween } from "fractional-indexing";
@@ -78,11 +77,6 @@ type ToolkitStorage = {
   readonly connections: PluginStorageCollectionFacade<typeof toolkitConnectionsCollection>;
 };
 
-export interface ToolkitsPluginOptions {
-  /** When set, this executor instance enforces only the named toolkit's rules. */
-  readonly activeToolkitSlug?: string;
-}
-
 const newId = (prefix: string): string =>
   `${prefix}_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
@@ -133,48 +127,40 @@ const comparePositioned = (
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 };
 
-const blockedPolicy = (pattern = "*"): EffectivePolicy => ({
-  action: "block",
-  source: "user",
-  pattern,
-});
-
-const pluginDefaultPolicy = (defaultRequiresApproval: boolean | undefined): EffectivePolicy =>
-  defaultRequiresApproval
-    ? { action: "require_approval", source: "plugin-default" }
-    : { action: "approve", source: "plugin-default" };
-
 const isLegacyConnectionPolicy = (policy: ToolkitPolicyRecord): boolean => {
   if (policy.action !== "approve") return false;
   const parts = policy.pattern.split(".");
   return parts.at(-1) === "*" && (parts.length === 3 || parts.length === 4);
 };
 
-const resolveToolkitPolicy = (
-  toolId: string,
+// A toolkit as core consumes it: the connections (plus any legacy
+// connection-shaped approve rows) name what is VISIBLE, the remaining policies
+// are the overlay core layers on top of the workspace's own rules. An
+// org-owned toolkit never exposes a member's personal connections, whoever
+// holds its URL.
+const toolkitProjection = (
+  owner: Owner,
   connections: readonly ToolkitConnectionRecord[],
   policies: readonly ToolkitPolicyRecord[],
-  defaultRequiresApproval?: boolean,
-): EffectivePolicy => {
+): ToolProjection => {
   const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
-  const connected =
-    connections.some((connection) => matchPattern(connection.pattern, toolId)) ||
-    policies.some(
-      (policy) => legacyPolicyIds.has(policy.id) && matchPattern(policy.pattern, toolId),
-    );
-  if (!connected) return blockedPolicy();
-
-  for (const policy of [...policies].sort(comparePositioned)) {
-    if (legacyPolicyIds.has(policy.id)) continue;
-    if (!matchPattern(policy.pattern, toolId)) continue;
-    return {
-      action: policy.action,
-      source: "user",
-      pattern: policy.pattern,
-      policyId: policy.id,
-    };
-  }
-  return pluginDefaultPolicy(defaultRequiresApproval);
+  return {
+    visible: [
+      ...connections.map((connection) => connection.pattern),
+      ...policies
+        .filter((policy) => legacyPolicyIds.has(policy.id))
+        .map((policy) => policy.pattern),
+    ],
+    rules: policies
+      .filter((policy) => !legacyPolicyIds.has(policy.id))
+      .map((policy) => ({
+        id: policy.id,
+        pattern: policy.pattern,
+        action: policy.action,
+        position: policy.position,
+      })),
+    excludePersonal: owner === "org",
+  };
 };
 
 const legacyConnectionPolicyIds = (
@@ -191,8 +177,6 @@ const legacyConnectionPolicyIds = (
       .map((policy) => policy.id),
   );
 };
-
-const isPersonalDynamicToolId = (toolId: string): boolean => toolId.split(".")[1] === "user";
 
 const toolkitToResponse = (entry: { readonly owner: Owner; readonly data: ToolkitRecord }) => ({
   id: entry.data.id,
@@ -477,69 +461,19 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       yield* storage.connections.remove({ owner: toolkit.owner, key: connectionId });
     });
 
-  const policyRulesForSlug = (
-    slug: string,
-  ): Effect.Effect<readonly ToolPolicyProviderRule[], StorageFailure> =>
+  /**
+   * The toolkit named by `slug` as a projection core can serve, or `null` when
+   * no such toolkit is visible to this owner binding. Three reads — the
+   * toolkit, its policies, its connections — once per operation; core resolves
+   * every tool in that operation against the returned snapshot.
+   */
+  const projectionForSlug = (slug: string): Effect.Effect<ToolProjection | null, StorageFailure> =>
     Effect.gen(function* () {
       const toolkit = yield* getBySlugEntry(slug);
-      if (!toolkit) return [];
+      if (!toolkit) return null;
       const policies = yield* listPoliciesForRecord(toolkit.data.id);
       const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
-      return policies
-        .filter((policy) => !legacyPolicyIds.has(policy.id))
-        .map((policy) => ({
-          id: policy.id,
-          pattern: policy.pattern,
-          action: policy.action,
-          position: policy.position,
-        }));
-    });
-
-  const resolvePolicyForSlug = (
-    slug: string,
-    toolId: string,
-    defaultRequiresApproval?: boolean,
-  ): Effect.Effect<EffectivePolicy, StorageFailure> =>
-    Effect.gen(function* () {
-      const toolkit = yield* getBySlugEntry(slug);
-      if (!toolkit) return blockedPolicy();
-      if (toolkit.owner === "org" && isPersonalDynamicToolId(toolId)) return blockedPolicy();
-      const policies = yield* listPoliciesForRecord(toolkit.data.id);
-      const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      return resolveToolkitPolicy(toolId, connections, policies, defaultRequiresApproval);
-    });
-
-  // Batched form of `resolvePolicyForSlug`: fetch the toolkit, its policies, and
-  // its connections ONCE, then hand back a pure resolver core can run for every
-  // tool in a single tools/list or tools/call. `resolvePolicyForSlug` re-fetches
-  // policies + connections on every tool, which is the per-tool N+1 that scales
-  // with the whole catalog on the list surface. This is byte-for-byte the same
-  // resolution, just hoisted out of the loop.
-  const preparePolicyResolverForSlug = (
-    slug: string,
-  ): Effect.Effect<
-    (input: {
-      readonly toolId: string;
-      readonly defaultRequiresApproval?: boolean;
-    }) => EffectivePolicy,
-    StorageFailure
-  > =>
-    Effect.gen(function* () {
-      const toolkit = yield* getBySlugEntry(slug);
-      if (!toolkit) return () => blockedPolicy();
-      const isOrg = toolkit.owner === "org";
-      const policies = yield* listPoliciesForRecord(toolkit.data.id);
-      const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      return (input: { readonly toolId: string; readonly defaultRequiresApproval?: boolean }) => {
-        if (isOrg && isPersonalDynamicToolId(input.toolId)) return blockedPolicy();
-        return resolveToolkitPolicy(
-          input.toolId,
-          connections,
-          policies,
-          input.defaultRequiresApproval,
-        );
-      };
+      return toolkitProjection(toolkit.owner, connections, policies);
     });
 
   return {
@@ -558,9 +492,7 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       ),
     createConnection,
     removeConnection,
-    policyRulesForSlug,
-    resolvePolicyForSlug,
-    preparePolicyResolverForSlug,
+    projectionForSlug,
   };
 };
 
@@ -671,43 +603,30 @@ const ToolkitsHandlers = HttpApiBuilder.group(ExecutorApiWithToolkits, "toolkits
     ),
 );
 
-const makePolicyProvider = (
-  extension: Pick<
-    ToolkitsExtension,
-    "policyRulesForSlug" | "resolvePolicyForSlug" | "preparePolicyResolverForSlug"
-  >,
-  slug: string,
-): ToolPolicyProvider => ({
-  list: () => extension.policyRulesForSlug(slug),
-  resolve: ({ toolId, defaultRequiresApproval }) =>
-    extension.resolvePolicyForSlug(slug, toolId, defaultRequiresApproval),
-  // Preferred path: core calls this once per operation, so the toolkit's
-  // policies + connections are fetched once instead of once per tool.
-  prepare: () => extension.preparePolicyResolverForSlug(slug),
+const makeProjectionSource = (
+  extension: Pick<ToolkitsExtension, "projectionForSlug">,
+): ToolProjectionSource => ({
+  resolve: (name) => extension.projectionForSlug(name),
 });
 
-export const toolkitsPlugin = definePlugin((options: ToolkitsPluginOptions = {}) => {
-  const activeToolkitSlug = options.activeToolkitSlug;
-  return {
-    id: "toolkits" as const,
-    packageName: "@executor-js/plugin-toolkits",
-    pluginStorage: {
-      toolkits: toolkitsCollection,
-      toolkitPolicies: toolkitPoliciesCollection,
-      toolkitConnections: toolkitConnectionsCollection,
-    },
-    storage: ({ pluginStorage }) => makeToolkitStorage(pluginStorage),
-    extension: makeToolkitsExtension,
-    routes: () => ToolkitsApi,
-    handlers: () => ToolkitsHandlers,
-    extensionService: ToolkitsExtensionService,
-    ...(activeToolkitSlug
-      ? {
-          toolPolicyProvider: (ctx: PluginCtx<ToolkitStorage>) =>
-            makePolicyProvider(makeToolkitsExtension(ctx), activeToolkitSlug),
-        }
-      : {}),
-  };
-});
+export const toolkitsPlugin = definePlugin(() => ({
+  id: "toolkits" as const,
+  packageName: "@executor-js/plugin-toolkits",
+  pluginStorage: {
+    toolkits: toolkitsCollection,
+    toolkitPolicies: toolkitPoliciesCollection,
+    toolkitConnections: toolkitConnectionsCollection,
+  },
+  storage: ({ pluginStorage }) => makeToolkitStorage(pluginStorage),
+  extension: makeToolkitsExtension,
+  routes: () => ToolkitsApi,
+  handlers: () => ToolkitsHandlers,
+  extensionService: ToolkitsExtensionService,
+  // Every executor built with this plugin can serve any toolkit by slug
+  // (`executor.project(slug)`); the projection is a read over this plugin's
+  // storage, not a different executor.
+  toolProjections: (ctx: PluginCtx<ToolkitStorage>) =>
+    makeProjectionSource(makeToolkitsExtension(ctx)),
+}));
 
 export default toolkitsPlugin;

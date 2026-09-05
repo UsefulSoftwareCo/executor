@@ -3,10 +3,11 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  defaultMcpResource,
+  mcpResourceFromRequest,
   orgWriteAccessForPrincipal,
   withOrgWriteAccess,
   type AuthOutcome,
+  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
 import {
@@ -75,6 +76,7 @@ const authenticate = (request: Request, config: CloudflareConfig) =>
 const propsForPrincipal = (
   request: Request,
   principal: Principal,
+  resource: McpResource,
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
     const propagation = yield* currentPropagationHeaders(request);
@@ -86,10 +88,7 @@ const propsForPrincipal = (
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
-        // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
-        // bridge (see worker.ts), so the session always serves the default
-        // resource.
-        resource: defaultMcpResource,
+        resource,
         webOrigin: new URL(request.url).origin,
       },
       propagation,
@@ -97,10 +96,15 @@ const propsForPrincipal = (
   });
 
 export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
-  const serve = McpSessionDO.serve("/mcp", {
+  const serveOptions = {
     binding: "MCP_SESSION",
     transport: "streamable-http",
-  });
+  } as const;
+  // The agents SDK builds an exact-match `URLPattern` from the `serve` path, so
+  // the bare endpoint and the scoped sub-resources need two mounts; auth,
+  // ownership, and props are shared above.
+  const serve = McpSessionDO.serve("/mcp", serveOptions);
+  const serveScoped = McpSessionDO.serve("/mcp/:kind/:value", serveOptions);
 
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
@@ -142,7 +146,10 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+    // `worker.ts` routes every path the shared grammar recognizes here, so a
+    // session minted on a scoped path serves that projection of the catalog.
+    const resource = mcpResourceFromRequest(request);
+    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(
       withVerifiedIdentityHeaders(
@@ -151,10 +158,11 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
         },
-        defaultMcpResource,
+        resource,
       ),
       orgWriteAccessForPrincipal(outcome.principal),
     );
-    return serve.fetch(forwarded, env, ctx);
+    const target = resource.kind === "default" ? serve : serveScoped;
+    return target.fetch(forwarded, env, ctx);
   };
 };

@@ -4,8 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import {
-  defaultMcpResource,
   jsonRpcErrorBody,
+  mcpResourceFromPathname,
   mcpResourceKey,
   preInitializeMethodNotFound,
   type McpResource,
@@ -105,15 +105,10 @@ const resumeApprovalResult = (executionId: string, response: ResumeResponse) => 
   isError: false,
 });
 
-const toolkitPathPattern = /^\/mcp\/toolkits\/([^/?#]+)\/?$/;
-
-const resourceFromRequest = (request: Request): McpResource | null => {
-  const pathname = new URL(request.url).pathname;
-  if (pathname === "/mcp" || pathname === "/mcp/") return defaultMcpResource;
-  const match = toolkitPathPattern.exec(pathname);
-  if (!match) return null;
-  return { kind: "toolkit", slug: decodeURIComponent(match[1]) };
-};
+// The MCP resource grammar is the shared one from host-mcp; a path it does not
+// recognize is not an MCP resource here either.
+const resourceFromRequest = (request: Request): McpResource | null =>
+  mcpResourceFromPathname(new URL(request.url).pathname);
 
 const engineFromConfig = (config: ExecutorMcpServerConfig): AnyExecutionEngine | null =>
   "engine" in config ? config.engine : null;

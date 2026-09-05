@@ -25,7 +25,7 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 export const makeCloudflarePlugins = (
   secretKey: string,
-  options: { readonly activeToolkitSlug?: string; readonly allowLocalNetwork?: boolean } = {},
+  _options: { readonly allowLocalNetwork?: boolean } = {},
 ) =>
   [
     openApiHttpPlugin({
@@ -34,7 +34,7 @@ export const makeCloudflarePlugins = (
     }),
     mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
     graphqlHttpPlugin(),
-    toolkitsPlugin({ activeToolkitSlug: options.activeToolkitSlug }),
+    toolkitsPlugin(),
     encryptedSecretsPlugin({ key: secretKey }),
   ] as const;
 

@@ -23,7 +23,7 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 // ---------------------------------------------------------------------------
 
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug }: { readonly activeToolkitSlug?: string } = {}) =>
+  plugins: () =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -31,7 +31,7 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
-      toolkitsPlugin({ activeToolkitSlug }),
+      toolkitsPlugin(),
       encryptedSecretsPlugin({ key: process.env.EXECUTOR_SECRET_KEY ?? "build-time-placeholder" }),
     ] as const,
 });

@@ -4,7 +4,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  defaultMcpResource,
+  mcpResourceFromRequest,
   orgWriteAccessForPrincipal,
   withOrgWriteAccess,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
@@ -155,18 +155,6 @@ const runTraced = <A>(request: Request, program: Effect.Effect<A>): Promise<A> =
   );
 };
 
-// The MCP resource the request targets. `server.ts` routes both the bare `/mcp`
-// and `/mcp/toolkits/<slug>` to this handler (`prepareMcpOrgScope` strips the org
-// selector but keeps the toolkit segment), so a session minted on a toolkit path
-// scopes its tool catalog to that toolkit.
-const resourceFromPath = (request: Request): McpResource => {
-  const segments = new URL(request.url).pathname.split("/").filter((s) => s.length > 0);
-  if (segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits" && segments[2]) {
-    return { kind: "toolkit", slug: segments[2] };
-  }
-  return defaultMcpResource;
-};
-
 const propsForPrincipal = (
   request: Request,
   principal: Extract<AuthOutcome, { readonly _tag: "Authenticated" }>["principal"],
@@ -204,12 +192,12 @@ export const makeCloudMcpAgentHandler = () => {
   // The agents SDK builds an exact-match `URLPattern` from the path handed to
   // `serve` (see `createStreamingHttpHandler` in `agents/dist/mcp/index.js`) —
   // a single `/mcp` handler never matches `/mcp/toolkits/<slug>` and falls
-  // through to its own internal 404. A second `serve` mounted on the
-  // parameterized path picks it up (`URLPattern` supports `:slug` segments);
-  // the auth/ownership/props logic above is unchanged and shared, only the
-  // final dispatch target differs.
+  // through to its own internal 404. A second `serve` mounted on a two-segment
+  // wildcard picks up every scoped sub-resource (`URLPattern` supports `:kind`
+  // segments); the auth/ownership/props logic above is unchanged and shared,
+  // only the final dispatch target differs.
   const serve = McpSessionDOSqlite.serve("/mcp", serveOptions);
-  const serveToolkit = McpSessionDOSqlite.serve("/mcp/toolkits/:slug", serveOptions);
+  const serveScoped = McpSessionDOSqlite.serve("/mcp/:kind/:value", serveOptions);
 
   const ALLOWED_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
 
@@ -290,7 +278,10 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const resource = resourceFromPath(request);
+    // `prepareMcpOrgScope` already stripped the org selector, so the path is
+    // the bare resource path and a session minted on a scoped path serves that
+    // projection of the catalog.
+    const resource = mcpResourceFromRequest(request);
     const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(
@@ -304,7 +295,7 @@ export const makeCloudMcpAgentHandler = () => {
       ),
       orgWriteAccessForPrincipal(outcome.principal),
     );
-    const target = resource.kind === "toolkit" ? serveToolkit : serve;
+    const target = resource.kind === "default" ? serve : serveScoped;
     let response: Response;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: the agents SDK aborts the isolate (throws) instead of returning a response for a condemned session
     try {

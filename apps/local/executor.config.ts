@@ -25,12 +25,8 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 // First-party and third-party plugins use the same import-and-call flow.
 // ---------------------------------------------------------------------------
 
-interface LocalPluginDeps {
-  readonly activeToolkitSlug?: string;
-}
-
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug }: LocalPluginDeps = {}) =>
+  plugins: () =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -38,7 +34,7 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       graphqlHttpPlugin(),
-      toolkitsPlugin({ activeToolkitSlug }),
+      toolkitsPlugin(),
       // The durable file store must register before keychain: the first
       // writable provider becomes the default for minted OAuth tokens, and on
       // sandbox/headless hosts the keychain is an in-memory keyring that a

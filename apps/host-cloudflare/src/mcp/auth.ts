@@ -3,6 +3,10 @@ import { Effect, Layer } from "effect";
 import {
   authenticated,
   McpAuthProvider,
+  mcpResourceFromRequest,
+  mcpResourcePath,
+  OAUTH_PROTECTED_RESOURCE_PREFIX,
+  scopedMcpRoutePaths,
   unauthorized,
   type McpDiscoveryRoute,
 } from "@executor-js/host-mcp";
@@ -10,37 +14,14 @@ import {
 import { makeAccessVerifier } from "../auth/cloudflare-access";
 import type { CloudflareConfig } from "../config";
 
-const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
-const MCP_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp`;
-const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;
+const PROTECTED_RESOURCE_METADATA_PATH = OAUTH_PROTECTED_RESOURCE_PREFIX;
+const MCP_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp` as const;
 
-const toolkitSlugFromPath = (pathname: string): string | undefined => {
-  const mcpPrefix = "/mcp/toolkits/";
-  if (pathname.startsWith(mcpPrefix)) {
-    const slug = pathname.slice(mcpPrefix.length).split("/", 1)[0];
-    return slug ? decodeURIComponent(slug) : undefined;
-  }
-  const metadataPrefix = `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/toolkits/`;
-  if (pathname.startsWith(metadataPrefix)) {
-    const slug = pathname.slice(metadataPrefix.length).split("/", 1)[0];
-    return slug ? decodeURIComponent(slug) : undefined;
-  }
-  return undefined;
-};
+const resourcePathForRequest = (request: Request): string =>
+  mcpResourcePath(mcpResourceFromRequest(request));
 
-const toolkitPath = (slug: string): string => `/mcp/toolkits/${encodeURIComponent(slug)}`;
-
-const resourcePathForRequest = (request: Request): string => {
-  const slug = toolkitSlugFromPath(new URL(request.url).pathname);
-  return slug ? toolkitPath(slug) : "/mcp";
-};
-
-const metadataPathForRequest = (request: Request): string => {
-  const slug = toolkitSlugFromPath(new URL(request.url).pathname);
-  return slug
-    ? `${MCP_PROTECTED_RESOURCE_METADATA_PATH}/toolkits/${encodeURIComponent(slug)}`
-    : MCP_PROTECTED_RESOURCE_METADATA_PATH;
-};
+const metadataPathForRequest = (request: Request): string =>
+  `${PROTECTED_RESOURCE_METADATA_PATH}${resourcePathForRequest(request)}`;
 
 const protectedResourceMetadataResponse = (request: Request): Response => {
   const url = new URL(request.url);
@@ -80,10 +61,10 @@ export const cloudflareAccessMcpAuth = (config: CloudflareConfig): Layer.Layer<M
       path: MCP_PROTECTED_RESOURCE_METADATA_PATH,
       handler: (request) => Effect.succeed(protectedResourceMetadataResponse(request)),
     },
-    {
-      path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
-      handler: (request) => Effect.succeed(protectedResourceMetadataResponse(request)),
-    },
+    ...scopedMcpRoutePaths(MCP_PROTECTED_RESOURCE_METADATA_PATH).map((path) => ({
+      path,
+      handler: (request: Request) => Effect.succeed(protectedResourceMetadataResponse(request)),
+    })),
   ];
   return Layer.succeed(McpAuthProvider)({
     discoveryRoutes,

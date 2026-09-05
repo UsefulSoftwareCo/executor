@@ -1,6 +1,7 @@
 import { Context, Data, Effect, Layer, ManagedRuntime } from "effect";
 
 import { withExecutionAnalytics } from "@executor-js/analytics";
+import { projectionForMcpResource } from "@executor-js/api/server";
 import { createExecutionEngine } from "@executor-js/execution";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
@@ -8,8 +9,9 @@ import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
-import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
+import { disposeExecutor, getExecutorBundle } from "./executor";
 import { createMcpRequestHandler, type McpRequestHandler } from "./mcp";
+import type { ExecutorMcpServerConfig } from "@executor-js/host-mcp/tool-server";
 
 // ---------------------------------------------------------------------------
 // Local server handlers.
@@ -87,21 +89,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
     const { executor, webBaseUrl } = await getExecutorBundle();
-    // Both engines below serve MCP endpoints, so the wrap binds the "mcp"
-    // plane structurally; the toolkit-scoped engine additionally marks
-    // `toolkit` (the slug itself is a user label and never recorded).
-    const engine = withExecutionAnalytics(
-      createExecutionEngine({
-        executor,
-        codeExecutor: makeQuickJsExecutor(),
-      }),
-      localAnalytics,
-      { plane: "mcp", toolkit: false },
-    );
     // The generative-UI surface, shared by every resource this daemon serves.
-    // Each toolkit gets its own executor, so `artifacts` is bound per resource
-    // below rather than hoisted with the rest.
-    //
     // Including the create-time smoke render, on the same terms as every other
     // host. This daemon is a dependency of `apps/cli`, whose build does not
     // configure `jsx`, and the renderer used to be unusable here for that
@@ -118,48 +106,33 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       onArtifactUsage: (action: "created" | "viewed" | "updated") =>
         localAnalytics.record(`artifact_${action}`, { via: "agent" }),
     };
+    // One config shape for every resource. The default endpoint serves the
+    // boot executor; a scoped one serves the same executor through a
+    // projection (same database handle — this process holds the data dir's
+    // exclusive lock, so a second open would contend with ourselves — same
+    // plugins, same workspace policies, narrowed to what the resource
+    // exposes). The wrap binds the "mcp" plane structurally; `toolkit` marks
+    // a projected engine (the resource's own label is user data and never
+    // recorded).
+    const configFor = (view: typeof executor, toolkit: boolean): ExecutorMcpServerConfig => ({
+      engine: withExecutionAnalytics(
+        createExecutionEngine({ executor: view, codeExecutor: makeQuickJsExecutor() }),
+        localAnalytics,
+        { plane: "mcp", toolkit },
+      ),
+      artifacts: view.artifacts,
+      connections: view.connections,
+      ...appsConfig,
+    });
     mcp = createMcpRequestHandler({
-      defaultConfig: {
-        engine,
-        artifacts: executor.artifacts,
-        connections: executor.connections,
-        ...appsConfig,
-      },
+      defaultConfig: configFor(executor, false),
       createConfigForResource: async (resource) => {
-        if (resource.kind === "default") {
-          return {
-            config: {
-              engine,
-              artifacts: executor.artifacts,
-              connections: executor.connections,
-              ...appsConfig,
-            },
-          };
-        }
-        // Borrow the running server's DB handle: this process already holds the
-        // data dir's exclusive ownership lock, so opening it a second time here
-        // fails against ourselves. The toolkit executor differs only in its
-        // plugin set, and the borrowed handle stays open when it disposes.
-        const handle = await createExecutorHandle({
-          activeToolkitSlug: resource.slug,
-          borrowedDb: (await getExecutorBundle()).db,
-        });
-        const toolkitEngine = withExecutionAnalytics(
-          createExecutionEngine({
-            executor: handle.executor,
-            codeExecutor: makeQuickJsExecutor(),
-          }),
-          localAnalytics,
-          { plane: "mcp", toolkit: true },
-        );
+        const projection = projectionForMcpResource(resource);
+        if (projection === undefined) return { config: configFor(executor, false) };
+        const projected = await Effect.runPromise(executor.project(projection));
         return {
-          config: {
-            engine: toolkitEngine,
-            artifacts: handle.executor.artifacts,
-            connections: handle.executor.connections,
-            ...appsConfig,
-          },
-          close: handle.dispose,
+          config: configFor(projected, true),
+          close: () => Effect.runPromise(Effect.ignore(projected.close())),
         };
       },
     });
