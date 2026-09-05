@@ -5,6 +5,7 @@ import { unstable_readConfig } from "wrangler";
 
 import tailwindcss from "@tailwindcss/vite";
 import react from "@astrojs/react";
+import mdx from "@astrojs/mdx";
 
 import cloudflare from "@astrojs/cloudflare";
 
@@ -29,7 +30,7 @@ const wranglerPublicDefine = () => {
 export default defineConfig({
   site: "https://executor.sh",
   output: "server",
-  integrations: [react()],
+  integrations: [react(), mdx()],
   vite: {
     plugins: [tailwindcss()],
     define: wranglerPublicDefine(),

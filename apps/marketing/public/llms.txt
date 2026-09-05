@@ -23,6 +23,11 @@ Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted
 - [Pricing](https://executor.sh/#pricing): plans for Executor Cloud.
 - [Install](https://executor.sh/#install): install the CLI and connect your first agent.
 
+## Blog
+
+- [MCPs, CLIs, and APIs are the same thing](https://executor.sh/blog/mcp-cli-same-thing): interactive tour of tool-calling envelopes, why context bloat is a client problem, and why the MCP-vs-CLI debate is a category error.
+- [Why MCP had so many growing pains](https://executor.sh/blog/why-mcp-had-growing-pains): what went wrong in MCP's first year and where it goes from here.
+
 ## Source
 
 - [GitHub](https://github.com/UsefulSoftwareCo/executor): source for the integration layer, plugins, and hosts.
