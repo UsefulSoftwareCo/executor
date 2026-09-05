@@ -11,6 +11,7 @@ import type {
 import {
   annotateToolResultOutcome,
   authToolFailure,
+  IntegrationSlug,
   isUserActionableError,
   isToolResult,
   ToolResult,
@@ -415,7 +416,7 @@ export type ExecutorIntegrationListItem = {
 export type ToolDiscoveryInput = {
   readonly executor: Executor;
   readonly query: string;
-  readonly namespace?: string;
+  readonly namespace?: string | readonly string[];
   readonly limit: number;
   readonly offset: number;
 };
@@ -479,6 +480,7 @@ const toSearchableTool = (tool: Tool): SearchableTool => ({
 type PreparedField = {
   readonly raw: string;
   readonly tokens: readonly string[];
+  readonly tokenSet: ReadonlySet<string>;
 };
 
 const SEARCH_FIELD_WEIGHTS = {
@@ -495,16 +497,31 @@ const normalizeSearchText = (value: string): string =>
     .toLowerCase()
     .trim();
 
-const tokenizeSearchText = (value: string): string[] =>
-  normalizeSearchText(value)
-    .split(/[^a-z0-9]+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
+const tokenizeNormalized = (normalized: string): readonly string[] => {
+  if (normalized.length === 0) return [];
+  return normalized.split(/[^a-z0-9]+/).filter(Boolean);
+};
 
-const prepareField = (value?: string): PreparedField => ({
-  raw: normalizeSearchText(value ?? ""),
-  tokens: tokenizeSearchText(value ?? ""),
-});
+const tokenizeSearchText = (value: string): readonly string[] =>
+  tokenizeNormalized(normalizeSearchText(value));
+
+const prepareField = (value?: string, maxLen?: number): PreparedField => {
+  if (!value || value.length === 0) {
+    return {
+      raw: "",
+      tokens: [],
+      tokenSet: new Set(),
+    };
+  }
+  const text = maxLen !== undefined && value.length > maxLen ? value.slice(0, maxLen) : value;
+  const raw = normalizeSearchText(text);
+  const tokens = tokenizeNormalized(raw);
+  return {
+    raw,
+    tokens,
+    tokenSet: new Set(tokens),
+  };
+};
 
 const scorePreparedField = (
   query: string,
@@ -539,7 +556,7 @@ const scorePreparedField = (
   }
 
   for (const token of queryTokens) {
-    if (field.tokens.includes(token)) {
+    if (field.tokenSet.has(token)) {
       score += weight * 4;
       matchedTokens.add(token);
       continue;
@@ -566,11 +583,30 @@ const scorePreparedField = (
   };
 };
 
-const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => {
-  if (!namespace || normalizeSearchText(namespace).length === 0) {
-    return true;
+const parseNamespaces = (namespace?: string | readonly string[]): readonly string[] | undefined => {
+  if (namespace === undefined) return undefined;
+  if (Array.isArray(namespace)) {
+    const list = namespace
+      .map((s) => (typeof s === "string" ? s.trim() : ""))
+      .filter((s) => s.length > 0);
+    return list.length > 0 ? list : undefined;
   }
+  if (typeof namespace === "string") {
+    const trimmed = namespace.trim();
+    if (trimmed.length === 0) return undefined;
+    if (trimmed.includes(",")) {
+      const list = trimmed
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      return list.length > 0 ? list : undefined;
+    }
+    return [trimmed];
+  }
+  return undefined;
+};
 
+const matchesSingleNamespace = (tool: SearchableTool, namespace: string): boolean => {
   const namespaceTokens = tokenizeSearchText(namespace);
   if (namespaceTokens.length === 0) {
     return true;
@@ -585,10 +621,18 @@ const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => 
   return isPrefixMatch(integrationTokens) || isPrefixMatch(pathTokens);
 };
 
-const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResult | null => {
-  const normalizedQuery = normalizeSearchText(query);
-  const queryTokens = tokenizeSearchText(query);
+const matchesNamespace = (tool: SearchableTool, namespaces?: readonly string[]): boolean => {
+  if (!namespaces || namespaces.length === 0) {
+    return true;
+  }
+  return namespaces.some((ns) => matchesSingleNamespace(tool, ns));
+};
 
+const scoreToolMatch = (
+  tool: SearchableTool,
+  normalizedQuery: string,
+  queryTokens: readonly string[],
+): ToolDiscoveryResult | null => {
   if (normalizedQuery.length === 0 || queryTokens.length === 0) {
     return null;
   }
@@ -596,7 +640,7 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
   const path = prepareField(tool.path);
   const integration = prepareField(tool.integration);
   const name = prepareField(tool.name);
-  const description = prepareField(tool.description);
+  const description = prepareField(tool.description, 2048);
 
   const fieldScores = [
     scorePreparedField(normalizedQuery, queryTokens, path, SEARCH_FIELD_WEIGHTS.path),
@@ -638,10 +682,7 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
     score += 8;
   }
 
-  if (
-    normalizeSearchText(tool.path) === normalizedQuery ||
-    normalizeSearchText(tool.name) === normalizedQuery
-  ) {
+  if (path.raw === normalizedQuery || name.raw === normalizedQuery) {
     score += 20;
   }
 
@@ -659,19 +700,23 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   executor: Executor,
   query: string,
   limit = 12,
-  options?: { readonly namespace?: string; readonly offset?: number },
+  options?: { readonly namespace?: string | readonly string[]; readonly offset?: number },
 ) {
   const offset = options?.offset ?? 0;
+  const namespaces = parseNamespaces(options?.namespace);
+  const namespaceAttr = namespaces && namespaces.length > 0 ? namespaces.join(",") : undefined;
+
   yield* Effect.annotateCurrentSpan({
     "executor.search.query_length": query.length,
     "executor.search.limit": limit,
     "executor.search.offset": offset,
-    ...(options?.namespace ? { "executor.search.namespace": options.namespace } : {}),
+    ...(namespaceAttr ? { "executor.search.namespace": namespaceAttr } : {}),
   });
 
-  const emptyQuery = normalizeSearchText(query).length === 0;
-  const hasNamespace =
-    options?.namespace !== undefined && normalizeSearchText(options.namespace).length > 0;
+  const normalizedQuery = normalizeSearchText(query);
+  const queryTokens = tokenizeNormalized(normalizedQuery);
+  const emptyQuery = normalizedQuery.length === 0 || queryTokens.length === 0;
+  const hasNamespace = namespaces !== undefined && namespaces.length > 0;
 
   // An empty query with no namespace stays empty: it carries neither a
   // ranking signal nor a scope, and listing the whole workspace "by default"
@@ -685,16 +730,34 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
-  const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ExecutionToolError({
-          message: "Failed to list tools for search",
-          cause,
-        }),
-    ),
-  );
-  const searchable = all.map(toSearchableTool);
+  // Optimize database read:
+  // If exact namespace enumeration (empty query with namespace), query only the requested integration(s).
+  let allTools: readonly Tool[];
+  if (emptyQuery && namespaces && namespaces.length === 1) {
+    allTools = yield* executor.tools
+      .list({ integration: IntegrationSlug.make(namespaces[0]), includeAnnotations: false })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ExecutionToolError({
+              message: "Failed to list tools for search",
+              cause,
+            }),
+        ),
+      );
+  } else {
+    allTools = yield* executor.tools.list({ includeAnnotations: false }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionToolError({
+            message: "Failed to list tools for search",
+            cause,
+          }),
+      ),
+    );
+  }
+
+  const searchable = allTools.map(toSearchableTool);
 
   // An empty query WITH a namespace is enumeration, not search: there is no
   // ranking signal, so the namespace's whole catalog comes back sorted by
@@ -704,9 +767,10 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   // google_gmail and google_sheets), which would silently break the census
   // guarantee: `total` here must reconcile against
   // `executor.integrations.list`'s per-integration toolCount.
+  const namespaceSet = hasNamespace ? new Set(namespaces) : null;
   const ranked: readonly ToolDiscoveryResult[] = emptyQuery
     ? searchable
-        .filter((tool) => tool.integration === options?.namespace?.trim())
+        .filter((tool) => namespaceSet !== null && namespaceSet.has(tool.integration))
         .sort((left, right) => left.path.localeCompare(right.path))
         .map((tool) => ({
           path: tool.path,
@@ -716,15 +780,15 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
           ...(tool.description !== undefined ? { description: tool.description } : {}),
         }))
     : searchable
-        .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-        .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+        .filter((tool: SearchableTool) => matchesNamespace(tool, namespaces))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, normalizedQuery, queryTokens))
         .filter(Predicate.isNotNull)
         .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
   const page = paginate(ranked, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
-    "executor.search.candidate_count": all.length,
+    "executor.search.candidate_count": allTools.length,
     "executor.search.match_count": ranked.length,
     "executor.search.result_count": page.items.length,
     "executor.search.has_more": page.hasMore,

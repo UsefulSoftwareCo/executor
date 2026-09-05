@@ -340,10 +340,15 @@ const makeFullInvoker = (
           );
         }
 
-        if (args.namespace !== undefined && typeof args.namespace !== "string") {
+        if (
+          args.namespace !== undefined &&
+          typeof args.namespace !== "string" &&
+          (!Array.isArray(args.namespace) ||
+            !args.namespace.every((item) => typeof item === "string"))
+        ) {
           return Effect.fail(
             new ExecutionToolError({
-              message: "tools.search namespace must be a string when provided",
+              message: "tools.search namespace must be a string or array of strings when provided",
             }),
           );
         }
@@ -363,7 +368,7 @@ const makeFullInvoker = (
             executor,
             query: args.query ?? "",
             limit,
-            namespace: args.namespace,
+            namespace: args.namespace as string | readonly string[] | undefined,
             offset,
           })
           .pipe(

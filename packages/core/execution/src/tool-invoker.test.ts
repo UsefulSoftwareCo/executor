@@ -674,12 +674,66 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect(
+    "can narrow discovery to multiple namespaces using an array or comma-separated list",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeSearchExecutor();
+
+        const multiArray = yield* searchTools(executor, "list", 5, {
+          namespace: ["github", "crm"],
+        });
+        const paths = multiArray.items.map((match) => match.path);
+        expect(paths).toContain("github.org.main.listRepositoryIssues");
+        expect(paths).toContain("crm.org.main.listContacts");
+
+        const commaSeparated = yield* searchTools(executor, "list", 5, {
+          namespace: "github, crm",
+        });
+        expect(commaSeparated.items.map((match) => match.path)).toEqual(paths);
+
+        const sandboxResult = yield* createExecutionEngine({ executor, codeExecutor }).execute(
+          'return await tools.search({ namespace: ["github", "crm"], query: "list", limit: 5 });',
+          { onElicitation: acceptAll },
+        );
+        expect(sandboxResult.error).toBeUndefined();
+        expect(sandboxResult.result).toEqual(
+          expect.objectContaining({
+            total: 2,
+          }),
+        );
+      }),
+  );
+
+  it.effect("supports batched multi-namespace searches in a single sandbox execution run", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const sandboxResult = yield* engine.execute(
+        [
+          "const [github, crm] = await Promise.all([",
+          '  tools.search({ namespace: "github", query: "issues", limit: 5 }),',
+          '  tools.search({ namespace: "crm", query: "contact", limit: 5 }),',
+          "]);",
+          "return { githubTotal: github.total, crmTotal: crm.total };",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+      expect(sandboxResult.error).toBeUndefined();
+      expect(sandboxResult.result).toEqual({
+        githubTotal: 1,
+        crmTotal: 2,
+      });
+    }),
+  );
+
   it.effect("lets execution hosts provide custom tool discovery", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();
       const calls: Array<{
         readonly query: string;
-        readonly namespace?: string;
+        readonly namespace?: string | readonly string[];
         readonly limit: number;
         readonly offset: number;
       }> = [];
