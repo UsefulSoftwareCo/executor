@@ -222,6 +222,33 @@ export function memoryAdapter(options: MemoryAdapterOptions = {}): FumaDBAdapter
           const rows = tableRows(db, table);
           db[table.ormName] = rows.filter((row) => !matchesCondition(row, v.where));
         },
+        async replaceMany(plan) {
+          // In-memory: stage the whole result on a clone, then swap it in
+          // with no suspension point — so a concurrent reader or writer sees
+          // either the old state or the new one, never a partial plan.
+          const staged = cloneValue(db);
+          if (plan.guard) {
+            let matched = 0;
+            for (const row of tableRows(staged, plan.guard.table)) {
+              if (!matchesCondition(row, plan.guard.where)) continue;
+              Object.assign(row, cloneValue(plan.guard.set));
+              matched += 1;
+            }
+            if (matched === 0) return { applied: false };
+          }
+          for (const del of plan.deletes) {
+            staged[del.table.ormName] = tableRows(staged, del.table).filter(
+              (row) => !matchesCondition(row, del.where),
+            );
+          }
+          for (const ins of plan.inserts) {
+            const rows = tableRows(staged, ins.table);
+            for (const value of ins.values) rows.push(applyDefaults(ins.table, value));
+          }
+          for (const key of Object.keys(db)) delete db[key];
+          Object.assign(db, staged);
+          return { applied: true };
+        },
         async transaction<T>(run: (transactionInstance: AbstractQuery<AnySchema>) => Promise<T>) {
           const snapshot = cloneValue(db);
           try {

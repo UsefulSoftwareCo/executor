@@ -79,6 +79,42 @@ export const readSearchToolsEnabled = (request: Request): boolean => {
   return TRUE_QUERY_VALUES.has(value.toLowerCase());
 };
 
+export type McpToolMode = "codemode" | "passthrough";
+
+/**
+ * Read the tool surface mode off an MCP request's `?mode=` query. The default,
+ * `codemode`, serves `execute` (the model writes sandboxed TypeScript against
+ * `tools.*`). `?mode=passthrough` instead serves every visible integration
+ * tool as its own MCP tool, with no `execute`, `skills`, or `resume`: the
+ * harness's native approval reads the advertised annotations. Any other value
+ * reads as the default.
+ */
+export const readToolMode = (request: Request): McpToolMode => {
+  const value = new URL(request.url).searchParams.get("mode");
+  return value === "passthrough" ? "passthrough" : "codemode";
+};
+
+/**
+ * Read the optional integration filter for passthrough mode off `?integrations=`,
+ * a comma-separated list of integration slugs. Absent or empty means every
+ * visible integration. Only meaningful with `?mode=passthrough`; codemode has
+ * `tools.search` for scoping. Slugs are trimmed and de-duplicated; order is
+ * not significant.
+ */
+export const readPassthroughIntegrations = (request: Request): readonly string[] | undefined => {
+  const value = new URL(request.url).searchParams.get("integrations");
+  if (value === null) return undefined;
+  const slugs = Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((slug) => slug.trim())
+        .filter((slug) => slug.length > 0),
+    ),
+  );
+  return slugs.length === 0 ? undefined : slugs;
+};
+
 /**
  * Build the console approval URL for a paused execution:
  * `<origin>/<organizationSlug>/resume/<executionId>?mcp_session_id=<sessionId>`

@@ -33,6 +33,34 @@ export const ToolSchemaView = Schema.Struct({
 export type ToolSchemaView = typeof ToolSchemaView.Type;
 
 // ---------------------------------------------------------------------------
+// ToolProjection — one visible tool as an MCP passthrough surface serves it:
+// the address, the resolved policy, and a SELF-CONTAINED input schema (shared
+// `$defs` re-attached), returned by `executor.tools.describeAll()`. Built in
+// one pass over the catalog so a workspace with thousands of tools costs a
+// handful of reads, not one round-trip per tool.
+// ---------------------------------------------------------------------------
+
+export const ToolProjection = Schema.Struct({
+  address: ToolAddress,
+  integration: Schema.String,
+  owner: Schema.Literals(["org", "user"]),
+  connection: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+  /** JSON Schema with every referenced `$def` inlined under `$defs`. Absent
+   *  when the tool declares no input. */
+  inputSchema: Schema.optional(Schema.Unknown),
+  /** The effective policy action for this caller. `block`ed tools are never
+   *  returned, so this is `approve` or `require_approval`. */
+  policy: Schema.Literals(["approve", "require_approval"]),
+  /** Whether the plugin marks the tool as never mutating upstream state. Only
+   *  plugins that know (HTTP method, GraphQL operation kind, upstream MCP hint)
+   *  set it; absent means unknown. */
+  readOnly: Schema.optional(Schema.Boolean),
+});
+export type ToolProjection = typeof ToolProjection.Type;
+
+// ---------------------------------------------------------------------------
 // Integration detection — optional capability on `PluginSpec.detect`. When a
 // user pastes a URL in the onboarding UI, `executor.integrations.detect(url)`
 // asks every plugin "is this yours?" and returns the best-confidence match so

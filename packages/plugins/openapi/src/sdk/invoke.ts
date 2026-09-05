@@ -1427,11 +1427,15 @@ export const REQUIRE_APPROVAL = new Set(["post", "put", "patch", "delete"]);
 export const annotationsForOperation = (
   method: string,
   pathTemplate: string,
-): { requiresApproval?: boolean; approvalDescription?: string } => {
+): { requiresApproval?: boolean; approvalDescription?: string; readOnly?: boolean } => {
   const m = method.toLowerCase();
-  if (!REQUIRE_APPROVAL.has(m)) return {};
+  // A safe method (GET/HEAD/OPTIONS) is read-only by HTTP semantics; a
+  // passthrough MCP surface advertises that as `readOnlyHint` so a harness can
+  // skip its own confirmation for it.
+  if (!REQUIRE_APPROVAL.has(m)) return { readOnly: true };
   return {
     requiresApproval: true,
     approvalDescription: `${method.toUpperCase()} ${pathTemplate}`,
+    readOnly: false,
   };
 };

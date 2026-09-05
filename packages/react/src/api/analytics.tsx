@@ -169,6 +169,7 @@ export interface AnalyticsEvents {
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
   mcp_install_artifacts_toggled: { artifacts: boolean };
   mcp_install_search_tools_toggled: { search_tools: boolean };
+  mcp_install_tool_mode_changed: { tool_mode: "codemode" | "passthrough" };
 
   // ── Command palette ──────────────────────────────────────────────────────
   command_palette_navigated: {

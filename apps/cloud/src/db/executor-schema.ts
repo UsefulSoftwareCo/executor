@@ -62,6 +62,8 @@ export const connection = pgTable(
     description: text("description"),
     last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),
+    tools_manifest: json("tools_manifest"),
+    tools_rebuild: text("tools_rebuild"),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),
@@ -156,6 +158,7 @@ export const tool = pgTable(
     input_schema: json("input_schema"),
     output_schema: json("output_schema"),
     annotations: json("annotations"),
+    generation: text("generation"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
@@ -186,6 +189,7 @@ export const definition = pgTable(
     plugin_id: text("plugin_id").notNull(),
     name: text("name").notNull(),
     schema: json("schema").notNull(),
+    generation: text("generation"),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
       .primaryKey()

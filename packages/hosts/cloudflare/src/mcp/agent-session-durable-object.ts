@@ -23,6 +23,7 @@ import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 import {
   ResumeResponsePayload,
   decodeResumeResponse,
+  type McpToolMode,
 } from "@executor-js/host-mcp/browser-approval";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
@@ -77,6 +78,12 @@ interface McpSessionInitBase {
    *  tools, read off `?search_tools=` at connect time. Absent means the
    *  default (disabled). */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface, read off `?mode=` at connect time. Absent means the
+   *  default (codemode). */
+  readonly toolMode?: McpToolMode;
+  /** Passthrough only: the `?integrations=` filter. Absent means every
+   *  visible integration. */
+  readonly passthroughIntegrations?: readonly string[];
   /** The MCP resource the session was minted against (`/mcp` default vs a
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
@@ -151,6 +158,14 @@ interface SessionMetaBase {
    *  {@link McpSessionInit}). Absent — including for sessions persisted before
    *  the flag existed — means the default (disabled). */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface (carried from {@link McpSessionInit}). Absent —
+   *  including for sessions persisted before the field existed — means
+   *  codemode. A cold restore MUST rebuild the same surface the client first
+   *  saw, or its cached tool names stop resolving mid-conversation. */
+  readonly toolMode?: McpToolMode;
+  /** Passthrough only: the integration filter (carried from
+   *  {@link McpSessionInit}). */
+  readonly passthroughIntegrations?: readonly string[];
   /** The MCP resource the session serves (carried from {@link McpSessionInit});
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;

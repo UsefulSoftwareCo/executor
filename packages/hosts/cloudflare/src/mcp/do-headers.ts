@@ -132,6 +132,9 @@ export const withMcpResponseHeaders = (response: Response): Response => {
 export {
   readArtifactsEnabled,
   readElicitationMode,
+  readPassthroughIntegrations,
   readSearchToolsEnabled,
+  readToolMode,
   type McpElicitationMode,
+  type McpToolMode,
 } from "@executor-js/host-mcp/browser-approval";

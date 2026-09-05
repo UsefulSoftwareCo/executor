@@ -341,6 +341,12 @@ const makeSafeFumaQuery = <TSchema extends AnySchema>(
     updateMany: (name, value) => db.updateMany(table(name), value),
     upsert: (name, value) => db.upsert(table(name), value),
     upsertMany: (name, value) => db.upsertMany(table(name), value),
+    replaceMany: (plan) =>
+      db.replaceMany({
+        ...(plan.guard ? { guard: { ...plan.guard, table: table(plan.guard.table) } } : {}),
+        deletes: plan.deletes.map((del) => ({ ...del, table: table(del.table) })),
+        inserts: plan.inserts.map((ins) => ({ ...ins, table: table(ins.table) })),
+      }),
   };
 
   return Object.freeze(query);

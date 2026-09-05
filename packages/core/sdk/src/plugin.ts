@@ -131,13 +131,36 @@ export interface ToolPolicyProvider {
    * requests), so caching on it would serve stale policy state. Each operation
    * gets a fresh snapshot.
    */
-  readonly prepare?: () => Effect.Effect<
-    (input: {
-      readonly toolId: string;
-      readonly defaultRequiresApproval?: boolean;
-    }) => EffectivePolicy,
-    StorageFailure
-  >;
+  readonly prepare?: () => Effect.Effect<PreparedToolPolicy, StorageFailure>;
+}
+
+/**
+ * What one `prepare()` call hands back: a pure per-tool resolver and, for
+ * providers that can answer it, a pure connection-scope predicate — BOTH
+ * derived from the same storage snapshot, so a grant that changes between
+ * two reads cannot make the resolver serve a connection the predicate has
+ * just declared unservable (or vice versa).
+ */
+export interface PreparedToolPolicy {
+  readonly resolve: (input: {
+    readonly toolId: string;
+    readonly defaultRequiresApproval?: boolean;
+  }) => EffectivePolicy;
+  /**
+   * Can ANY tool of this connection be visible through this provider?
+   * Providers that are capability allowlists over connection patterns
+   * (toolkits) answer from real pattern overlap — a grant of
+   * `acme.org.main.issues.*` means yes for `acme/org/main` even though the
+   * connection-wide wildcard id would not match it. Core uses this to leave
+   * a connection's catalog out of a consistency check when nothing under it
+   * could ever be served; a provider that omits it keeps every connection
+   * under strict validation.
+   */
+  readonly canServeConnection?: (connection: {
+    readonly integration: string;
+    readonly owner: string;
+    readonly name: string;
+  }) => boolean;
 }
 
 // ---------------------------------------------------------------------------

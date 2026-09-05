@@ -13,7 +13,9 @@ import {
   currentPropagationHeaders,
   readArtifactsEnabled,
   readElicitationMode,
+  readPassthroughIntegrations,
   readSearchToolsEnabled,
+  readToolMode,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
@@ -86,6 +88,10 @@ const propsForPrincipal = (
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
+        toolMode: readToolMode(request),
+        ...(readPassthroughIntegrations(request)
+          ? { passthroughIntegrations: readPassthroughIntegrations(request) }
+          : {}),
         // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
         // bridge (see worker.ts), so the session always serves the default
         // resource.

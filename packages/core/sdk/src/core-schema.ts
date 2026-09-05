@@ -227,6 +227,32 @@ export const coreTables = defineTables({
       // Epoch ms of the last tool (re)production for this connection. Stale
       // vs the integration's `config_revised_at` → re-produced on next read.
       tools_synced_at: nullableBigintColumn("tools_synced_at"),
+      // The catalog MANIFEST: which build is active for this connection and
+      // how many tool + definition rows it wrote, as JSON
+      // `{ generation, tools, definitions }`. Written by every rebuild in the
+      // same transaction as its rows where the engine has one; on D1 it may
+      // commit BEFORE the row batch. Either way a reader joining tools to
+      // definitions (`tools.describeAll`) accepts the rows only when every
+      // one carries this generation and the counts match exactly — that
+      // agreement, not commit order, is what proves the catalog is whole on
+      // a backend that commits each statement on its own
+      // (D1) and across isolates the per-executor write lock cannot see.
+      // Null for connections built before the manifest existed. A null
+      // manifest means "no proven-whole catalog": `tools.describeAll` refuses
+      // the connection, and the stale-catalog scan treats it as needing a
+      // rebuild, which stamps it. Rows written by a rebuild that died before
+      // its stamp are refused the same way, and `tools_synced_at` is cleared
+      // FIRST on every rebuild so such a death is also rescanned.
+      tools_manifest: nullableJsonColumn("tools_manifest"),
+      // The rebuild OWNERSHIP token: the id of the build currently replacing
+      // this connection's catalog, or null when no build is in flight. A
+      // rebuild claims it as its first statement (together with clearing
+      // `tools_synced_at`) and its final stamp is conditioned on still holding
+      // it. Two builds in different isolates cannot both finish: whichever
+      // claims last owns the token, and the other's stamp finds it changed
+      // and writes nothing — so a manifest can never describe rows another
+      // build has since replaced. Cleared by the stamp that wins.
+      tools_rebuild: nullableTextColumn("tools_rebuild"),
       oauth_client: nullableTextColumn("oauth_client"),
       // The OWNER of `oauth_client` (a Personal connection may be minted through
       // a shared Workspace app), set together with `oauth_client`; null for
@@ -336,6 +362,14 @@ export const coreTables = defineTables({
       input_schema: nullableJsonColumn("input_schema"),
       output_schema: nullableJsonColumn("output_schema"),
       annotations: nullableJsonColumn("annotations"),
+      // One opaque id per catalog (re)build, shared by every tool AND
+      // definition row that build wrote for the connection. A reader that
+      // must join the two tables (`tools.describeAll`) compares it to prove
+      // both halves came from the same build — a wall-clock stamp cannot
+      // (SQLite stores it at second resolution; two builds can share it).
+      // Nullable only for rows written before the column existed; the next
+      // rebuild stamps them.
+      generation: nullableTextColumn("generation"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -356,6 +390,8 @@ export const coreTables = defineTables({
       // rows (22001) — that drift broke cloud migration 0013 once already.
       name: textColumn("name"),
       schema: jsonColumn("schema"),
+      /** Same value as the `tool` rows written by the same build; see there. */
+      generation: nullableTextColumn("generation"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "integration", "connection", "name"],
@@ -449,10 +485,12 @@ export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;
 export type ToolRow = FumaRow<CoreSchema["tool"]>;
 /** The tool-row projection the invoke/list hot paths load: everything except
- *  the heavy `input_schema`/`output_schema` JSON, which only `tools.schema`
- *  (describe) needs. Plugin `invokeTool` receives this shape — operation
- *  details ride in plugin storage or `annotations`, not the row schemas. */
-export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema">;
+ *  the heavy `input_schema`/`output_schema` JSON (which only `tools.schema`
+ *  needs) and the build `generation` marker (which only the
+ *  tools-to-definitions join in `tools.describeAll` reads). Plugin
+ *  `invokeTool` receives this shape — operation details ride in plugin
+ *  storage or `annotations`, not the row schemas. */
+export type ToolInvocationRow = Omit<ToolRow, "input_schema" | "output_schema" | "generation">;
 /** The columns backing {@link ToolInvocationRow}, for `select` projections. */
 export const TOOL_INVOCATION_COLUMNS = [
   "tenant",

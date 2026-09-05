@@ -127,6 +127,27 @@
       "when": 1788287088210,
       "tag": "0017_lush_thunderbolts",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788505381630,
+      "tag": "0018_tool_generation",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788506387005,
+      "tag": "0019_connection_tools_manifest",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788507464393,
+      "tag": "0020_connection_tools_rebuild",
+      "breakpoints": true
     }
   ]
 }

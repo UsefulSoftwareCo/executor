@@ -133,6 +133,8 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       elicitationMode: token.elicitationMode,
       artifactsEnabled: token.artifactsEnabled,
       searchToolsEnabled: token.searchToolsEnabled,
+      toolMode: token.toolMode,
+      passthroughIntegrations: token.passthroughIntegrations,
     } satisfies SessionMeta);
   }
 
@@ -165,6 +167,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         engine,
         artifacts: executor.artifacts,
         connections: executor.connections,
+        tools: executor.tools,
         // Artifacts are on by default, opt-out per connection. A session
         // persisted without a value restores to the default, same as a fresh
         // connection whose URL says nothing about `?artifacts=`.
@@ -172,6 +175,10 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         // Per-integration search tools are off by default, opt-in per
         // connection (`?search_tools=true`). Same restore rule as artifacts.
         searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
+        mode: sessionMeta.toolMode ?? "codemode",
+        ...(sessionMeta.passthroughIntegrations
+          ? { passthroughIntegrations: sessionMeta.passthroughIntegrations }
+          : {}),
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,

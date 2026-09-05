@@ -20,7 +20,9 @@ import {
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
+  readPassthroughIntegrations,
   readSearchToolsEnabled,
+  readToolMode,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -223,6 +225,7 @@ export const createMcpRequestHandler = (
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK handler must return JSON-RPC errors from thrown Promise APIs
       try {
         const elicitationMode = readElicitationMode(request);
+        const passthroughIntegrations = readPassthroughIntegrations(request);
         resourceConfig = await configForResource(resource);
         created = await Effect.runPromise(
           createExecutorMcpServer({
@@ -230,6 +233,8 @@ export const createMcpRequestHandler = (
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
             searchToolsEnabled: readSearchToolsEnabled(request),
+            mode: readToolMode(request),
+            ...(passthroughIntegrations ? { passthroughIntegrations } : {}),
             elicitationMode:
               elicitationMode === "browser"
                 ? {

@@ -4,6 +4,7 @@ import { Data, Effect, Inspectable, Logger, Predicate, Result, Scheduler } from 
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
 import { createExecutor } from "./executor";
+import { matchPattern } from "./policies";
 import { StorageError, type FumaDb } from "./fuma-runtime";
 import {
   AuthTemplateSlug,
@@ -54,6 +55,10 @@ const addr = (tool: string): ToolAddress => ToolAddress.make(`tools.${INTEG}.org
 // resolveTools (with shared $defs), and supports ctx.transaction rollback.
 // ---------------------------------------------------------------------------
 
+/** Toggled by a test so the demo plugin's next discovery differs from what
+ *  is persisted. Module-level because the plugin closure is created once. */
+const demoDiscoversExtra = { value: false };
+
 const demoPlugin = definePlugin(() => ({
   id: "demo" as const,
   credentialProviders: [memoryProvider()],
@@ -68,6 +73,11 @@ const demoPlugin = definePlugin(() => ({
   resolveTools: () =>
     Effect.succeed({
       tools: [
+        // A test may flip this to make one discovery differ from the last
+        // persisted catalog (see the lost-claim rebuild test).
+        ...(demoDiscoversExtra.value
+          ? [{ name: ToolName.make("extra"), description: "extra" }]
+          : []),
         {
           name: ToolName.make("inspect"),
           description: "inspect",
@@ -773,6 +783,594 @@ describe("createExecutor", () => {
       // Reachable defs from inspect's input/output are attached; Unused is not.
       expect(Object.keys(defs).sort()).toEqual(["Cat", "Collar", "Dog", "Owner", "Pet"]);
     }),
+  );
+
+  it.effect("tools.describeAll inlines only the reachable input definitions per tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+      });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: {
+          provider: ProviderKey.make("memory"),
+          id: ProviderItemId.make("v"),
+        },
+      });
+
+      const all = yield* executor.tools.describeAll();
+      const inspect = all.find((tool) => tool.name === "inspect");
+      const run = all.find((tool) => tool.name === "run");
+      expect(inspect).toBeDefined();
+      expect(run).toBeDefined();
+      // The INPUT schema's transitive `$ref` closure rides along under `$defs`,
+      // so the schema is self-contained on the wire. `Owner` is only reachable
+      // from the output schema and `Unused` from nothing, so neither appears.
+      const inlined = inspect?.inputSchema as { $defs?: Record<string, unknown> };
+      expect(Object.keys(inlined.$defs ?? {}).sort()).toEqual(["Cat", "Collar", "Dog", "Pet"]);
+      // A tool with no declared input carries no schema at all.
+      expect(run?.inputSchema).toBeUndefined();
+    }),
+  );
+
+  // The tools-to-definitions join in `describeAll` must never serve one
+  // build's schemas with another build's `$defs`. On a backend with no
+  // interactive transactions (D1) a rebuild is visible statement by statement,
+  // so the read is proven consistent by the `generation` stamp each build
+  // writes on every row, not by a transaction. Modelled here by a storage
+  // proxy that lets a rebuild commit BETWEEN the tool read and the definition
+  // read, exactly the interleaving a snapshot would have hidden.
+  it.effect("tools.describeAll never joins tool rows to definitions from another build", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      // Fires once: after the tool read of a describeAll, before its
+      // definition read, run the armed rebuild to completion.
+      const race: { rebuild: (() => Promise<void>) | null } = { rebuild: null };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "findMany") {
+              return async (table: unknown, query: unknown) => {
+                const result = await (
+                  target.findMany as (t: unknown, q: unknown) => Promise<unknown>
+                )(table, query);
+                if (table === "tool" && race.rebuild) {
+                  const rebuild = race.rebuild;
+                  race.rebuild = null;
+                  await rebuild();
+                }
+                return result;
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      const before = yield* executor.tools.describeAll();
+      const beforeInspect = before.find((tool) => tool.name === "inspect");
+      expect(beforeInspect, "the seeded build is served whole").toBeDefined();
+
+      // Arm: a full rebuild of the same connection lands between the two reads.
+      race.rebuild = () =>
+        Effect.runPromise(
+          executor.connections.refresh({ owner: "org", integration: INTEG, name: CONN }),
+        ).then(() => undefined);
+      const after = yield* executor.tools.describeAll();
+      expect(race.rebuild, "the rebuild ran mid-read").toBeNull();
+
+      // Whatever was served is ONE build: the same reachable `$defs` as a
+      // clean read, never an old schema against new (or missing) definitions.
+      const inspect = after.find((tool) => tool.name === "inspect");
+      expect(inspect, "the tool is still served").toBeDefined();
+      const inlined = inspect?.inputSchema as { $defs?: Record<string, unknown> };
+      expect(Object.keys(inlined.$defs ?? {}).sort()).toEqual(["Cat", "Collar", "Dog", "Pet"]);
+    }),
+  );
+
+  // On D1 the manifest and the row batch are separate commits, so a reader
+  // can land with a manifest whose rows are not (all) there. The manifest's
+  // exact generation + row counts are what let `describeAll` tell that apart
+  // from a finished build. Modelled here by deleting the definitions out from
+  // under a stamped
+  // catalog: the row counts no longer match the manifest.
+  it.effect("tools.describeAll refuses a catalog whose rows do not match its manifest", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const executor = yield* createExecutor(config);
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      const whole = yield* executor.tools.describeAll();
+      expect(whole.length).toBeGreaterThan(0);
+
+      // The half-written window: definitions gone, manifest still says N.
+      yield* Effect.promise(() =>
+        config.db.deleteMany("definition", { where: (b) => b("integration", "=", String(INTEG)) }),
+      );
+      const outcome = yield* Effect.result(executor.tools.describeAll());
+      expect(Result.isFailure(outcome), "a partial catalog is refused, not served").toBe(true);
+      // The refusal is not the end: it stale-marks exactly this connection,
+      // and the very next read's stale scan rebuilds it and serves it whole.
+      const [marked] = yield* Effect.promise(() =>
+        config.db.findMany("connection", { where: (b) => b("integration", "=", String(INTEG)) }),
+      );
+      expect(marked?.tools_synced_at, "the torn connection is stale-marked").toBeNull();
+      const recovered = yield* executor.tools.describeAll();
+      expect(
+        recovered.map((tool) => tool.name).sort(),
+        "the next read rebuilds and serves",
+      ).toEqual(["inspect", "run"]);
+      const inlined = recovered.find((tool) => tool.name === "inspect")?.inputSchema as {
+        $defs?: Record<string, unknown>;
+      };
+      expect(Object.keys(inlined.$defs ?? {}).sort(), "definitions are back").toEqual([
+        "Cat",
+        "Collar",
+        "Dog",
+        "Pet",
+      ]);
+    }),
+  );
+
+  // A catalog written before the manifest column existed has rows and no
+  // manifest — exactly what a rebuild that died before its stamp leaves too.
+  // Nothing proves it whole, so it is not served; and because a null manifest
+  // marks the connection stale, the read that trips on it is the read that
+  // rebuilds and stamps it. Modelled by wiping the manifest under a live
+  // catalog.
+  it.effect(
+    "tools.describeAll refuses a catalog with no manifest and the next read rebuilds it",
+    () =>
+      Effect.gen(function* () {
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.demo.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+        expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+        // Pre-upgrade shape: rows present, manifest absent, stamp present.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+            set: { tools_manifest: null },
+          }),
+        );
+        // `describeAll` runs the stale scan first, which sees the null manifest
+        // and rebuilds — so the served catalog is the freshly stamped one, and
+        // the manifest is back.
+        const served = yield* executor.tools.describeAll();
+        expect(served.map((tool) => tool.name).sort()).toEqual(["inspect", "run"]);
+        const [row] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(row?.tools_manifest, "the rebuild stamped a manifest").not.toBeNull();
+      }),
+  );
+
+  // Two builds of one connection in two isolates. A claims the rebuild
+  // token; B claims it after A (so B owns the connection); A's fenced
+  // replacement then runs. Its guard is "tools_rebuild is still A", which
+  // no longer holds, so the WHOLE unit — deletes, inserts, stamp — must be
+  // discarded, leaving B's claim and a null sync stamp for the stale scan to
+  // settle. Modelled with a storage proxy that lets "B" re-claim between A's
+  // claim and A's `replaceMany`, then simulates B dying by never stamping.
+  it.effect(
+    "a rebuild that lost its claim to a competing build writes nothing, and the row stays stale",
+    () =>
+      Effect.gen(function* () {
+        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const raceState: { armed: boolean; applied: boolean | undefined } = {
+          armed: false,
+          applied: undefined,
+        };
+        const wrap = (inner: FumaDb): FumaDb =>
+          new Proxy(inner, {
+            get(target, prop) {
+              if (prop === "withContext") {
+                return (context: unknown) =>
+                  wrap((target.withContext as (c: unknown) => FumaDb)(context));
+              }
+              if (prop === "transaction") {
+                return (run: (tx: FumaDb) => Promise<unknown>) =>
+                  (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                    (tx) => run(wrap(tx)),
+                  );
+              }
+              if (prop === "replaceMany") {
+                return async (plan: unknown) => {
+                  // A has claimed; before A's fenced unit runs, B claims.
+                  if (raceState.armed) {
+                    raceState.armed = false;
+                    await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                      "connection",
+                      {
+                        where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                          b("integration", "=", String(INTEG)),
+                        set: { tools_synced_at: null, tools_rebuild: "build-B" },
+                      },
+                    );
+                  }
+                  const out = (await (
+                    target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>
+                  )(plan)) as { applied: boolean };
+                  raceState.applied = out.applied;
+                  return out;
+                };
+              }
+              return Reflect.get(target, prop);
+            },
+          });
+        const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+        yield* executor.demo.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+        const before = yield* executor.tools.describeAll();
+        expect(before.length).toBeGreaterThan(0);
+        const rowsBefore = yield* Effect.promise(() =>
+          config.db.findMany("tool", { where: (b) => b("integration", "=", String(INTEG)) }),
+        );
+
+        // "A" rebuilds — and discovers something NEW (`extra`) that the
+        // persisted catalog does not have, so a caller handed A's discovery
+        // instead of the persisted rows is distinguishable. The proxy plays
+        // "B" between A's claim and A's unit.
+        demoDiscoversExtra.value = true;
+        raceState.armed = true;
+        const reported = yield* executor.connections
+          .refresh({ owner: "org", integration: INTEG, name: CONN })
+          .pipe(Effect.ensuring(Effect.sync(() => void (demoDiscoversExtra.value = false))));
+        expect(raceState.armed, "B interleaved").toBe(false);
+        expect(raceState.applied, "A's fenced unit was discarded").toBe(false);
+
+        // Nothing of A's landed: the rows are still the earlier build's, the
+        // token is B's, and the sync stamp is null for the stale scan.
+        const rowsAfter = yield* Effect.promise(() =>
+          config.db.findMany("tool", { where: (b) => b("integration", "=", String(INTEG)) }),
+        );
+        expect(rowsAfter.map((row) => row.generation).sort(), "A did not replace the rows").toEqual(
+          rowsBefore.map((row) => row.generation).sort(),
+        );
+        // And A reported the persisted rows, VALIDATED against the manifest,
+        // not the ones it discovered and failed to write — so its caller
+        // cannot disagree with the next list. A discovered `extra`; persisted
+        // has no `extra`; the report must not.
+        expect(
+          reported.map((tool) => String(tool.name)).sort(),
+          "refresh reports what is persisted",
+        ).toEqual(["inspect", "run"]);
+        expect(
+          reported.map((tool) => String(tool.address)).sort(),
+          "refresh reports the persisted addresses",
+        ).toEqual(
+          rowsAfter
+            .map((row) => `tools.${row.integration}.${row.owner}.${row.connection}.${row.name}`)
+            .sort(),
+        );
+        const [row] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(row?.tools_rebuild, "A's unit did not clear B's claim").toBe("build-B");
+        expect(row?.tools_synced_at, "the connection stays stale-marked").toBeNull();
+
+        // The next read runs the stale scan, rebuilds, and serves one whole
+        // catalog with the token released.
+        const served = yield* executor.tools.describeAll();
+        expect(served.map((tool) => tool.name).sort()).toEqual(["inspect", "run"]);
+        const [after] = yield* Effect.promise(() =>
+          config.db.findMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+          }),
+        );
+        expect(after?.tools_rebuild, "the recovering build released the token").toBeNull();
+        expect(after?.tools_manifest).not.toBeNull();
+      }),
+  );
+
+  // D1 commits the winner's manifest before its row batch. A loser that
+  // reads the rows in that window must NOT report the previous build's rows
+  // as if they were current: `describeAll` refuses that state (manifest names
+  // the new generation, rows carry the old), so the loser reports nothing.
+  it.effect("a lost claim reports nothing while the winner's rows have not landed", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const raceState: { armed: boolean } = { armed: false };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "replaceMany") {
+              return async (plan: unknown) => {
+                if (raceState.armed) {
+                  raceState.armed = false;
+                  // B claims AND has already committed its manifest for a
+                  // generation whose rows are not in the table yet — the D1
+                  // guard-then-batch window.
+                  await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                    "connection",
+                    {
+                      where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                        b("integration", "=", String(INTEG)),
+                      set: {
+                        tools_synced_at: null,
+                        tools_rebuild: "build-B",
+                        tools_manifest: { generation: "gen-B", tools: 2, definitions: 6 },
+                      },
+                    },
+                  );
+                }
+                return (target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>)(plan);
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+      raceState.armed = true;
+      const reported = yield* executor.connections.refresh({
+        owner: "org",
+        integration: INTEG,
+        name: CONN,
+      });
+      expect(raceState.armed, "B interleaved").toBe(false);
+      // The rows in the table are the OLD build's; the manifest is B's. That
+      // is not a servable catalog, and the loser must not pretend it is.
+      expect(reported, "nothing is reported while the winner lands").toEqual([]);
+    }),
+  );
+
+  // The D1 race the guard-then-batch protocol cannot prevent: A's guard
+  // commits (A "won"), B claims + guards + lands its rows, THEN A's delayed
+  // batch lands rows A under manifest B. A got `applied: true` and must still
+  // not report its discovery: the persisted state is manifest B over rows A,
+  // which every list refuses. A reports nothing and stale-marks the row so
+  // the next read rebuilds. Modelled by rewriting the manifest to B's after
+  // A's `replaceMany` returns.
+  it.effect("a build whose rows landed under another build's manifest reports nothing", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const raceState: { armed: boolean } = { armed: false };
+      const wrap = (inner: FumaDb): FumaDb =>
+        new Proxy(inner, {
+          get(target, prop) {
+            if (prop === "withContext") {
+              return (context: unknown) =>
+                wrap((target.withContext as (c: unknown) => FumaDb)(context));
+            }
+            if (prop === "transaction") {
+              return (run: (tx: FumaDb) => Promise<unknown>) =>
+                (target.transaction as (r: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>)(
+                  (tx) => run(wrap(tx)),
+                );
+            }
+            if (prop === "replaceMany") {
+              return async (plan: unknown) => {
+                const out = await (
+                  target.replaceMany as (p: unknown) => Promise<{ applied: boolean }>
+                )(plan);
+                if (raceState.armed && out.applied) {
+                  raceState.armed = false;
+                  // B's manifest overwrites A's after A's rows are in.
+                  await (target.updateMany as (t: unknown, q: unknown) => Promise<unknown>)(
+                    "connection",
+                    {
+                      where: (b: { (c: string, op: string, v: unknown): unknown }) =>
+                        b("integration", "=", String(INTEG)),
+                      set: {
+                        tools_synced_at: Date.now(),
+                        tools_rebuild: null,
+                        tools_manifest: { generation: "gen-B", tools: 2, definitions: 6 },
+                      },
+                    },
+                  );
+                }
+                return out;
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const executor = yield* createExecutor({ ...config, db: wrap(config.db) });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+      });
+      expect((yield* executor.tools.describeAll()).length).toBeGreaterThan(0);
+
+      raceState.armed = true;
+      const reported = yield* executor.connections.refresh({
+        owner: "org",
+        integration: INTEG,
+        name: CONN,
+      });
+      expect(raceState.armed, "B overwrote the manifest after A's rows landed").toBe(false);
+      expect(reported, "A reports nothing: its rows sit under B's manifest").toEqual([]);
+      const [row] = yield* Effect.promise(() =>
+        config.db.findMany("connection", {
+          where: (b) => b("integration", "=", String(INTEG)),
+        }),
+      );
+      expect(row?.tools_synced_at, "the connection is stale-marked for the next read").toBeNull();
+    }),
+  );
+
+  // A toolkit endpoint is a policy projection: connections it does not
+  // grant can never contribute a tool. A torn (or simply unrebuildable)
+  // catalog on one of THOSE must not fail the read for the connection the
+  // toolkit does grant. Only a provider that can PROVE it (a prepared
+  // connection-scope predicate) gets to exclude a connection; a bare
+  // rule-list provider keeps every connection strict. Modelled with a
+  // provider that grants only `main`, and a torn manifest on `other`.
+  it.effect("tools.describeAll ignores a torn catalog on a connection the projection blocks", () =>
+    Effect.gen(function* () {
+      const mainOnly = definePlugin(() => ({
+        id: "main-only" as const,
+        storage: () => ({}),
+        toolPolicyProvider: () => ({
+          list: () =>
+            Effect.succeed([
+              {
+                id: "grant-main",
+                pattern: `${INTEG}.org.${CONN}.*`,
+                action: "approve" as const,
+                position: "a0",
+              },
+            ]),
+          // One snapshot yields both the resolver and the scope predicate.
+          prepare: () =>
+            Effect.succeed({
+              resolve: ({ toolId }: { readonly toolId: string }) =>
+                matchPattern(`${INTEG}.org.${CONN}.*`, toolId)
+                  ? { action: "approve" as const, source: "user" as const }
+                  : { action: "block" as const, source: "user" as const },
+              canServeConnection: (connection: { readonly name: string }) =>
+                connection.name === String(CONN),
+            }),
+        }),
+      }))();
+      const config = makeTestConfig({ plugins: [demoPlugin, mainOnly] as const });
+      const executor = yield* createExecutor(config);
+      yield* executor.demo.seed();
+      for (const name of [CONN, ConnectionName.make("other")]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name,
+          integration: INTEG,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+      }
+      const before = yield* executor.tools.describeAll();
+      expect(before.map((tool) => String(tool.connection)).sort(), "only main is served").toEqual([
+        "main",
+        "main",
+      ]);
+
+      // Tear `other`: its manifest says N definitions, none are there, and it
+      // is stamped synced so the stale scan will not quietly repair it.
+      yield* Effect.promise(() =>
+        config.db.deleteMany("definition", {
+          where: (b) => b.and(b("integration", "=", String(INTEG)), b("connection", "=", "other")),
+        }),
+      );
+      const served = yield* executor.tools.describeAll();
+      expect(served.map((tool) => String(tool.connection)).sort(), "main still served").toEqual([
+        "main",
+        "main",
+      ]);
+    }),
+  );
+
+  // The inverse: a provider with no connection-scope predicate cannot prove
+  // anything about `other`, so its torn catalog fails the read — strict by
+  // default, never silently lenient.
+  it.effect(
+    "tools.describeAll stays strict under a provider without a connection-scope predicate",
+    () =>
+      Effect.gen(function* () {
+        const mainOnlyNoScope = definePlugin(() => ({
+          id: "main-only-noscope" as const,
+          storage: () => ({}),
+          toolPolicyProvider: () => ({
+            list: () =>
+              Effect.succeed([
+                {
+                  id: "grant-main",
+                  pattern: `${INTEG}.org.${CONN}.*`,
+                  action: "approve" as const,
+                  position: "a0",
+                },
+              ]),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [demoPlugin, mainOnlyNoScope] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.demo.seed();
+        for (const name of [CONN, ConnectionName.make("other")]) {
+          yield* executor.connections.create({
+            owner: "org",
+            name,
+            integration: INTEG,
+            template: TEMPLATE,
+            from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+          });
+        }
+        yield* executor.tools.describeAll();
+        yield* Effect.promise(() =>
+          config.db.deleteMany("definition", {
+            where: (b) =>
+              b.and(b("integration", "=", String(INTEG)), b("connection", "=", "other")),
+          }),
+        );
+        const outcome = yield* Effect.result(executor.tools.describeAll());
+        expect(Result.isFailure(outcome), "without proof, a torn connection fails the read").toBe(
+          true,
+        );
+      }),
   );
 
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>

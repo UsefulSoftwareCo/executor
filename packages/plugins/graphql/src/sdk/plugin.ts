@@ -570,9 +570,11 @@ const annotationsFor = (binding: OperationBinding): ToolAnnotations => {
     return {
       requiresApproval: true,
       approvalDescription: `mutation ${binding.fieldName}`,
+      readOnly: false,
     };
   }
-  return {};
+  // A query is the read side of GraphQL by definition.
+  return { readOnly: true };
 };
 
 // ---------------------------------------------------------------------------

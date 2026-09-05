@@ -12,6 +12,10 @@ export interface ToolAnnotations {
   readonly requiresApproval?: boolean;
   readonly approvalDescription?: string;
   readonly mayElicit?: boolean;
+  /** The tool never mutates upstream state (a GET, a GraphQL query, an
+   *  upstream MCP `readOnlyHint`). Set only by plugins that can tell; absent
+   *  means unknown, and a surface must not read it as "mutating". */
+  readonly readOnly?: boolean;
 }
 
 /** A tool as produced by a plugin — the definition, no address yet (the SDK

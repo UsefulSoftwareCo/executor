@@ -13,6 +13,7 @@ import {
   type PluginStorageFacade,
   type PluginStorageCollectionFacade,
   type StorageFailure,
+  type PreparedToolPolicy,
   type ToolPolicyAction,
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
@@ -516,31 +517,76 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
   // policies + connections on every tool, which is the per-tool N+1 that scales
   // with the whole catalog on the list surface. This is byte-for-byte the same
   // resolution, just hoisted out of the loop.
+  // Can any tool of this connection be visible through the toolkit? True
+  // when any granting pattern (a connection grant, or a legacy policy that
+  // acts as one) is UNDER the connection — i.e. begins with
+  // `<integration>.<owner>.<name>` followed by `.` or is exactly that prefix
+  // with a trailing wildcard — or is the universal `*`. A pattern rooted
+  // elsewhere can never match a tool id of this connection, whatever its
+  // remaining segments say.
+  const connectionScopeFrom = (
+    isOrg: boolean,
+    policies: readonly ToolkitPolicyRecord[],
+    connections: readonly ToolkitConnectionRecord[],
+  ) => {
+    const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
+    const grants = [
+      ...connections.map((connection) => connection.pattern),
+      ...policies.filter((policy) => legacyPolicyIds.has(policy.id)).map((p) => p.pattern),
+    ];
+    return (connection: {
+      readonly integration: string;
+      readonly owner: string;
+      readonly name: string;
+    }): boolean => {
+      if (isOrg && connection.owner === "user") return false;
+      const root = `${connection.integration}.${connection.owner}.${connection.name}`;
+      return grants.some((pattern) => {
+        if (pattern === "*") return true;
+        // A grant under the connection root, or a segment-wildcarded grant
+        // that still matches the root's three segments.
+        if (pattern === root || pattern.startsWith(`${root}.`)) return true;
+        const head = pattern.split(".").slice(0, 3).join(".");
+        return matchPattern(`${head}.*`, `${root}.x`);
+      });
+    };
+  };
+
+  // ONE read of the toolkit's policies + connections yields BOTH the per-tool
+  // resolver and the connection-scope predicate, so the two can never
+  // disagree about a grant that changed between reads.
   const preparePolicyResolverForSlug = (
     slug: string,
-  ): Effect.Effect<
-    (input: {
-      readonly toolId: string;
-      readonly defaultRequiresApproval?: boolean;
-    }) => EffectivePolicy,
-    StorageFailure
-  > =>
+  ): Effect.Effect<PreparedToolPolicy, StorageFailure> =>
     Effect.gen(function* () {
       const toolkit = yield* getBySlugEntry(slug);
-      if (!toolkit) return () => blockedPolicy();
+      if (!toolkit) return { resolve: () => blockedPolicy(), canServeConnection: () => false };
       const isOrg = toolkit.owner === "org";
       const policies = yield* listPoliciesForRecord(toolkit.data.id);
       const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      return (input: { readonly toolId: string; readonly defaultRequiresApproval?: boolean }) => {
-        if (isOrg && isPersonalDynamicToolId(input.toolId)) return blockedPolicy();
-        return resolveToolkitPolicy(
-          input.toolId,
-          connections,
-          policies,
-          input.defaultRequiresApproval,
-        );
+      return {
+        resolve: (input: {
+          readonly toolId: string;
+          readonly defaultRequiresApproval?: boolean;
+        }) => {
+          if (isOrg && isPersonalDynamicToolId(input.toolId)) return blockedPolicy();
+          return resolveToolkitPolicy(
+            input.toolId,
+            connections,
+            policies,
+            input.defaultRequiresApproval,
+          );
+        },
+        canServeConnection: connectionScopeFrom(isOrg, policies, connections),
       };
     });
+
+  /** The scope predicate alone, for callers that want only it. Same snapshot
+   *  rules as `preparePolicyResolverForSlug`, from which it is derived. */
+  const prepareConnectionScopeForSlug = (slug: string) =>
+    preparePolicyResolverForSlug(slug).pipe(
+      Effect.map((prepared) => prepared.canServeConnection ?? (() => false)),
+    );
 
   return {
     list,
@@ -561,6 +607,7 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
     policyRulesForSlug,
     resolvePolicyForSlug,
     preparePolicyResolverForSlug,
+    prepareConnectionScopeForSlug,
   };
 };
 
@@ -682,7 +729,8 @@ const makePolicyProvider = (
   resolve: ({ toolId, defaultRequiresApproval }) =>
     extension.resolvePolicyForSlug(slug, toolId, defaultRequiresApproval),
   // Preferred path: core calls this once per operation, so the toolkit's
-  // policies + connections are fetched once instead of once per tool.
+  // policies + connections are fetched once instead of once per tool — and
+  // the connection-scope predicate rides on the same snapshot.
   prepare: () => extension.preparePolicyResolverForSlug(slug),
 });
 

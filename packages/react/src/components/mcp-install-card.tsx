@@ -26,6 +26,9 @@ const McpInstallPreferencesSchema = Schema.Struct({
   httpElicitationMode: Schema.Literals(["browser", "model", "native"]),
   artifacts: Schema.Boolean,
   searchTools: Schema.Boolean,
+  // Added after v1 shipped; optional so a stored preference from before it
+  // existed still decodes and takes the default (codemode).
+  toolMode: Schema.optional(Schema.Literals(["codemode", "passthrough"])),
 });
 
 type McpInstallPreferences = typeof McpInstallPreferencesSchema.Type;
@@ -52,6 +55,7 @@ const DEFAULT_MCP_INSTALL_PREFERENCES: McpInstallPreferences = {
   httpElicitationMode: "model",
   artifacts: true,
   searchTools: false,
+  toolMode: "codemode",
 };
 const decodeMcpInstallPreferences = Schema.decodeUnknownOption(
   Schema.fromJsonString(McpInstallPreferencesSchema),
@@ -116,6 +120,9 @@ export const buildMcpHttpEndpoint = (input: {
   /** Per-integration search tools are off by default, so only the opt-in is
    *  spelled out on the URL (`&search_tools=true`). */
   readonly searchTools?: boolean;
+  /** Codemode is the default, so only passthrough is spelled out on the URL
+   *  (`&mode=passthrough`). */
+  readonly toolMode?: "codemode" | "passthrough";
   // Cloud only: pins the URL to `/<org-slug>/mcp` (the server also accepts the
   // legacy `/<org_id>/mcp` form). Desktop/local pass nothing and get the bare
   // `/mcp` path.
@@ -137,7 +144,12 @@ export const buildMcpHttpEndpoint = (input: {
     params.push(["elicitation_mode", input.elicitationMode]);
   }
   if (input.artifacts === false) params.push(["artifacts", "false"]);
-  if (input.searchTools === true) params.push(["search_tools", "true"]);
+  // Search tools and artifacts are codemode affordances; passthrough serves
+  // neither, so the URL never claims them alongside it.
+  if (input.searchTools === true && input.toolMode !== "passthrough") {
+    params.push(["search_tools", "true"]);
+  }
+  if (input.toolMode === "passthrough") params.push(["mode", "passthrough"]);
   if (params.length === 0) return endpoint;
 
   const query = params.map(([key, value]) => `${key}=${value}`).join("&");
@@ -160,6 +172,7 @@ export const buildMcpInstallCommand = (input: {
   readonly elicitationMode?: McpElicitationMode;
   readonly artifacts?: boolean;
   readonly searchTools?: boolean;
+  readonly toolMode?: "codemode" | "passthrough";
   readonly devCliCwd?: string;
   readonly organizationSlug?: string | null;
 }): string => {
@@ -170,6 +183,7 @@ export const buildMcpInstallCommand = (input: {
       elicitationMode: input.elicitationMode,
       artifacts: input.artifacts,
       searchTools: input.searchTools,
+      toolMode: input.toolMode,
       organizationSlug: input.organizationSlug,
     });
     const headerFlags: string[] = [];
@@ -197,8 +211,11 @@ export const buildMcpInstallCommand = (input: {
   if (input.artifacts === false) {
     innerArgs.push("--no-artifacts");
   }
-  if (input.searchTools === true) {
+  if (input.searchTools === true && input.toolMode !== "passthrough") {
     innerArgs.push("--search-tools");
+  }
+  if (input.toolMode === "passthrough") {
+    innerArgs.push("--mode", "passthrough");
   }
   return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
 };
@@ -227,6 +244,7 @@ export function McpInstallCard(props: { className?: string }) {
   }
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const { mode, httpElicitationMode, artifacts, searchTools } = preferences;
+  const toolMode = preferences.toolMode ?? "codemode";
 
   useEffect(() => {
     writeMcpInstallPreferences(storageKey, preferences);
@@ -268,6 +286,7 @@ export function McpInstallCard(props: { className?: string }) {
     elicitationMode,
     artifacts,
     searchTools,
+    toolMode,
     devCliCwd,
     organizationSlug,
   });
@@ -291,15 +310,37 @@ export function McpInstallCard(props: { className?: string }) {
       <CollapsibleContent>
         <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <div className="text-xs font-medium text-foreground">Artifacts</div>
+            <div className="text-xs font-medium text-foreground">Expose tools directly</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {artifacts
-                ? "Generated UI components are saved to your workspace."
-                : "Disabled: this connection serves no artifact tools."}
+              {toolMode === "passthrough"
+                ? "Every connected tool is its own MCP tool. Your client handles approvals from each tool's annotations; there is no execute or resume."
+                : "Disabled: agents write code against your tools through one execute tool."}
             </div>
           </div>
           <Switch
-            checked={artifacts}
+            checked={toolMode === "passthrough"}
+            onCheckedChange={(next) => {
+              const nextMode = next ? "passthrough" : "codemode";
+              setPreferences((current) => ({ ...current, toolMode: nextMode }));
+              trackEvent("mcp_install_tool_mode_changed", { tool_mode: nextMode });
+            }}
+            aria-label="Expose tools directly"
+          />
+        </div>
+        <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">Artifacts</div>
+            <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              {toolMode === "passthrough"
+                ? "Not available when tools are exposed directly."
+                : artifacts
+                  ? "Generated UI components are saved to your workspace."
+                  : "Disabled: this connection serves no artifact tools."}
+            </div>
+          </div>
+          <Switch
+            checked={toolMode === "passthrough" ? false : artifacts}
+            disabled={toolMode === "passthrough"}
             onCheckedChange={(next) => {
               setPreferences((current) => ({ ...current, artifacts: next }));
               trackEvent("mcp_install_artifacts_toggled", { artifacts: next });
@@ -311,13 +352,16 @@ export function McpInstallCard(props: { className?: string }) {
           <div className="min-w-0">
             <div className="text-xs font-medium text-foreground">Integration search tools</div>
             <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {searchTools
-                ? "One search tool per connected integration, so agents see your integrations as tool names."
-                : "Disabled: agents discover tools through search inside execute."}
+              {toolMode === "passthrough"
+                ? "Not needed when tools are exposed directly: every tool is already on the list."
+                : searchTools
+                  ? "One search tool per connected integration, so agents see your integrations as tool names."
+                  : "Disabled: agents discover tools through search inside execute."}
             </div>
           </div>
           <Switch
-            checked={searchTools}
+            checked={toolMode === "passthrough" ? false : searchTools}
+            disabled={toolMode === "passthrough"}
             onCheckedChange={(next) => {
               setPreferences((current) => ({ ...current, searchTools: next }));
               trackEvent("mcp_install_search_tools_toggled", { search_tools: next });
