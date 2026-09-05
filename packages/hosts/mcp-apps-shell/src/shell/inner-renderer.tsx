@@ -94,9 +94,31 @@ Object.assign(globalThis, {
   SharedWorker: blockedNetwork("SharedWorker"),
 });
 
+// Grab these before any model-written code runs. The saved postMessage and the
+// private nonce mean generated code can't fake or snoop on our open-link
+// messages, even if it later overwrites `parent.postMessage`.
+const postParentMessage = window.parent.postMessage.bind(window.parent);
+const openLinkNonce = Array.from(crypto.getRandomValues(new Uint32Array(4))).join("-");
+
 const sendParent = (message: Record<string, unknown>) => {
-  window.parent.postMessage({ ...message, token }, "*");
+  postParentMessage({ ...message, token }, "*");
 };
+
+// The sandbox can't open popups on its own (no `allow-popups`, on purpose), so
+// a plain `<a target="_blank">` click does nothing. We hand those clicks to the
+// host, which opens the link for us. Normal same-page links are left alone.
+document.addEventListener("click", (event) => {
+  // Only real user clicks count. Generated code can call `element.click()`, but
+  // it can't forge a trusted event, so those are ignored here.
+  if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const anchor = target.closest<HTMLAnchorElement>("a[href]");
+  if (!anchor || anchor.target.toLowerCase() !== "_blank" || anchor.href === "") return;
+
+  event.preventDefault();
+  sendParent({ type: "executor.openLink", url: anchor.href, openLinkNonce });
+});
 
 const requestParent = (message: ParentRequestPayload): Promise<unknown> => {
   const requestId = ++nextRequestId;
@@ -429,4 +451,4 @@ const resizeObserver = new ResizeObserver(([entry]) => {
 });
 
 resizeObserver.observe(document.body);
-sendParent({ type: "executor.renderer.ready" });
+sendParent({ type: "executor.renderer.ready", openLinkNonce });
