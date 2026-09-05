@@ -1,5 +1,23 @@
 # executor
 
+## 1.6.8
+
+### Patch Changes
+
+- [#1904](https://github.com/UsefulSoftwareCo/executor/pull/1904) [`c27436d`](https://github.com/UsefulSoftwareCo/executor/commit/c27436dd9280eb77114e2d637c7b4c77cf2d6a2b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Allow manually registered OAuth apps to use HTTP Basic client authentication for token exchange and refresh.
+
+- [#1834](https://github.com/UsefulSoftwareCo/executor/pull/1834) [`b22d536`](https://github.com/UsefulSoftwareCo/executor/commit/b22d53641d9689d6919a468f148137acceaafca8) Thanks [@charliemeyer2000](https://github.com/charliemeyer2000)! - **Self-host: bring-your-own SSO (Google, Okta, any OIDC IdP) with a verified-domain allowlist**
+
+  Operators can enable a single OIDC sign-in provider on a self-hosted instance by setting `EXECUTOR_SSO_PROVIDER_ID`, `EXECUTOR_SSO_CLIENT_ID`, `EXECUTOR_SSO_CLIENT_SECRET`, and `EXECUTOR_SSO_ALLOWED_DOMAINS` (comma-separated email domains), plus `EXECUTOR_SSO_DISCOVERY_URL` for providers without a preset (`google` is preset; `EXECUTOR_SSO_PROVIDER_NAME` overrides the button label). The login page renders a "Continue with <provider>" button when configured (discovered through the new unauthenticated `GET /api/auth-config`, which returns provider id + display name only), and the MCP OAuth connect flow's login step gains the same option since it lands on the same page.
+
+  The domain allowlist replaces the invite code for SSO sign-ups: a sign-in whose IdP-verified email (`email_verified`) has an allowlisted domain auto-joins the instance organization as a member; unverified emails and any other domain are refused. Enabling the provider without an allowlist is refused at boot, as is a half-configured client id/secret pair, so SSO can never silently become open registration. Email/password sign-in and invite-based signup are unchanged. The end-to-end flow (discovery → redirect → consent → callback → membership) is exercised in tests against an emulated OIDC IdP from `@executor-js/emulate`.
+
+- Updated dependencies [[`31a8042`](https://github.com/UsefulSoftwareCo/executor/commit/31a8042450475fd86ea580f4dbd5dcc3c290c008), [`b5271a6`](https://github.com/UsefulSoftwareCo/executor/commit/b5271a6f0cb6d0c42a6b9fbcdffe70fc2aad8bc6), [`caa0391`](https://github.com/UsefulSoftwareCo/executor/commit/caa03919a8f2a5c82ed13bc4ea9060e964af3a79)]:
+  - @executor-js/sdk@1.6.8
+  - @executor-js/api@1.4.71
+  - @executor-js/local@1.6.8
+  - @executor-js/runtime-quickjs@1.6.8
+
 ## 1.6.7
 
 ### Patch Changes
