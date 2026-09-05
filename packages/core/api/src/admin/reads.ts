@@ -183,12 +183,19 @@ const toUser = (subject: AdminSubject, identities: ReadonlyMap<string, AdminUser
  * prevent — the column allowlist below would still have "passed" while every
  * upstream field rode along inside it.
  *
- * Two fields survive, both of them verdicts ABOUT the connection rather than
- * content FROM it: `status` and `checkedAt`. Written as an explicit
+ * Three fields survive, all of them verdicts ABOUT the connection rather than
+ * content FROM it: `status`, `checkedAt`, and the enumerable `reason` (a
+ * closed literal set — never upstream text). Written as an explicit
  * construction, never a spread, for the same reason the row mappings are.
  */
 const toHealth = (health: AdminConnection["lastHealth"]) =>
-  health === null ? null : { status: health.status, checkedAt: health.checkedAt };
+  health === null
+    ? null
+    : {
+        status: health.status,
+        checkedAt: health.checkedAt,
+        ...(health.reason !== undefined ? { reason: health.reason } : {}),
+      };
 
 /**
  * `AdminConnection` → the public `AdminUserConnection` shape.

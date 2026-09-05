@@ -11,6 +11,7 @@ import {
   IntegrationSlug,
   ToolAddress,
   effectivePolicyFromSorted,
+  isToolSyncHealth,
   type Connection,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -255,7 +256,26 @@ export function IntegrationDetailPage(props: {
   const healthProbeFor = useConnectionsHealth(integrationConnections);
   const toolsHealthIssue = useMemo(() => {
     const issues = integrationConnections
-      .map((connection) => ({ connection, probe: healthProbeFor(connection) }))
+      .map((connection) => {
+        // The health hook hides tool-sync stamps from CONNECTION-health
+        // display, but this consumer explains an empty CATALOG, where the
+        // "Tool sync failing" stamp is a real answer (it names the sync
+        // failure and drives the "Check and sync tools" recovery). Precedence:
+        // an expired/degraded PROBE verdict wins — a rejected credential
+        // names its own fix ("Connection rejected" → reconnect) — but a
+        // healthy or unknown probe must NOT hide the stamp: a working
+        // credential does not refute a broken catalog, and only a successful
+        // sync clears the stamp.
+        const probe = healthProbeFor(connection);
+        const catalogStamp = isToolSyncHealth(connection.lastHealth) ? connection.lastHealth : null;
+        return {
+          connection,
+          probe:
+            probe?.status === "expired" || probe?.status === "degraded"
+              ? probe
+              : (catalogStamp ?? probe),
+        };
+      })
       .filter(
         (
           entry,

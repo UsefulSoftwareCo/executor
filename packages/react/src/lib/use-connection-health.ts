@@ -9,6 +9,7 @@
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { RegistryContext, useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { isToolSyncHealth } from "@executor-js/sdk/shared";
 import type { Connection, HealthCheckResult, HealthStatus, Owner } from "@executor-js/sdk/shared";
 
 import { checkConnectionHealth, connectionsOptimisticAtom } from "../api/atoms";
@@ -53,6 +54,17 @@ export const revalidateQuery = (
   last: HealthCheckResult | null | undefined,
 ): { readonly ifStaleMs?: number } =>
   last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {};
+
+/** The verdict a HEALTH surface may present, or null when the persisted
+ *  verdict is a tool-sync stamp (`isToolSyncHealth`). A "Tool sync failing"
+ *  verdict describes the CATALOG — tools may be stale or missing — not the
+ *  credential, so rendering it as the connection's health painted whole rows
+ *  "Degraded" (an entire integrations list, when one bad sweep stamped many
+ *  connections at once) for connections whose credentials were fine.
+ *  Surfaces show the stamp as its own muted note instead. */
+export const presentableHealth = (
+  last: HealthCheckResult | null | undefined,
+): HealthCheckResult | null => (last == null || isToolSyncHealth(last) ? null : last);
 
 /** Identity of a persisted verdict, for detecting the reconnect transition.
  *  An OAuth re-mint clears `last_health`, so a verdict giving way to `null`
@@ -115,7 +127,7 @@ export function useConnectionHealth(connection: Connection): {
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
-  const probe = freshestVerdict(liveProbe, connection.lastHealth);
+  const probe = freshestVerdict(liveProbe, presentableHealth(connection.lastHealth));
   const status: HealthStatus = probe?.status ?? "unknown";
 
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
@@ -137,6 +149,10 @@ export function useConnectionHealth(connection: Connection): {
     seenEpoch.current = epoch;
     if (!firstSight && !cleared) return;
     if (healthyAndFresh(last)) return;
+    // A tool-sync stamp still PROBES (it is non-healthy, and the probe is
+    // what discovers the credential's real state — a never-probed connection
+    // whose first sync failed must still surface Expired); it just never
+    // RENDERS as connection health (see `presentableHealth`).
     void doCheck({
       params: connectionParams(connection),
       query: revalidateQuery(last),
@@ -226,7 +242,10 @@ export function useConnectionsHealth(
 
   return useCallback(
     (connection: Connection) =>
-      freshestVerdict(liveProbes.get(probeKey(connection)) ?? null, connection.lastHealth),
+      freshestVerdict(
+        liveProbes.get(probeKey(connection)) ?? null,
+        presentableHealth(connection.lastHealth),
+      ),
     [liveProbes],
   );
 }

@@ -150,6 +150,15 @@ export const AdminConnectionHealth = Schema.Struct({
   /** Epoch ms the check ran, so an operator can tell a fresh verdict from a
    *  stale one. */
   checkedAt: Schema.Number,
+  /** Enumerable failure mechanism — a `HealthCheckReason` literal. Carried so
+   *  the view can tell a tool-sync stamp (`tool_sync_failed` — catalog state,
+   *  not credential health) from a genuine probe verdict without the free-text
+   *  `detail` this plane deliberately strips. Typed as a plain string ON
+   *  PURPOSE: the reason enum grows, and a closed set here would make a client
+   *  built today fail the WHOLE admin response the first time one connection
+   *  carries a literal it doesn't know. Clients treat unrecognized values as
+   *  unclassified. */
+  reason: Schema.optional(Schema.String),
 });
 
 /**

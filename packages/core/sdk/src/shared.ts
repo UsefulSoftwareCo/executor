@@ -144,6 +144,7 @@ export {
   candidateIdentityTier,
   sortHealthCheckCandidatesByIdentity,
   identityPathTier,
+  isToolSyncHealth,
   rankResponseSample,
 } from "./health-check";
 
