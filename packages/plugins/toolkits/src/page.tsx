@@ -156,8 +156,12 @@ const resolveToolkitPolicy = (
 const toolMatchId = (tool: ToolRow): string =>
   tool.static ? String(tool.address) : String(tool.address).replace(/^tools\./, "");
 
-const toolCanAppearInToolkit = (toolkit: ToolkitResponse, tool: ToolRow): boolean =>
-  toolkit.owner === "user" || tool.static === true || tool.owner !== "user";
+export const toolCanAppearInToolkit = (
+  toolkit: ToolkitResponse,
+  tool: ToolRow,
+  showOwnerLabels = true,
+): boolean =>
+  !showOwnerLabels || toolkit.owner === "user" || tool.static === true || tool.owner !== "user";
 
 const toolkitUrlFor = (orgSlug: string | undefined, slug: string): string => {
   const path = orgSlug ? `/${orgSlug}/mcp/toolkits/${slug}` : `/mcp/toolkits/${slug}`;
@@ -461,10 +465,10 @@ function ToolkitTile(props: { showOwnerLabels: boolean; toolkit: ToolkitResponse
     () =>
       AsyncResult.isSuccess(tools)
         ? (tools.value as readonly ToolRow[]).filter((tool) =>
-            toolCanAppearInToolkit(toolkit, tool),
+            toolCanAppearInToolkit(toolkit, tool, props.showOwnerLabels),
           )
         : [],
-    [toolkit, tools],
+    [props.showOwnerLabels, toolkit, tools],
   );
   const connectionGroups = useMemo(() => buildConnectionGroups(visibleTools), [visibleTools]);
   const connectionRows = AsyncResult.isSuccess(connections) ? connections.value.connections : [];
@@ -674,7 +678,7 @@ function ToolkitGrid(props: {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
           <ToolkitSection
-            owner="org"
+            owner="user"
             showOwnerLabels={false}
             toolkits={props.toolkits}
             onCreate={props.onCreate}
@@ -1050,14 +1054,17 @@ function ToolkitWorkspace(props: {
   const [addOpen, setAddOpen] = useState(false);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const visibleTools = useMemo(
-    () => props.tools.filter((tool) => toolCanAppearInToolkit(props.toolkit, tool)),
-    [props.toolkit, props.tools],
+    () =>
+      props.tools.filter((tool) =>
+        toolCanAppearInToolkit(props.toolkit, tool, props.showOwnerLabels),
+      ),
+    [props.showOwnerLabels, props.toolkit, props.tools],
   );
   const connectionGroups = useMemo(() => buildConnectionGroups(visibleTools), [visibleTools]);
   const hiddenPersonalConnectionCount = useMemo(() => {
-    if (props.toolkit.owner !== "org") return 0;
+    if (!props.showOwnerLabels || props.toolkit.owner !== "org") return 0;
     return buildConnectionGroups(props.tools.filter((tool) => toolOwner(tool) === "user")).length;
-  }, [props.toolkit.owner, props.tools]);
+  }, [props.showOwnerLabels, props.toolkit.owner, props.tools]);
   const configuredConnections = useMemo(
     () =>
       configuredConnectionViews(

@@ -199,4 +199,41 @@ describe("toolkitsPlugin", () => {
       ).toContain("google_docs.org.* approve");
     }),
   );
+
+  it.effect("allows personal toolkits to connect and resolve personal connections", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+      });
+
+      const toolkit = yield* executor.toolkits.create({
+        owner: "user",
+        name: "Desktop Kit",
+      });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "github.user.main.*",
+      });
+
+      const personalResult = yield* executor.toolkits.resolvePolicyForSlug(
+        toolkit.slug,
+        "github.user.main.repos.list",
+        false,
+      );
+      expect(personalResult.action).toBe("approve");
+
+      const personalApprovalResult = yield* executor.toolkits.resolvePolicyForSlug(
+        toolkit.slug,
+        "github.user.main.repos.list",
+        true,
+      );
+      expect(personalApprovalResult.action).toBe("require_approval");
+
+      const preparedResolver = yield* executor.toolkits.preparePolicyResolverForSlug(toolkit.slug);
+      const preparedResult = preparedResolver({
+        toolId: "github.user.main.repos.list",
+        defaultRequiresApproval: false,
+      });
+      expect(preparedResult.action).toBe("approve");
+    }),
+  );
 });
