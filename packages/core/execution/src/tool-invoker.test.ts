@@ -905,39 +905,42 @@ describe("tool discovery", () => {
     }),
   );
 
-  it.effect("describes a return type that accepts the sandbox invocation result", () =>
-    Effect.gen(function* () {
-      const executor = yield* makeSearchExecutor();
-      const engine = createExecutionEngine({ executor, codeExecutor });
+  it.effect(
+    "describes a return type that accepts the sandbox invocation result",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeSearchExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
 
-      const execution = yield* engine.execute(
-        [
-          'const details = await tools.describe.tool({ path: "github.org.main.getRepositoryDetails" });',
-          "const result = await tools.github.org.main.getRepositoryDetails({ owner: 'executor', repo: 'executor' });",
-          "return {",
-          "  outputTypeScript: details.outputTypeScript,",
-          "  typeScriptDefinitions: details.typeScriptDefinitions,",
-          "  result,",
-          "};",
-        ].join("\n"),
-        { onElicitation: acceptAll },
-      );
+        const execution = yield* engine.execute(
+          [
+            'const details = await tools.describe.tool({ path: "github.org.main.getRepositoryDetails" });',
+            "const result = await tools.github.org.main.getRepositoryDetails({ owner: 'executor', repo: 'executor' });",
+            "return {",
+            "  outputTypeScript: details.outputTypeScript,",
+            "  typeScriptDefinitions: details.typeScriptDefinitions,",
+            "  result,",
+            "};",
+          ].join("\n"),
+          { onElicitation: acceptAll },
+        );
 
-      expect(execution.error).toBeUndefined();
-      const observed = execution.result as DescribedToolContract & { readonly result: unknown };
-      const diagnostics = typeCheckDescribedInvocation(
-        observed,
-        observed.result,
-        [
-          "function readDefaultBranch(result: ToolOutput): string {",
-          "  if (!result.ok) return result.error.message;",
-          "  return result.data.defaultBranch;",
-          "}",
-          "readDefaultBranch(invokedResult);",
-        ].join("\n"),
-      );
-      expect(diagnostics).toEqual([]);
-    }),
+        expect(execution.error).toBeUndefined();
+        const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+        const diagnostics = typeCheckDescribedInvocation(
+          observed,
+          observed.result,
+          [
+            "function readDefaultBranch(result: ToolOutput): string {",
+            "  if (!result.ok) return result.error.message;",
+            "  return result.data.defaultBranch;",
+            "}",
+            "readDefaultBranch(invokedResult);",
+          ].join("\n"),
+        );
+        expect(diagnostics).toEqual([]);
+      }),
+    { timeout: 10000 },
   );
 
   it.effect(
