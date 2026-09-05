@@ -182,6 +182,13 @@ const structuredOf = (result: Awaited<ReturnType<Client["callTool"]>>): Record<s
 const textOf = (result: Awaited<ReturnType<Client["callTool"]>>): string =>
   (result.content as Array<{ type: string; text: string }>)[0].text;
 
+/** Assert source is available through both MCP result channels. */
+const expectArtifactSource = (result: Awaited<ReturnType<Client["callTool"]>>, code: string) => {
+  expect(structuredOf(result).code).toBe(code);
+  expect(textOf(result)).toContain("Source:");
+  expect(textOf(result)).toContain(code);
+};
+
 const toolNames = async (client: Client): Promise<string[]> =>
   (await client.listTools()).tools.map((tool) => tool.name);
 
@@ -688,8 +695,11 @@ describe("MCP host — create-artifact", () => {
           url: "https://executor.test/artifacts/art_1",
           artifactId: "art_1",
         });
-        // The model needs to be told to hand the URL over.
+        // The model needs to be told to hand the URL over. Source is a
+        // show-artifact read, not part of the create confirmation.
         expect(textOf(result)).toContain("https://executor.test/artifacts/art_1");
+        expect(textOf(result)).not.toContain("Source:");
+        expect(structuredOf(result)).not.toHaveProperty("code");
         // Persistence is what makes the fallback possible at all.
         expect(store.calls).toHaveLength(1);
         expect(store.rows.get("art_1")?.code).toBe(COUNTER_CODE);
@@ -1285,6 +1295,10 @@ describe("MCP host — artifact retrieval", () => {
           code: COUNTER_CODE,
           artifactId: "art_1",
         });
+        // Apps-capable hosts still need the source on the text channel: a
+        // later restore or a client that starts advertising apps must not
+        // make `show-artifact` unusable for `edit-artifact`.
+        expectArtifactSource(shown, COUNTER_CODE);
       },
       { artifacts: store.port },
     );
@@ -1368,12 +1382,46 @@ describe("MCP host — artifact retrieval", () => {
           status: "fallback_url",
           url: "https://executor.test/artifacts/art_1",
           artifactId: "art_1",
+          code: COUNTER_CODE,
         });
+        // The URL instruction stays; the source rides after it so a text-only
+        // host can copy `oldText` for `edit-artifact` from this result.
+        expect(textOf(shown)).toContain("https://executor.test/artifacts/art_1");
+        expectArtifactSource(shown, COUNTER_CODE);
       },
       {
         artifacts: store.port,
         artifactUrl: artifactUrlFor("https://executor.test"),
       },
+    );
+  });
+
+  it("returns show-artifact source when the client has no apps support and no web UI", async () => {
+    const store = makeArtifactStore();
+    await Effect.runPromise(
+      store.port.save({
+        title: "Saved earlier",
+        description: null,
+        code: COUNTER_CODE,
+      }),
+    );
+    await withClient(
+      makeStubEngine({}),
+      NO_APPS_CAPS,
+      async (client) => {
+        const shown = await client.callTool({
+          name: "show-artifact",
+          arguments: { id: "art_1" },
+        });
+        expect(structuredOf(shown)).toEqual({
+          status: "fallback_unavailable",
+          reason: "mcp_apps_unsupported",
+          artifactId: "art_1",
+          code: COUNTER_CODE,
+        });
+        expectArtifactSource(shown, COUNTER_CODE);
+      },
+      { artifacts: store.port },
     );
   });
 
