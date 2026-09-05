@@ -1,9 +1,9 @@
 ---
-"@executor-js/sdk": minor
-"@executor-js/api": minor
-"@executor-js/plugin-graphql": minor
-"@executor-js/plugin-mcp": minor
-"@executor-js/plugin-openapi": minor
+"@executor-js/sdk": patch
+"@executor-js/api": patch
+"@executor-js/plugin-graphql": patch
+"@executor-js/plugin-mcp": patch
+"@executor-js/plugin-openapi": patch
 ---
 
 **Workspace writes now require an administrator**
