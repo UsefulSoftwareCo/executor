@@ -53,6 +53,7 @@ import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
 import { OperationBinding } from "./types";
+import { getHealthCheckParameters } from "./health-check-operation";
 
 const STRINGIFIED_BODY_CAP = 1024;
 const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
@@ -905,16 +906,15 @@ export const checkHealthOpenApi = (input: {
       } satisfies HealthCheckResult;
     }
 
-    // HARD block, not just a ranking hint: a health check runs unattended and
-    // repeatedly, so a mutating operation must never execute through it. The
-    // normal tool path gates these behind approval, and this path has no
-    // approval step. The candidate list labels these "(writes)"; refusing here
-    // is the enforcement.
-    if (REQUIRE_APPROVAL.has(binding.method.toLowerCase())) {
+    // HTTP RPC reads can use POST; the editor warns users before enabling them.
+    if (
+      REQUIRE_APPROVAL.has(binding.method.toLowerCase()) &&
+      binding.method.toLowerCase() !== "post"
+    ) {
       return {
         status: "unknown",
         checkedAt,
-        detail: `Health check operation "${spec.operation}" is a ${binding.method.toUpperCase()} (mutating): pick a read-only operation.`,
+        detail: `Health check operation "${spec.operation}" uses ${binding.method.toUpperCase()} and is not supported for health checks. Pick a read-only operation.`,
       } satisfies HealthCheckResult;
     }
 
@@ -1068,19 +1068,12 @@ export const listHealthCheckCandidatesOpenApi = (input: {
 
     const candidates = operations.map((op): HealthCheckCandidate => {
       const method = op.binding.method.toLowerCase();
-      const parameters = op.binding.parameters.map((parameter) => ({
-        name: parameter.name,
-        location: parameter.location,
-        required: parameter.required,
-        ...(Option.isSome(parameter.description)
-          ? { description: parameter.description.value }
-          : {}),
-      }));
+      const parameters = getHealthCheckParameters(op.binding);
       const responseFields = responseFieldsByTool.get(op.toolName);
       return {
         operation: op.toolName,
         method,
-        requiredArgCount: op.binding.parameters.filter((parameter) => parameter.required).length,
+        requiredArgCount: parameters.filter((parameter) => parameter.required).length,
         destructive: REQUIRE_APPROVAL.has(method),
         summary: summaries.get(op.toolName) ?? `${method.toUpperCase()} ${op.binding.pathTemplate}`,
         ...(parameters.length > 0 ? { parameters } : {}),

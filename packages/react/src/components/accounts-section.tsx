@@ -175,7 +175,7 @@ function AccountRow(props: {
   // below, because the remediation is a console visit, not a reconnect.
   const misconfigured = status === "misconfigured";
   const needsHealthAttention = status === "expired" || status === "degraded";
-  const healthDetail = needsHealthAttention ? probe?.detail : undefined;
+  const healthDetail = needsHealthAttention || status === "unknown" ? probe?.detail : undefined;
   const missingOAuthScopes = connection.missingOAuthScopes ?? [];
 
   const handleCheck = async () => {
@@ -204,7 +204,7 @@ function AccountRow(props: {
     } else if (exit.value.status === "degraded") {
       toast.warning(exit.value.detail ?? "Connection check returned an error");
     } else {
-      toast.message("No health check is configured for this integration");
+      toast.message(exit.value.detail ?? "Health check did not run");
     }
   };
 

@@ -976,6 +976,7 @@ export interface StreamedPreviewParameter {
  *  add screen's operation list and health-check candidate ranking need, and
  *  nothing that scales with schema size. */
 export interface StreamedPreviewOperation {
+  readonly requestBodyRequired?: boolean;
   readonly operationId: string;
   /** Tool path planned over the full kept operation set, so preview candidates
    *  match the names registration will assign. */
@@ -1050,6 +1051,7 @@ export const streamPreviewOperations = (
         }),
       );
       metas.push({
+        requestBodyRequired: extractRequestBody(operation, r)?.required,
         operationId,
         method,
         pathTemplate: resolvedPathTemplate,
