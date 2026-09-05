@@ -57,11 +57,12 @@ const tenantExecutorTable = <const TColumns extends UserColumns>(
   name: string,
   columns: TColumns,
   uniqueKey: readonly string[],
+  keyStorage: "varchar(255)" | "string" = "varchar(255)",
 ) => {
   const out = table(name, {
     ...columns,
-    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
-    tenant: keyColumn("tenant"),
+    row_id: idColumn("row_id", keyStorage).defaultTo$("auto"),
+    tenant: column("tenant", keyStorage),
   });
   out.unique(`${name}_uidx`, [...uniqueKey]);
   return out.policy<ExecutorOwnerPolicyContext>({
@@ -195,6 +196,31 @@ export const coreTables = defineTables({
       status: nullableTextColumn("status"),
     },
     ["tenant", "external_id"],
+  ),
+
+  // Append-only configuration audit history. Tenant-scoped so the platform
+  // view can read every actor's events without widening any credential-bearing
+  // owner-scoped table. Rows contain identifiers only — never credential
+  // values, provider item ids, OAuth tokens, or free-form descriptions.
+  audit_event: tenantExecutorTable(
+    "audit_event",
+    {
+      // Internal audit ids are generated locally with a short fixed prefix and
+      // random suffix. Keep their bound explicit so every SQL generator can
+      // represent the primary/index contract without silently narrowing it.
+      id: keyColumn("id"),
+      actor_id: nullableTextColumn("actor_id"),
+      action: textColumn("action"),
+      resource_type: textColumn("resource_type"),
+      resource_owner: nullableTextColumn("resource_owner"),
+      resource_parent: nullableTextColumn("resource_parent"),
+      resource_id: textColumn("resource_id"),
+      created_at: dateColumn("created_at"),
+    },
+    // The unique index doubles as the newest-first admin read index. `id` is
+    // globally unique in practice and remains the final tie-breaker for events
+    // written in the same millisecond.
+    ["tenant", "created_at", "id"],
   ),
 
   // THE saved credential, one per (owner, integration, name). Resolves each named
@@ -444,6 +470,7 @@ export type CoreSchema = typeof coreTables;
 
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
 export type SubjectRow = FumaRow<CoreSchema["subject"]>;
+export type AuditEventRow = FumaRow<CoreSchema["audit_event"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;

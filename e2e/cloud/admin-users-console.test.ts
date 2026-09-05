@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
+import { AdminUsersHttpApi } from "@executor-js/api";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
@@ -107,6 +108,14 @@ scenario(
     );
     const adminConnection = freshConnectionName();
     const memberConnection = freshConnectionName();
+    const auditPolicy = yield* adminClient.policies.create({
+      payload: {
+        owner: "org",
+        pattern: `executor.${connectedIntegration}.audit`,
+        action: "approve",
+      },
+    });
+
     yield* Effect.ensuring(
       Effect.gen(function* () {
         // Both roles may store Personal credentials. A member cannot promote
@@ -141,6 +150,34 @@ scenario(
             value: "member-personal-token",
           },
         });
+
+        const auditClient = yield* apiClient(AdminUsersHttpApi, admin);
+        const audit = yield* auditClient.adminUsers.listAuditEvents({ query: { limit: 100 } });
+        expect(
+          audit.events.some(
+            (event) => event.resourceType === "tool_policy" && event.resourceId === auditPolicy.id,
+          ),
+          "the admin audit API includes the tool-policy event",
+        ).toBe(true);
+        expect(
+          audit.events.some(
+            (event) => event.resourceType === "connection" && event.resourceId === memberConnection,
+          ),
+          "the admin audit API includes the Personal connection event",
+        ).toBe(true);
+        const auditPayload = JSON.stringify(audit);
+        expect(auditPayload, "audit events never contain the member credential").not.toContain(
+          "member-personal-token",
+        );
+        expect(auditPayload, "audit events never contain the admin credential").not.toContain(
+          "admin-personal-token",
+        );
+        const memberAudit = yield* Effect.promise(() =>
+          fetch(new URL("/api/admin/audit-events", target.baseUrl), {
+            headers: member.headers,
+          }),
+        );
+        expect(memberAudit.status, "a member cannot read workspace audit history").toBe(403);
 
         // ── The admin's view ────────────────────────────────────────────────
         yield* browser.session(forBrowser(admin), async ({ page, step }) => {
@@ -355,6 +392,18 @@ scenario(
             await page.keyboard.press("Escape");
             await page.keyboard.press("Escape");
           });
+
+          await step("The Activity tab renders the tool-policy event", async () => {
+            await visit(page, `/${slug}/users`);
+            await page.getByRole("button", { name: "Activity", exact: true }).click();
+            await page.locator("[data-slot='admin-audit-table']").waitFor({
+              state: "visible",
+              timeout: 30_000,
+            });
+            await page
+              .getByText(`Tool policy: ${auditPolicy.id}`, { exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
+          });
         });
 
         // ── The plain member's view ─────────────────────────────────────────
@@ -445,6 +494,9 @@ scenario(
             .remove({
               params: { owner: "user", integration: connectedIntegration, name: memberConnection },
             })
+            .pipe(Effect.ignore),
+          adminClient.policies
+            .remove({ params: { policyId: auditPolicy.id }, payload: { owner: "org" } })
             .pipe(Effect.ignore),
           adminClient.openapi
             .removeSpec({ params: { slug: connectedIntegration } })

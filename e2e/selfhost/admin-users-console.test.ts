@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
+import { AdminUsersHttpApi } from "@executor-js/api";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
@@ -92,6 +93,14 @@ scenario(
     // guaranteed to render at least one connect link to assert the shape of.
     const availableIntegration = yield* registerIntegration(ownerClient, "admin-ui-sh-avail");
     const memberConnection = ConnectionName.make(`conn${randomBytes(4).toString("hex")}`);
+    const auditPolicy = yield* ownerClient.policies.create({
+      payload: {
+        owner: "org",
+        pattern: `executor.${integration}.audit`,
+        action: "approve",
+      },
+    });
+
     yield* Effect.ensuring(
       Effect.gen(function* () {
         // Members may add Personal credentials, but the API refuses the same
@@ -117,6 +126,33 @@ scenario(
             value: "member-personal-token",
           },
         });
+
+        const auditClient = yield* apiClient(AdminUsersHttpApi, owner);
+        const audit = yield* auditClient.adminUsers.listAuditEvents({ query: { limit: 100 } });
+        expect(
+          audit.events.some(
+            (event) => event.resourceType === "tool_policy" && event.resourceId === auditPolicy.id,
+          ),
+          "the self-host audit API includes the tool-policy event",
+        ).toBe(true);
+        expect(
+          audit.events.some(
+            (event) => event.resourceType === "connection" && event.resourceId === memberConnection,
+          ),
+          "the self-host audit API includes the Personal connection event",
+        ).toBe(true);
+        expect(
+          JSON.stringify(audit),
+          "self-host audit events never contain credentials",
+        ).not.toContain("member-personal-token");
+        const memberAudit = yield* Effect.promise(() =>
+          fetch(new URL("/api/admin/audit-events", target.baseUrl), {
+            headers: member.headers,
+          }),
+        );
+        expect(memberAudit.status, "a self-host member cannot read workspace audit history").toBe(
+          403,
+        );
 
         yield* browser.session(owner, async ({ page, step }) => {
           await step("Open Users from the sidebar as the instance owner", async () => {
@@ -298,6 +334,19 @@ scenario(
               "the link lands in the connect flow, not just on the page",
             ).toBe("1");
           });
+
+          await step("The Activity tab renders the tool-policy event", async () => {
+            await page.keyboard.press("Escape");
+            await visit(page, "/users");
+            await page.getByRole("button", { name: "Activity", exact: true }).click();
+            await page.locator("[data-slot='admin-audit-table']").waitFor({
+              state: "visible",
+              timeout: 30_000,
+            });
+            await page
+              .getByText(`Tool policy: ${auditPolicy.id}`, { exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
+          });
         });
 
         yield* browser.session(member, async ({ page, step }) => {
@@ -362,6 +411,9 @@ scenario(
         [
           memberClient.connections
             .remove({ params: { owner: "user", integration, name: memberConnection } })
+            .pipe(Effect.ignore),
+          ownerClient.policies
+            .remove({ params: { policyId: auditPolicy.id }, payload: { owner: "org" } })
             .pipe(Effect.ignore),
           ownerClient.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
           ownerClient.openapi

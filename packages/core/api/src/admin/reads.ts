@@ -16,6 +16,7 @@ import { Effect } from "effect";
 
 import type {
   AdminConnection,
+  AdminListAuditEventsOptions,
   AdminSubject,
   AdminSubjectWithConnections,
   Executor,
@@ -26,6 +27,7 @@ import {
   AdminUserNotFound,
   AdminUsersError,
   type AdminUserConnectionsResponse,
+  type AdminAuditEventsResponse,
   type AdminUserResponse,
   type AdminUsersResponse,
   type AdminUsersWithConnectionsResponse,
@@ -144,6 +146,41 @@ const resolveIdentities = (
 };
 
 const ABSENT_IDENTITY: AdminUserIdentity = { email: null, displayName: null };
+
+export const listAuditEvents = (
+  admin: ExecutorAdmin,
+  options: AdminListAuditEventsOptions,
+  directory?: AdminIdentityDirectory | AdminUserDirectory,
+): Effect.Effect<typeof AdminAuditEventsResponse.Type, AdminUsersError> =>
+  Effect.gen(function* () {
+    const events = yield* admin
+      .listAuditEvents(options)
+      .pipe(Effect.mapError(readFailed("audit events")));
+    const actorIds = [
+      ...new Set(events.flatMap((event) => (event.actorId === null ? [] : [event.actorId]))),
+    ];
+    const identities = yield* resolveIdentities(asDirectory(directory).identities, actorIds);
+    return {
+      events: events.map((event) => {
+        const identity =
+          event.actorId === null
+            ? ABSENT_IDENTITY
+            : (identities.get(event.actorId) ?? ABSENT_IDENTITY);
+        return {
+          id: event.id,
+          actorId: event.actorId,
+          actorEmail: identity.email,
+          actorDisplayName: identity.displayName,
+          action: event.action,
+          resourceType: event.resourceType,
+          resourceOwner: event.resourceOwner,
+          resourceParent: event.resourceParent,
+          resourceId: event.resourceId,
+          createdAt: event.createdAt.getTime(),
+        };
+      }),
+    };
+  });
 
 /**
  * `AdminSubject` → the public `AdminUser` shape.
