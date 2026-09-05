@@ -3,10 +3,10 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
-  defaultMcpResource,
   orgWriteAccessForPrincipal,
   withOrgWriteAccess,
   type AuthOutcome,
+  type McpResource,
   type Principal,
 } from "@executor-js/host-mcp";
 import {
@@ -22,6 +22,7 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
 import { cloudflareAccessMcpAuth } from "./auth";
+import { mcpResourceFromPath } from "./resource";
 import { McpSessionDO } from "./session-durable-object";
 
 const corsPreflightResponse = (): Response =>
@@ -75,6 +76,7 @@ const authenticate = (request: Request, config: CloudflareConfig) =>
 const propsForPrincipal = (
   request: Request,
   principal: Principal,
+  resource: McpResource,
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
     const propagation = yield* currentPropagationHeaders(request);
@@ -86,10 +88,7 @@ const propsForPrincipal = (
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
-        // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
-        // bridge (see worker.ts), so the session always serves the default
-        // resource.
-        resource: defaultMcpResource,
+        resource,
         webOrigin: new URL(request.url).origin,
       },
       propagation,
@@ -97,10 +96,12 @@ const propsForPrincipal = (
   });
 
 export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
-  const serve = McpSessionDO.serve("/mcp", {
+  const serveOptions = {
     binding: "MCP_SESSION",
     transport: "streamable-http",
-  });
+  } as const;
+  const serveDefault = McpSessionDO.serve("/mcp", serveOptions);
+  const serveToolkit = McpSessionDO.serve("/mcp/toolkits/:slug", serveOptions);
 
   return async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
@@ -120,15 +121,23 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       return renderAuthError(auth, request, outcome);
     }
 
+    const resource = mcpResourceFromPath(new URL(request.url).pathname);
+    if (resource === null) {
+      return jsonRpcResponse(404, -32001, "MCP route not found");
+    }
+
     if (!sessionId && request.method === "DELETE") {
       return new Response(null, { status: 204, headers: { "access-control-allow-origin": "*" } });
     }
 
     if (sessionId) {
-      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      });
+      const owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner(
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      );
       if (owner === "not_found") {
         return jsonRpcResponse(404, -32001, "Session not found");
       }
@@ -142,7 +151,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
       }
     }
 
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(
       withVerifiedIdentityHeaders(
@@ -151,10 +160,11 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
         },
-        defaultMcpResource,
+        resource,
       ),
       orgWriteAccessForPrincipal(outcome.principal),
     );
-    return serve.fetch(forwarded, env, ctx);
+    const target = resource.kind === "toolkit" ? serveToolkit : serveDefault;
+    return target.fetch(forwarded, env, ctx);
   };
 };

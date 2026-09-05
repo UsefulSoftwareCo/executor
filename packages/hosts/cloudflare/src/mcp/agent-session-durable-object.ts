@@ -19,7 +19,7 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+import { defaultMcpResource, mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
 import {
   ResumeResponsePayload,
   decodeResumeResponse,
@@ -1585,6 +1585,7 @@ export abstract class McpAgentSessionDOBase<
 
   async validateMcpSessionOwner(
     identity: McpApprovalOwner,
+    resource: McpResource,
   ): Promise<"ok" | "not_found" | "forbidden" | "terminated"> {
     const self = this;
     return Effect.runPromise(
@@ -1613,10 +1614,11 @@ export abstract class McpAgentSessionDOBase<
             Effect.withSpan("McpSessionDO.restore_transport_runtime"),
           );
         }
-        return identity.accountId === sessionMeta.userId &&
-          identity.organizationId === sessionMeta.organizationId
-          ? ("ok" as const)
-          : ("forbidden" as const);
+        const ownerMatches =
+          identity.accountId === sessionMeta.userId &&
+          identity.organizationId === sessionMeta.organizationId;
+        const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
+        return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
       }).pipe(
         Effect.withSpan("McpSessionDO.validateMcpSessionOwner"),
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results

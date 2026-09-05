@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk/types.js";
 
-import { defaultMcpResource } from "@executor-js/host-mcp";
+import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
 import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
@@ -181,10 +181,13 @@ type HarnessSession = {
     readonly response: ResumeResponse;
     readonly orgWriteAccess: "allowed" | "denied";
   } | null>;
-  validateMcpSessionOwner: (identity: {
-    readonly accountId: string;
-    readonly organizationId: string;
-  }) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
+  validateMcpSessionOwner: (
+    identity: {
+      readonly accountId: string;
+      readonly organizationId: string;
+    },
+    resource: McpResource,
+  ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
 
 class StaleCloseTransport implements Transport {
@@ -622,8 +625,24 @@ describe("McpAgentSessionDOBase transport restore", () => {
     await session.alarm();
 
     await expect(
-      session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1" },
+        defaultMcpResource,
+      ),
     ).resolves.toBe("ok");
+  });
+
+  it("rejects the same owner on a different MCP resource", async () => {
+    const session = await makeHarnessSession();
+    const identity = { accountId: "user-1", organizationId: "org-1" };
+
+    await expect(session.validateMcpSessionOwner(identity, defaultMcpResource)).resolves.toBe("ok");
+    await expect(
+      session.validateMcpSessionOwner(identity, {
+        kind: "toolkit",
+        slug: "other-toolkit",
+      }),
+    ).resolves.toBe("forbidden");
   });
 
   it("single-flights concurrent same-session restore after idle disposal", async () => {
@@ -646,14 +665,20 @@ describe("McpAgentSessionDOBase transport restore", () => {
 
     await session.alarm();
 
-    const first = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    });
-    const second = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    });
+    const first = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
+    const second = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
 
     await firstRestoreEntered.promise;
     await Promise.resolve();
@@ -682,10 +707,13 @@ describe("McpAgentSessionDOBase transport restore", () => {
 
     await session.alarm();
 
-    const restore = session.validateMcpSessionOwner({
-      accountId: "user-1",
-      organizationId: "org-1",
-    });
+    const restore = session.validateMcpSessionOwner(
+      {
+        accountId: "user-1",
+        organizationId: "org-1",
+      },
+      defaultMcpResource,
+    );
     const sdkStart = session.onStart();
 
     await firstStartEntered.promise;
@@ -793,7 +821,7 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
     buildMcpServer: () => Effect.Effect<{ mcpServer: McpServer; engine: unknown }>;
     openSessionDb: () => { readonly end: () => void };
     resolveSessionMeta: () => Effect.Effect<SessionMeta>;
-    validateMcpSessionOwner: (identity: McpApprovalOwner) => Promise<string>;
+    validateMcpSessionOwner: (identity: McpApprovalOwner, resource: McpResource) => Promise<string>;
   };
 
   const sessionMeta: SessionMeta = {
@@ -867,7 +895,10 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
     expect(storage.alarm, "the write that failed left no alarm").toBeUndefined();
 
     await expect(
-      session.validateMcpSessionOwner({ accountId: "user-1", organizationId: "org-1" }),
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1" },
+        defaultMcpResource,
+      ),
     ).resolves.toBe("ok");
     expect(storage.alarm, "the next request re-establishes the idle clock").toBeGreaterThan(0);
   });
