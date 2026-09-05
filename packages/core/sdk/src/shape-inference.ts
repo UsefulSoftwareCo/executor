@@ -45,6 +45,43 @@ const MAX_ANYOF = 4;
 const isUnknown = (shape: InferredShape): boolean =>
   shape.type === undefined && shape.anyOf === undefined;
 
+/**
+ * Keys that look like DATA rather than API surface: emails, UUIDs,
+ * timestamps, URLs, bare numbers, long random tokens. Struct field names are
+ * schema; map keys are values, and values must never persist. Width alone
+ * (`MAX_OBJECT_KEYS`) misses a two-entry object keyed by email addresses, so
+ * any single data-looking key collapses the whole object to a map. No
+ * classifier is a proof — only declared schemas are — so this errs toward
+ * collapsing.
+ */
+const DATA_KEY_PATTERNS: readonly RegExp[] = [
+  // Email addresses (full-string — `@odata.context`-style annotation keys are
+  // legitimate API surface and must NOT collapse).
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  // UUIDs.
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  // Timestamps / dates.
+  /^\d{4}-\d{2}-\d{2}/,
+  // Bare numbers and IPv4 addresses.
+  /^\d+$/,
+  /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+  // URLs.
+  /^https?:\/\//,
+  // Long hex tokens (hashes, ids).
+  /^[0-9a-f]{16,}$/i,
+  // Platform opaque ids: Slack-style ALL-CAPS ids (U012ABCDEF), and
+  // prefix_body ids (cus_..., price_..., asst_...). Real field names in
+  // snake_case are lowercase words, not lowercase prefix + mixed-case body.
+  /^[A-Z][A-Z0-9]{8,}$/,
+  /^[a-z]{1,6}_(?=.*[A-Z0-9])[A-Za-z0-9]{10,}$/,
+  // Generic digit-bearing opaque tokens (API keys, base62/base64 ids). Long
+  // camelCase field names rarely contain digits at this length.
+  /^(?=.*\d)[A-Za-z0-9+/=_-]{20,}$/,
+];
+
+const looksLikeDataKey = (key: string): boolean =>
+  DATA_KEY_PATTERNS.some((pattern) => pattern.test(key));
+
 /** Infer the shape of one observed value. Reads structure only, never values. */
 export const inferShape = (value: unknown, depth = 0): InferredShape => {
   if (value === null || value === undefined) return { type: "null" };
@@ -64,7 +101,9 @@ export const inferShape = (value: unknown, depth = 0): InferredShape => {
 
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > MAX_OBJECT_KEYS) {
+    // Both branches guarantee at least one entry, so the seedless reduce is
+    // safe (an UNKNOWN seed would absorb every merge).
+    if (entries.length > MAX_OBJECT_KEYS || entries.some(([key]) => looksLikeDataKey(key))) {
       const merged = entries
         .slice(0, MAX_ARRAY_SAMPLE)
         .map(([, item]) => inferShape(item, depth + 1))

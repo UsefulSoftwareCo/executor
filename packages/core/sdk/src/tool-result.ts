@@ -51,8 +51,28 @@ const matchesToolFileSchema = Schema.is(ToolFileSchema);
 
 export const isToolFile = (value: unknown): value is ToolFile => matchesToolFileSchema(value);
 
+/**
+ * One MCP-style content block, kept structurally open: unknown future block
+ * types must survive normalization rather than being dropped.
+ */
+export type ToolContentBlock = Readonly<Record<string, unknown>>;
+
 export type ToolResult<T> =
-  | { readonly ok: true; readonly data: T; readonly http?: ToolHttpMeta }
+  | {
+      readonly ok: true;
+      readonly data: T;
+      readonly http?: ToolHttpMeta;
+      /**
+       * Supplemental rich content beside `data` (media, extra prose) for
+       * transports whose results carry more than one channel — MCP content
+       * blocks not already represented by `data`. Never a serialized
+       * duplicate of `data`.
+       */
+      readonly content?: readonly ToolContentBlock[];
+      /** Transport envelope metadata (MCP `_meta`); excluded from schemas
+       *  and shape inference. */
+      readonly meta?: unknown;
+    }
   | { readonly ok: false; readonly error: ToolError };
 
 export const ToolResult = {
@@ -69,6 +89,8 @@ const ToolResultSchema = Schema.Union([
     ok: Schema.Literal(true),
     data: Schema.Unknown,
     http: Schema.optional(ToolHttpMetaSchema),
+    content: Schema.optional(Schema.Array(Schema.Record(Schema.String, Schema.Unknown))),
+    meta: Schema.optional(Schema.Unknown),
   }),
   Schema.Struct({ ok: Schema.Literal(false), error: ToolErrorSchema }),
 ]);
