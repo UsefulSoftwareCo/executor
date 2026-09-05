@@ -78,29 +78,85 @@ export interface EffectivePolicy {
 //   - mid-segment `*`:  `vercel.*.*.dns.create` — each NON-trailing `*` matches
 //                       EXACTLY ONE segment (e.g. wildcard the owner/connection
 //                       segments to target a tool across every connection).
-// A `*` is always a complete segment: mid-pattern it consumes one segment,
-// trailing it is a subtree. Partial wildcards (`me*`) and a leading `*` (other
-// than the universal `*`) are rejected by `isValidPattern`.
+//   - name prefix:      `vercel.*.*.dns.get*` — a trailing `*` inside a segment
+//                       matches the rest of that ONE tool-name segment
+//   - globstar:         `vercel.*.*.**.get*` — `**` matches zero or more
+//                       structured tool-name segments
+// A complete trailing `*` keeps its legacy subtree meaning. Leading wildcards
+// (other than the universal `*`) and non-trailing partial wildcards (`g*t`) are
+// rejected by `isValidPattern`.
 // ---------------------------------------------------------------------------
 
 export const matchPattern = (pattern: string, toolId: string): boolean => {
   if (pattern === "*") return true;
   const patternSegments = pattern.split(".");
   const toolSegments = toolId.split(".");
-  for (let i = 0; i < patternSegments.length; i++) {
-    const seg = patternSegments[i]!;
-    if (seg === "*") {
-      // Trailing `*` is a subtree: the literal prefix already matched, so the
-      // address matches at this position and anything deeper (or nothing).
-      if (i === patternSegments.length - 1) return toolSegments.length >= i;
-      // A non-trailing `*` consumes EXACTLY ONE segment; one must exist here.
+
+  // Keep the common path allocation-light: existing exact / segment-wildcard
+  // rules and new name-prefix rules do not need globstar backtracking.
+  if (!patternSegments.includes("**")) {
+    for (let i = 0; i < patternSegments.length; i++) {
+      const segment = patternSegments[i]!;
+      if (segment === "*") {
+        if (i === patternSegments.length - 1) return toolSegments.length >= i;
+        if (i >= toolSegments.length) return false;
+        continue;
+      }
       if (i >= toolSegments.length) return false;
-      continue;
+      if (segment.endsWith("*")) {
+        if (!toolSegments[i]!.startsWith(segment.slice(0, -1))) return false;
+      } else if (toolSegments[i] !== segment) {
+        return false;
+      }
     }
-    if (i >= toolSegments.length || toolSegments[i] !== seg) return false;
+    return patternSegments.length === toolSegments.length;
   }
-  // Pattern exhausted with no trailing `*`: an exact match requires equal length.
-  return patternSegments.length === toolSegments.length;
+
+  const memo = new Map<string, boolean>();
+
+  const matchesFrom = (patternIndex: number, toolIndex: number): boolean => {
+    const memoKey = `${patternIndex}:${toolIndex}`;
+    const cached = memo.get(memoKey);
+    if (cached !== undefined) return cached;
+
+    if (patternIndex === patternSegments.length) {
+      const result = toolIndex === toolSegments.length;
+      memo.set(memoKey, result);
+      return result;
+    }
+
+    const segment = patternSegments[patternIndex]!;
+    let result: boolean;
+    if (segment === "**") {
+      // Globstar may consume no segment, or consume one and remain active.
+      result =
+        matchesFrom(patternIndex + 1, toolIndex) ||
+        (toolIndex < toolSegments.length && matchesFrom(patternIndex, toolIndex + 1));
+    } else if (segment === "*") {
+      // Preserve the original grammar: a complete trailing `*` is a subtree,
+      // while a complete mid-pattern `*` consumes exactly one segment.
+      result =
+        patternIndex === patternSegments.length - 1
+          ? toolSegments.length >= toolIndex
+          : toolIndex < toolSegments.length && matchesFrom(patternIndex + 1, toolIndex + 1);
+    } else if (segment.endsWith("*")) {
+      const prefix = segment.slice(0, -1);
+      result =
+        toolIndex < toolSegments.length &&
+        toolSegments[toolIndex]!.startsWith(prefix) &&
+        matchesFrom(patternIndex + 1, toolIndex + 1);
+    } else {
+      result =
+        toolIndex < toolSegments.length &&
+        toolSegments[toolIndex] === segment &&
+        matchesFrom(patternIndex + 1, toolIndex + 1);
+    }
+
+    memo.set(memoKey, result);
+    return result;
+  };
+
+  return matchesFrom(0, 0);
 };
 
 export const isValidPattern = (pattern: string): boolean => {
@@ -113,9 +169,15 @@ export const isValidPattern = (pattern: string): boolean => {
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]!;
     if (seg.length === 0) return false;
-    // A `*` segment must be the WHOLE segment — no partial wildcards (`me*`).
-    // A `*` is valid mid-pattern (one segment) or trailing (subtree).
-    if (seg.includes("*") && seg !== "*") return false;
+    if (!seg.includes("*")) continue;
+    // Complete wildcard segments retain their existing meaning; `**` adds an
+    // explicit zero-or-more form that can be followed by a tool-name prefix.
+    if (seg === "*" || seg === "**") continue;
+    // Partial wildcards apply only to the final tool-name segment and only as
+    // a suffix (`get*`, never an owner/connection wildcard, `g*t`, or `*get`).
+    if (i === 0 || i !== segments.length - 1 || !seg.endsWith("*")) return false;
+    const prefix = seg.slice(0, -1);
+    if (prefix.length === 0 || prefix.includes("*")) return false;
   }
   return true;
 };
@@ -144,18 +206,31 @@ export const comparePolicyRow = (
 // lower position-key (higher precedence). New rules are auto-placed below
 // any more-specific existing rules so a freshly-added group rule never
 // silently shadows an existing leaf rule.
-//   `*`            → 0
-//   `vercel.*`     → 2  (1 literal segment, wildcard)
-//   `vercel.dns.*` → 4  (2 literal segments, wildcard)
-//   `vercel.dns`   → 5  (2 literal segments, exact — beats same-prefix wildcard)
-//   `vercel.dns.create` → 7  (3 literal segments, exact)
+// Literal segments contribute 2, name-prefix segments contribute 1, complete
+// wildcards contribute 0, and a pattern with no wildcard receives an exact
+// bonus. This preserves the original examples while placing a rule such as
+// `vercel.*.*.**.get*` below an exact tool and above `vercel.*`.
+//   `*`                    → 0
+//   `vercel.*`             → 2
+//   `vercel.dns.*`         → 4
+//   `vercel.dns`           → 5
+//   `vercel.*.*.**.get*`   → 3
+//   `vercel.dns.create`    → 7
 export const patternSpecificity = (pattern: string): number => {
   if (pattern === "*") return 0;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    return prefix.split(".").length * 2;
+  let score = 0;
+  let hasWildcard = false;
+  for (const segment of pattern.split(".")) {
+    if (segment === "*" || segment === "**") {
+      hasWildcard = true;
+    } else if (segment.endsWith("*")) {
+      score += 1;
+      hasWildcard = true;
+    } else {
+      score += 2;
+    }
   }
-  return pattern.split(".").length * 2 + 1;
+  return score + (hasWildcard ? 0 : 1);
 };
 
 /**
