@@ -39,6 +39,7 @@ export const connection = sqliteTable(
     item_ids: text("item_ids").notNull(),
     credential_write: text("credential_write"),
     identity_label: text("identity_label"),
+    connected_by: text("connected_by"),
     oauth_client: text("oauth_client"),
     oauth_client_owner: text("oauth_client_owner"),
     refresh_item_id: text("refresh_item_id"),

@@ -394,6 +394,7 @@ export const addConnectionOptimistic = Atom.family((owner: Owner) =>
               `tools.${payload.integration}.${payload.owner}.${payload.name}`,
             ),
             identityLabel: payload.identityLabel ?? null,
+            connectedBy: null,
             description: payload.description ?? null,
             expiresAt: null,
             // Optimistic placeholder predates the server resolving which app (if

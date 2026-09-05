@@ -127,7 +127,10 @@ test("connection reads answer org-owned rows and never a member's personal ones"
     new Request("http://localhost/api/connections", { headers: platformHeaders }),
   );
   expect(res.status).toBe(200);
-  const body = (await res.json()) as ReadonlyArray<{ readonly name: string }>;
+  const body = (await res.json()) as ReadonlyArray<{
+    readonly name: string;
+    readonly connectedBy: string | null;
+  }>;
   const raw = JSON.stringify(body);
   expect(
     body.map((connection) => connection.name),
@@ -138,6 +141,10 @@ test("connection reads answer org-owned rows and never a member's personal ones"
     "a member's personal connection is not — the platform view binds no subject",
   ).not.toContain("personal");
   expect(raw, "no credential material either way").not.toContain("token");
+  expect(
+    body.find((connection) => connection.name === "shared")?.connectedBy,
+    "workspace ownership keeps the member who originally connected it",
+  ).toBe(MEMBER);
 });
 
 test("the OAuth callback is refused despite being a GET", async () => {

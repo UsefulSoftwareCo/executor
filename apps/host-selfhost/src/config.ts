@@ -41,6 +41,11 @@ export interface SelfHostConfig {
   readonly bootstrapAdminEmail: string | undefined;
   readonly bootstrapAdminPassword: string | undefined;
   readonly bootstrapAdminName: string;
+  /**
+   * Optional machine credential for a trusted identity proxy. Requests using
+   * this token must also provide the delegated account and current org role.
+   */
+  readonly trustedDelegationToken: string | undefined;
   /** The single organization every self-host user belongs to. */
   readonly organizationName: string;
   /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
@@ -169,12 +174,24 @@ export const loadConfig = (): SelfHostConfig => {
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
     bootstrapAdminName: process.env.EXECUTOR_BOOTSTRAP_ADMIN_NAME ?? "Admin",
+    trustedDelegationToken: resolveTrustedDelegationToken(),
     organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
     orgSlug: resolveOrgSlug(),
     sandboxTimeoutMs: resolveSandboxTimeoutMs(),
     mcpSessionIdleTtlMs: resolveMcpSessionIdleTtlMs(),
     toolsSyncTtlMs: resolveToolsSyncTtlMs(),
   };
+};
+
+const resolveTrustedDelegationToken = (): string | undefined => {
+  const raw = process.env.EXECUTOR_TRUSTED_DELEGATION_TOKEN;
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const token = raw.trim();
+  if (token.length < 32) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot with a weak trusted proxy credential
+    throw new Error("EXECUTOR_TRUSTED_DELEGATION_TOKEN must be at least 32 characters");
+  }
+  return token;
 };
 
 // A malformed value is refused rather than silently ignored: an operator who

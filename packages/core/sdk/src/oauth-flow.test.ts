@@ -1948,6 +1948,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           code: callback.code,
         });
 
+        expect(connection.connectedBy).toBe("test-subject");
         expect(connection.missingOAuthScopes).toEqual(["write"]);
         const row = yield* Effect.promise(() =>
           config.db.findFirst("connection", {

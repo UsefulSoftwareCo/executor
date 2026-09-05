@@ -1,0 +1,1 @@
+ALTER TABLE `connection` ADD `connected_by` text;

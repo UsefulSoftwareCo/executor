@@ -23,6 +23,7 @@ const toResponse = (c: Connection) => ({
   provider: c.provider,
   address: c.address,
   identityLabel: c.identityLabel ?? null,
+  connectedBy: c.connectedBy ?? null,
   description: c.description ?? null,
   expiresAt: c.expiresAt ?? null,
   oauthClient: c.oauthClient ?? null,

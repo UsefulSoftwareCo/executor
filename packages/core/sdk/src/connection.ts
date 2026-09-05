@@ -34,6 +34,10 @@ export interface Connection {
   /** Optional human label (which account). Not load-bearing for routing, but
    *  agent-visible through `connections.list`. */
   readonly identityLabel?: string | null;
+  /** The opaque authenticated subject that originally connected this account.
+   *  Retained for workspace connections as attribution and as a safe hint for
+   *  a future explicit move to personal ownership. Null for legacy rows. */
+  readonly connectedBy?: string | null;
   /** User-curated description of what this connection is for. Agent-visible
    *  through `connections.list`, so it is the place to give agents context a
    *  spec can't (e.g. "the staging CRM — reads only"). */

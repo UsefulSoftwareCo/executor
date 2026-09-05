@@ -180,6 +180,7 @@ describe("connections.create", () => {
       });
       expect(connection.provider).toBe(ProviderKey.make("memory"));
       expect(String(connection.address)).toBe("tools.vercel.org.main");
+      expect(connection.connectedBy).toBe("test-subject");
 
       const tools = yield* executor.tools.list();
       expect(tools.map((t) => String(t.name)).sort()).toEqual(["deploy", "list"]);
@@ -601,6 +602,7 @@ describe("connections.create", () => {
         value: "user-token",
       });
       expect(String(personal.address)).toBe("tools.vercel.user.main");
+      expect(personal.connectedBy).toBe("test-subject");
       expect((yield* executor.connections.list()).length).toBe(2);
     }),
   );

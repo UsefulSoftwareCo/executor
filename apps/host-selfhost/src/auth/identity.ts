@@ -1,6 +1,8 @@
+import { timingSafeEqual } from "node:crypto";
+
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import { IdentityProvider, type Principal, Unauthorized } from "@executor-js/api/server";
 
 import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
@@ -26,6 +28,74 @@ const bearerToken = (headers: Headers): string | undefined => {
   return authorization.toLowerCase().startsWith("bearer ")
     ? authorization.slice(7).trim() || undefined
     : undefined;
+};
+
+export const DELEGATED_ACCOUNT_ID_HEADER = "x-executor-delegated-account-id";
+export const DELEGATED_ORG_ROLE_HEADER = "x-executor-delegated-org-role";
+
+type TrustedDelegationResolution =
+  | { readonly matched: false }
+  | { readonly matched: true; readonly principal: Principal | null };
+
+const secureTokenEqual = (supplied: string, expected: string): boolean => {
+  const suppliedBytes = Buffer.from(supplied);
+  const expectedBytes = Buffer.from(expected);
+  return (
+    suppliedBytes.length === expectedBytes.length && timingSafeEqual(suppliedBytes, expectedBytes)
+  );
+};
+
+const validDelegatedAccountId = (value: string): boolean => {
+  const containsAsciiControl = Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 32 || code === 127;
+  });
+  return value.length > 0 && value.length <= 255 && value.trim() === value && !containsAsciiControl;
+};
+
+/**
+ * Resolve the machine-only delegated identity path. The configured token is a
+ * separate capability from ordinary personal API keys, so an admin or member
+ * API key cannot select another person's subject by adding headers.
+ *
+ * A matched token with malformed or missing identity headers fails closed. It
+ * never falls through to the token's provisioning user.
+ */
+export const resolveTrustedDelegation = (
+  request: Request,
+  input: Pick<
+    BetterAuthHandle,
+    "organizationId" | "organizationName" | "organizationSlug" | "trustedDelegationToken"
+  >,
+): TrustedDelegationResolution => {
+  const expected = input.trustedDelegationToken;
+  const supplied = bearerToken(request.headers);
+  if (expected === undefined || supplied === undefined || !secureTokenEqual(supplied, expected)) {
+    return { matched: false };
+  }
+
+  const accountId = request.headers.get(DELEGATED_ACCOUNT_ID_HEADER) ?? "";
+  const rawOrgRole = request.headers.get(DELEGATED_ORG_ROLE_HEADER);
+  if (!validDelegatedAccountId(accountId) || (rawOrgRole !== "admin" && rawOrgRole !== "member")) {
+    return { matched: true, principal: null };
+  }
+
+  return {
+    matched: true,
+    principal: {
+      kind: "member",
+      accountId,
+      organizationId: input.organizationId,
+      organizationName: input.organizationName,
+      organizationSlug: input.organizationSlug,
+      email: "",
+      name: null,
+      avatarUrl: null,
+      roles: [],
+      orgRoleModel: "organization",
+      orgRole: rawOrgRole,
+    },
+  };
 };
 
 /**
@@ -70,6 +140,12 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
+            const delegated = resolveTrustedDelegation(request, betterAuth);
+            if (delegated.matched) {
+              if (delegated.principal === null) return yield* new Unauthorized();
+              return delegated.principal;
+            }
+
             let resolved = yield* Effect.promise(() =>
               auth.api.getSession({ headers: request.headers }),
             );

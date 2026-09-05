@@ -149,3 +149,78 @@ test("a request with no identity is rejected", async () => {
   // path fires.
   expect(res.status).toBeGreaterThanOrEqual(400);
 });
+
+test("members share workspace connections and keep personal connections isolated", async () => {
+  const organizationId = "shared-org";
+  const alice = headersFor("alice", organizationId);
+  const bob = headersFor("bob", organizationId);
+
+  const add = await handler(
+    new Request("http://localhost/api/openapi/specs", {
+      method: "POST",
+      headers: alice,
+      body: JSON.stringify({
+        spec: { kind: "blob", value: TINY_SPEC },
+        slug: "shared-scope",
+        baseUrl: "",
+      }),
+    }),
+  );
+  expect(add.status).toBe(200);
+
+  const create = async (headers: Record<string, string>, owner: "org" | "user", name: string) => {
+    const response = await handler(
+      new Request("http://localhost/api/connections", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          owner,
+          name,
+          integration: "shared-scope",
+          template: "bearer",
+          value: `${name}-token`,
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as { readonly connectedBy: string | null };
+  };
+
+  expect((await create(alice, "org", "workspace")).connectedBy).toBe("alice");
+  expect((await create(alice, "user", "alice-personal")).connectedBy).toBe("alice");
+  expect((await create(bob, "user", "bob-personal")).connectedBy).toBe("bob");
+
+  const list = async (headers: Record<string, string>) => {
+    const response = await handler(new Request("http://localhost/api/connections", { headers }));
+    expect(response.status).toBe(200);
+    return (await response.json()) as ReadonlyArray<{
+      readonly name: string;
+      readonly connectedBy: string | null;
+    }>;
+  };
+
+  const aliceConnections = await list(alice);
+  expect(aliceConnections.map((connection) => connection.name).sort()).toEqual([
+    "alicePersonal",
+    "workspace",
+  ]);
+  expect(aliceConnections.find((connection) => connection.name === "workspace")?.connectedBy).toBe(
+    "alice",
+  );
+
+  const bobConnections = await list(bob);
+  expect(bobConnections.map((connection) => connection.name).sort()).toEqual([
+    "bobPersonal",
+    "workspace",
+  ]);
+  expect(bobConnections.find((connection) => connection.name === "workspace")?.connectedBy).toBe(
+    "alice",
+  );
+
+  const privateRead = await handler(
+    new Request("http://localhost/api/connections/user/shared-scope/alicePersonal", {
+      headers: bob,
+    }),
+  );
+  expect(privateRead.status).toBe(404);
+});

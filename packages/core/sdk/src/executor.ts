@@ -1124,6 +1124,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
     provider: ProviderKey.make(row.provider),
     address: connectionAddress(owner, integration, name),
     identityLabel: row.identity_label ?? null,
+    connectedBy: row.connected_by ?? null,
     description: row.description ?? null,
     expiresAt: row.expires_at == null ? null : Number(row.expires_at),
     oauthClient: row.oauth_client == null ? null : OAuthClientSlug.make(String(row.oauth_client)),
@@ -3975,6 +3976,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               item_ids: itemIds,
               credential_write: credentialWrite,
               identity_label: input.identityLabel ?? null,
+              connected_by: subject,
               description: input.description ?? null,
               oauth_client: null,
               refresh_item_id: null,
@@ -4311,6 +4313,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               item_ids: itemIds,
               credential_write: credentialWrite,
               identity_label: input.identityLabel ?? null,
+              connected_by: subject,
               description: input.description ?? null,
               oauth_client: null,
               refresh_item_id: null,
@@ -4441,6 +4444,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
               credential_write: credentialWrite,
               identity_label: identityLabel,
+              // Preserve the original connector. A legacy unattributed row is
+              // backfilled by the first authenticated reconnect.
+              connected_by: existing?.connected_by ?? subject,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,
               refresh_item_id: versionedRefreshItemId,
@@ -4488,6 +4494,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
                     credential_write: credentialWrite,
                     identity_label: identityLabel,
+                    connected_by: subject,
                     // Curated description: never stamped by a mint — a reconnect
                     // or token refresh must not erase what the user wrote.
                     description: null,
@@ -4623,6 +4630,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               item_ids: { [PRIMARY_INPUT_VARIABLE]: versionedItemId },
               credential_write: credentialWrite,
               identity_label: identityLabel,
+              connected_by: subject,
               description: null,
               oauth_client: String(input.oauthClient),
               oauth_client_owner: input.oauthClientOwner,

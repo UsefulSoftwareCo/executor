@@ -1,0 +1,1 @@
+ALTER TABLE "connection" ADD COLUMN "connected_by" varchar(255);

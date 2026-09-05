@@ -292,6 +292,8 @@ export interface BetterAuthHandle {
   readonly organizationName: string;
   /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
   readonly organizationSlug: string;
+  /** Machine-only credential allowed to bind requests to an external subject. */
+  readonly trustedDelegationToken: string | undefined;
   readonly handler: (request: Request) => Promise<Response>;
 }
 
@@ -350,6 +352,7 @@ export const buildBetterAuth = async (client: Client): Promise<BetterAuthHandle>
     organizationId,
     organizationName,
     organizationSlug: config.orgSlug,
+    trustedDelegationToken: config.trustedDelegationToken,
     handler: auth.handler,
   };
 };

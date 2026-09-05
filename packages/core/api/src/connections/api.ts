@@ -52,6 +52,7 @@ const ConnectionResponse = Schema.Struct({
   provider: ProviderKey,
   address: ConnectionAddress,
   identityLabel: Schema.NullOr(Schema.String),
+  connectedBy: Schema.NullOr(Schema.String),
   description: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.Number),
   // The OAuth app that minted this connection (its `oauth_client` slug), or null

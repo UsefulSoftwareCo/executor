@@ -59,6 +59,7 @@ export const connection = pgTable(
     item_ids: json("item_ids").notNull(),
     credential_write: json("credential_write"),
     identity_label: text("identity_label"),
+    connected_by: varchar("connected_by", { length: 255 }),
     description: text("description"),
     last_health: json("last_health"),
     tools_synced_at: bigint("tools_synced_at", { mode: "bigint" }),

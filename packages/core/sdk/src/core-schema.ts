@@ -216,6 +216,12 @@ export const coreTables = defineTables({
       // external/legacy and therefore opaque to core — never repairable.
       credential_write: nullableJsonColumn("credential_write"),
       identity_label: nullableTextColumn("identity_label"),
+      // The authenticated subject that originally connected this credential.
+      // User rows also carry their owner in `subject`; org rows use this field
+      // to retain who connected them without changing workspace ownership.
+      // Nullable for rows created before attribution was recorded and for
+      // direct subject-less SDK hosts.
+      connected_by: nullableKeyColumn("connected_by"),
       // User-curated, agent-visible "what is this connection for". Settable at
       // create, editable after; never reset by OAuth re-mints.
       description: nullableTextColumn("description"),

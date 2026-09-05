@@ -6,9 +6,11 @@ import executorConfig from "../executor.config";
 const ENV_NAME = "EXECUTOR_ALLOW_STDIO_MCP";
 const SECRET_ENV_NAME = "EXECUTOR_SECRET_KEY";
 const TTL_ENV_NAME = "EXECUTOR_TOOLS_SYNC_TTL_MS";
+const DELEGATION_ENV_NAME = "EXECUTOR_TRUSTED_DELEGATION_TOKEN";
 const originalValue = process.env[ENV_NAME];
 const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
+const originalDelegationToken = process.env[DELEGATION_ENV_NAME];
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
@@ -29,6 +31,11 @@ afterEach(() => {
     delete process.env[TTL_ENV_NAME];
   } else {
     process.env[TTL_ENV_NAME] = originalTtl;
+  }
+  if (originalDelegationToken === undefined) {
+    delete process.env[DELEGATION_ENV_NAME];
+  } else {
+    process.env[DELEGATION_ENV_NAME] = originalDelegationToken;
   }
 });
 
@@ -111,4 +118,20 @@ test.each(["abc", "60_000", "1.5", "1e3ms", "NaN", "Infinity", "9007199254740993
 test("a negative tools-sync TTL refuses to boot", () => {
   process.env[TTL_ENV_NAME] = "-1";
   expect(() => loadConfig()).toThrow(/must not be negative/);
+});
+
+test("an unset trusted delegation token leaves delegation disabled", () => {
+  delete process.env[DELEGATION_ENV_NAME];
+  expect(loadConfig().trustedDelegationToken).toBeUndefined();
+});
+
+test("a strong trusted delegation token is loaded", () => {
+  const token = "trusted-delegation-token-with-32-bytes";
+  process.env[DELEGATION_ENV_NAME] = token;
+  expect(loadConfig().trustedDelegationToken).toBe(token);
+});
+
+test("a weak trusted delegation token refuses to boot", () => {
+  process.env[DELEGATION_ENV_NAME] = "too-short";
+  expect(() => loadConfig()).toThrow(/EXECUTOR_TRUSTED_DELEGATION_TOKEN/);
 });
