@@ -18,6 +18,26 @@ import {
 export const SELF_HOST_NAMESPACE = "executor_selfhost";
 export const SELF_HOST_SCHEMA_VERSION = "1.0.0";
 
+/**
+ * SSO sign-in for the self-host login page and the MCP OAuth connect flow: one
+ * OIDC provider (Google, Okta, Entra, any discovery-compliant IdP) resolved
+ * from the environment. Present only when the operator configured it; the
+ * allowlist is what replaces the invite code for SSO sign-ups (the domain IS
+ * the invite), so it is required whenever the provider is enabled.
+ */
+export interface SsoConfig {
+  /** URL-safe id — also the OAuth callback path segment and the button key. */
+  readonly providerId: string;
+  /** Display name for the login button (“Continue with <name>”). */
+  readonly providerName: string;
+  /** The IdP's OIDC discovery document (…/.well-known/openid-configuration). */
+  readonly discoveryUrl: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+  /** Lowercased email domains admitted without an invite code. */
+  readonly allowedDomains: readonly string[];
+}
+
 export interface SelfHostConfig {
   /** Bind address. Defaults to loopback. */
   readonly host: string;
@@ -53,6 +73,8 @@ export interface SelfHostConfig {
    * minutes (the same pattern as MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS on cloud).
    */
   readonly sandboxTimeoutMs: number | undefined;
+  /** SSO sign-in, or undefined when the operator hasn't configured it. */
+  readonly sso: SsoConfig | undefined;
   /**
    * How long an MCP session may sit idle before the in-process store evicts it,
    * or undefined for the store's own default (30 minutes). 0 disables eviction.
@@ -172,9 +194,66 @@ export const loadConfig = (): SelfHostConfig => {
     organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
     orgSlug: resolveOrgSlug(),
     sandboxTimeoutMs: resolveSandboxTimeoutMs(),
+    sso: resolveSso(),
     mcpSessionIdleTtlMs: resolveMcpSessionIdleTtlMs(),
     toolsSyncTtlMs: resolveToolsSyncTtlMs(),
   };
+};
+
+// Well-known discovery documents for providers an operator can name without
+// hunting down the URL. Anything else (Okta, Entra, Auth0, …) has a
+// tenant-specific issuer, so EXECUTOR_SSO_DISCOVERY_URL is required for it.
+const DISCOVERY_PRESETS: Record<string, string> = {
+  google: "https://accounts.google.com/.well-known/openid-configuration",
+};
+
+// The provider id doubles as the OAuth callback path segment
+// (`/api/auth/oauth2/callback/<id>`), so it must be URL-safe.
+const PROVIDER_ID_PATTERN = /^[a-z0-9-]{1,48}$/;
+
+// A half-configured provider is refused rather than silently ignored (same
+// posture as resolveSandboxTimeoutMs): an operator who set some of the
+// variables should find out at boot, not by staring at a login page with no
+// button. An empty domain allowlist is refused too — without it, SSO sign-in
+// would be open registration for anyone with an account at the IdP, bypassing
+// the invite gate entirely.
+const resolveSso = (): SsoConfig | undefined => {
+  const clientId = process.env.EXECUTOR_SSO_CLIENT_ID?.trim();
+  const clientSecret = process.env.EXECUTOR_SSO_CLIENT_SECRET?.trim();
+  if (!clientId && !clientSecret) return undefined;
+  if (!clientId || !clientSecret) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on half-configured SSO credentials
+    throw new Error("EXECUTOR_SSO_CLIENT_ID and EXECUTOR_SSO_CLIENT_SECRET must be set together");
+  }
+  const providerId = process.env.EXECUTOR_SSO_PROVIDER_ID?.trim().toLowerCase() ?? "";
+  if (!PROVIDER_ID_PATTERN.test(providerId)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a missing/malformed provider id
+    throw new Error(
+      'EXECUTOR_SSO_PROVIDER_ID is required when SSO is configured (1-48 chars of [a-z0-9-], e.g. "google" or "okta") — it names the provider and its OAuth callback path',
+    );
+  }
+  const discoveryUrl =
+    process.env.EXECUTOR_SSO_DISCOVERY_URL?.trim() || DISCOVERY_PRESETS[providerId];
+  if (!discoveryUrl) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot without a way to reach the IdP
+    throw new Error(
+      `EXECUTOR_SSO_DISCOVERY_URL is required for provider ${JSON.stringify(providerId)} (the IdP's …/.well-known/openid-configuration URL)`,
+    );
+  }
+  const allowedDomains = (process.env.EXECUTOR_SSO_ALLOWED_DOMAINS ?? "")
+    .split(",")
+    .map((domain) => domain.trim().replace(/^@/, "").toLowerCase())
+    .filter((domain) => domain.length > 0);
+  if (allowedDomains.length === 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: SSO sign-in without a domain allowlist is open registration; refuse to boot
+    throw new Error(
+      'EXECUTOR_SSO_ALLOWED_DOMAINS is required when SSO is configured (comma-separated email domains, e.g. "example.com") — it is what gates sign-ups in place of an invite code',
+    );
+  }
+  const providerName =
+    process.env.EXECUTOR_SSO_PROVIDER_NAME?.trim() ||
+    providerId.charAt(0).toUpperCase() + providerId.slice(1);
+  return { providerId, providerName, discoveryUrl, clientId, clientSecret, allowedDomains };
 };
 
 // A malformed value is refused rather than silently ignored: an operator who
