@@ -198,6 +198,22 @@ const moreRestrictive = <T extends { readonly action: ToolPolicyAction }>(
   return candidateRank > currentRank ? candidate : current;
 };
 
+export const combineEffectivePolicies = (
+  providerPolicy: EffectivePolicy,
+  workspacePolicy: EffectivePolicy,
+): EffectivePolicy => {
+  if (providerPolicy.action === "block") return providerPolicy;
+  if (workspacePolicy.action === "block") return workspacePolicy;
+
+  if (providerPolicy.source === "user" && workspacePolicy.source === "user") {
+    return moreRestrictive(providerPolicy, workspacePolicy);
+  }
+
+  if (workspacePolicy.source === "user") return workspacePolicy;
+  if (providerPolicy.source === "user") return providerPolicy;
+  return moreRestrictive(providerPolicy, workspacePolicy);
+};
+
 export const resolveToolPolicy = (
   toolId: string,
   policies: readonly ToolPolicyRow[],

@@ -16,6 +16,7 @@ import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { createExecutor } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
 import {
+  combineEffectivePolicies,
   effectivePolicyFromSorted,
   isValidPattern,
   matchPattern,
@@ -245,6 +246,54 @@ describe("effectivePolicyFromSorted", () => {
     );
     expect(result.action).toBe("block");
     expect(result.policyId).toBe(PolicyId.make("outer"));
+  });
+});
+
+describe("combineEffectivePolicies", () => {
+  const user = (action: "approve" | "require_approval" | "block", pattern: string) => ({
+    action,
+    source: "user" as const,
+    pattern,
+  });
+  const pluginDefault = (action: "approve" | "require_approval") => ({
+    action,
+    source: "plugin-default" as const,
+  });
+
+  it("keeps a provider capability-boundary block", () => {
+    expect(combineEffectivePolicies(user("block", "*"), user("approve", "sample.*"))).toEqual(
+      user("block", "*"),
+    );
+  });
+
+  it("keeps a workspace block", () => {
+    expect(
+      combineEffectivePolicies(user("approve", "sample.ctl.read"), user("block", "sample.*")),
+    ).toEqual(user("block", "sample.*"));
+  });
+
+  it("keeps workspace approval when the toolkit approves", () => {
+    expect(
+      combineEffectivePolicies(
+        user("approve", "sample.ctl.read"),
+        user("require_approval", "sample.*"),
+      ),
+    ).toEqual(user("require_approval", "sample.*"));
+  });
+
+  it("uses an explicit rule over a plugin default", () => {
+    expect(
+      combineEffectivePolicies(
+        user("approve", "sample.ctl.read"),
+        pluginDefault("require_approval"),
+      ),
+    ).toEqual(user("approve", "sample.ctl.read"));
+  });
+
+  it("uses the more restrictive result when both are plugin defaults", () => {
+    expect(
+      combineEffectivePolicies(pluginDefault("approve"), pluginDefault("require_approval")),
+    ).toEqual(pluginDefault("require_approval"));
   });
 });
 
@@ -693,6 +742,100 @@ describe("active tool-policy provider", () => {
       expect(Result.isFailure(blocked)).toBe(true);
       if (!Result.isFailure(blocked)) return;
       expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
+    }),
+  );
+
+  it.effect("enforces workspace require_approval over provider approve", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [staticPlugin, policyProviderPlugin] as const,
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "toolkit-fixture.ctl.allowed",
+        action: "require_approval",
+      });
+
+      const calls = { count: 0 };
+      const result = yield* executor.execute(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+        {},
+        { onElicitation: recordingHandler(calls) },
+      );
+      expect(result).toBe("allowed");
+      expect(calls.count).toBe(1);
+    }),
+  );
+
+  it.effect("enforces workspace block over provider approve", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [staticPlugin, policyProviderPlugin] as const,
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "toolkit-fixture.ctl.allowed",
+        action: "block",
+      });
+
+      expect(yield* executor.tools.list()).toHaveLength(0);
+      const policy = yield* executor.policies.resolve(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+      );
+      expect(policy.action).toBe("block");
+
+      const result = yield* Effect.result(
+        executor.execute(ToolAddress.make("toolkit-fixture.ctl.allowed"), {}),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (!Result.isFailure(result)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+    }),
+  );
+
+  it.effect("combines a prepared provider with workspace policies", () =>
+    Effect.gen(function* () {
+      const preparedProviderPlugin = definePlugin(() => ({
+        id: "prepared-policy-provider" as const,
+        storage: () => ({}),
+        toolPolicyProvider: () => ({
+          list: () => Effect.succeed([]),
+          prepare: () =>
+            Effect.succeed((input: { readonly toolId: string }) =>
+              input.toolId === "toolkit-fixture.ctl.allowed"
+                ? {
+                    action: "approve" as const,
+                    source: "user" as const,
+                    pattern: "toolkit-fixture.ctl.allowed",
+                  }
+                : { action: "block" as const, source: "user" as const, pattern: "*" },
+            ),
+        }),
+      }))();
+      const executor = yield* makeTestExecutor({
+        plugins: [staticPlugin, preparedProviderPlugin] as const,
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "toolkit-fixture.ctl.allowed",
+        action: "require_approval",
+      });
+
+      const calls = { count: 0 };
+      yield* executor.execute(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+        {},
+        { onElicitation: recordingHandler(calls) },
+      );
+      expect(calls.count).toBe(1);
+
+      const hidden = yield* Effect.result(
+        executor.execute(ToolAddress.make("toolkit-fixture.ctl.hidden"), {}),
+      );
+      expect(Result.isFailure(hidden)).toBe(true);
+      expect(
+        (yield* executor.policies.resolve(ToolAddress.make("toolkit-fixture.ctl.hidden"))).action,
+      ).toBe("block");
     }),
   );
 });
