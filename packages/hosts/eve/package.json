@@ -1,0 +1,33 @@
+{
+  "name": "@executor-js/host-eve",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Expose Executor's tool catalog to a Vercel eve agent as codemode execute/resume tools.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@executor-js/codemode-core": "workspace:*",
+    "@executor-js/execution": "workspace:*",
+    "effect": "catalog:",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@executor-js/runtime-quickjs": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@types/node": "catalog:",
+    "bun-types": "catalog:",
+    "vitest": "catalog:"
+  }
+}
