@@ -189,17 +189,17 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const cookieState = request.cookies[STATE_COOKIE] ?? null;
-          // CSRF check is only enforced when the redirect carries a state
-          // value — some WorkOS-initiated redirects don't include one.
-          // When state is present, it MUST match the cookie we set on
-          // /login.
-          if (query.state !== undefined) {
-            if (!cookieState || !timingSafeEqual(cookieState, query.state)) {
-              return deleteResponseCookie(
-                HttpServerResponse.text("Invalid login state", { status: 400 }),
-                STATE_COOKIE,
-              );
-            }
+          // CSRF is unconditional: every callback must carry a state that
+          // matches the cookie set on /login. There is no legitimate
+          // no-state entry path — omitting state previously allowed an
+          // attacker to complete their own OAuth round-trip and redirect a
+          // victim's browser through this callback, signing the victim into
+          // the attacker's account (login CSRF).
+          if (!cookieState || !timingSafeEqual(cookieState, query.state ?? "")) {
+            return deleteResponseCookie(
+              HttpServerResponse.text("Invalid login state", { status: 400 }),
+              STATE_COOKIE,
+            );
           }
 
           const result = yield* workos.authenticateWithCode(query.code);
