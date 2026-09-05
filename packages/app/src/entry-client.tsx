@@ -17,11 +17,17 @@ if ("executor" in window && navigator.platform.includes("Mac")) {
   document.documentElement.classList.add("executor-desktop-macos");
 }
 
-// Resolve the local bearer token (?_token → localStorage → dev global) and set
-// the connection's auth BEFORE the router mounts, so the first API atom carries
-// it. No-op on desktop (the main process injects the header).
-bootstrapLocalAuthToken();
+// Resolve the local bearer token (?_otc exchange → ?_token → localStorage) and
+// set the connection's auth BEFORE the router mounts, so the first API atom
+// carries it. No-op on desktop (the main process injects the header). The OTC
+// exchange is a network round trip — await it (bounded by the fetch itself)
+// so the bearer lands on the connection before the first atom fires.
+const mountApp = async (): Promise<void> => {
+  await bootstrapLocalAuthToken();
 
-const router = getRouter();
+  const router = getRouter();
 
-ReactDOM.createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+  ReactDOM.createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+};
+
+void mountApp();

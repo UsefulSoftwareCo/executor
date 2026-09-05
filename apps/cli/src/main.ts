@@ -1149,7 +1149,10 @@ const runForegroundSession = (input: {
 
       try {
         console.log(`Executor is ready.`);
-        console.log(`Open:    ${baseUrl}/?_token=${server.authToken}`);
+        const otcCode = server.otcStore?.issue() ?? null;
+        console.log(
+          `Open:    ${otcCode ? `${baseUrl}/?_otc=${otcCode}` : `${baseUrl}/?_token=${server.authToken}`}`,
+        );
         console.log(`Web:     ${baseUrl}`);
         console.log(`MCP:     ${baseUrl}/mcp`);
         console.log(`OpenAPI: ${baseUrl}/api/docs`);
@@ -3269,10 +3272,36 @@ const openRunningLocalWebApp = (): Effect.Effect<
     }
     const { origin, auth } = manifest.connection;
     const token = auth?.kind === "bearer" ? auth.token : undefined;
-    const url = token ? `${origin}/?_token=${token}` : origin;
+    if (!token) {
+      console.log(`Opening ${origin}`);
+      yield* openInBrowser(origin);
+      return;
+    }
+    // Mint a one-time bootstrap code instead of putting the bearer in the
+    // URL. The browser exchanges it for the bearer on first load (HttpOnly
+    // cookie + in-memory connection), and the query is stripped.
+    const otc = yield* mintOtcForDaemon(origin, token);
+    const url = otc ? `${origin}/?_otc=${otc}` : `${origin}/?_token=${token}`;
     console.log(`Opening ${url}`);
     yield* openInBrowser(url);
   });
+
+/** Mint a one-time bootstrap code from the running daemon (bearer-gated).
+ *  Falls back to null on any failure — the caller then falls back to the
+ *  legacy `?_token=` URL rather than failing the open. */
+const mintOtcForDaemon = (origin: string, token: string): Effect.Effect<string | null> =>
+  Effect.tryPromise({
+    try: async () => {
+      const res = await fetch(`${origin}/api/auth/otc`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { readonly code?: unknown };
+      return typeof body.code === "string" && body.code.length > 0 ? body.code : null;
+    },
+    catch: () => null,
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
 
 /**
  * `executor open` — the friendly way back in. Reads the running local server's
