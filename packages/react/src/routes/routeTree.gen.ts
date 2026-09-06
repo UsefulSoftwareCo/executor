@@ -16,6 +16,7 @@ import { Route as DotToolkitsRouteImport } from './toolkits'
 import { Route as DotSecretsRouteImport } from './secrets'
 import { Route as DotPoliciesRouteImport } from './policies'
 import { Route as DotArtifactsRouteImport } from './artifacts'
+import { Route as DotActivityRouteImport } from './activity'
 import { Route as DotToolkitsDottoolkitSlugRouteImport } from './toolkits.$toolkitSlug'
 import { Route as DotResumeDotexecutionIdRouteImport } from './resume.$executionId'
 import { Route as DotIntegrationsDotbrowseRouteImport } from './integrations.browse'
@@ -58,6 +59,11 @@ const DotPoliciesRoute = DotPoliciesRouteImport.update({
 const DotArtifactsRoute = DotArtifactsRouteImport.update({
   id: '/{-$orgSlug}/artifacts',
   path: '/{-$orgSlug}/artifacts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DotActivityRoute = DotActivityRouteImport.update({
+  id: '/{-$orgSlug}/activity',
+  path: '/{-$orgSlug}/activity',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DotToolkitsDottoolkitSlugRoute =
@@ -109,6 +115,7 @@ const DotIntegrationsDotaddDotpluginKeyRoute =
   } as any)
 
 export interface FileRoutesByFullPath {
+  '/{-$orgSlug}/activity': typeof DotActivityRoute
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
@@ -126,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/plugins/$pluginId/$': typeof DotPluginsDotpluginIdDotsplatRoute
 }
 export interface FileRoutesByTo {
+  '/{-$orgSlug}/activity': typeof DotActivityRoute
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
@@ -144,6 +152,7 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/{-$orgSlug}/activity': typeof DotActivityRoute
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
@@ -163,6 +172,7 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/{-$orgSlug}/activity'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -180,6 +190,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/plugins/$pluginId/$'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/{-$orgSlug}/activity'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -197,6 +208,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/plugins/$pluginId/$'
   id:
     | '__root__'
+    | '/{-$orgSlug}/activity'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -215,6 +227,7 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  DotActivityRoute: typeof DotActivityRoute
   DotArtifactsRoute: typeof DotArtifactsRouteWithChildren
   DotPoliciesRoute: typeof DotPoliciesRoute
   DotSecretsRoute: typeof DotSecretsRoute
@@ -279,6 +292,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/artifacts'
       fullPath: '/{-$orgSlug}/artifacts'
       preLoaderRoute: typeof DotArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/activity': {
+      id: '/{-$orgSlug}/activity'
+      path: '/{-$orgSlug}/activity'
+      fullPath: '/{-$orgSlug}/activity'
+      preLoaderRoute: typeof DotActivityRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/toolkits/$toolkitSlug': {
@@ -365,6 +385,7 @@ const DotToolkitsRouteWithChildren = DotToolkitsRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
+  DotActivityRoute: DotActivityRoute,
   DotArtifactsRoute: DotArtifactsRouteWithChildren,
   DotPoliciesRoute: DotPoliciesRoute,
   DotSecretsRoute: DotSecretsRoute,

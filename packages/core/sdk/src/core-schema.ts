@@ -375,6 +375,60 @@ export const coreTables = defineTables({
     ["tenant", "owner", "subject", "id"],
   ),
 
+  // One row per tool call that reached `execute`, written after the call
+  // settles. This is the audit trail: which connection an agent used, when,
+  // and how it ended — including the calls a policy blocked and the approvals
+  // a caller declined, which today leave no trace at all.
+  //
+  // Deliberately NOT the analytics catalog in `@executor-js/analytics`: that
+  // one is anonymous by construction and forbids exactly the fields an audit
+  // needs (tool address, integration, connection). Owner-scoped like every
+  // other personal row, so a subject reads back its own calls and nobody
+  // else's.
+  //
+  // Arguments and results are never stored. They carry the caller's data and,
+  // for a credential-shaped argument, the credential itself; `arg_keys` keeps
+  // the top-level parameter NAMES, which is what an audit needs to answer
+  // "what did it ask for" without the table becoming a secret store.
+  tool_call_log: ownedExecutorTable(
+    "tool_call_log",
+    {
+      id: keyColumn("id"),
+      // The address as called: `integration.owner.connection.tool`, or a
+      // static tool's fqid. Verbatim, so a row greps against what the agent
+      // actually wrote.
+      address: textColumn("address"),
+      // The parsed parts, so a report groups by integration or connection
+      // without re-parsing every address. Null for static tools (core-tools,
+      // plugin namespaces), which have no connection behind them.
+      integration: nullableKeyColumn("integration"),
+      connection: nullableKeyColumn("connection"),
+      tool: nullableTextColumn("tool"),
+      // ok | fail | blocked | declined | error — see ToolCallOutcome.
+      outcome: keyColumn("outcome"),
+      // For `fail` the upstream's own error code; otherwise the failure tag.
+      // Null when the call simply succeeded.
+      error_code: nullableTextColumn("error_code"),
+      // One line of human context, truncated. Never a response body.
+      error_message: nullableTextColumn("error_message"),
+      // The policy that governed this call, so the row shows both what
+      // happened and under which rule. Null when no rule matched.
+      policy_action: nullableTextColumn("policy_action"),
+      policy_pattern: nullableTextColumn("policy_pattern"),
+      // Wall-clock duration of the call, in milliseconds.
+      duration_ms: bigintColumn("duration_ms"),
+      // Top-level argument names only — never their values.
+      arg_keys: nullableJsonColumn("arg_keys"),
+      created_at: dateColumn("created_at"),
+    },
+    // The conventional owned-table key. Note what it does NOT do: a subject's
+    // view spans two partitions (its own rows plus the org's), so a newest-
+    // first read across both still sorts. Serving that would take a
+    // `(tenant, created_at)` index, and the schema layer has no non-unique
+    // index yet — worth adding before this table gets large.
+    ["tenant", "owner", "subject", "id"],
+  ),
+
   // A saved generative-UI artifact — the JSX source a model produced, kept so
   // it can be re-rendered later and matched by title/description from any MCP
   // client. Owner-scoped like every other personal row: artifacts are created
@@ -470,6 +524,28 @@ export const TOOL_INVOCATION_COLUMNS = [
 export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
 export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
 export type ArtifactRow = FumaRow<CoreSchema["artifact"]>;
+export type ToolCallLogRow = FumaRow<CoreSchema["tool_call_log"]>;
+
+/**
+ * How a tool call ended.
+ *
+ * `ok` and `fail` both mean the call reached the upstream service: `fail` is
+ * the tool's own error result (a 404 from the API, an expired credential),
+ * which travels the success channel and would otherwise read as healthy.
+ * `blocked` and `declined` mean it never left the gateway — a policy stopped
+ * it, or the human refused the approval. `error` is everything else: the tool
+ * or connection did not exist, the plugin could not be loaded, the transport
+ * broke.
+ */
+export type ToolCallOutcome = "ok" | "fail" | "blocked" | "declined" | "error";
+
+export const TOOL_CALL_OUTCOMES = [
+  "ok",
+  "fail",
+  "blocked",
+  "declined",
+  "error",
+] as const satisfies readonly ToolCallOutcome[];
 /**
  * The columns a list projects — everything except the JSX source, which only a
  * full read needs.
