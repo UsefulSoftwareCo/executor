@@ -154,6 +154,8 @@ const googleCatalogMethodPrefixFixtures: ReadonlyMap<string, readonly string[]> 
   ["google-chat", ["chat.spaces.list"]],
   ["google-youtube-data", ["youtube.channels.list"]],
   ["google-search-console", ["searchconsole.sites.list", "webmasters.sites.list"]],
+  ["google-analytics-data", ["analyticsdata.properties.runReport"]],
+  ["google-analytics-admin", ["analyticsadmin.accountSummaries.list"]],
   ["google-classroom", ["classroom.courses.list"]],
   [
     "google-admin-directory",
