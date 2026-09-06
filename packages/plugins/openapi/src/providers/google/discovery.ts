@@ -41,6 +41,7 @@ type GoogleDiscoveryServiceOverride = {
 };
 
 const GOOGLE_DISCOVERY_SERVICE_OVERRIDES: Record<string, GoogleDiscoveryServiceOverride> = {
+  analyticsdata: { preserveServiceHostedUrl: true },
   forms: { preserveServiceHostedUrl: true },
   keep: { preserveServiceHostedUrl: true },
   [GOOGLE_PHOTOS_PICKER_SERVICE]: {
