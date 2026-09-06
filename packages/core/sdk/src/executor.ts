@@ -4453,6 +4453,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // pre-reconnect "expired" outlive the reconnect; the next health
               // check writes the verdict for the new grant.
               last_health: null,
+              // A fresh grant invalidates the catalog's freshness even when
+              // its remote rebuild runs after the OAuth callback responds.
+              // If that background task is interrupted, the next tools read
+              // sees this marker and converges it through the normal stale
+              // catalog path.
+              tools_synced_at: null,
               updated_at: now,
             };
             if (existing) {
@@ -4599,13 +4605,44 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               );
             }
 
-            // Produce + persist tools for the minted connection (same path
-            // connections.create uses).
-            yield* produceConnectionTools(integrationRow, ref).pipe(
+            // The connection row and credential are already durable. Interactive
+            // OAuth callbacks return at this boundary and let remote discovery run
+            // under the host's keep-alive; otherwise a slow MCP listTools call can
+            // keep the popup open until the Worker request is cancelled. Explicit
+            // mints (for example client_credentials) retain the original contract.
+            const syncTools = produceConnectionTools(
+              integrationRow,
+              ref,
+              input.toolSync ?? "explicit",
+            ).pipe(
               Effect.catchTag("IntegrationNotFoundError", () =>
                 Effect.succeed([] as readonly Tool[]),
               ),
             );
+            if (input.toolSync === "background") {
+              const fiber = yield* Effect.forkDetach(
+                syncTools.pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("executor OAuth tool sync failed", {
+                      integration: String(ref.integration),
+                      connection: String(ref.name),
+                      error: describeSyncFailure(error),
+                    }),
+                  ),
+                  Effect.withSpan("executor.oauth.tools.sync", {
+                    attributes: {
+                      "executor.integration": String(ref.integration),
+                      "executor.connection": String(ref.name),
+                    },
+                  }),
+                ),
+              );
+              config.waitUntil?.(
+                new Promise<void>((resolve) => fiber.addObserver(() => resolve(undefined))),
+              );
+            } else {
+              yield* syncTools;
+            }
           }),
         );
 
