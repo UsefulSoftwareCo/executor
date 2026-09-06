@@ -263,6 +263,30 @@ describe("oauth.start / oauth.complete", () => {
         }),
       ),
   );
+  it.effect("createClient rejects owner user when subject is local", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins, subject: "local" }));
+      let seen = false;
+      yield* executor.oauth
+        .createClient({
+          owner: "user",
+          slug: OAuthClientSlug.make("personal"),
+          authorizationUrl: "https://example.com/authorize",
+          tokenUrl: "https://example.com/token",
+          grant: "authorization_code",
+          clientId: "id",
+          clientSecret: "secret",
+        })
+        .pipe(
+          Effect.catchTag("StorageError", (err) => {
+            seen = true;
+            expect(err.message).toContain("User-owned OAuth clients are not supported");
+            return Effect.void;
+          }),
+        );
+      expect(seen).toBe(true);
+    }),
+  );
 
   it.effect("persists HTTP Basic client auth for code exchange and refresh", () =>
     Effect.scoped(
@@ -999,7 +1023,7 @@ describe("oauth.start / oauth.complete", () => {
         );
         expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
         const startError = error as OAuthStartError;
-        expect(startError.message).toContain("must use a Workspace app");
+        expect(startError.message).toContain("must use an org-owned OAuth client");
       }),
     ),
   );
