@@ -409,20 +409,29 @@ export const missingGrantedOAuthScopes = (
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 
-/** Extract the persisted `requestedScopes` from an `oauth_session.payload`. The
+/** Extract a persisted scope list from an `oauth_session.payload`. The
  *  jsonColumn may surface as a parsed object (in-memory backends) or a JSON
- *  string (serialized backends); decode strings before reading. Returns `null`
- *  for legacy sessions written before `requestedScopes` was persisted, so
- *  `complete` can fall back to the client's scopes. */
-const requestedScopesFromPayload = (payload: unknown): readonly string[] | null => {
+ *  string (serialized backends); decode strings before reading. */
+const scopesFromPayload = (payload: unknown, key: string): readonly string[] | null => {
   const decoded =
     typeof payload === "string"
       ? decodeJsonPayload(payload).pipe(Option.getOrElse(() => payload))
       : payload;
   if (decoded === null || typeof decoded !== "object") return null;
-  const value = (decoded as Record<string, unknown>).requestedScopes;
+  const value = (decoded as Record<string, unknown>)[key];
   return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string") : null;
 };
+
+/** Returns `null` for legacy sessions written before `requestedScopes` was
+ * persisted, so `complete` can fall back to the client's scopes. */
+const requestedScopesFromPayload = (payload: unknown): readonly string[] | null =>
+  scopesFromPayload(payload, "requestedScopes");
+
+/** Required scopes are distinct from dynamically discovered supported scopes.
+ * Legacy sessions deliberately fall back to their requested set at completion,
+ * preserving the verdict they would have received before this field existed. */
+const requiredScopesFromPayload = (payload: unknown): readonly string[] | null =>
+  scopesFromPayload(payload, "requiredScopes");
 
 /** Read the app owner `start` recorded on the session payload. Null when absent
  *  (same-owner connects, or sessions written before this field), so `complete`
@@ -1795,6 +1804,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           client,
           token,
           requestedScopes,
+          scopePolicy.kind === "scopes" ? requestedScopes : [],
           input.clientOwner,
           // client_credentials has no callback, so no regional rebind applies.
           null,
@@ -1975,6 +1985,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         ...authorizationRequestedScopes,
         ...(firstParty?.additionalAuthorizationScopes ?? []),
       ]);
+      // RFC 9728 `scopes_supported` advertises capabilities; it does not make
+      // every discovered value a requirement. Only integration/client policy
+      // that explicitly declares scopes can produce a missing-scope verdict.
+      const requiredAuthorizationScopes =
+        firstParty?.authorizationScopes !== undefined || scopePolicy.kind === "scopes"
+          ? completeAuthorizationScopes
+          : dedupeScopes(firstParty?.additionalAuthorizationScopes ?? []);
 
       // authorization_code: persist a session + build the authorize URL.
       const verifier = createPkceCodeVerifier();
@@ -2037,6 +2054,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             owner: input.owner,
             clientOwner: input.clientOwner,
             requestedScopes: completeAuthorizationScopes,
+            requiredScopes: requiredAuthorizationScopes,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -2106,6 +2124,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // recorded-scope fallback when the AS omits `scope`. Missing/legacy
         // payloads fall back to the client's scopes below.
         requestedScopes: requestedScopesFromPayload(sessionRow.payload),
+        requiredScopes: requiredScopesFromPayload(sessionRow.payload),
         // The app's owner, recorded by `start` — reload the SAME app at
         // completion by explicit owner (no derivation). Defaults to the session
         // owner for same-owner connects.
@@ -2211,6 +2230,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // The scopes `start` requested (the integration's declared set), persisted
         // on the session. Empty only for a corrupt/legacy session with no payload.
         session.requestedScopes ?? [],
+        // Legacy sessions predate the required/supported distinction and retain
+        // their historical requested-scope verdict.
+        session.requiredScopes ?? session.requestedScopes ?? [],
         session.clientOwner,
         // Persist the regional token endpoint ONLY when it differs from the
         // client's configured one, so refresh redeems against the same region.
@@ -2285,6 +2307,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
      *  declared or discovered scopes) — the recorded-scope fallback when the AS
      *  omits `scope`. */
     requestedScopes: readonly string[],
+    /** Scopes explicitly required by integration/client policy. Dynamically
+     * discovered `scopes_supported` values are capabilities, not requirements. */
+    requiredScopes: readonly string[],
     /** The owner of `client` — persisted so refresh loads it by explicit owner. */
     clientOwner: Owner,
     /** Regional token endpoint override to persist when the code was redeemed
@@ -2313,7 +2338,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const oauthScope = recordedOAuthScope(token, requestedScopes);
       const missingScopes =
         client.grant === "authorization_code"
-          ? missingGrantedOAuthScopes(requestedScopes, oauthScope)
+          ? missingGrantedOAuthScopes(requiredScopes, oauthScope)
           : [];
       // The freshness facts of this connection AT BIRTH, on the enclosing
       // span (executor.oauth.complete, or the reconnect path's request
@@ -2325,6 +2350,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // customer resource names on some providers.
       yield* Effect.annotateCurrentSpan({
         "executor.oauth.scope_requested_count": requestedScopes.length,
+        "executor.oauth.scope_required_count": requiredScopes.length,
         "executor.oauth.scope_missing_count": missingScopes.length,
         "executor.oauth.has_refresh_token": token.refresh_token !== undefined,
         "executor.oauth.has_advertised_expiry": typeof token.expires_in === "number",
