@@ -22,6 +22,7 @@ import {
   ToolCallFinished,
   ToolCallStarted,
   emitExecutionEvent,
+  isToolResult,
   noopExecutionObserver,
   withExecutionObserver,
 } from "@executor-js/sdk/core";
@@ -654,19 +655,64 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       owner,
       status: result.error ? "failed" : "completed",
       result: result.result,
+      output: result.output,
       error: result.error,
       logs: result.logs,
       completedAt: new Date(),
     });
 
+  // An interrupt-only cause is the run being torn down from outside (client
+  // abort, host backstop, sandbox shutdown), not the code failing: record it as
+  // `interrupted` so history never shows it as a code failure.
   const finishFromCause = (executionId: ExecutionId, cause: Cause.Cause<E>): ExecutionFinished =>
     new ExecutionFinished({
       executionId,
       owner,
-      status: "failed",
+      status: Cause.hasInterruptsOnly(cause) ? "interrupted" : "failed",
       error: Cause.pretty(cause),
       completedAt: new Date(),
     });
+
+  /** Emit the terminal event for a sandbox run from its exit. Attached with
+   *  `Effect.onExit` so it runs as a finalizer — uninterruptibly — and an
+   *  interrupted run still closes in every observer instead of dangling as
+   *  "running" forever. */
+  const observeFinish =
+    (executionId: ExecutionId) =>
+    (exit: Exit.Exit<ExecuteResult, E>): Effect.Effect<void> =>
+      Exit.isSuccess(exit)
+        ? emitExecutionEvent(finishFromResult(executionId, exit.value))
+        : emitExecutionEvent(finishFromCause(executionId, exit.cause));
+
+  /** Expected tool failures ride the success channel as `ToolResult.fail`
+   *  envelopes; surface them to observers as failed calls (with the result kept
+   *  for inspection) so history does not record an upstream 4xx as success. */
+  const toolCallFinishedFromResult = (
+    executionId: ExecutionId,
+    toolCallId: ExecutionToolCallId,
+    path: string,
+    result: unknown,
+  ): ToolCallFinished =>
+    isToolResult(result) && !result.ok
+      ? new ToolCallFinished({
+          executionId,
+          toolCallId,
+          owner,
+          path,
+          status: "failed",
+          result,
+          error: `${result.error.code}: ${result.error.message}`,
+          completedAt: new Date(),
+        })
+      : new ToolCallFinished({
+          executionId,
+          toolCallId,
+          owner,
+          path,
+          status: "completed",
+          result,
+          completedAt: new Date(),
+        });
 
   /** Wrap an invoker so each tool call brackets `ToolCallStarted`/`Finished`. */
   const observeToolCalls = (
@@ -689,15 +735,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         return yield* inner.invoke(call).pipe(
           Effect.tap((result) =>
             emitExecutionEvent(
-              new ToolCallFinished({
-                executionId,
-                toolCallId,
-                owner,
-                path: call.path,
-                status: "completed",
-                result,
-                completedAt: new Date(),
-              }),
+              toolCallFinishedFromResult(executionId, toolCallId, call.path, result),
             ),
           ),
           Effect.tapCause((cause) =>
@@ -919,11 +957,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       makeFullInvoker(executor, { onElicitation: elicitationHandler }, toolDiscoveryProvider),
     );
     fiber = yield* Effect.forkDetach(
-      codeExecutor.execute(code, invoker).pipe(
-        Effect.withSpan("executor.code.exec"),
-        Effect.tap((result) => emitExecutionEvent(finishFromResult(executionId, result))),
-        Effect.tapCause((cause) => emitExecutionEvent(finishFromCause(executionId, cause))),
-      ),
+      codeExecutor
+        .execute(code, invoker)
+        .pipe(Effect.withSpan("executor.code.exec"), Effect.onExit(observeFinish(executionId))),
     );
     liveSandboxFibers.add(fiber);
 
@@ -1072,11 +1108,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         toolDiscoveryProvider,
       ),
     );
-    const result = yield* codeExecutor.execute(code, invoker).pipe(
-      Effect.withSpan("executor.code.exec"),
-      Effect.tap((result) => emitExecutionEvent(finishFromResult(executionId, result))),
-      Effect.tapCause((cause) => emitExecutionEvent(finishFromCause(executionId, cause))),
-    );
+    const result = yield* codeExecutor
+      .execute(code, invoker)
+      .pipe(Effect.withSpan("executor.code.exec"), Effect.onExit(observeFinish(executionId)));
     yield* annotateExecuteOutcome(result);
     return result;
   });

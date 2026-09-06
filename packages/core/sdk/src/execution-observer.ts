@@ -26,7 +26,22 @@ export type ExecutionTrigger = {
 
 export type ToolCallStatus = "completed" | "failed";
 export type InteractionStatus = "accepted" | "declined" | "cancelled" | "failed";
-export type ExecutionStatus = "completed" | "failed";
+/**
+ * How a run ended. `interrupted` is the run being torn down from outside
+ * (client abort, host backstop timeout, sandbox shutdown) rather than the code
+ * finishing or failing on its own; it carries no result and no logs.
+ */
+export type ExecutionStatus = "completed" | "failed" | "interrupted";
+
+/**
+ * One item the code sent to the user through `emit()`. Mirrors the sandbox's
+ * `ExecuteOutputItem` structurally so the observer contract stays free of the
+ * kernel package: `content` is an arbitrary JSON value; `file` is a file
+ * reference (never inline bytes).
+ */
+export type ExecutionOutputItem =
+  | { readonly type: "content"; readonly content: unknown }
+  | { readonly type: "file"; readonly file: unknown };
 
 export class ExecutionStarted extends Data.TaggedClass("ExecutionStarted")<{
   readonly executionId: ExecutionId;
@@ -78,7 +93,10 @@ export class ExecutionFinished extends Data.TaggedClass("ExecutionFinished")<{
   readonly executionId: ExecutionId;
   readonly owner: OwnerBinding;
   readonly status: ExecutionStatus;
+  /** The code's return value (`null`/absent when it only emitted). */
   readonly result?: unknown;
+  /** Everything the code sent to the user through `emit()`, in order. */
+  readonly output?: readonly ExecutionOutputItem[];
   readonly error?: string;
   readonly logs?: readonly string[];
   readonly completedAt: Date;

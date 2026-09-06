@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Schema } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Schema } from "effect";
 
 import { createExecutor, definePlugin, ElicitationResponse, tool } from "@executor-js/sdk";
 import type { ExecutionEvent, ExecutionObserver } from "@executor-js/sdk";
@@ -127,6 +127,80 @@ describe("execution engine observer emission", () => {
       expect(interactionStarted?.context.request.message).toContain("approval");
       expect(interactionResolved?.status).toBe("accepted");
       expect(interactionResolved?.response?.action).toBe("accept");
+    }),
+  );
+
+  it.effect("records a ToolResult failure envelope as a failed tool call", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const { events, observer } = collectingObserver();
+      // Invoke a path that resolves to `ToolResult.fail` on the success channel
+      // (an unknown tool is the cheapest such case).
+      const failingEnvelopeExecutor: CodeExecutor = {
+        execute: (code, invoker) =>
+          invoker
+            .invoke({ path: "nope.missing.tool", args: {} })
+            .pipe(Effect.as({ result: null, logs: [] } satisfies ExecuteResult), Effect.orDie),
+      };
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: failingEnvelopeExecutor,
+        observer,
+      });
+      yield* engine.executeWithPause("noop");
+
+      const toolFinished = events.find((e) => Predicate.isTagged(e, "ToolCallFinished"));
+      expect(toolFinished?.status).toBe("failed");
+      expect(toolFinished?.error).toMatch(/^tool_not_found: /);
+      // The envelope itself stays attached for inspection.
+      expect(toolFinished?.result).toMatchObject({ ok: false });
+      const finished = events.find((e) => Predicate.isTagged(e, "ExecutionFinished"));
+      expect(finished?.status).toBe("completed");
+    }),
+  );
+
+  it.effect("carries emitted output on ExecutionFinished", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const { events, observer } = collectingObserver();
+      const emittingExecutor: CodeExecutor = {
+        execute: () =>
+          Effect.succeed({
+            result: null,
+            output: [{ type: "content", content: { hello: "world" } }],
+            logs: ["[log] hi"],
+          } satisfies ExecuteResult),
+      };
+      const engine = createExecutionEngine({ executor, codeExecutor: emittingExecutor, observer });
+      yield* engine.executeWithPause("emit({ hello: 'world' })");
+
+      const finished = events.find((e) => Predicate.isTagged(e, "ExecutionFinished"));
+      expect(finished?.status).toBe("completed");
+      expect(finished?.result).toBeNull();
+      expect(finished?.output).toEqual([{ type: "content", content: { hello: "world" } }]);
+      expect(finished?.logs).toEqual(["[log] hi"]);
+    }),
+  );
+
+  it.effect("closes an interrupted run as `interrupted` via the exit finalizer", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutor();
+      const { events, observer } = collectingObserver();
+      const started = yield* Deferred.make<void>();
+      // Never completes on its own; only engine.shutdown interrupts it.
+      const hangingExecutor: CodeExecutor = {
+        execute: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      };
+      const engine = createExecutionEngine({ executor, codeExecutor: hangingExecutor, observer });
+      const run = yield* Effect.forkChild(engine.executeWithPause("while (true) {}"));
+      yield* Deferred.await(started);
+      yield* engine.shutdown;
+      yield* Fiber.await(run);
+
+      const finished = events.find((e) => Predicate.isTagged(e, "ExecutionFinished"));
+      expect(finished?.status).toBe("interrupted");
+      expect(finished?.result).toBeUndefined();
+      expect(Predicate.isTagged(events[events.length - 1], "ExecutionFinished")).toBe(true);
     }),
   );
 
