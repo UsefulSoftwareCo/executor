@@ -1,6 +1,13 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
-import { admin, bearer, deviceAuthorization, mcp, organization } from "better-auth/plugins";
+import {
+  admin,
+  bearer,
+  deviceAuthorization,
+  genericOAuth,
+  mcp,
+  organization,
+} from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { type Client } from "@libsql/client";
 import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
@@ -9,6 +16,7 @@ import { Context } from "effect";
 import { loadConfig } from "../config";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
+import { isAdmitted, isOAuthCallback, ssoProviderConfig } from "./sso";
 
 // The self-service signup gate: present only on the live (phase-2) auth
 // instance, so the bootstrap seed's `createUser` — which
@@ -165,6 +173,14 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       // is the page the user opens to confirm the code — the self-host app serves
       // it at /device (this is also the Better Auth default; pinned for clarity).
       deviceAuthorization({ verificationUri: "/device" }),
+      // The operator-configured SSO provider (see config.ts), spoken over plain
+      // OIDC discovery so Google, Okta, Entra, or any compliant IdP slots in —
+      // and so tests can point it at an emulated IdP. The domain gate below is
+      // what admits or refuses the users this creates; enabling the provider
+      // alone never opens registration. Always in the plugin tuple (an empty
+      // provider list serves no routes that match) so the inferred `auth.api`
+      // shape doesn't depend on the environment.
+      genericOAuth({ config: config.sso ? [ssoProviderConfig(config.sso)] : [] }),
       // `consentPage` makes the MCP authorize flow redirect to a human approval
       // screen instead of auto-issuing a code — but ONLY when the request
       // carries `prompt=consent`. MCP clients don't send that, so the self-host
@@ -199,8 +215,26 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
         ? {
             user: {
               create: {
-                before: async (_user, context) => {
-                  if (context?.path !== SIGNUP_PATH) return;
+                before: async (user, context) => {
+                  if (context?.path !== SIGNUP_PATH) {
+                    // SSO sign-ups arrive on an OAuth callback path; the
+                    // verified-domain allowlist gates them in place of an
+                    // invite code. Server-side creation (the seed, admin
+                    // add-user) passes.
+                    const sso = config.sso;
+                    if (
+                      isOAuthCallback(context?.path) &&
+                      !(sso !== undefined && isAdmitted(sso, user))
+                    ) {
+                      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a Better Auth create hook rejects a request by throwing APIError
+                      throw new APIError("FORBIDDEN", {
+                        message: sso
+                          ? `Sign-ups are restricted to verified ${sso.allowedDomains.map((d) => `@${d}`).join(", ")} accounts.`
+                          : "SSO sign-up is not enabled on this instance.",
+                      });
+                    }
+                    return;
+                  }
                   if (await orgHasNoMembers(gate)) return; // first user claims the org
                   const code = inviteCodeFrom(context);
                   if (!code) {
@@ -217,9 +251,30 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
                   }
                 },
                 after: async (user, context) => {
-                  if (context?.path !== SIGNUP_PATH) return;
                   const auth = gate.getAuth();
                   if (!auth) return;
+                  if (context?.path !== SIGNUP_PATH) {
+                    // An SSO user that reached `after` was admitted by
+                    // `before`; joining the instance org as a member is what an
+                    // invite redemption would have done. Server-side creation
+                    // (no callback path) is left alone — the seed manages its
+                    // own membership.
+                    const sso = config.sso;
+                    if (
+                      isOAuthCallback(context?.path) &&
+                      sso !== undefined &&
+                      isAdmitted(sso, user)
+                    ) {
+                      await auth.api.addMember({
+                        body: {
+                          userId: user.id,
+                          role: "member",
+                          organizationId: gate.organizationId,
+                        },
+                      });
+                    }
+                    return;
+                  }
                   // First user into an empty org becomes its owner (no code).
                   if (await orgHasNoMembers(gate)) {
                     await auth.api.addMember({

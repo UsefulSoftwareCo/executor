@@ -5,7 +5,7 @@
 //
 // Picking the value is a squeeze from both sides. It must be LOW enough that
 // the backstop scenario can exhaust it with real sequential executions (prod's
-// 1000/hour cannot be reached in a test), and HIGH enough that no other
+// 10,000/hour cannot be reached in a test), and HIGH enough that no other
 // scenario trips it: the counter is per organization and every `execute` a
 // scenario runs counts against its org, so this must exceed the busiest
 // single-org scenario's execute count (currently toolkits-mcp at ~8) with

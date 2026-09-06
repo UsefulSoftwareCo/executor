@@ -681,15 +681,11 @@ function NoConnectionToolsEmptyState(props: {
         <p className="mt-1.5 text-sm text-muted-foreground">
           Add a connection to unlock this integration's tools.
         </p>
-        <Button
-          type="button"
-          size="sm"
-          className="mt-4"
-          onClick={props.onAddConnection}
-          disabled={!props.canAddConnection}
-        >
-          Add connection
-        </Button>
+        {props.canAddConnection ? (
+          <Button type="button" size="sm" className="mt-4" onClick={props.onAddConnection}>
+            Add connection
+          </Button>
+        ) : null}
       </div>
     </div>
   );

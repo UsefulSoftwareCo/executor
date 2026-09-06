@@ -24,6 +24,7 @@
 
 import { Schema } from "effect";
 
+import { NO_AUTH_TEMPLATE } from "../ids";
 import { TOKEN_VARIABLE, type ApiKeyAuthMethod, type AuthPlacement } from "./auth-method";
 
 export interface AuthTemplateVariable {
@@ -69,7 +70,13 @@ export const ApiKeyAuthTemplate = Schema.Struct({
   label: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, AuthTemplateValue)),
   queryParams: Schema.optional(Schema.Record(Schema.String, AuthTemplateValue)),
-});
+}).check(
+  Schema.makeFilter((template) =>
+    template.slug?.trim() === String(NO_AUTH_TEMPLATE)
+      ? `The auth template slug "${String(NO_AUTH_TEMPLATE)}" is reserved for no-auth methods`
+      : undefined,
+  ),
+);
 export type ApiKeyAuthTemplate = typeof ApiKeyAuthTemplate.Type;
 
 const placementFromValue = (

@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Layer, Ref } from "effect";
+import { Cause, Effect, Layer, Ref, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import {
@@ -22,6 +22,8 @@ import {
   McpServingRoutes,
   McpDiscoveryRoutes,
   McpSessionStore,
+  orgWriteAccessForPrincipal,
+  Principal as PrincipalSchema,
   preInitializeMethodNotFound,
   type McpResource,
   type McpDispatchResult,
@@ -38,7 +40,25 @@ const TEST_PRINCIPAL: Principal = {
   name: "Test",
   avatarUrl: null,
   roles: ["user"],
+  orgRoleModel: "none",
 };
+
+it("allows workspace writes only when a role-less host explicitly declares no model", () => {
+  expect(orgWriteAccessForPrincipal(TEST_PRINCIPAL)).toBe("allowed");
+  expect(
+    orgWriteAccessForPrincipal({
+      ...TEST_PRINCIPAL,
+      orgRoleModel: "organization",
+    }),
+  ).toBe("denied");
+});
+
+it.effect("rejects a role on the no-role principal arm", () =>
+  Schema.decodeUnknownEffect(PrincipalSchema)({
+    ...TEST_PRINCIPAL,
+    orgRole: "member",
+  }).pipe(Effect.flip, Effect.asVoid),
+);
 
 /** An auth provider that authenticates everything (so dispatch is reached). */
 const AuthProviderLive = Layer.succeed(McpAuthProvider)({

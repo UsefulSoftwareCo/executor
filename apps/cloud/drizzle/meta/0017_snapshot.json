@@ -1,5 +1,5 @@
 {
-  "id": "90eb5baa-0e07-4514-8a37-cebc3fabcee4",
+  "id": "42251aa3-ae24-4010-ac65-9f41e26cdc20",
   "prevId": "f22622e4-cfd6-4224-b653-050244dc511e",
   "version": "7",
   "dialect": "postgresql",
@@ -351,6 +351,12 @@
           "type": "json",
           "primaryKey": false,
           "notNull": true
+        },
+        "credential_write": {
+          "name": "credential_write",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false
         },
         "identity_label": {
           "name": "identity_label",
@@ -774,6 +780,12 @@
         "client_secret_item_id": {
           "name": "client_secret_item_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_write": {
+          "name": "credential_write",
+          "type": "json",
           "primaryKey": false,
           "notNull": false
         },
@@ -1352,155 +1364,6 @@
             },
             {
               "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.tool_call_log": {
-      "name": "tool_call_log",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "address": {
-          "name": "address",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "integration": {
-          "name": "integration",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection": {
-          "name": "connection",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tool": {
-          "name": "tool",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "error_code": {
-          "name": "error_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error_message": {
-          "name": "error_message",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "policy_action": {
-          "name": "policy_action",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "policy_pattern": {
-          "name": "policy_pattern",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "duration_ms": {
-          "name": "duration_ms",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "arg_keys": {
-          "name": "arg_keys",
-          "type": "json",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "row_id": {
-          "name": "row_id",
-          "type": "varchar(255)",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "tenant": {
-          "name": "tenant",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner": {
-          "name": "owner",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject": {
-          "name": "subject",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "tool_call_log_uidx": {
-          "name": "tool_call_log_uidx",
-          "columns": [
-            {
-              "expression": "tenant",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "owner",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

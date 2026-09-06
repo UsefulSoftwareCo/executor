@@ -16,8 +16,9 @@
 // same place. `packages/react/src/routes/connect-deep-link.test.ts` only proves
 // the router parses the param. Neither has a second org to land in by mistake.
 //
-// So: a recipient who is a member of TWO orgs, whose session defaults to org B,
-// follows an org-A-scoped link, and the credential must end up in org A.
+// So: a recipient who is a plain member of TWO orgs, whose session defaults to
+// org B, follows an org-A-scoped link. The request must open the forced-Personal
+// connection flow in org A — never enter a connection flow in B.
 //
 // Both orgs register an integration under the SAME slug — that is what makes
 // this a real test. With distinct slugs, org B's catalog would simply not
@@ -41,8 +42,6 @@ import { activeOrg, forBrowser, joinOrg, organizationsOf } from "./support/sessi
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
 
-/** The spec's title, which the console uses to name a saved connection
- *  ("Personal Ping API"). */
 const INTEGRATION_TITLE = "Ping API";
 
 /** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
@@ -75,7 +74,7 @@ const registerIntegration = (client: Client, slug: IntegrationSlug) =>
   });
 
 scenario(
-  "Connect · an org-scoped connect link lands a multi-org recipient in the SENDING org",
+  "Connect · an org-scoped connect link resolves a multi-org recipient in the SENDING org",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -136,54 +135,44 @@ scenario(
             // connections open, so idle is not a state this page reaches. The
             // real wait is the redirect assertion below.
             await page.goto(connectLink, { waitUntil: "domcontentloaded" });
-            // The deep link forwards into the integration detail route with the
-            // add-account handoff — and it must keep ORG A's prefix through the
-            // redirect. Landing on `/${orgB.slug}/...` here IS the bug.
+            // A plain member can add a Personal connection. The org-A prefix
+            // still proves the link resolved against the SENDING workspace
+            // rather than session org B.
             await page.waitForURL((url) => url.pathname === `/${orgA.slug}/integrations/${slug}`, {
               timeout: 30_000,
             });
             expect(
               new URL(page.url()).pathname.split("/").filter(Boolean)[0],
-              "the connect flow stayed in the SENDING org, not the session default",
+              "the Personal add flow is scoped to the SENDING org, not the session default",
             ).toBe(orgA.slug);
-            expect(new URL(page.url()).searchParams.get("addAccount")).toBe("1");
+            expect(
+              new URL(page.url()).searchParams.get("addAccount"),
+              "the member enters the add-account route",
+            ).toBe("1");
+            const dialog = page.getByRole("dialog");
+            await dialog
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
+            expect(
+              await dialog.getByText("Workspace", { exact: true }).count(),
+              "the member is forced to Personal scope",
+            ).toBe(0);
           });
 
-          await step("Complete the connection from that page", async () => {
+          await step("Complete the Personal connection in org A", async () => {
             const dialog = page.getByRole("dialog");
-            await dialog.getByRole("heading", { name: /Add connection/ }).waitFor({
-              timeout: 30_000,
-            });
-            // The credential field is labelled by the method's PLACEMENT (the
-            // `authorization` header this spec declares), not by the variable.
-            // Waited for explicitly: the field renders only once the modal has
-            // loaded the integration's auth methods, which is a second fetch
-            // after the heading appears.
             const credential = dialog.getByRole("textbox", { name: "authorization" });
             await credential.waitFor({ state: "visible", timeout: 90_000 });
             await credential.fill("recipient-personal-token");
-            // The offered health check is opt-in (it runs only on "Check"), and
-            // this spec's base URL is never served — so the credential is saved
-            // unprobed, which is what this scenario is about: WHERE it lands,
-            // not whether it works.
             await dialog.getByRole("button", { name: "Continue" }).click();
             await dialog.getByRole("button", { name: "Add connection" }).click();
-            // The saved credential appears as a row in the accounts list of the
-            // page it was saved from — and that page is ORG A's (its URL was
-            // pinned to `orgA.slug` in the step above). So this row IS the
-            // "landed in the sending workspace" half of the guarantee, read
-            // from the surface the recipient is actually looking at.
-            //
-            // Waited on rather than the success toast (which auto-dismisses
-            // below the fold) or the dialog's disappearance (which races the
-            // close animation).
             await page
               .getByText(`Personal ${INTEGRATION_TITLE}`, { exact: true })
               .first()
               .waitFor({ state: "visible", timeout: 90_000 });
             expect(
               new URL(page.url()).pathname.split("/").filter(Boolean)[0],
-              "the credential was saved from a page scoped to the SENDING org",
+              "the submitted Personal connection stayed in the sending org",
             ).toBe(orgA.slug);
           });
 
@@ -191,35 +180,29 @@ scenario(
           //
           // Same person, same session, same integration slug — the only thing
           // that differs is the org in the URL. Org B registered the SAME slug,
-          // so this page exists and renders; it simply must hold no connection.
-          // Had the link resolved against the session default, THIS is the page
-          // the credential would be on.
-          await step("Org B — the session's own default — has none", async () => {
+          // so this page exists and must resolve an empty connection list.
+          await step("Org B has no persisted connection", async () => {
             await page.goto(`${origin}/${orgB.slug}/integrations/${slug}?tab=accounts`, {
               waitUntil: "domcontentloaded",
             });
-            // Wait for the accounts panel to finish loading before asserting an
-            // absence, so "not rendered yet" cannot pass as "not there". The
-            // empty state is the positive signal that the list resolved AND is
-            // empty — checking only for the missing row would also pass while
-            // the list was still loading.
-            await page
-              .getByRole("button", { name: "Add connection" })
-              .first()
-              .waitFor({ state: "visible", timeout: 90_000 });
+            const add = page.getByRole("button", { name: "Add connection" });
+            await add.waitFor({ state: "visible", timeout: 90_000 });
             await page
               .getByText("No connections", { exact: false })
               .first()
               .waitFor({ state: "visible", timeout: 90_000 });
             expect(
+              new URL(page.url()).pathname.split("/").filter(Boolean)[0],
+              "navigating explicitly to org B changes the active add-flow scope",
+            ).toBe(orgB.slug);
+            expect(
               await page.getByText(`Personal ${INTEGRATION_TITLE}`, { exact: true }).count(),
-              "nothing landed in the org the recipient's session happened to default to",
+              "the submitted connection did not land in the session-default org",
             ).toBe(0);
           });
         });
       }),
-      // Removing each org's spec takes its connections with it, so the
-      // UI-created credential (whose name the console chose) needs no lookup.
+      // Remove the same-slug fixtures from both organizations.
       Effect.all(
         [
           ownerAClient.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),

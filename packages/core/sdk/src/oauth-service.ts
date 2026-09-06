@@ -14,13 +14,25 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Layer, Match, Option, Predicate, Schema } from "effect";
+import { Duration, Effect, Exit, Layer, Match, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
 import type { Connection } from "./connection";
+import type { OrgWriteDeniedError } from "./errors";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
-import { afterCommit, StorageError } from "./fuma-runtime";
+import {
+  afterCommit,
+  afterCommitRequired,
+  CredentialWriteIncompleteError,
+  StorageError,
+} from "./fuma-runtime";
+import {
+  credentialAttemptItemId,
+  makeCredentialWriteAttempt,
+  parseCredentialWriteAttempt,
+  type CredentialWriteAttempt,
+} from "./credential-item-reference";
 import {
   AuthTemplateSlug,
   ConnectionName,
@@ -59,6 +71,11 @@ import {
 } from "./oauth-client";
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
+import {
+  restoreCredentialSnapshotsWithRecheck,
+  snapshotCredentialWrites,
+  type CredentialWriteSnapshot,
+} from "./credential-compensation";
 import {
   discoverAuthorizationServerMetadata,
   discoverProtectedResourceMetadata,
@@ -111,6 +128,12 @@ export interface MintOAuthConnectionInput {
   /** Credential provider key + item id the access token is stored under. */
   readonly provider: string;
   readonly itemId: string;
+  /** Credential material to persist only after the row transaction commits.
+   * Values remain internal to the executor/provider boundary. */
+  readonly credentialValues: readonly {
+    readonly itemId: string;
+    readonly value: string;
+  }[];
   readonly oauthClient: OAuthClientSlug;
   /** The owner of `oauthClient` (persisted so refresh loads it by explicit owner). */
   readonly oauthClientOwner: Owner;
@@ -188,11 +211,17 @@ export interface OAuthServiceDeps {
   readonly owner: OwnerBinding;
   readonly tenant: string;
   readonly subject: string | null;
+  /** Executor incarnation recorded beside attempt-owned provider references. */
+  readonly credentialWriteRuntimeId: string;
   readonly ownedKeys: (owner: Owner) => {
     readonly tenant: string;
     readonly owner: Owner;
     readonly subject: string;
   };
+  /** Workspace-settings gate from the executor binding
+   *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
+   *  user-intent client/connect surfaces. */
+  readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */
   readonly mintOAuthConnection: (
@@ -847,7 +876,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const createClient = (
     input: CreateOAuthClientInput,
-  ): Effect.Effect<OAuthClientSlug, StorageFailure> =>
+  ): Effect.Effect<OAuthClientSlug, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
       // The `first-party:` namespace is reserved for config-declared apps — a
       // stored row under it would be shadowed by (or worse, impersonate) the
@@ -858,6 +887,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      yield* deps.guardOrgWrite(input.owner);
       yield* validateClientEndpoints(input, deps.endpointUrlPolicy);
       if (
         input.tokenEndpointAuthMethod !== undefined &&
@@ -879,10 +909,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       });
       const now = new Date();
 
-      // Store the secret out-of-band in the default writable provider; the row
-      // keeps only its item id. A public/PKCE client (empty secret) stores null
-      // — there is no plaintext column to fall back to (the schema dropped it).
+      // Resolve the out-of-band write up front, but do not mutate the provider
+      // until the database transaction commits.
       let clientSecretItemIdValue: string | null = null;
+      let credentialWrite: CredentialWriteAttempt | null = null;
+      let secretWrite: CredentialWriteSnapshot | undefined;
       if (input.clientSecret.length > 0) {
         const provider = deps.defaultWritableProvider();
         if (!provider || !provider.set) {
@@ -892,49 +923,192 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             cause: undefined,
           });
         }
-        clientSecretItemIdValue = clientSecretItemId(input.owner, input.slug);
-        yield* provider.set(ProviderItemId.make(clientSecretItemIdValue), input.clientSecret);
+        const attemptId = crypto.randomUUID();
+        credentialWrite = makeCredentialWriteAttempt(deps.credentialWriteRuntimeId, attemptId);
+        clientSecretItemIdValue = credentialAttemptItemId(
+          clientSecretItemId(input.owner, input.slug),
+          attemptId,
+        );
+        const itemId = ProviderItemId.make(clientSecretItemIdValue);
+        const [snapshot] = yield* snapshotCredentialWrites(
+          { ...provider, set: provider.set },
+          [{ itemId, value: input.clientSecret }],
+          () =>
+            new StorageError({
+              message:
+                "The default credential provider cannot safely create an OAuth client secret because it does not support compensating deletion.",
+              cause: undefined,
+            }),
+          { requireDeleteForNew: true },
+        );
+        secretWrite = snapshot;
       }
 
-      yield* deps.fuma
-        .use("oauth_client.deleteExisting", (db) =>
-          looseDb(db).deleteMany("oauth_client", {
-            where: (b: any) =>
-              b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
-          }),
-        )
-        .pipe(Effect.catch(() => Effect.void));
-      yield* deps.fuma.use("oauth_client.create", (db) =>
-        looseDb(db).create("oauth_client", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          slug: String(input.slug),
-          authorization_url: input.authorizationUrl,
-          token_url: input.tokenUrl,
-          grant: input.grant,
-          client_id: input.clientId,
-          client_secret_item_id: clientSecretItemIdValue,
-          token_endpoint_auth_method: input.tokenEndpointAuthMethod ?? null,
-          resource: input.resource ?? null,
-          origin_kind: input.origin?.kind ?? "manual",
-          // Recorded intent, kept for BOTH origins: a manual app registered from
-          // an integration's dialog stamps its integration so the picker can
-          // match it exactly, the same way a DCR client records the integration
-          // that requested it.
-          origin_integration:
-            input.origin?.integration == null ? null : String(input.origin.integration),
-          origin_issuer:
-            input.origin?.kind === "dynamic_client_registration"
-              ? (canonicalIssuerUrl(input.originIssuer) ?? null)
-              : null,
-          origin_redirect_uri:
-            input.origin?.kind === "dynamic_client_registration"
-              ? (input.originRedirectUri ?? null)
-              : null,
-          created_at: now,
+      const committed = yield* deps.fuma.transaction(
+        Effect.gen(function* () {
+          const existing = yield* deps.fuma.use("oauth_client.findExisting", (db) =>
+            looseDb(db).findFirst("oauth_client", {
+              where: (b: any) =>
+                b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+            }),
+          );
+          yield* deps.fuma
+            .use("oauth_client.deleteExisting", (db) =>
+              looseDb(db).deleteMany("oauth_client", {
+                where: (b: any) =>
+                  b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+              }),
+            )
+            .pipe(Effect.catch(() => Effect.void));
+          const inserted = yield* deps.fuma.use("oauth_client.create", (db) =>
+            looseDb(db).create("oauth_client", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              slug: String(input.slug),
+              authorization_url: input.authorizationUrl,
+              token_url: input.tokenUrl,
+              grant: input.grant,
+              client_id: input.clientId,
+              client_secret_item_id: clientSecretItemIdValue,
+              credential_write: credentialWrite,
+              token_endpoint_auth_method: input.tokenEndpointAuthMethod ?? null,
+              resource: input.resource ?? null,
+              origin_kind: input.origin?.kind ?? "manual",
+              // Recorded intent, kept for BOTH origins: a manual app registered from
+              // an integration's dialog stamps its integration so the picker can
+              // match it exactly, the same way a DCR client records the integration
+              // that requested it.
+              origin_integration:
+                input.origin?.integration == null ? null : String(input.origin.integration),
+              origin_issuer:
+                input.origin?.kind === "dynamic_client_registration"
+                  ? (canonicalIssuerUrl(input.originIssuer) ?? null)
+                  : null,
+              origin_redirect_uri:
+                input.origin?.kind === "dynamic_client_registration"
+                  ? (input.originRedirectUri ?? null)
+                  : null,
+              created_at: now,
+            }),
+          );
+          const rowId = (inserted as Record<string, unknown>)["row_id"];
+          if (typeof rowId !== "string") {
+            return yield* new StorageError({
+              message:
+                "Storage adapter did not return the inserted OAuth client row's row_id; the credential write cannot be compensated safely.",
+              cause: undefined,
+            });
+          }
+          return { existing, rowId };
         }),
       );
+
+      if (secretWrite) {
+        yield* afterCommitRequired(
+          Effect.gen(function* () {
+            const writeExit = yield* secretWrite.write.pipe(Effect.exit);
+            if (Exit.isFailure(writeExit)) {
+              // Restore the row only while it is still the exact row this call
+              // inserted. This attempt owns its provider item id, so cleanup can
+              // never overwrite a concurrent successor's secret.
+              const restoredRow = yield* deps.fuma
+                .transaction(
+                  Effect.gen(function* () {
+                    const current = yield* deps.fuma.use("oauth_client.compensate.find", (db) =>
+                      looseDb(db).findFirst("oauth_client", {
+                        where: (b: any) =>
+                          b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+                      }),
+                    );
+                    if (
+                      (current as Record<string, unknown> | null)?.["row_id"] !== committed.rowId
+                    ) {
+                      return false;
+                    }
+                    yield* deps.fuma.use("oauth_client.compensate.delete", (db) =>
+                      looseDb(db).deleteMany("oauth_client", {
+                        where: (b: any) => b("row_id", "=", committed.rowId),
+                      }),
+                    );
+                    if (committed.existing) {
+                      const existing = committed.existing;
+                      yield* deps.fuma.use("oauth_client.compensate.restore", (db) =>
+                        looseDb(db).create("oauth_client", existing),
+                      );
+                    }
+                    return true;
+                  }),
+                )
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logError(
+                      "OAuth client credential compensation could not restore its row",
+                      {
+                        owner: input.owner,
+                        client: String(input.slug),
+                        cause,
+                      },
+                    ).pipe(Effect.as(false)),
+                  ),
+                );
+              if (!restoredRow) {
+                return yield* new StorageError({
+                  message: `Failed to store the OAuth client secret for ${input.owner}/${String(input.slug)}, and the client row could not be safely restored.`,
+                  cause: writeExit.cause,
+                });
+              }
+              // This attempt owns a unique item id. The row recheck keeps the
+              // existing compensation contract, while deleting/restoring this id
+              // cannot touch a successor's credential even if one commits later.
+              const restoredCredential = yield* restoreCredentialSnapshotsWithRecheck(
+                [secretWrite],
+                deps.fuma.transaction(
+                  Effect.gen(function* () {
+                    const current = yield* deps.fuma.use("oauth_client.compensate.recheck", (db) =>
+                      looseDb(db).findFirst("oauth_client", {
+                        where: (b: any) =>
+                          b.and(b("owner", "=", input.owner), b("slug", "=", String(input.slug))),
+                      }),
+                    );
+                    const currentRowId = (current as Record<string, unknown> | null)?.["row_id"];
+                    const expectedRowId = (committed.existing as Record<string, unknown> | null)?.[
+                      "row_id"
+                    ];
+                    return committed.existing === null
+                      ? current === null
+                      : currentRowId === expectedRowId;
+                  }),
+                ),
+              );
+              if (Predicate.isTagged(restoredCredential, "Superseded")) {
+                return yield* new StorageError({
+                  message: `Failed to store the OAuth client secret for ${input.owner}/${String(input.slug)}, and credential cleanup was skipped because the compensated row was superseded.`,
+                  cause: writeExit.cause,
+                });
+              }
+              if (Predicate.isTagged(restoredCredential, "Failed")) {
+                return yield* new StorageError({
+                  message: `Failed to store the OAuth client secret for ${input.owner}/${String(input.slug)}, and credential compensation also failed.`,
+                  cause: restoredCredential.cause,
+                });
+              }
+              return yield* Effect.failCause(writeExit.cause);
+            }
+            const previousItemId = (committed.existing as Record<string, unknown> | null)?.[
+              "client_secret_item_id"
+            ];
+            const provider = deps.defaultWritableProvider();
+            if (
+              typeof previousItemId === "string" &&
+              previousItemId !== clientSecretItemIdValue &&
+              provider?.delete
+            ) {
+              yield* provider.delete(ProviderItemId.make(previousItemId)).pipe(Effect.ignore);
+            }
+          }),
+        );
+      }
       return input.slug;
     });
 
@@ -952,7 +1126,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // the next token refresh, prompting a reconnect (graceful degradation; this
   // op never cascades into connections).
   // -----------------------------------------------------------------------
-  const removeClient = (owner: Owner, slug: OAuthClientSlug): Effect.Effect<void, StorageFailure> =>
+  const removeClient = (
+    owner: Owner,
+    slug: OAuthClientSlug,
+  ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
       // Config-declared apps have no row to remove; removing one is an env
       // change on the host, not a storage operation. Fail loudly rather than
@@ -963,6 +1140,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      yield* deps.guardOrgWrite(owner);
       // "Is there an app at (owner, slug) right now?" — asked twice, for two
       // different reasons. Before the delete it says whether this call removes
       // anything at all; after the commit it says whether the secret key still
@@ -973,19 +1151,23 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         }),
       );
 
-      const removedRow = yield* findClientRow;
-      yield* deps.fuma
-        .use("oauth_client.delete", (db) =>
-          looseDb(db).deleteMany("oauth_client", {
-            where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
-          }),
-        )
-        .pipe(Effect.asVoid);
+      const removedRow = yield* deps.fuma.transaction(
+        Effect.gen(function* () {
+          const existing = yield* findClientRow;
+          yield* deps.fuma
+            .use("oauth_client.delete", (db) =>
+              looseDb(db).deleteMany("oauth_client", {
+                where: (b: any) => b.and(b("owner", "=", owner), b("slug", "=", String(slug))),
+              }),
+            )
+            .pipe(Effect.asVoid);
+          return existing;
+        }),
+      );
       // Nothing matched, so this call removed nothing and owns no secret. The
       // idempotent no-op and the cross-subject miss both land here, and both
       // used to queue a delete of a key they never had a claim on.
       if (!removedRow) return;
-
       // Best-effort: drop the secret from the provider so it isn't orphaned.
       //
       // Deferred to the outermost commit. This function opens no transaction of
@@ -1013,7 +1195,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             // an orphaned secret is recoverable, a destroyed live one is not.
             const recreated = yield* findClientRow;
             if (recreated) return;
-            yield* dropSecret.call(provider, ProviderItemId.make(clientSecretItemId(owner, slug)));
+            const removedItemId = removedRow["client_secret_item_id"];
+            if (typeof removedItemId === "string") {
+              yield* dropSecret.call(provider, ProviderItemId.make(removedItemId));
+            }
           }).pipe(Effect.catch(() => Effect.void)),
         );
       }
@@ -1203,8 +1388,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
   const registerDynamicClient = (
     input: RegisterDynamicClientInput,
-  ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
+  ): Effect.Effect<
+    OAuthClientSlug,
+    OAuthRegisterDynamicError | OrgWriteDeniedError | StorageFailure
+  > =>
     Effect.gen(function* () {
+      yield* deps.guardOrgWrite(input.owner);
       const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
       // Resolved before the reuse decision: a persisted client registered with
       // a DIFFERENT callback must not be reused (strict servers 400 the
@@ -1288,19 +1477,25 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // tenant's org rows + this subject's own user rows, so no explicit filter is
   // needed. The `client_secret` column is deliberately never projected.
   // -----------------------------------------------------------------------
-  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> => {
-    // First-party apps lead the list: config-resolved, visible to every caller,
-    // and projected exactly like stored rows — clientId only, never the secret.
-    // Owner is reported as "org" (the widest visibility the summary shape can
-    // express); the flow itself ignores owner for first-party slugs.
-    //
-    // `unlisted` apps are withheld here and ONLY here: listing is what offers an
-    // app for a NEW connection, so this is the whole of "stop offering it".
-    // `loadClient` still resolves them, keeping every existing connection's
-    // refresh and reconnect intact.
-    const firstPartySummaries: readonly OAuthClientSummary[] = [...firstPartyBySlug.values()]
-      .filter((config) => config.unlisted !== true)
-      .map((config) => ({
+  const listClients = (): Effect.Effect<readonly OAuthClientSummary[], StorageFailure> =>
+    Effect.gen(function* () {
+      // First-party apps lead the list: config-resolved, filtered by host policy,
+      // and projected exactly like stored rows — clientId only, never the secret.
+      // Owner is reported as "org" (the widest visibility the summary shape can
+      // express); the flow itself ignores owner for first-party slugs.
+      //
+      // `unlisted` apps are withheld here and ONLY here: listing is what offers an
+      // app for a NEW connection, so this is the whole of "stop offering it".
+      // `loadClient` still resolves them, keeping every existing connection's
+      // refresh and reconnect intact.
+      const listed = yield* Effect.filter([...firstPartyBySlug.values()], (config) =>
+        config.unlisted === true
+          ? Effect.succeed(false)
+          : config.isListed === undefined
+            ? Effect.succeed(true)
+            : config.isListed({ userId: deps.subject, organizationId: deps.tenant }),
+      );
+      const firstPartySummaries: readonly OAuthClientSummary[] = listed.map((config) => ({
         owner: "org",
         slug: firstPartyOAuthClientSlug(config.name),
         grant: "authorization_code",
@@ -1317,49 +1512,49 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
         },
       }));
-    return deps.fuma
-      .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
-      .pipe(
-        Effect.flatMap((rows) =>
-          Effect.forEach(rows, (row) => {
-            const grant = parseGrant(row.grant);
-            // EXPLICIT — a row with an unknown grant is corrupt; surface it
-            // loudly rather than silently displaying it as authorization_code.
-            if (grant === null) {
-              return Effect.fail(
-                new StorageError({
-                  message: `oauth_client ${String(row.slug)} has an unknown grant: ${String(row.grant)}`,
-                  cause: undefined,
-                }),
+      return yield* deps.fuma
+        .use("oauth_client.findMany", (db) => looseDb(db).findMany("oauth_client", {}))
+        .pipe(
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) => {
+              const grant = parseGrant(row.grant);
+              // EXPLICIT — a row with an unknown grant is corrupt; surface it
+              // loudly rather than silently displaying it as authorization_code.
+              if (grant === null) {
+                return Effect.fail(
+                  new StorageError({
+                    message: `oauth_client ${String(row.slug)} has an unknown grant: ${String(row.grant)}`,
+                    cause: undefined,
+                  }),
+                );
+              }
+              const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
+                row.token_endpoint_auth_method,
               );
-            }
-            const tokenEndpointAuthMethod = parseStoredTokenEndpointAuthMethod(
-              row.token_endpoint_auth_method,
-            );
-            if (tokenEndpointAuthMethod === null) {
-              return Effect.fail(
-                new StorageError({
-                  message: `oauth_client ${String(row.slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
-                  cause: undefined,
-                }),
-              );
-            }
-            return Effect.succeed({
-              owner: String(row.owner) as Owner,
-              slug: OAuthClientSlug.make(String(row.slug)),
-              grant,
-              authorizationUrl: String(row.authorization_url),
-              tokenUrl: String(row.token_url),
-              resource: row.resource == null ? null : String(row.resource),
-              clientId: String(row.client_id),
-              ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
-              origin: parseOAuthClientOrigin(row),
-            } satisfies OAuthClientSummary);
-          }),
-        ),
-        Effect.map((stored) => [...firstPartySummaries, ...stored]),
-      );
-  };
+              if (tokenEndpointAuthMethod === null) {
+                return Effect.fail(
+                  new StorageError({
+                    message: `oauth_client ${String(row.slug)} has an unknown token endpoint auth method: ${String(row.token_endpoint_auth_method)}`,
+                    cause: undefined,
+                  }),
+                );
+              }
+              return Effect.succeed({
+                owner: String(row.owner) as Owner,
+                slug: OAuthClientSlug.make(String(row.slug)),
+                grant,
+                authorizationUrl: String(row.authorization_url),
+                tokenUrl: String(row.token_url),
+                resource: row.resource == null ? null : String(row.resource),
+                clientId: String(row.client_id),
+                ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
+                origin: parseOAuthClientOrigin(row),
+              } satisfies OAuthClientSummary);
+            }),
+          ),
+          Effect.map((stored) => [...firstPartySummaries, ...stored]),
+        );
+    });
 
   // -----------------------------------------------------------------------
   // Load an oauth_client row by (owner, slug).
@@ -1416,9 +1611,18 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             if (row.client_secret_item_id != null) {
               const provider = deps.defaultWritableProvider();
               if (provider) {
-                clientSecret =
-                  (yield* provider.get(ProviderItemId.make(String(row.client_secret_item_id)))) ??
-                  "";
+                const itemId = String(row.client_secret_item_id);
+                const resolved = yield* provider.get(ProviderItemId.make(itemId));
+                if (
+                  resolved === null &&
+                  parseCredentialWriteAttempt(row.credential_write) !== null
+                ) {
+                  return yield* new CredentialWriteIncompleteError({
+                    message: `OAuth client credential write for ${owner}/${String(slug)} is incomplete; retry the operation.`,
+                    cause: undefined,
+                  });
+                }
+                clientSecret = resolved ?? "";
               }
             }
             return {
@@ -1441,8 +1645,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const start = (
     input: OAuthStartInput,
-  ): Effect.Effect<ConnectResult, OAuthStartError | StorageFailure> =>
+  ): Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
+      // Gate before any session row or upstream exchange: minting a Workspace
+      // connection (including a reconnect that would replace its credential)
+      // is a workspace-level change. Personal connections remain member-owned.
+      yield* deps.guardOrgWrite(input.owner);
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>
@@ -1591,12 +1799,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           // client_credentials has no callback, so no regional rebind applies.
           null,
         ).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OAuthStartError({
-                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
-                message: `Failed to mint OAuth connection: ${cause.message}`,
-              }),
+          Effect.mapError((cause) =>
+            Predicate.isTagged(cause, "OrgWriteDeniedError")
+              ? cause
+              : new OAuthStartError({
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                  message: `Failed to mint OAuth connection: ${cause.message}`,
+                }),
           ),
         );
         return { status: "connected", connection } as const;
@@ -1721,12 +1930,13 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               resolvedEnterprise,
               metadata.issuer,
             ).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OAuthStartError({
-                    // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
-                    message: `Failed to mint OAuth connection: ${cause.message}`,
-                  }),
+              Effect.mapError((cause) =>
+                Predicate.isTagged(cause, "OrgWriteDeniedError")
+                  ? cause
+                  : new OAuthStartError({
+                      // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                      message: `Failed to mint OAuth connection: ${cause.message}`,
+                    }),
               ),
             );
             yield* recordEnterpriseManagedRollout({
@@ -1868,7 +2078,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const complete = (
     input: OAuthCompleteInput,
-  ): Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure> =>
+  ): Effect.Effect<
+    Connection,
+    OAuthCompleteError | OAuthSessionNotFoundError | OrgWriteDeniedError | StorageFailure
+  > =>
     Effect.gen(function* () {
       const sessionRow = yield* deps.fuma.use("oauth_session.findFirst", (db) =>
         looseDb(db).findFirst("oauth_session", {
@@ -2003,13 +2216,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // client's configured one, so refresh redeems against the same region.
         tokenUrl === client.tokenUrl ? null : tokenUrl,
       ).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OAuthCompleteError({
-              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
-              message: `Failed to mint OAuth connection: ${cause.message}`,
-              restartRequired: false,
-            }),
+        Effect.mapError((cause) =>
+          Predicate.isTagged(cause, "OrgWriteDeniedError")
+            ? cause
+            : new OAuthCompleteError({
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                message: `Failed to mint OAuth connection: ${cause.message}`,
+                restartRequired: false,
+              }),
         ),
       );
 
@@ -2053,9 +2267,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     );
 
   // -----------------------------------------------------------------------
-  // Mint the connection from a freshly exchanged token: store the access
-  // value (+ refresh) in the default writable provider, then write the
-  // connection row with OAuth lifecycle fields + produce its tools.
+  // Mint the connection from a freshly exchanged token: hand the access value
+  // (+ refresh) to the executor, which commits the row first, persists the
+  // credentials with compensation, then produces the connection's tools.
   // -----------------------------------------------------------------------
   const mintFromToken = (
     target: {
@@ -2076,8 +2290,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     /** Regional token endpoint override to persist when the code was redeemed
      *  off the client's configured host; null to use the client's token URL. */
     oauthTokenUrl: string | null,
-  ): Effect.Effect<Connection, StorageFailure> =>
+  ): Effect.Effect<Connection, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
+      // The token exchange may outlive the role that admitted `start`. Re-read
+      // the live binding at the first persistence sink so a demotion takes
+      // effect before either access or refresh credentials are stored.
+      yield* deps.guardOrgWrite(target.owner);
       const provider = deps.defaultWritableProvider();
       if (!provider || !provider.set) {
         return yield* new StorageError({
@@ -2087,12 +2305,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       const itemId = accessItemId(target.owner, target.integration, target.name);
-      yield* provider.set(ProviderItemId.make(itemId), token.access_token);
-
       let refreshItemId: string | null = null;
       if (token.refresh_token) {
         refreshItemId = refreshItemIdFor(itemId);
-        yield* provider.set(ProviderItemId.make(refreshItemId), token.refresh_token);
       }
 
       const oauthScope = recordedOAuthScope(token, requestedScopes);
@@ -2125,6 +2340,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         derivedIdentityLabel: token.idTokenIdentityLabel ?? null,
         provider: String(provider.key),
         itemId,
+        credentialValues: [
+          { itemId, value: token.access_token },
+          ...(refreshItemId === null || token.refresh_token === undefined
+            ? []
+            : [{ itemId: refreshItemId, value: token.refresh_token }]),
+        ],
         oauthClient: OAuthClientSlug.make(client.slug),
         oauthClientOwner: clientOwner,
         refreshItemId,
@@ -2161,8 +2382,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     enterprise: EnterpriseManagedStartInput & { readonly subjectTokenType: SubjectTokenType },
     /** The Resource Authorization Server's issuer identifier, as discovered. */
     audience: string,
-  ): Effect.Effect<Connection, StorageFailure> =>
+  ): Effect.Effect<Connection, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
+      yield* deps.guardOrgWrite(target.owner);
       const provider = deps.defaultWritableProvider();
       if (!provider || !provider.set) {
         return yield* new StorageError({
@@ -2172,9 +2394,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       const itemId = accessItemId(target.owner, target.integration, target.name);
-      yield* provider.set(ProviderItemId.make(itemId), grant.token.access_token);
       const subjectTokenItemId = refreshItemIdFor(itemId);
-      yield* provider.set(ProviderItemId.make(subjectTokenItemId), enterprise.subjectToken);
 
       yield* Effect.annotateCurrentSpan({
         "executor.oauth.has_advertised_expiry": typeof grant.token.expires_in === "number",
@@ -2189,6 +2409,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         derivedIdentityLabel: grant.token.idTokenIdentityLabel ?? null,
         provider: String(provider.key),
         itemId,
+        credentialValues: [
+          { itemId, value: grant.token.access_token },
+          { itemId: subjectTokenItemId, value: enterprise.subjectToken },
+        ],
         oauthClient: OAuthClientSlug.make(client.slug),
         oauthClientOwner: clientOwner,
         refreshItemId: subjectTokenItemId,

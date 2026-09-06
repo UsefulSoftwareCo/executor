@@ -2,7 +2,7 @@ import type { Effect } from "effect";
 import { Schema } from "effect";
 
 import type { Connection } from "./connection";
-import type { UserActionableError } from "./errors";
+import type { OrgWriteDeniedError, UserActionableError } from "./errors";
 import type { StorageFailure } from "./fuma-runtime";
 import {
   type AuthTemplateSlug,
@@ -243,6 +243,14 @@ export interface FirstPartyOAuthClientConfig {
    *  instead removes the config entry itself, which strands every existing
    *  connection on a client the host can no longer resolve. */
   readonly unlisted?: boolean;
+  /** Optional host policy for offering this app to the acting user. Evaluated
+   *  on each listing; false withholds the app without disrupting existing
+   *  connections. `unlisted: true` always withholds it. This controls discovery,
+   *  not authorization to resolve an already-known first-party client slug. */
+  readonly isListed?: (context: {
+    readonly userId: string | null;
+    readonly organizationId: string;
+  }) => Effect.Effect<boolean>;
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this
@@ -501,12 +509,15 @@ export class OAuthSessionNotFoundError extends Schema.TaggedErrorClass<OAuthSess
 export interface OAuthService {
   readonly createClient: (
     input: CreateOAuthClientInput,
-  ) => Effect.Effect<OAuthClientSlug, StorageFailure>;
+  ) => Effect.Effect<OAuthClientSlug, OrgWriteDeniedError | StorageFailure>;
   /** Mint a client via RFC 7591 Dynamic Client Registration (no pre-shared
    *  client id/secret) and persist it as an owner-scoped `oauth_client`. */
   readonly registerDynamicClient: (
     input: RegisterDynamicClientInput,
-  ) => Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure>;
+  ) => Effect.Effect<
+    OAuthClientSlug,
+    OAuthRegisterDynamicError | OrgWriteDeniedError | StorageFailure
+  >;
   /** All registered clients visible to the caller (their org's shared clients +
    *  their own user clients), as metadata-only summaries — never the secret. */
   readonly listClients: () => Effect.Effect<readonly OAuthClientSummary[], StorageFailure>;
@@ -518,13 +529,16 @@ export interface OAuthService {
   readonly removeClient: (
     owner: Owner,
     slug: OAuthClientSlug,
-  ) => Effect.Effect<void, StorageFailure>;
+  ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly start: (
     input: OAuthStartInput,
-  ) => Effect.Effect<ConnectResult, OAuthStartError | StorageFailure>;
+  ) => Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure>;
   readonly complete: (
     input: OAuthCompleteInput,
-  ) => Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure>;
+  ) => Effect.Effect<
+    Connection,
+    OAuthCompleteError | OAuthSessionNotFoundError | OrgWriteDeniedError | StorageFailure
+  >;
   readonly cancel: (state: OAuthState) => Effect.Effect<void, StorageFailure>;
   readonly probe: (
     input: OAuthProbeInput,

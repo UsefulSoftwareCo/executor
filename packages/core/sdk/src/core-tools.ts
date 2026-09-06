@@ -14,7 +14,6 @@ import {
   AuthTemplateSlug,
   ConnectionName,
   IntegrationSlug,
-  NO_AUTH_TEMPLATE,
   OAuthClientSlug,
   OAuthState,
   ProviderItemId,
@@ -141,18 +140,11 @@ const ConnectionCreateInput = Schema.Struct({
   Schema.makeFilter((payload) => {
     const originCount =
       (payload.from === undefined ? 0 : 1) + (payload.inputs === undefined ? 0 : 1);
-    // The no-auth template ("none") binds zero credentials — both `from` and
-    // `inputs` are legitimately absent (public MCP servers, public REST APIs).
-    // Mirror the engine, which accepts an empty input set only for this
-    // template; a stray origin would wire a credential the connection can't
-    // hold, so reject any. Every other template needs exactly one origin.
-    const isNoAuth = String(payload.template) === String(NO_AUTH_TEMPLATE);
-    if (isNoAuth) {
-      if (originCount > 0) {
-        return 'A no-auth connection (template "none") takes no provider credential origin';
-      }
-    } else if (originCount !== 1) {
-      return "Expected exactly one provider credential origin";
+    // Auth meaning belongs to the integration's resolved method descriptor,
+    // which the engine evaluates with catalog context. This boundary only
+    // rejects an ambiguous shape that supplies two competing origins.
+    if (originCount > 1) {
+      return "Expected at most one provider credential origin";
     }
     if (payload.inputs !== undefined && Object.keys(payload.inputs).length === 0) {
       return "Expected at least one provider credential input";

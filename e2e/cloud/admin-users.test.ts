@@ -4,8 +4,8 @@
 // member of the tenant instead of binding to one.
 //
 // Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation), each connects their own credential, and the
-// admin then reads the joined view — the exact shape a customer dashboard's
+// invite → accept-invitation), each connects their own Personal credential, and
+// the admin then reads the joined view — the exact shape a customer dashboard's
 // icon grid consumes. The guarantees pinned here:
 //
 //   1. the joined view reports BOTH members and each one's own connections,
@@ -96,8 +96,8 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Each member stores their OWN credential. Neither can see the other's
-        // through the product plane — that is the whole point of the admin one.
+        // Each member stores their OWN Personal credential. Neither can see the
+        // other's through the product plane — that is the admin view's job.
         yield* adminClient.connections.create({
           payload: {
             owner: "user",
@@ -116,7 +116,6 @@ scenario(
             value: "member-personal-token",
           },
         });
-
         const client = yield* apiClient(AdminUsersHttpApi, admin);
 
         // (1) The joined view: both members, each with their own connection.

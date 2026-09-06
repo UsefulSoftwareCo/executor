@@ -17,6 +17,7 @@ import {
   type McpSessionInit,
   type SessionMeta,
 } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { sessionOrgRoleMetadata } from "@executor-js/cloudflare/mcp/role-metadata";
 import {
   mcpExecutionOwnerDirectoryFromNamespace,
   type McpExecutionOwnerDirectory,
@@ -126,6 +127,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       organizationId: token.organizationId,
       organizationName: this.cfConfig.organizationName,
       organizationSlug: this.cfConfig.organizationSlug,
+      ...sessionOrgRoleMetadata(token),
       userId: token.userId,
       resource: token.resource,
       elicitationMode: token.elicitationMode,
@@ -148,7 +150,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource },
+        { mcpResource: sessionMeta.resource, orgWrites: "request" },
       ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into

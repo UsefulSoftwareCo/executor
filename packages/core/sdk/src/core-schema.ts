@@ -210,6 +210,11 @@ export const coreTables = defineTables({
       template: textColumn("template"),
       provider: textColumn("provider"),
       item_ids: jsonColumn("item_ids"),
+      // Executor ownership for this row's credential references, as JSON
+      // `{ runtimeId: string, attemptId: string }` (see
+      // credential-item-reference.ts). Null means every provider item id is
+      // external/legacy and therefore opaque to core — never repairable.
+      credential_write: nullableJsonColumn("credential_write"),
       identity_label: nullableTextColumn("identity_label"),
       // User-curated, agent-visible "what is this connection for". Settable at
       // create, editable after; never reset by OAuth re-mints.
@@ -261,6 +266,11 @@ export const coreTables = defineTables({
       // (WorkOS Vault on cloud, the local store on desktop). Null for public /
       // PKCE clients (no secret). Keeps secrets out of plaintext columns.
       client_secret_item_id: nullableTextColumn("client_secret_item_id"),
+      // Executor ownership for `client_secret_item_id`, as JSON
+      // `{ runtimeId: string, attemptId: string }` (see
+      // credential-item-reference.ts). Null means the provider reference is
+      // external/legacy and therefore opaque to core — never repairable.
+      credential_write: nullableJsonColumn("credential_write"),
       // Null in old rows means client_secret_post (the existing default).
       // Stored values are "body" or "basic" and are validated on read.
       token_endpoint_auth_method: nullableTextColumn("token_endpoint_auth_method"),
