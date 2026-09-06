@@ -1,5 +1,5 @@
 import { Deferred, Effect, Fiber, Predicate, Queue, Ref } from "effect";
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 
 import type {
@@ -8,6 +8,23 @@ import type {
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
+  ExecutionObserver,
+  ExecutionTrigger,
+} from "@executor-js/sdk/core";
+import {
+  ExecutionId,
+  ExecutionInteractionId,
+  ExecutionToolCallId,
+  ExecutionFinished,
+  ExecutionStarted,
+  InteractionResolved,
+  InteractionStarted,
+  ToolCallFinished,
+  ToolCallStarted,
+  emitExecutionEvent,
+  isToolResult,
+  noopExecutionObserver,
+  withExecutionObserver,
 } from "@executor-js/sdk/core";
 import { CurrentOrgWriteAccess, type OrgWriteAccessState } from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
@@ -31,6 +48,26 @@ export type ExecutionEngineConfig<E extends Cause.YieldableError = CodeExecution
   readonly executor: Executor;
   readonly codeExecutor: CodeExecutor<E>;
   readonly toolDiscoveryProvider?: ToolDiscoveryProvider;
+  /** Optional sink for execution lifecycle events. Defaults to a no-op, so a
+   *  host that registers no observer pays only for constructing the events. */
+  readonly observer?: ExecutionObserver<unknown>;
+};
+
+/** Per-run options shared by both execute paths. */
+export type ExecutionRunOptions = {
+  /** What kicked off this run (e.g. `mcp.tool`, `api.http`); recorded on the
+   *  `ExecutionStarted` event for downstream attribution. */
+  readonly trigger?: ExecutionTrigger;
+};
+
+export type PausableExecutionOptions = ExecutionRunOptions & {
+  /** Treat the caller as the human approver and resolve every elicitation inline. */
+  readonly autoApprove?: boolean;
+};
+
+/** Options for the inline-elicitation execute path. */
+export type InlineExecutionOptions = ExecutionRunOptions & {
+  readonly onElicitation: ElicitationHandler;
 };
 
 export type ExecutionResult =
@@ -477,7 +514,7 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    */
   readonly execute: (
     code: string,
-    options: { readonly onElicitation: ElicitationHandler },
+    options: InlineExecutionOptions,
   ) => Effect.Effect<ExecuteResult, E>;
 
   /**
@@ -493,7 +530,7 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    */
   readonly executeWithPause: (
     code: string,
-    options?: { readonly autoApprove?: boolean },
+    options?: PausableExecutionOptions,
   ) => Effect.Effect<ExecutionResult, E>;
 
   /**
@@ -598,6 +635,170 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     }
   };
 
+  // Observer wiring is scoped around public execution methods so detached
+  // execution fibers inherit the observer context for pause/resume events.
+  const observeExecution = withExecutionObserver(config.observer ?? noopExecutionObserver);
+  const owner = executor.owner;
+
+  const makeExecutionId = (): ExecutionId => ExecutionId.make(`exec_${crypto.randomUUID()}`);
+  const makeToolCallId = (): ExecutionToolCallId =>
+    ExecutionToolCallId.make(`tc_${crypto.randomUUID()}`);
+  const makeInteractionId = (): ExecutionInteractionId =>
+    ExecutionInteractionId.make(`ix_${crypto.randomUUID()}`);
+
+  const interactionStatusFromAction = (action: ResumeResponse["action"]) =>
+    action === "accept" ? "accepted" : action === "decline" ? "declined" : "cancelled";
+
+  const finishFromResult = (executionId: ExecutionId, result: ExecuteResult): ExecutionFinished =>
+    new ExecutionFinished({
+      executionId,
+      owner,
+      status: result.error ? "failed" : "completed",
+      result: result.result,
+      output: result.output,
+      error: result.error,
+      logs: result.logs,
+      completedAt: new Date(),
+    });
+
+  // An interrupt-only cause is the run being torn down from outside (client
+  // abort, host backstop, sandbox shutdown), not the code failing: record it as
+  // `interrupted` so history never shows it as a code failure.
+  const finishFromCause = (executionId: ExecutionId, cause: Cause.Cause<E>): ExecutionFinished =>
+    new ExecutionFinished({
+      executionId,
+      owner,
+      status: Cause.hasInterruptsOnly(cause) ? "interrupted" : "failed",
+      error: Cause.pretty(cause),
+      completedAt: new Date(),
+    });
+
+  /** Emit the terminal event for a sandbox run from its exit. Attached with
+   *  `Effect.onExit` so it runs as a finalizer — uninterruptibly — and an
+   *  interrupted run still closes in every observer instead of dangling as
+   *  "running" forever. */
+  const observeFinish =
+    (executionId: ExecutionId) =>
+    (exit: Exit.Exit<ExecuteResult, E>): Effect.Effect<void> =>
+      Exit.isSuccess(exit)
+        ? emitExecutionEvent(finishFromResult(executionId, exit.value))
+        : emitExecutionEvent(finishFromCause(executionId, exit.cause));
+
+  /** Expected tool failures ride the success channel as `ToolResult.fail`
+   *  envelopes; surface them to observers as failed calls (with the result kept
+   *  for inspection) so history does not record an upstream 4xx as success. */
+  const toolCallFinishedFromResult = (
+    executionId: ExecutionId,
+    toolCallId: ExecutionToolCallId,
+    path: string,
+    result: unknown,
+  ): ToolCallFinished =>
+    isToolResult(result) && !result.ok
+      ? new ToolCallFinished({
+          executionId,
+          toolCallId,
+          owner,
+          path,
+          status: "failed",
+          result,
+          error: `${result.error.code}: ${result.error.message}`,
+          completedAt: new Date(),
+        })
+      : new ToolCallFinished({
+          executionId,
+          toolCallId,
+          owner,
+          path,
+          status: "completed",
+          result,
+          completedAt: new Date(),
+        });
+
+  /** Wrap an invoker so each tool call brackets `ToolCallStarted`/`Finished`. */
+  const observeToolCalls = (
+    executionId: ExecutionId,
+    inner: SandboxToolInvoker,
+  ): SandboxToolInvoker => ({
+    invoke: (call) =>
+      Effect.gen(function* () {
+        const toolCallId = makeToolCallId();
+        yield* emitExecutionEvent(
+          new ToolCallStarted({
+            executionId,
+            toolCallId,
+            owner,
+            path: call.path,
+            args: call.args,
+            startedAt: new Date(),
+          }),
+        );
+        return yield* inner.invoke(call).pipe(
+          Effect.tap((result) =>
+            emitExecutionEvent(
+              toolCallFinishedFromResult(executionId, toolCallId, call.path, result),
+            ),
+          ),
+          Effect.tapCause((cause) =>
+            emitExecutionEvent(
+              new ToolCallFinished({
+                executionId,
+                toolCallId,
+                owner,
+                path: call.path,
+                status: "failed",
+                error: Cause.pretty(cause),
+                completedAt: new Date(),
+              }),
+            ),
+          ),
+        );
+      }),
+  });
+
+  /** Wrap an inline elicitation handler so it brackets `InteractionStarted`/
+   *  `Resolved`. The pausable path emits these directly (see below). */
+  const observeInlineElicitation =
+    (executionId: ExecutionId, handler: ElicitationHandler): ElicitationHandler =>
+    (ctx) =>
+      Effect.gen(function* () {
+        const interactionId = makeInteractionId();
+        yield* emitExecutionEvent(
+          new InteractionStarted({
+            executionId,
+            interactionId,
+            owner,
+            context: ctx,
+            startedAt: new Date(),
+          }),
+        );
+        return yield* handler(ctx).pipe(
+          Effect.tap((response) =>
+            emitExecutionEvent(
+              new InteractionResolved({
+                executionId,
+                interactionId,
+                owner,
+                status: interactionStatusFromAction(response.action),
+                response,
+                completedAt: new Date(),
+              }),
+            ),
+          ),
+          Effect.tapCause((cause) =>
+            emitExecutionEvent(
+              new InteractionResolved({
+                executionId,
+                interactionId,
+                owner,
+                status: "failed",
+                error: Cause.pretty(cause),
+                completedAt: new Date(),
+              }),
+            ),
+          ),
+        );
+      });
+
   /**
    * Race a running fiber against the pause queue. Returns when either
    * the fiber completes or an elicitation handler fires (whichever
@@ -642,7 +843,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    */
   const startPausableExecution = Effect.fn("mcp.execute")(function* (
     code: string,
-    options?: { readonly autoApprove?: boolean },
+    options?: PausableExecutionOptions,
   ) {
     yield* Effect.annotateCurrentSpan({
       "mcp.execute.mode": "pausable",
@@ -656,10 +857,29 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       yield* Effect.annotateCurrentSpan({ "mcp.execute.auto_approve": true });
       const result = yield* runInlineExecution(code, {
         onElicitation: acceptAllHandler,
+        trigger: options.trigger,
       });
       yield* annotateExecuteOutcome(result);
       return { status: "completed", result } satisfies ExecutionResult;
     }
+
+    // Observer execution id: minted per run, distinct from the per-pause
+    // resume handle below so a run with N interactions is one execution with N
+    // interaction events.
+    const executionId = makeExecutionId();
+    yield* emitExecutionEvent(
+      new ExecutionStarted({
+        executionId,
+        owner,
+        code,
+        trigger: options?.trigger,
+        startedAt: new Date(),
+      }),
+    );
+    yield* Effect.annotateCurrentSpan({
+      "executor.execution.id": executionId,
+      ...(options?.trigger ? { "executor.execution.trigger": options.trigger.kind } : {}),
+    });
 
     // Queue preserves pauses that arrive before the previous approval has
     // returned to the caller, which can happen with concurrent tool calls.
@@ -677,6 +897,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         // re-mint the same ids and let a stale client resume bind to a
         // different execution's pause.
         const id = `exec_${crypto.randomUUID()}`;
+        const interactionId = makeInteractionId();
 
         const paused: InternalPausedExecution<E> = {
           id,
@@ -688,19 +909,57 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         };
         pausedExecutions.set(id, paused);
 
+        yield* emitExecutionEvent(
+          new InteractionStarted({
+            executionId,
+            interactionId,
+            owner,
+            context: ctx,
+            startedAt: new Date(),
+          }),
+        );
         yield* Queue.offer(pauseQueue, paused);
 
-        // Suspend until resume() completes responseDeferred.
-        return yield* Deferred.await(responseDeferred);
+        // Suspend until resume() completes responseDeferred. Emit
+        // InteractionResolved on the failure/interrupt path too (e.g. the daemon
+        // fiber is killed while blocked here) so InteractionStarted always has a
+        // pair, mirroring observeInlineElicitation on the inline path.
+        return yield* Deferred.await(responseDeferred).pipe(
+          Effect.tap((response) =>
+            emitExecutionEvent(
+              new InteractionResolved({
+                executionId,
+                interactionId,
+                owner,
+                status: interactionStatusFromAction(response.action),
+                response,
+                completedAt: new Date(),
+              }),
+            ),
+          ),
+          Effect.tapCause((cause) =>
+            emitExecutionEvent(
+              new InteractionResolved({
+                executionId,
+                interactionId,
+                owner,
+                status: "failed",
+                error: Cause.pretty(cause),
+                completedAt: new Date(),
+              }),
+            ),
+          ),
+        );
       });
 
-    const invoker = makeFullInvoker(
-      executor,
-      { onElicitation: elicitationHandler },
-      toolDiscoveryProvider,
+    const invoker = observeToolCalls(
+      executionId,
+      makeFullInvoker(executor, { onElicitation: elicitationHandler }, toolDiscoveryProvider),
     );
     fiber = yield* Effect.forkDetach(
-      codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
+      codeExecutor
+        .execute(code, invoker)
+        .pipe(Effect.withSpan("executor.code.exec"), Effect.onExit(observeFinish(executionId))),
     );
     liveSandboxFibers.add(fiber);
 
@@ -819,22 +1078,39 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
    */
   const runInlineExecution = Effect.fn("mcp.execute")(function* (
     code: string,
-    options: { readonly onElicitation: ElicitationHandler },
+    options: InlineExecutionOptions,
   ) {
     yield* Effect.annotateCurrentSpan({
       "mcp.execute.mode": "inline",
       "mcp.execute.code_length": code.length,
     });
-    const invoker = makeFullInvoker(
-      executor,
-      {
-        onElicitation: options.onElicitation,
-      },
-      toolDiscoveryProvider,
+
+    const executionId = makeExecutionId();
+    yield* emitExecutionEvent(
+      new ExecutionStarted({
+        executionId,
+        owner,
+        code,
+        trigger: options.trigger,
+        startedAt: new Date(),
+      }),
+    );
+    yield* Effect.annotateCurrentSpan({
+      "executor.execution.id": executionId,
+      ...(options.trigger ? { "executor.execution.trigger": options.trigger.kind } : {}),
+    });
+
+    const invoker = observeToolCalls(
+      executionId,
+      makeFullInvoker(
+        executor,
+        { onElicitation: observeInlineElicitation(executionId, options.onElicitation) },
+        toolDiscoveryProvider,
+      ),
     );
     const result = yield* codeExecutor
       .execute(code, invoker)
-      .pipe(Effect.withSpan("executor.code.exec"));
+      .pipe(Effect.withSpan("executor.code.exec"), Effect.onExit(observeFinish(executionId)));
     yield* annotateExecuteOutcome(result);
     return result;
   });
@@ -862,9 +1138,11 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   });
 
   return {
-    execute: runInlineExecution,
-    executeWithPause: startPausableExecution,
-    resume: resumeExecution,
+    execute: (code, options) => runInlineExecution(code, options).pipe(observeExecution),
+    executeWithPause: (code, options) =>
+      startPausableExecution(code, options).pipe(observeExecution),
+    resume: (executionId, response) =>
+      resumeExecution(executionId, response).pipe(observeExecution),
     shutdown,
     isExecutionSettled: (executionId) => Effect.sync(() => settledExecutionIds.has(executionId)),
     getPausedExecution: (executionId) =>

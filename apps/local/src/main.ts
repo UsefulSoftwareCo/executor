@@ -6,6 +6,7 @@ import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { loadMcpAppsShellHtml } from "@executor-js/mcp-apps-shell";
 import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { composeExecutionObservers } from "@executor-js/sdk";
 import { localAnalytics } from "./analytics";
 import { makeLocalApiHandler } from "./app";
 import { createExecutorHandle, disposeExecutor, getExecutorBundle } from "./executor";
@@ -86,7 +87,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
     // engine instance (the browser-approval + stdio surface is local-only and not
     // part of the shared API). Reuse the shared boot bundle so the MCP executor is
     // byte-identical to the one the API serves.
-    const { executor, webBaseUrl } = await getExecutorBundle();
+    const { executor, plugins, webBaseUrl } = await getExecutorBundle();
     // Both engines below serve MCP endpoints, so the wrap binds the "mcp"
     // plane structurally; the toolkit-scoped engine additionally marks
     // `toolkit` (the slug itself is a user label and never recorded).
@@ -94,6 +95,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       createExecutionEngine({
         executor,
         codeExecutor: makeQuickJsExecutor(),
+        observer: composeExecutionObservers(plugins, executor),
       }),
       localAnalytics,
       { plane: "mcp", toolkit: false },
@@ -148,6 +150,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
           createExecutionEngine({
             executor: handle.executor,
             codeExecutor: makeQuickJsExecutor(),
+            observer: composeExecutionObservers(handle.plugins, handle.executor),
           }),
           localAnalytics,
           { plane: "mcp", toolkit: true },
