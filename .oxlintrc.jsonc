@@ -146,6 +146,25 @@
       },
     },
     {
+      // boundary: the Pi extension runs inside Pi's runtime, not ours. There
+      // is no Effect runtime in that process, and throwing is Pi's error
+      // PROTOCOL, not a shortcut: `AgentToolResult` has no error field, and the
+      // harness marks a tool call failed exactly when `execute` throws
+      // (pi-agent-core, harness/execution/tools.js). The MCP client it drives
+      // is likewise promise-native. Scoped to this package because every file
+      // in it sits on that boundary; the rules that keep our own failures
+      // typed (no-double-cast, no-json-parse, no-explicit-any, …) stay on.
+      "files": ["packages/hosts/pi/**/*.ts"],
+      "rules": {
+        "executor/no-error-constructor": "off",
+        "executor/no-instanceof-error": "off",
+        "executor/no-promise-catch": "off",
+        "executor/no-promise-reject": "off",
+        "executor/no-try-catch-or-throw": "off",
+        "executor/no-unknown-error-message": "off",
+      },
+    },
+    {
       "files": ["packages/kernel/core/src/code-recovery.ts"],
       "rules": {
         "executor/no-switch-statement": "off",

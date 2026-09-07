@@ -98,6 +98,41 @@ differs) already filled in. Most MCP clients only load servers at startup, so
 you may need to restart the client or open a new chat before the Executor tools
 appear.
 
+### Use with Pi
+
+[Pi](https://pi.dev) ships no MCP client, so `add-mcp` does not apply to it.
+Install the first-party extension instead — it needs an Executor to talk to, so
+set one up first (any of the forms above):
+
+```bash
+pi install npm:@executor-js/pi
+```
+
+Point it at your Executor with two environment variables — the endpoint, and a
+bearer for it. Which bearer depends on where that Executor runs:
+
+```bash
+# Hosted (executor.sh, or a deployment of your own)
+export EXECUTOR_MCP_URL=https://executor.example/acme/mcp   # the URL from the Connect card
+export EXECUTOR_API_KEY=…                                   # from Executor's API Keys page
+
+# Local CLI service or desktop app — loopback is not a free pass, auth is on
+export EXECUTOR_MCP_URL=http://127.0.0.1:4788/mcp           # the URL from the Connect card
+export EXECUTOR_AUTH_TOKEN=…                                # the server's own bearer token
+```
+
+A local server mints that token on first run and keeps it, so it stays valid
+across restarts. The Connect card's `add-mcp` command carries it in the
+`Authorization: Bearer …` header it prints; on disk it is the `token` in
+`~/.executor/server-control/auth.json` (or `$EXECUTOR_DATA_DIR/server-control/auth.json`).
+`EXECUTOR_API_KEY` wins when both are set.
+
+Then run `/executor` in Pi: it prints the endpoint it resolved and the tools it
+can see. Executor arrives as `executor_execute`, `executor_skills`, and
+`executor_resume` — the same small surface every other agent gets, so Pi's
+context stays clear of your individual tool schemas. Start with
+`executor_skills` for the guide to writing `executor_execute` code.
+
 ## Add an integration
 
 From the web UI, click **Add Integration**, paste an OpenAPI, GraphQL, or MCP URL,

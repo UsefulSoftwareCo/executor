@@ -22,9 +22,11 @@
     "motel": "MOTEL_OTEL_BASE_URL=http://127.0.0.1:4796 MOTEL_OTEL_DB_PATH=runs/.motel/telemetry.sqlite motel server"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@executor-js/api": "workspace:*",
     "@executor-js/emulate": "^0.14.1",
     "@executor-js/mcporter": "^0.11.4",
+    "@executor-js/pi": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",

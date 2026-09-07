@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ES2022"],
+    "types": ["bun-types", "node"],
+    "noUnusedLocals": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src/**/*.ts", "tsup.config.ts", "vitest.config.ts"]
+}
