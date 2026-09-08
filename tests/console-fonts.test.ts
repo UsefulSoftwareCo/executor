@@ -6,12 +6,13 @@ import { describe, expect, it } from "@effect/vitest";
 // The console must paint without reaching any third-party host. A self-hosted
 // deployment behind a restrictive network once sat blank until a synchronous
 // Google Fonts stylesheet timed out, even though the app itself was healthy.
-// The faces are vendored next to this stylesheet and declared once for every
+// The faces are vendored next to the shared stylesheet and declared once for every
 // host; the entry documents carry no font links at all.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, "../../../..");
-const globalsCss = readFileSync(path.join(here, "globals.css"), "utf-8");
+const repoRoot = path.resolve(here, "..");
+const stylesDir = path.join(repoRoot, "packages/react/src/styles");
+const globalsCss = readFileSync(path.join(stylesDir, "globals.css"), "utf-8");
 
 const entryDocuments = [
   "apps/host-selfhost/web/index.html",
@@ -31,7 +32,7 @@ describe("console fonts", () => {
       /@font-face\s*\{[^}]*font-family:\s*"Geist Mono";[^}]*url\("\.\/fonts\/geist-mono\.woff2"\)[^}]*font-display:\s*swap;/,
     );
     for (const file of ["geist-sans.woff2", "geist-mono.woff2"]) {
-      expect(readFileSync(path.join(here, "fonts", file)).byteLength, file).toBeGreaterThan(0);
+      expect(readFileSync(path.join(stylesDir, "fonts", file)).byteLength, file).toBeGreaterThan(0);
     }
   });
 
