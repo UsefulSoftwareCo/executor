@@ -15,7 +15,7 @@ import {
   type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
 import {
-  approvalUrlForRequest,
+  buildResumeApprovalUrl,
   decodeResumeResponse,
   formatResumeAcknowledgement,
   readArtifactsEnabled,
@@ -56,6 +56,13 @@ export interface LocalMcpRequestHandlerConfig {
   readonly createConfigForResource?: (
     resource: McpResource,
   ) => Promise<LocalMcpServerConfig> | LocalMcpServerConfig;
+  /**
+   * Pinned public origin for browser-approval URLs. When set (for example
+   * `EXECUTOR_WEB_BASE_URL` behind a TLS proxy) it is preferred over the
+   * request URL, whose scheme is the internal HTTP listener. Omit it on
+   * loopback so the request origin stays the approval link.
+   */
+  readonly webBaseUrl?: string;
 }
 
 // Local serves these error bodies in-process; like the self-host store they are
@@ -235,7 +242,11 @@ export const createMcpRequestHandler = (
                 ? {
                     mode: "browser" as const,
                     approvalUrl: (executionId) =>
-                      approvalUrlForRequest(request, executionId, createdSessionId),
+                      buildResumeApprovalUrl({
+                        origin: handlerConfig.webBaseUrl ?? request.url,
+                        executionId,
+                        sessionId: createdSessionId,
+                      }),
                   }
                 : { mode: elicitationMode },
           }),

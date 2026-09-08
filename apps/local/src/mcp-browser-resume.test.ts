@@ -104,20 +104,35 @@ const makeExecutor = async (tmpDir: string): Promise<Executor> => {
   };
 };
 
-const makeMcpFetch = (executor: Executor) => {
+const makeMcpFetch = (
+  executor: Executor,
+  options: {
+    readonly webBaseUrl?: string;
+    readonly extraHeaders?: HeadersInit;
+  } = {},
+) => {
   const engine = createExecutionEngine({
     executor,
     codeExecutor: makeQuickJsExecutor(),
   });
-  const mcp = createMcpRequestHandler({ engine });
+  const mcp = createMcpRequestHandler(
+    options.webBaseUrl === undefined
+      ? { engine }
+      : { defaultConfig: { engine }, webBaseUrl: options.webBaseUrl },
+  );
 
   const fetchImpl: typeof globalThis.fetch = Object.assign(
     (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(input, init);
-      const url = new URL(request.url);
-      if (url.pathname.startsWith("/mcp")) return mcp.handleRequest(request);
+      const headers = new Headers(request.headers);
+      if (options.extraHeaders) {
+        new Headers(options.extraHeaders).forEach((value, key) => headers.set(key, value));
+      }
+      const forwarded = new Request(request, { headers });
+      const url = new URL(forwarded.url);
+      if (url.pathname.startsWith("/mcp")) return mcp.handleRequest(forwarded);
       if (url.pathname.startsWith("/api/mcp-sessions/")) {
-        return mcp.handleApprovalRequest(request);
+        return mcp.handleApprovalRequest(forwarded);
       }
       return Promise.resolve(new Response("Not found", { status: 404 }));
     },
@@ -192,6 +207,11 @@ describe("local MCP browser approval resume", () => {
 
       expect(first.isError).toBeFalsy();
       const firstApproval = readApproval(first.structuredContent);
+      expect(firstApproval.url.origin).toBe(TEST_BASE_URL);
+      expect(firstApproval.url.pathname).toBe(
+        `/resume/${encodeURIComponent(firstApproval.executionId)}`,
+      );
+      expect(firstApproval.url.searchParams.get("mcp_session_id")).not.toBeNull();
 
       const second = await approveInBrowserThenResume(fetch, mcpClient, firstApproval);
       const secondApproval = readApproval(second.structuredContent);
@@ -219,6 +239,55 @@ describe("local MCP browser approval resume", () => {
           }),
         ]),
       );
+    } finally {
+      await mcpClient.close();
+      await Effect.runPromise(Effect.ignore(Effect.tryPromise(() => dispose())));
+      await Effect.runPromise(
+        Effect.ignore(Effect.tryPromise(() => Effect.runPromise(executor.close()))),
+      );
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("uses EXECUTOR_WEB_BASE_URL for approval links when the request is internal HTTP", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "executor-local-browser-resume-origin-"));
+    const executor = await makeExecutor(tmpDir);
+    const { fetch, dispose } = makeMcpFetch(executor, {
+      webBaseUrl: "https://executor.example.test:8443/prefix?from-base=1",
+      extraHeaders: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "poisoned.example",
+      },
+    });
+    const mcpClient = new Client(
+      { name: "browser-resume-origin-test-client", version: "1.0.0" },
+      { capabilities: {} },
+    );
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=browser", "http://127.0.0.1:4788"),
+      { fetch },
+    );
+
+    await mcpClient.connect(transport);
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test owns MCP transports, web handler, and executor lifecycle
+    try {
+      const paused = await mcpClient.callTool({
+        name: "execute",
+        arguments: {
+          code: `return await tools.api.singleApproval({});`,
+        },
+      });
+
+      expect(paused.isError).toBeFalsy();
+      const approval = readApproval(paused.structuredContent);
+      expect(approval.url.origin).toBe("https://executor.example.test:8443");
+      expect(approval.url.pathname).toBe(`/resume/${encodeURIComponent(approval.executionId)}`);
+      expect(approval.url.pathname).not.toContain("/prefix");
+      expect(approval.url.searchParams.get("from-base")).toBeNull();
+      expect(approval.url.searchParams.get("mcp_session_id")).not.toBeNull();
+      expect(approval.url.host).not.toBe("poisoned.example");
+      expect(approval.url.protocol).not.toBe("http:");
     } finally {
       await mcpClient.close();
       await Effect.runPromise(Effect.ignore(Effect.tryPromise(() => dispose())));
