@@ -297,6 +297,46 @@ describe("local MCP browser approval resume", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it("falls back to the request origin when EXECUTOR_WEB_BASE_URL uses ephemeral port 0", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "executor-local-browser-resume-port0-"));
+    const executor = await makeExecutor(tmpDir);
+    const { fetch, dispose } = makeMcpFetch(executor, {
+      webBaseUrl: "http://127.0.0.1:0",
+    });
+    const mcpClient = new Client(
+      { name: "browser-resume-port0-test-client", version: "1.0.0" },
+      { capabilities: {} },
+    );
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=browser", "http://127.0.0.1:4788"),
+      { fetch },
+    );
+
+    await mcpClient.connect(transport);
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test owns MCP transports, web handler, and executor lifecycle
+    try {
+      const paused = await mcpClient.callTool({
+        name: "execute",
+        arguments: {
+          code: `return await tools.api.singleApproval({});`,
+        },
+      });
+
+      expect(paused.isError).toBeFalsy();
+      const approval = readApproval(paused.structuredContent);
+      expect(approval.url.origin).toBe("http://127.0.0.1:4788");
+      expect(approval.url.port).not.toBe("0");
+    } finally {
+      await mcpClient.close();
+      await Effect.runPromise(Effect.ignore(Effect.tryPromise(() => dispose())));
+      await Effect.runPromise(
+        Effect.ignore(Effect.tryPromise(() => Effect.runPromise(executor.close()))),
+      );
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
 
 const approveInBrowserThenResume = async (
