@@ -674,6 +674,25 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("records only the connected tool resolved after discovery", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute(
+        [
+          'const search = await tools.search({ query: "repository details", namespace: "github", limit: 1 });',
+          'const result = await tools[search.items[0].path]({ owner: "executor", repo: "executor" });',
+          "return result;",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(execution.error).toBeUndefined();
+      expect(execution.toolPaths).toEqual(["github.org.main.getRepositoryDetails"]);
+    }),
+  );
+
   it.effect("lets execution hosts provide custom tool discovery", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();

@@ -114,14 +114,14 @@ const executeApproved = (session: McpSession, code: string) =>
       guard += 1;
     }
     expect(result.ok, `execute completed (got: ${result.text.slice(0, 400)})`).toBe(true);
-    return result.text;
+    return result;
   });
 
 /** Invoke a dynamic tool by full address and parse the envelope it returns. */
 const invokeEnvelope = (session: McpSession, address: string, args: unknown = {}) =>
   Effect.map(
     executeApproved(session, invokeByAddressCode(address, args)),
-    (text) => JSON.parse(text) as ToolEnvelope,
+    (result) => JSON.parse(result.text) as ToolEnvelope,
   );
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ scenario(
             },
           });
           const created = JSON.parse(
-            yield* executeApproved(session, createConnectionCode(slug)),
+            (yield* executeApproved(session, createConnectionCode(slug))).text,
           ) as ToolEnvelope;
           expect(created.ok, `the no-auth connection was created: ${JSON.stringify(created)}`).toBe(
             true,
@@ -199,13 +199,23 @@ scenario(
           const path = address!.replace(/^tools\./, "");
 
           // 1. A well-addressed call executes and carries the upstream's payload.
-          const success = yield* invokeEnvelope(session, address!);
+          const successfulCall = yield* executeApproved(session, invokeByAddressCode(address!, {}));
+          const success = JSON.parse(successfulCall.text) as ToolEnvelope;
           expect(
             success.ok,
             `the call succeeded (got: ${JSON.stringify(success.error ?? {}).slice(0, 400)})`,
           ).toBe(true);
           expect(JSON.stringify(success.data), "the upstream's payload comes back").toContain(
             "anvil",
+          );
+          const structured = (successfulCall.raw as { readonly structuredContent?: unknown })
+            .structuredContent;
+          expect(structured, "the completed MCP result includes structured content").toMatchObject({
+            status: "completed",
+            toolName: path,
+          });
+          expect(structured, "the internal tool-call trace is not exposed").not.toHaveProperty(
+            "toolPaths",
           );
           expect(upstream.requests(), "the upstream served exactly one call").toBe(1);
 

@@ -46,6 +46,8 @@ export type ExecuteResult = {
   /** Enumerable failure class for telemetry; never carries message content. */
   errorKind?: ExecuteErrorKind;
   logs?: string[];
+  /** Successful connected-tool paths observed during this execution. */
+  toolPaths?: readonly string[];
 };
 
 /**

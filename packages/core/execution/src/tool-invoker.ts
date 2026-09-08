@@ -306,7 +306,10 @@ const extractNamespace = (path: string): string => {
  */
 export const makeExecutorToolInvoker = (
   executor: Executor,
-  options: { readonly invokeOptions: InvokeOptions },
+  options: {
+    readonly invokeOptions: InvokeOptions;
+    readonly onConnectedToolCall?: (path: string) => void;
+  },
 ): SandboxToolInvoker => ({
   invoke: Effect.fn("mcp.tool.dispatch")(function* ({ path, args }) {
     yield* Effect.annotateCurrentSpan({
@@ -372,6 +375,12 @@ export const makeExecutorToolInvoker = (
     // outcome annotation the dispatch span reads as healthy even when the
     // caller hit an upstream error or auth wall.
     yield* annotateToolResultOutcome(result);
+    const connectedToolPath = parseToolAddress(String(address))
+      ? addressToPath(String(address))
+      : undefined;
+    if (connectedToolPath && (!isToolResult(result) || result.ok)) {
+      options.onConnectedToolCall?.(connectedToolPath);
+    }
     if (isToolResult(result)) {
       return result;
     }

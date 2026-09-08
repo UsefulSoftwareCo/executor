@@ -1039,12 +1039,15 @@ describe("MCP host server — native form-only elicitation", () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP host server — client without elicitation (pause/resume)", () => {
-  it("completed execution returns result directly", async () => {
+  it("completed execution returns result and connected-tool metadata directly", async () => {
     const engine = makeStubEngine({
       executeWithPause: () =>
         Effect.succeed({
           status: "completed",
-          result: { result: "done" },
+          result: {
+            result: "done",
+            toolPaths: ["linear.org.work.issues.list"],
+          },
         }),
     });
 
@@ -1054,6 +1057,10 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         arguments: { code: "ok" },
       });
       expect(result.content).toEqual([{ type: "text", text: "done" }]);
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        toolName: "linear.org.work.issues.list",
+      });
       expect(result.isError).toBeFalsy();
     });
   });
