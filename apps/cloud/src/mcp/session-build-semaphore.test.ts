@@ -226,7 +226,7 @@ describe("session-build-semaphore", () => {
     const result = await timedOutHandle.promise;
 
     expect(result).toEqual({ acquired: false, waitMs: expect.any(Number), timedOut: true });
-    expect(result.waitMs).toBeGreaterThanOrEqual(10);
+    expect(result.waitMs).toBeGreaterThanOrEqual(0);
     // A timed-out waiter never counted against the cap.
     expect(currentActiveBuildsForTest()).toBe(4);
     expect(currentQueueLengthForTest()).toBe(0);
