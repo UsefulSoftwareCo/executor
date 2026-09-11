@@ -1197,9 +1197,29 @@ export const openApiPlugin = definePlugin<
           ctx.core.integrations
             .get(IntegrationSlug.make(slug))
             .pipe(
-              Effect.map((record) =>
-                record ? decodeOpenApiIntegrationConfig(record.config) : null,
-              ),
+              Effect.map((record) => {
+                if (!record) return null;
+                const config = decodeOpenApiIntegrationConfig(record.config);
+                if (!config?.authenticationTemplate) return config;
+                return {
+                  ...config,
+                  // The connection UI needs the catalog's deployment-aware capabilities.
+                  authenticationTemplate: config.authenticationTemplate.map((template) =>
+                    template.kind === "oauth2" &&
+                    template.supportsClientIdMetadataDocument === true
+                      ? {
+                          ...template,
+                          supportsClientIdMetadataDocument: record.authMethods.some(
+                            (method) =>
+                              method.kind === "oauth" &&
+                              method.template === String(template.slug) &&
+                              method.oauth?.supportsClientIdMetadataDocument === true,
+                          ),
+                        }
+                      : template,
+                  ),
+                };
+              }),
             ),
 
         configure: (

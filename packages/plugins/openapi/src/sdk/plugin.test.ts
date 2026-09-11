@@ -454,6 +454,52 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
+  it.effect("getConfig disables CIMD for a first connection after restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins: testPlugins() });
+        const slug = IntegrationSlug.make("cimd_api");
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: testApiSpecText() },
+          slug,
+          authenticationTemplate: [
+            apiKeyTemplate,
+            { ...oauthTemplate, supportsClientIdMetadataDocument: true },
+          ],
+        });
+        const enabledConfig = yield* executor.openapi.getConfig(slug);
+        const [apiKey, oauth] = enabledConfig?.authenticationTemplate ?? [];
+        expect(oauth).toMatchObject({ kind: "oauth2", supportsClientIdMetadataDocument: true });
+        const stored = yield* executor.integrations.get(slug);
+        yield* executor.close();
+
+        const disabled = yield* Effect.acquireRelease(
+          createExecutor({ ...config, oauthClientIdMetadataDocumentEnabled: false }),
+          (instance) => instance.close(),
+        );
+        expect(yield* disabled.oauth.listClients()).toEqual([]);
+        expect((yield* disabled.integrations.get(slug))?.authMethods).toContainEqual(
+          expect.objectContaining({
+            kind: "oauth",
+            oauth: expect.objectContaining({ supportsClientIdMetadataDocument: false }),
+          }),
+        );
+        expect(yield* disabled.openapi.getConfig(slug)).toEqual({
+          ...enabledConfig,
+          authenticationTemplate: [apiKey, { ...oauth, supportsClientIdMetadataDocument: false }],
+        });
+        expect((yield* disabled.integrations.get(slug))?.config).toEqual(stored?.config);
+        yield* disabled.close();
+
+        const reenabled = yield* Effect.acquireRelease(
+          createExecutor({ ...config, oauthClientIdMetadataDocumentEnabled: true }),
+          (instance) => instance.close(),
+        );
+        expect(yield* reenabled.openapi.getConfig(slug)).toEqual(enabledConfig);
+      }),
+    ),
+  );
+
   it.effect("exposes static openapi executor control tools via execute", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
