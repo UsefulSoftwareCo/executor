@@ -87,10 +87,8 @@ export interface SelfHostConfig {
    */
   readonly toolsSyncTtlMs: number | null | undefined;
   /**
-   * Whether this instance can serve its OAuth Client ID Metadata Document
-   * to authorization servers. Defaults to true. Set false when those
-   * servers cannot reach this instance, so the connect flow falls through
-   * to Dynamic Client Registration.
+   * Resolved `EXECUTOR_OAUTH_CIMD_ENABLED`; see apps/docs/hosted/docker.mdx.
+   * Passed to `ExecutorConfig.oauthClientIdMetadataDocumentEnabled`.
    */
   readonly oauthCimdEnabled: boolean;
 }

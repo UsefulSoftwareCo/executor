@@ -763,8 +763,9 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * the document from this instance, such as an air-gapped or inbound-blocked
    * topology. Defaults to enabled. When disabled, `oauth.probe` reports CIMD
    * unsupported even if the authorization server advertises it, and catalog
-   * oauth methods omit `supportsClientIdMetadataDocument`, so the connect
-   * flow falls through to Dynamic Client Registration.
+   * OAuth methods replace advertised `supportsClientIdMetadataDocument: true`
+   * with `false`. Dynamic Client Registration remains available when the
+   * authorization server offers it.
    */
   readonly oauthClientIdMetadataDocumentEnabled?: boolean;
   /**

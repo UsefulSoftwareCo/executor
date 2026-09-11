@@ -825,7 +825,7 @@ export async function runCimdConnect(
 // Automatic discovered OAuth connect orchestration.
 //
 // MCP OAuth is discovered at connect time. Prefer Client ID Metadata Documents
-// when the authorization server advertises them; otherwise use Dynamic Client
+// when `OAuthProbeResult` reports support; otherwise use Dynamic Client
 // Registration when available. Both paths keep the popup reserved by the
 // original click and avoid a provider-specific app picker.
 //
@@ -956,7 +956,7 @@ const DCR_CLIENT_NAME = "Executor";
  *
  * - Popup refused → `{ kind: "popup-blocked" }` before any network call.
  * - Probe failure → `{ kind: "fallback", reason: "probe-failed" }` (caller shows BYO).
- * - CIMD advertised → create/reuse the public metadata client, then start.
+ * - Probe reports CIMD support -> create/reuse the public metadata client, then start.
  * - Otherwise no DCR endpoint → `{ kind: "fallback", reason: "no-registration-endpoint", probe }`.
  * - Register rejected with a message → `{ kind: "fallback", reason: "registration-failed", probe, message }`
  *   so the caller can show why (e.g. a redirect-URI rejection) over the generic copy.

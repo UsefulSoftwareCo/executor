@@ -196,8 +196,9 @@ export interface OpenApiPluginExtension {
   >;
   readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
-  /** Read the integration's full opaque config, including its
-   *  `authenticationTemplate`. Returns null when the integration is absent. */
+  /** Read the integration config with OAuth templates' CIMD support limited to
+   *  the catalog's effective capabilities. This is a read projection; stored
+   *  config is unchanged. Returns null when the integration is absent. */
   readonly getConfig: (
     slug: string,
   ) => Effect.Effect<OpenApiIntegrationConfig | null, StorageFailure>;
@@ -1194,33 +1195,30 @@ export const openApiPlugin = definePlugin<
           ),
 
         getConfig: (slug: string): Effect.Effect<OpenApiIntegrationConfig | null, StorageFailure> =>
-          ctx.core.integrations
-            .get(IntegrationSlug.make(slug))
-            .pipe(
-              Effect.map((record) => {
-                if (!record) return null;
-                const config = decodeOpenApiIntegrationConfig(record.config);
-                if (!config?.authenticationTemplate) return config;
-                return {
-                  ...config,
-                  // The connection UI needs the catalog's deployment-aware capabilities.
-                  authenticationTemplate: config.authenticationTemplate.map((template) =>
-                    template.kind === "oauth2" &&
-                    template.supportsClientIdMetadataDocument === true
-                      ? {
-                          ...template,
-                          supportsClientIdMetadataDocument: record.authMethods.some(
-                            (method) =>
-                              method.kind === "oauth" &&
-                              method.template === String(template.slug) &&
-                              method.oauth?.supportsClientIdMetadataDocument === true,
-                          ),
-                        }
-                      : template,
-                  ),
-                };
-              }),
-            ),
+          ctx.core.integrations.get(IntegrationSlug.make(slug)).pipe(
+            Effect.map((record) => {
+              if (!record) return null;
+              const config = decodeOpenApiIntegrationConfig(record.config);
+              if (!config?.authenticationTemplate) return config;
+              return {
+                ...config,
+                // The connection UI needs the catalog's deployment-aware capabilities.
+                authenticationTemplate: config.authenticationTemplate.map((template) =>
+                  template.kind === "oauth2" && template.supportsClientIdMetadataDocument === true
+                    ? {
+                        ...template,
+                        supportsClientIdMetadataDocument: record.authMethods.some(
+                          (method) =>
+                            method.kind === "oauth" &&
+                            method.template === String(template.slug) &&
+                            method.oauth?.supportsClientIdMetadataDocument === true,
+                        ),
+                      }
+                    : template,
+                ),
+              };
+            }),
+          ),
 
         configure: (
           slug: string,

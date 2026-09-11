@@ -289,9 +289,8 @@ export interface OAuthServiceDeps {
    *  client CRUD surface rejects the namespace. Empty/omitted on hosts that
    *  ship no first-party apps. */
   readonly firstPartyClients?: readonly FirstPartyOAuthClientConfig[];
-  /** Whether authorization servers can fetch this deployment's Client ID
-   *  Metadata Document. When false, `probe` reports CIMD unsupported so the
-   *  connect flow falls through to Dynamic Client Registration. */
+  /** Resolved `ExecutorConfig.oauthClientIdMetadataDocumentEnabled`;
+   *  see that public configuration contract for probe behavior. */
   readonly clientIdMetadataDocumentEnabled: boolean;
 }
 

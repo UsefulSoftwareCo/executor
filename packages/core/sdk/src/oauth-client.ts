@@ -397,8 +397,9 @@ export interface OAuthProbeResult {
   /** RFC 8414 `token_endpoint_auth_methods_supported`. Surfaced so DCR can pick
    *  a public ("none") client when the server allows it. */
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
-  /** Draft OAuth Client ID Metadata Document support, advertised by providers
-   *  such as PostHog as `client_id_metadata_document_supported`. */
+  /** Effective OAuth Client ID Metadata Document support from discovery, not
+   *  raw `client_id_metadata_document_supported` metadata. See
+   *  `ExecutorConfig.oauthClientIdMetadataDocumentEnabled` for deployment gating. */
   readonly clientIdMetadataDocumentSupported?: boolean;
 }
 
