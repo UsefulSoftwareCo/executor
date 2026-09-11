@@ -265,8 +265,8 @@ const resolveSso = (): SsoConfig | undefined => {
 };
 
 const resolveOauthCimdEnabled = (): boolean => {
-  const raw = process.env.EXECUTOR_OAUTH_CIMD_ENABLED?.trim().toLowerCase();
-  if (raw === undefined || raw.length === 0 || raw === "true") return true;
+  const raw = process.env.EXECUTOR_OAUTH_CIMD_ENABLED;
+  if (raw === undefined || raw === "true") return true;
   if (raw === "false") return false;
   // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
   throw new Error(`EXECUTOR_OAUTH_CIMD_ENABLED ${JSON.stringify(raw)} must be "true" or "false"`);

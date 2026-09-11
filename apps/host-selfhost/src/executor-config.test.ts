@@ -130,12 +130,17 @@ test("CIMD serving is disabled by false", () => {
   expect(loadConfig().oauthCimdEnabled).toBe(false);
 });
 
-test("CIMD serving is enabled by TRUE", () => {
-  process.env[CIMD_ENV_NAME] = "TRUE";
+test("CIMD serving is enabled by true", () => {
+  process.env[CIMD_ENV_NAME] = "true";
   expect(loadConfig().oauthCimdEnabled).toBe(true);
 });
 
-test("a malformed CIMD serving knob refuses to boot", () => {
-  process.env[CIMD_ENV_NAME] = "disabled";
-  expect(() => loadConfig()).toThrow(/EXECUTOR_OAUTH_CIMD_ENABLED/);
-});
+test.each(["disabled", "TRUE", "FALSE", "", "   ", " true", "true ", " false", "false "])(
+  "a malformed CIMD serving knob (%j) refuses to boot",
+  (raw) => {
+    process.env[CIMD_ENV_NAME] = raw;
+    expect(() => loadConfig()).toThrow(
+      `EXECUTOR_OAUTH_CIMD_ENABLED ${JSON.stringify(raw)} must be "true" or "false"`,
+    );
+  },
+);
