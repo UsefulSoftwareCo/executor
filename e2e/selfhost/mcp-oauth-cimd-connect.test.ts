@@ -30,7 +30,7 @@ scenario(
       const oauth = yield* OAuthTestServer;
       const server = yield* serveMcpServerWithOAuth(
         () => makeGreetingMcpServer({ name: "cimd-connect-mcp" }),
-        { path: "/mcp" },
+        { path: "/mcp", scopes: ["read", "offline_access"] },
       );
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
@@ -69,12 +69,26 @@ scenario(
               authorize,
               "the popup reached the discovered authorization endpoint",
             ).toBeDefined();
-            const clientId = authorize?.query["client_id"];
-            createdClientId = clientId;
+            expect(
+              (authorize?.query["scope"] ?? "").split(" "),
+              "authorization requests the resource's offline access scope",
+            ).toContain("offline_access");
+            const clientId = authorize?.query["client_id"] ?? "";
+            createdClientId = clientId || undefined;
             expect(
               clientId,
               "authorization uses Executor's metadata document as client_id",
             ).toMatch(/^https?:\/\/[^/]+\/api\/oauth\/client-id-metadata\/.+\.json$/);
+            const metadataResponse = await page.request.get(clientId);
+            expect(metadataResponse.status(), "the client metadata document is reachable").toBe(
+              200,
+            );
+            expect(
+              await metadataResponse.json(),
+              "the client declares the grant required by offline_access",
+            ).toMatchObject({
+              grant_types: ["authorization_code", "refresh_token"],
+            });
             await popup.close();
           });
         });
@@ -105,5 +119,12 @@ scenario(
         ),
       );
     }),
-  ).pipe(Effect.provide(OAuthTestServer.layer({ clientIdMetadataDocumentSupported: true }))),
+  ).pipe(
+    Effect.provide(
+      OAuthTestServer.layer({
+        clientIdMetadataDocumentSupported: true,
+        scopes: ["read", "offline_access"],
+      }),
+    ),
+  ),
 );
