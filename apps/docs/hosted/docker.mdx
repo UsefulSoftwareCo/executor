@@ -69,6 +69,7 @@ the container defaults.
 | `EXECUTOR_ORG_NAME`                 | `Default`                       | Display name of the single org every user joins.                                                |
 | `EXECUTOR_ORG_SLUG`                 | `default`                       | URL slug for that org.                                                                          |
 | `EXECUTOR_ALLOW_LOCAL_NETWORK`      | `false`                         | Allow sandboxed code to reach loopback / private addresses. Keep off unless you trust the code. |
+| `EXECUTOR_OAUTH_CIMD_ENABLED`       | `true`                          | Set `false` when authorization servers cannot reach this instance; MCP connects then use DCR.   |
 
 Tracing is configured separately, and off unless you turn it on — see
 [Tracing](/hosted/tracing).

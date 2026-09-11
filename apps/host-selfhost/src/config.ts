@@ -86,6 +86,13 @@ export interface SelfHostConfig {
    * re-sync, leaving stale-marking and config revision as the only triggers.
    */
   readonly toolsSyncTtlMs: number | null | undefined;
+  /**
+   * Whether this instance can serve its OAuth Client ID Metadata Document
+   * to authorization servers. Defaults to true. Set false when those
+   * servers cannot reach this instance, so the connect flow falls through
+   * to Dynamic Client Registration.
+   */
+  readonly oauthCimdEnabled: boolean;
 }
 
 export const resolveDataDir = (): string =>
@@ -197,6 +204,7 @@ export const loadConfig = (): SelfHostConfig => {
     sso: resolveSso(),
     mcpSessionIdleTtlMs: resolveMcpSessionIdleTtlMs(),
     toolsSyncTtlMs: resolveToolsSyncTtlMs(),
+    oauthCimdEnabled: resolveOauthCimdEnabled(),
   };
 };
 
@@ -254,6 +262,14 @@ const resolveSso = (): SsoConfig | undefined => {
     process.env.EXECUTOR_SSO_PROVIDER_NAME?.trim() ||
     providerId.charAt(0).toUpperCase() + providerId.slice(1);
   return { providerId, providerName, discoveryUrl, clientId, clientSecret, allowedDomains };
+};
+
+const resolveOauthCimdEnabled = (): boolean => {
+  const raw = process.env.EXECUTOR_OAUTH_CIMD_ENABLED?.trim().toLowerCase();
+  if (raw === undefined || raw.length === 0 || raw === "true") return true;
+  if (raw === "false") return false;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+  throw new Error(`EXECUTOR_OAUTH_CIMD_ENABLED ${JSON.stringify(raw)} must be "true" or "false"`);
 };
 
 // A malformed value is refused rather than silently ignored: an operator who

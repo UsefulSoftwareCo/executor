@@ -6,9 +6,11 @@ import executorConfig from "../executor.config";
 const ENV_NAME = "EXECUTOR_ALLOW_STDIO_MCP";
 const SECRET_ENV_NAME = "EXECUTOR_SECRET_KEY";
 const TTL_ENV_NAME = "EXECUTOR_TOOLS_SYNC_TTL_MS";
+const CIMD_ENV_NAME = "EXECUTOR_OAUTH_CIMD_ENABLED";
 const originalValue = process.env[ENV_NAME];
 const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
+const originalCimd = process.env[CIMD_ENV_NAME];
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
@@ -29,6 +31,11 @@ afterEach(() => {
     delete process.env[TTL_ENV_NAME];
   } else {
     process.env[TTL_ENV_NAME] = originalTtl;
+  }
+  if (originalCimd === undefined) {
+    delete process.env[CIMD_ENV_NAME];
+  } else {
+    process.env[CIMD_ENV_NAME] = originalCimd;
   }
 });
 
@@ -111,4 +118,24 @@ test.each(["abc", "60_000", "1.5", "1e3ms", "NaN", "Infinity", "9007199254740993
 test("a negative tools-sync TTL refuses to boot", () => {
   process.env[TTL_ENV_NAME] = "-1";
   expect(() => loadConfig()).toThrow(/must not be negative/);
+});
+
+test("CIMD serving is enabled when the knob is unset", () => {
+  delete process.env[CIMD_ENV_NAME];
+  expect(loadConfig().oauthCimdEnabled).toBe(true);
+});
+
+test("CIMD serving is disabled by false", () => {
+  process.env[CIMD_ENV_NAME] = "false";
+  expect(loadConfig().oauthCimdEnabled).toBe(false);
+});
+
+test("CIMD serving is enabled by TRUE", () => {
+  process.env[CIMD_ENV_NAME] = "TRUE";
+  expect(loadConfig().oauthCimdEnabled).toBe(true);
+});
+
+test("a malformed CIMD serving knob refuses to boot", () => {
+  process.env[CIMD_ENV_NAME] = "disabled";
+  expect(() => loadConfig()).toThrow(/EXECUTOR_OAUTH_CIMD_ENABLED/);
 });

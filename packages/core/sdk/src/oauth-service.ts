@@ -289,6 +289,10 @@ export interface OAuthServiceDeps {
    *  client CRUD surface rejects the namespace. Empty/omitted on hosts that
    *  ship no first-party apps. */
   readonly firstPartyClients?: readonly FirstPartyOAuthClientConfig[];
+  /** Whether authorization servers can fetch this deployment's Client ID
+   *  Metadata Document. When false, `probe` reports CIMD unsupported so the
+   *  connect flow falls through to Dynamic Client Registration. */
+  readonly clientIdMetadataDocumentEnabled: boolean;
 }
 
 type LooseDb = {
@@ -2487,6 +2491,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         registrationEndpoint: as.metadata.registration_endpoint ?? null,
         tokenEndpointAuthMethodsSupported: as.metadata.token_endpoint_auth_methods_supported,
         clientIdMetadataDocumentSupported:
+          deps.clientIdMetadataDocumentEnabled &&
           as.metadata.client_id_metadata_document_supported === true,
       } satisfies OAuthProbeResult;
     }).pipe(Effect.provide(httpClientLayer));
