@@ -95,17 +95,22 @@ for (const failsFirst of [false, true]) {
               // the gate. Callback success therefore proves ordering without
               // racing a timer against a cold browser or a loaded host.
               await popup.goto(callbackUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+              const committed = await Effect.runPromise(
+                client.connections.list({ query: { integration: slug } }),
+              );
+              expect(
+                committed.length,
+                "the callback persisted the connection before discovery",
+              ).toBe(1);
+              // Release before the opener's separate health probe, which also
+              // uses this transport, after proving the callback has returned.
+              gate.resolve();
               await page
                 .getByText("Connection added", { exact: true })
                 .waitFor({ timeout: 30_000 });
             });
           });
 
-          const committed = yield* client.connections.list({ query: { integration: slug } });
-          expect(committed.length, "the callback persisted the connection before discovery").toBe(
-            1,
-          );
-          gate.resolve();
           yield* Effect.promise(() => listing.promise);
           const afterListing = yield* client.connections.list({ query: { integration: slug } });
           expect(
