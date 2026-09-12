@@ -437,6 +437,28 @@ describe("oauth.start integration-driven scopes", () => {
     ),
   );
 
+  it.effect("does not add Vercel lifecycle scopes on a different port", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMetadataServer({ prm: { scopesSupported: ["openid"] } });
+        const executor = yield* setupMcpScopeClient(server, {
+          authorizationEndpoint: "https://vercel.com:8443/oauth/authorize",
+        });
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["openid"]);
+      }),
+    ),
+  );
+
   it.effect(
     "(e) for MCP, discovers scopes from a cross-origin authorization server named in resource metadata",
     () =>

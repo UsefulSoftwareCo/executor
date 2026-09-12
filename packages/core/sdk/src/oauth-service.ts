@@ -562,8 +562,7 @@ const additionalAuthorizationLifecycleScopes = (client: {
 }): readonly string[] => {
   if (!URL.canParse(client.authorizationUrl)) return [];
   const authorization = new URL(client.authorizationUrl);
-  return authorization.protocol === "https:" &&
-    authorization.hostname === "vercel.com" &&
+  return authorization.origin === "https://vercel.com" &&
     authorization.pathname === "/oauth/authorize"
     ? ["offline_access"]
     : [];
