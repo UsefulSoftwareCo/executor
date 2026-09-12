@@ -769,3 +769,73 @@ scenario(
     }),
   ),
 );
+
+scenario(
+  "Toolkits · workspace approval and block survive a toolkit approve rule",
+  { timeout: 240_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const mcp = yield* Mcp;
+    const apiSurface = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* apiSurface.client(api, identity);
+    const name = unique("workspace-policy-kit");
+    const createdPattern = `${unique("workspace-gated-result")}.*`;
+    const toolPattern = "executor.coreTools.policies.create";
+    yield* Effect.gen(function* () {
+      const toolkit = yield* client.toolkits.create({ payload: { owner: "org", name } });
+      yield* client.toolkits.createConnection({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: toolPattern },
+      });
+      yield* client.toolkits.createPolicy({
+        params: { toolkitId: toolkit.id },
+        payload: { pattern: toolPattern, action: "approve" },
+      });
+      yield* client.policies.create({
+        payload: { owner: "org", pattern: toolPattern, action: "require_approval" },
+      });
+      const session = mcp.session(identity, { url: toolkitUrl(target.baseUrl, toolkit.slug) });
+      const paused = yield* session.call("execute", {
+        code: createPolicyCode({ pattern: createdPattern, action: "block" }),
+      });
+      expect(paused.text).toContain("Execution paused");
+      expect((yield* client.policies.list()).some((p) => p.pattern === createdPattern)).toBe(false);
+      const resumed = yield* session.approvePaused(paused.text);
+      expect(resumed.ok).toBe(true);
+      expect((yield* client.policies.list()).some((p) => p.pattern === createdPattern)).toBe(true);
+      yield* client.policies.create({
+        payload: { owner: "org", pattern: toolPattern, action: "block" },
+      });
+      const blockedPattern = `${createdPattern}blocked`;
+      const blockedSession = mcp.session(identity, {
+        url: toolkitUrl(target.baseUrl, toolkit.slug),
+      });
+      const blocked = yield* blockedSession.call("execute", {
+        code: createPolicyCode({ pattern: blockedPattern, action: "block" }),
+      });
+      expect(blocked.text).not.toContain("Execution paused");
+      expect((yield* client.policies.list()).some((p) => p.pattern === blockedPattern)).toBe(false);
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const listed = yield* client.toolkits.list();
+          yield* Effect.forEach(
+            listed.toolkits.filter((t) => t.name === name),
+            (t) => client.toolkits.remove({ params: { toolkitId: t.id } }),
+            { discard: true },
+          );
+          const policies = yield* client.policies.list();
+          yield* Effect.forEach(
+            policies.filter(
+              (p) => p.pattern === toolPattern || p.pattern.startsWith(createdPattern),
+            ),
+            (p) =>
+              client.policies.remove({ params: { policyId: p.id }, payload: { owner: p.owner } }),
+            { discard: true },
+          );
+        }).pipe(Effect.ignore),
+      ),
+    );
+  }),
+);
