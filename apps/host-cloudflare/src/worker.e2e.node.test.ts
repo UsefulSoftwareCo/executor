@@ -371,6 +371,31 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       method: "tools/list",
     });
     expect(reusedOnDefault.status).toBe(403);
+
+    const reusedOnOtherToolkit = await rpc(`${toolkitPath}-other`, sessionId, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/list",
+    });
+    expect(reusedOnOtherToolkit.status).toBe(403);
+    for (const method of ["GET", "DELETE"]) {
+      const response = await worker.fetch("/mcp", {
+        method,
+        headers: { accept, "mcp-session-id": sessionId! },
+      });
+      expect(response.status).toBe(403);
+    }
+    const stillUsable = await rpc(toolkitPath, sessionId, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/list",
+    });
+    expect(stillUsable.status).toBe(200);
+    const deleted = await worker.fetch(toolkitPath, {
+      method: "DELETE",
+      headers: { accept, "mcp-session-id": sessionId! },
+    });
+    expect(deleted.status).toBe(204);
   }, 60_000);
 
   it("serves streamable HTTP GET only for initialized sessions", async () => {
