@@ -143,6 +143,13 @@ const widgetsSpec = (baseUrl: string): string =>
     info: { title: "Widgets API", version: "1.0.0" },
     servers: [{ url: baseUrl }],
     paths: {
+      "/unavailable": {
+        get: {
+          operationId: "unavailableWidgets",
+          summary: "Unavailable widgets",
+          responses: { "200": { description: "widgets" } },
+        },
+      },
       "/widgets/count": {
         get: {
           operationId: "countWidgets",
@@ -247,6 +254,22 @@ scenario(
           const failedResult = yield* Schema.decodeUnknownEffect(completion)(failed.raw);
           expect(failedResult.structuredContent.toolName).toBeUndefined();
           expect(failed.raw).not.toHaveProperty("structuredContent.toolPaths");
+          const unavailableAddress = yield* Schema.decodeUnknownEffect(Schema.String)(
+            tools
+              .filter((tool) => String(tool.integration) === slug)
+              .map((tool) => String(tool.address))
+              .find((candidate) => candidate.endsWith("unavailableWidgets")),
+          );
+          const upstreamFailure = yield* executeApproved(
+            session,
+            invokeByAddressCode(unavailableAddress, {}),
+          );
+          const upstreamFailureResult = yield* Schema.decodeUnknownEffect(completion)(
+            upstreamFailure.raw,
+          );
+          expect(upstreamFailure.text).toContain('"ok":false');
+          expect(upstreamFailureResult.structuredContent.toolName).toBeUndefined();
+          expect(upstreamFailure.raw).not.toHaveProperty("structuredContent.toolPaths");
 
           const repeated = yield* executeApproved(
             session,
