@@ -117,7 +117,19 @@ for (const failsFirst of [false, true]) {
             afterListing.length,
             "a failed remote listing cannot remove the durable grant",
           ).toBe(1);
+          const connection = afterListing[0];
+          if (connection === undefined) return yield* Effect.die("Missing committed connection");
+          expect(
+            connection.lastHealth?.status,
+            "discovery reports the actual upstream health",
+          ).toBe(failsFirst ? "degraded" : "healthy");
           failListing = false;
+          if (failsFirst) {
+            // Failed discovery intentionally backs off until the catalog TTL.
+            // An explicit refresh is the supported immediate recovery action.
+            const params = { owner: connection.owner, integration: slug, name: connection.name };
+            yield* client.connections.refresh({ params });
+          }
 
           const tools = yield* client.tools.list({ query: { integration: slug } }).pipe(
             Effect.filterOrFail(
@@ -130,6 +142,11 @@ for (const failsFirst of [false, true]) {
             tools.map((tool) => String(tool.name)),
             "the host-kept background sync eventually publishes the remote tool",
           ).toContain("simple_echo");
+          const healthy = yield* client.connections.checkHealth({
+            params: { owner: connection.owner, integration: slug, name: connection.name },
+            query: {},
+          });
+          expect(healthy.status, "the recovered server accepts the existing grant").toBe("healthy");
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
