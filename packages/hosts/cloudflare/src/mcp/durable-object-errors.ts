@@ -41,6 +41,8 @@ export type DurableObjectFailureKind =
   | "concurrency_reset"
   /** An invocation ran past the per-invocation CPU ceiling; the object was reset. */
   | "cpu_limit"
+  /** The isolate ran past its memory ceiling; every object in it was reset. */
+  | "memory_limit"
   /** A generic platform blip: `internal error; reference = <id>`. */
   | "internal_error"
   /** The runtime itself flagged the error as retryable. */
@@ -68,6 +70,14 @@ export type DurableObjectFailure = {
  */
 const MESSAGE_PATTERNS: ReadonlyArray<{
   readonly fragment: string;
+  /**
+   * A second fragment that, when also present, *disqualifies* the match. One
+   * runtime phrase covers both a platform reset and an application defect, and
+   * the qualifier the runtime adds for the defect is the only thing separating
+   * them — so the entry names that qualifier rather than trying to spell out
+   * every benign variant of the shared phrase.
+   */
+  readonly excludeFragment?: string;
   readonly failure: DurableObjectFailure;
 }> = [
   {
@@ -126,6 +136,28 @@ const MESSAGE_PATTERNS: ReadonlyArray<{
     failure: { kind: "cpu_limit", disposition: "transient" },
   },
   {
+    // The CPU limit's sibling, matched on the short shared phrase rather than a
+    // full sentence because the runtime words its two memory-limit messages
+    // differently after it.
+    //
+    // `excludeFragment` carries what used to keep this bucket out of the list
+    // entirely: the runtime reuses "exceeded its memory limit" for a USER error
+    // that names its own cause — "… due to overflowing the storage cache. All
+    // objects in the isolate were reset." — too many un-awaited writes, or one
+    // oversized read. That variant reproduces on every retry, so calling it
+    // transient would bury an application defect behind a 503. It still falls
+    // through unclassified and keeps being rethrown and reported.
+    //
+    // What is left is the plain reset, transient for exactly the reasons the
+    // CPU limit is: nothing about the request caused it, durable storage is
+    // untouched, and the session id still routes. Leaving it unclassified is
+    // what let a memory-limit reset mid-execute fall out of the worker as an
+    // unhandled 500.
+    fragment: "exceeded its memory limit",
+    excludeFragment: "overflowing the storage cache",
+    failure: { kind: "memory_limit", disposition: "transient" },
+  },
+  {
     // Only the bare blip. A reference id at the end of the message is NOT the
     // marker: the runtime also appends one to described faults such as the
     // startup failure above, and because this fragment includes the semicolon
@@ -136,12 +168,6 @@ const MESSAGE_PATTERNS: ReadonlyArray<{
     fragment: "internal error; reference =",
     failure: { kind: "internal_error", disposition: "transient" },
   },
-  // Not listed, on purpose: the sibling memory-limit reset ("Durable Object's
-  // isolate exceeded its memory limit due to overflowing the storage cache …
-  // All objects in the isolate were reset."). The runtime tags that one as a
-  // user error, and it names its own cause — too many un-awaited writes, or one
-  // oversized read. Retrying reproduces it, so calling it transient would bury
-  // an application defect behind a 503 instead of surfacing it.
 ];
 
 /**
@@ -175,7 +201,11 @@ const classifyOne = (error: unknown): DurableObjectFailure | null => {
       return { kind: "destroyed", disposition: "session_dead" };
     }
     for (const pattern of MESSAGE_PATTERNS) {
-      if (normalized.includes(pattern.fragment)) return pattern.failure;
+      if (!normalized.includes(pattern.fragment)) continue;
+      if (pattern.excludeFragment !== undefined && normalized.includes(pattern.excludeFragment)) {
+        continue;
+      }
+      return pattern.failure;
     }
   }
   // Checked last: the message is the more specific signal, and the runtime sets
