@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "@effect/vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "@effect/vitest";
 
 import {
   acquireBuildSlot,
@@ -11,6 +11,10 @@ import {
 describe("session-build-semaphore", () => {
   beforeEach(() => {
     resetBuildSlotsForTest();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("grants up to the cap immediately, with no wait", async () => {
@@ -214,6 +218,7 @@ describe("session-build-semaphore", () => {
   });
 
   it("proceeds without a slot when the queue wait exceeds the timeout, and does not count it as active", async () => {
+    vi.useFakeTimers();
     await Promise.all([
       acquireBuildSlot().promise,
       acquireBuildSlot().promise,
@@ -223,6 +228,10 @@ describe("session-build-semaphore", () => {
     expect(currentActiveBuildsForTest()).toBe(4);
 
     const timedOutHandle = acquireBuildSlot(10);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(currentQueueLengthForTest()).toBe(1);
+    expect(currentActiveBuildsForTest()).toBe(4);
+    await vi.advanceTimersByTimeAsync(1);
     const result = await timedOutHandle.promise;
 
     expect(result).toEqual({ acquired: false, waitMs: expect.any(Number), timedOut: true });
