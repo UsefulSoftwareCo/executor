@@ -21,7 +21,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -37,6 +37,13 @@ import { Api, Mcp, Target } from "../src/services";
 import type { McpSession } from "../src/surfaces/mcp";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
+
+const completion = Schema.Struct({
+  structuredContent: Schema.Struct({
+    status: Schema.String,
+    toolName: Schema.optional(Schema.String),
+  }),
+});
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -136,6 +143,13 @@ const widgetsSpec = (baseUrl: string): string =>
     info: { title: "Widgets API", version: "1.0.0" },
     servers: [{ url: baseUrl }],
     paths: {
+      "/widgets/count": {
+        get: {
+          operationId: "countWidgets",
+          summary: "Count widgets",
+          responses: { "200": { description: "widget count" } },
+        },
+      },
       "/widgets": {
         get: {
           operationId: "listWidgets",
@@ -218,6 +232,47 @@ scenario(
             "toolPaths",
           );
           expect(upstream.requests(), "the upstream served exactly one call").toBe(1);
+          const discovery = yield* executeApproved(
+            session,
+            'return await tools.search({ query: "widgets" });',
+          );
+          const discoveryResult = yield* Schema.decodeUnknownEffect(completion)(discovery.raw);
+          expect(discoveryResult.structuredContent.toolName).toBeUndefined();
+          expect(discovery.raw).not.toHaveProperty("structuredContent.toolPaths");
+
+          const failed = yield* executeApproved(
+            session,
+            invokeByAddressCode(address!.replace(/listWidgets$/, "missingWidget"), {}),
+          );
+          const failedResult = yield* Schema.decodeUnknownEffect(completion)(failed.raw);
+          expect(failedResult.structuredContent.toolName).toBeUndefined();
+          expect(failed.raw).not.toHaveProperty("structuredContent.toolPaths");
+
+          const repeated = yield* executeApproved(
+            session,
+            `
+            await tools[${JSON.stringify(path)}]({});
+            return await tools[${JSON.stringify(path)}]({});
+          `,
+          );
+          const repeatedResult = yield* Schema.decodeUnknownEffect(completion)(repeated.raw);
+          expect(repeatedResult.structuredContent.toolName).toBe(path);
+          expect(repeated.raw).not.toHaveProperty("structuredContent.toolPaths");
+          const anotherAddress = tools
+            .filter((tool) => String(tool.integration) === slug)
+            .map((tool) => String(tool.address))
+            .find((candidate) => candidate.endsWith("countWidgets"));
+          const anotherPath = yield* Schema.decodeUnknownEffect(Schema.String)(anotherAddress);
+          const multiple = yield* executeApproved(
+            session,
+            `
+            await tools[${JSON.stringify(path)}]({});
+            return await tools[${JSON.stringify(anotherPath.replace(/^tools\./, ""))}]({});
+          `,
+          );
+          const multipleResult = yield* Schema.decodeUnknownEffect(completion)(multiple.raw);
+          expect(multipleResult.structuredContent.toolName).toBeUndefined();
+          expect(multiple.raw).not.toHaveProperty("structuredContent.toolPaths");
 
           // 2a. A wrong TOOL name on a live connection: tool_not_found, and the
           // suggestions name the connection's real tools so the agent can
@@ -267,7 +322,9 @@ scenario(
             "the defect mask never surfaces for a missing connection",
           ).not.toContain("Internal tool error");
 
-          expect(upstream.requests(), "no misaddressed call ever reached the upstream").toBe(1);
+          expect(upstream.requests(), "only the five successful calls reached the upstream").toBe(
+            5,
+          );
         }),
         // Selfhost shares one workspace identity — leaked resources fail other
         // scenarios' zero-state assertions.
