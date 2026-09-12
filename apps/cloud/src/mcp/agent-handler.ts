@@ -5,6 +5,8 @@ import {
   McpAuthProvider,
   jsonRpcErrorBody,
   defaultMcpResource,
+  orgWriteAccessForPrincipal,
+  withOrgWriteAccess,
   UNAVAILABLE_RETRY_AFTER_SECONDS,
   type AuthOutcome,
   type McpResource,
@@ -17,6 +19,7 @@ import {
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import { sessionOrgRoleMetadata } from "@executor-js/cloudflare/mcp/role-metadata";
 import {
   classifyDurableObjectError,
   durableObjectFailureResponse,
@@ -181,6 +184,7 @@ const propsForPrincipal = (
         // "carried, and blank".
         ...(principal.organizationName ? { organizationName: principal.organizationName } : {}),
         ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
+        ...sessionOrgRoleMetadata(principal),
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
@@ -289,13 +293,16 @@ export const makeCloudMcpAgentHandler = () => {
     const resource = resourceFromPath(request);
     const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(
-      request,
-      {
-        accountId: outcome.principal.accountId,
-        organizationId: outcome.principal.organizationId,
-      },
-      resource,
+    const forwarded = withOrgWriteAccess(
+      withVerifiedIdentityHeaders(
+        request,
+        {
+          accountId: outcome.principal.accountId,
+          organizationId: outcome.principal.organizationId,
+        },
+        resource,
+      ),
+      orgWriteAccessForPrincipal(outcome.principal),
     );
     const target = resource.kind === "toolkit" ? serveToolkit : serve;
     let response: Response;

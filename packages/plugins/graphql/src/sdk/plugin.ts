@@ -19,6 +19,7 @@ import {
   type HealthCheckResult,
   type IntegrationConfig,
   type IntegrationRecord,
+  type OrgWriteDeniedError,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
@@ -842,7 +843,9 @@ export const describeGraphqlAuthMethods = (
 ): readonly AuthMethodDescriptor[] => {
   const config = Option.getOrUndefined(decodeGraphqlIntegrationConfigOption(record.config));
   if (!config) return [];
-  return config.authenticationTemplate.map((method: GraphqlAuthMethod): AuthMethodDescriptor => {
+  const templates = config.authenticationTemplate;
+  if (templates.length === 0) return [describeNoneAuthMethod("none")];
+  return templates.map((method: GraphqlAuthMethod): AuthMethodDescriptor => {
     if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
     if (method.kind === "oauth2") {
       return {
@@ -907,6 +910,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         return yield* new IntegrationAlreadyExistsError({ slug });
       }
 
+      yield* ctx.core.integrations.authorizeWrite();
       return yield* addIntegrationTransaction(input, slug);
     });
 
@@ -954,6 +958,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
         introspectionHash,
       });
 
+      yield* ctx.core.integrations.authorizeWrite();
       yield* ctx.storage.putIntrospection(introspectionHash, snapshotJson);
 
       yield* ctx.transaction(
@@ -1051,7 +1056,7 @@ const makeGraphqlExtension = (ctx: PluginCtx<GraphqlStore>) => {
   const configureAuthMethods = (
     slug: string,
     input: GraphqlConfigureAuthInput,
-  ): Effect.Effect<readonly GraphqlAuthMethod[], StorageFailure> =>
+  ): Effect.Effect<readonly GraphqlAuthMethod[], OrgWriteDeniedError | StorageFailure> =>
     ctx.transaction(
       Effect.gen(function* () {
         const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));

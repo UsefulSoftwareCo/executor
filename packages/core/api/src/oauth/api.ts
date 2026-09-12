@@ -28,6 +28,7 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   OAuthState,
+  OrgWriteDeniedError,
   Owner,
   ProviderKey,
   TokenEndpointAuthMethodSchema,
@@ -278,14 +279,14 @@ export const OAuthApi = HttpApiGroup.make("oauth")
     HttpApiEndpoint.post("createClient", "/oauth/clients", {
       payload: CreateClientPayload,
       success: CreateClientResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("registerDynamic", "/oauth/clients/register-dynamic", {
       payload: RegisterDynamicPayload,
       success: RegisterDynamicResponse,
-      error: [InternalError, OAuthRegisterDynamic],
+      error: [InternalError, OAuthRegisterDynamic, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -299,21 +300,21 @@ export const OAuthApi = HttpApiGroup.make("oauth")
       params: RemoveClientParams,
       payload: RemoveClientPayload,
       success: RemoveClientResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("start", "/oauth/start", {
       payload: StartPayload,
       success: StartResponse,
-      error: [InternalError, OAuthStart],
+      error: [InternalError, OAuthStart, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.post("complete", "/oauth/complete", {
       payload: CompletePayload,
       success: ConnectionResponse,
-      error: [InternalError, OAuthComplete, OAuthSessionNotFound],
+      error: [InternalError, OAuthComplete, OAuthSessionNotFound, OrgWriteDeniedError],
     }),
   )
   .add(

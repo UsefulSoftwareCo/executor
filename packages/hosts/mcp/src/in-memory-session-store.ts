@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
+import type { OrgWriteAccess } from "@executor-js/sdk";
 
 import {
   buildResumeApprovalUrl,
@@ -19,9 +20,12 @@ import {
 import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
 import {
   McpSessionStore,
+  MCP_ORG_WRITE_ACCESS_HEADER,
   defaultMcpResource,
   mcpResourceKey,
+  orgWriteAccessForPrincipal,
   principalOwns,
+  withOrgWriteAccess,
   type McpDispatchInput,
   type McpDispatchResult,
   type Principal,
@@ -309,17 +313,44 @@ export const makeInMemoryMcpSessionStore = (
   /**
    * Drive a transport for one web request, recovering any defect to a 500. On a
    * fresh transport that never minted a session id (e.g. a non-initialize first
-   * request), close it and its server eagerly so they don't leak.
+   * request), close it and its server eagerly so they don't leak. The SDK
+   * transport rejects malformed or literal-null POST bodies before dispatch;
+   * every request that reaches dispatch has its org-write-access header
+   * overwritten below with the value derived from the authenticated principal.
    */
   const runHandleRequest = (
     transport: WebStandardStreamableHTTPServerTransport,
     request: Request,
+    orgWriteAccess: OrgWriteAccess,
     onClose?: () => void,
   ): Effect.Effect<Response> => {
     const finish = (): void => {
       if (onClose && !transport.sessionId) onClose();
     };
-    return Effect.promise(() => transport.handleRequest(request)).pipe(
+    const handle =
+      request.method === "POST"
+        ? Effect.tryPromise({
+            try: () => request.json(),
+            catch: () => null,
+          }).pipe(
+            Effect.orElseSucceed(() => null),
+            Effect.flatMap((parsedBody) => {
+              if (parsedBody === null)
+                return Effect.promise(() => transport.handleRequest(request));
+              const headers = new Headers(request.headers);
+              headers.set(MCP_ORG_WRITE_ACCESS_HEADER, orgWriteAccess);
+              const bodylessRequest = new Request(request.url, {
+                method: request.method,
+                headers,
+                signal: request.signal,
+              });
+              return Effect.promise(() => transport.handleRequest(bodylessRequest, { parsedBody }));
+            }),
+          )
+        : Effect.promise(() =>
+            transport.handleRequest(withOrgWriteAccess(request, orgWriteAccess)),
+          );
+    return handle.pipe(
       Effect.tap(() => Effect.sync(finish)),
       Effect.catchCause((cause) =>
         Effect.sync(() => {
@@ -342,13 +373,14 @@ export const makeInMemoryMcpSessionStore = (
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
+    owners.set(sessionId, { principal, resource });
     touch(sessionId);
     // Claim before the await, release in the finalizer — `runHandleRequest`
     // already recovers every failure to a 500, but `ensuring` also covers an
     // interrupt, so the counter cannot be left permanently raised (which would
     // make the session immortal, the opposite leak).
     beginRequest(sessionId);
-    return runHandleRequest(transport, request).pipe(
+    return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
       Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
     );
   };
@@ -420,14 +452,19 @@ export const makeInMemoryMcpSessionStore = (
           yield* Effect.promise(() => mcpServer.connect(transport));
           // The session id is minted on the first (initialize) request, so we
           // drive `handleRequest` here; if no id results we close eagerly.
-          return yield* runHandleRequest(transport, request, () => {
-            // Nothing was ever registered under a session id, so `dispose` has
-            // no entry to work from — release the three handles by hand, engine
-            // included.
-            void ignoreClose(null, "transport", () => transport.close());
-            void ignoreClose(null, "server", () => mcpServer.close());
-            void shutdownEngine(null, engine);
-          });
+          return yield* runHandleRequest(
+            transport,
+            request,
+            orgWriteAccessForPrincipal(principal),
+            () => {
+              // Nothing was ever registered under a session id, so `dispose` has
+              // no entry to work from — release the three handles by hand, engine
+              // included.
+              void ignoreClose(null, "transport", () => transport.close());
+              void ignoreClose(null, "server", () => mcpServer.close());
+              void shutdownEngine(null, engine);
+            },
+          );
         }),
       ),
       // A build failure has nowhere typed to go in the envelope; render a 500.
@@ -532,7 +569,12 @@ export const makeInMemoryMcpSessionStore = (
     const response = raw === null ? null : decodeResumeResponse(raw);
     if (!response) return json({ error: "Invalid approval response" }, 400);
 
-    await Effect.runPromise(approvals.recordResponse(executionId, response));
+    await Effect.runPromise(
+      approvals.recordResponse(executionId, {
+        response,
+        orgWriteAccess: principal ? orgWriteAccessForPrincipal(principal) : "allowed",
+      }),
+    );
     return json({
       status: "completed",
       ...formatResumeAcknowledgement(executionId, response),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 
 import {
   firstPartyOAuthClientsFor,
@@ -99,7 +100,7 @@ describe("cloud first-party OAuth clients", () => {
 // The reviewed consumer scope boundary of the Executor-owned Google app.
 //
 // These assertions used to live in `e2e/scenarios/first-party-oauth.test.ts`,
-// read off `listClients`. The app is now `unlisted`, so it has no read surface
+// read off `listClients`. The app is now gated, so it has no public read surface
 // to introspect — the bundle is only observable on the config it is built from,
 // which is here. The e2e still owns the BEHAVIOUR the boundary produces (which
 // scopes an `oauth.start` requests, and that admin scopes are refused).
@@ -109,13 +110,17 @@ describe("cloud first-party Google app", () => {
   const google = () =>
     firstPartyOAuthClientsFor(completeEnv).find((client) => client.name === "google");
 
-  it("declares the Google app but withholds it from every listing", () => {
+  it("declares the Google app but withholds it without a configured rollout", async () => {
     const client = google();
     expect(client, "the env-declared first-party Google app is configured").toBeDefined();
     // The entry MUST stay declared: `loadClient` resolves it by slug for every
-    // existing connection's refresh and reconnect. `unlisted` is what stops it
+    // existing connection's refresh and reconnect. The listing policy stops it
     // being offered for new connections.
-    expect(client?.unlisted).toBe(true);
+    expect(client?.isListed).toBeDefined();
+    if (client?.isListed === undefined) return;
+    expect(
+      await Effect.runPromise(client.isListed({ userId: "test-user", organizationId: "test-org" })),
+    ).toBe(false);
   });
 
   it("covers the reviewed consumer bundle", () => {

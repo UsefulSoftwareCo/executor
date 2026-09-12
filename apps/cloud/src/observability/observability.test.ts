@@ -385,13 +385,22 @@ describe("Durable Object platform reset noise", () => {
     expect(beforeSendWithOtelCorrelation(defect)).not.toBeNull();
   });
 
-  // The memory-limit reset is deliberately absent from the classifier: the
-  // runtime blames the application for it, so it is a defect, not noise.
-  it("keeps the memory-limit reset the classifier deliberately excludes", () => {
+  // The storage-cache memory-limit variant stays absent from the classifier:
+  // the runtime blames the application for it (un-awaited writes, an oversized
+  // read), so it is a defect, not noise. Its plain sibling is a platform reset
+  // and IS classified — the two are separated only by that qualifier.
+  it("keeps the memory-limit variant the classifier deliberately excludes", () => {
     const memory = doInstrumentationEvent(
       "Durable Object's isolate exceeded its memory limit due to overflowing the storage cache. All objects in the isolate were reset.",
     );
     expect(beforeSendWithOtelCorrelation(memory)).not.toBeNull();
+  });
+
+  it("drops the plain memory-limit reset as platform noise", () => {
+    const memory = doInstrumentationEvent(
+      "Durable Object's isolate exceeded its memory limit and was reset.",
+    );
+    expect(beforeSendWithOtelCorrelation(memory)).toBeNull();
   });
 
   it("the hook the worker and DOs install drops the deploy reset", () => {

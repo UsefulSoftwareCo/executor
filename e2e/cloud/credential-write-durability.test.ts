@@ -525,10 +525,16 @@ scenario(
       const objects = yield* vaultObjectsFor(workos, slug);
       const refreshObject = objects.find((object) => object.name.endsWith("refresh"));
       expect(refreshObject, "the connection stored a refresh token in the vault").toBeDefined();
-      const accessObject = objects.find(
-        (object) => object !== refreshObject && refreshObject!.name.startsWith(object.name),
-      );
+      const accessObjects = objects.filter((object) => object.id !== refreshObject?.id);
+      expect(
+        accessObjects,
+        "the connection stored exactly one access token in the vault",
+      ).toHaveLength(1);
+      const accessObject = accessObjects[0];
       expect(accessObject, "the connection stored an access token in the vault").toBeDefined();
+      expect(accessObject!.id, "access and refresh are distinct vault objects").not.toBe(
+        refreshObject!.id,
+      );
 
       const interrupted = yield* Effect.scoped(
         Effect.gen(function* () {

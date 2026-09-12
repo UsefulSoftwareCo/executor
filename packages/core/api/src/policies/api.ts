@@ -8,7 +8,13 @@
 
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { InternalError, Owner, PolicyId, ToolPolicyActionSchema } from "@executor-js/sdk/shared";
+import {
+  InternalError,
+  OrgWriteDeniedError,
+  Owner,
+  PolicyId,
+  ToolPolicyActionSchema,
+} from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Params
@@ -63,7 +69,7 @@ export const PoliciesApi = HttpApiGroup.make("policies")
     HttpApiEndpoint.post("create", "/policies", {
       payload: CreateToolPolicyPayload,
       success: ToolPolicyResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -71,7 +77,7 @@ export const PoliciesApi = HttpApiGroup.make("policies")
       params: PolicyParams,
       payload: UpdateToolPolicyPayload,
       success: ToolPolicyResponse,
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -79,6 +85,6 @@ export const PoliciesApi = HttpApiGroup.make("policies")
       params: PolicyParams,
       payload: RemoveToolPolicyPayload,
       success: Schema.Struct({ removed: Schema.Boolean }),
-      error: InternalError,
+      error: [InternalError, OrgWriteDeniedError],
     }),
   );

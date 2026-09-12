@@ -1,8 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Exit } from "effect";
+import { Cause, Data, Deferred, Effect, Exit, Fiber, Ref, Schema } from "effect";
 
-import { createExecutor, definePlugin } from "@executor-js/sdk";
+import {
+  CurrentOrgWriteAccess,
+  createExecutor,
+  definePlugin,
+  makeOrgWriteAccessState,
+  tool,
+} from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
 import { createExecutionEngine, formatExecuteResult, formatPausedExecution } from "./engine";
@@ -87,6 +94,143 @@ describe("executeWithPause failure propagation", () => {
   );
 });
 
+describe("paused execution authorization", () => {
+  it.effect("uses the resumer's current org-write access after approval", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ coreTools: {}, orgWrites: "request" }),
+      );
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: makeQuickJsExecutor(),
+      });
+      yield* Effect.addFinalizer(() =>
+        engine.shutdown.pipe(Effect.andThen(executor.close()), Effect.ignore),
+      );
+
+      const started = yield* engine
+        .executeWithPause(
+          `
+          return await tools.executor.coreTools.policies.create({
+            owner: "org",
+            pattern: "resume-demotion-regression.*",
+            action: "block",
+          });
+        `,
+        )
+        .pipe(Effect.provideService(CurrentOrgWriteAccess, makeOrgWriteAccessState("allowed")));
+      expect(started.status).toBe("paused");
+      if (started.status !== "paused") return;
+
+      const resumed = yield* engine
+        .resume(started.execution.id, { action: "accept", content: {} })
+        .pipe(Effect.provideService(CurrentOrgWriteAccess, makeOrgWriteAccessState("denied")));
+      expect(resumed?.status).toBe("completed");
+      if (resumed?.status !== "completed") return;
+      expect(yield* executor.policies.list()).toEqual([]);
+      expect(resumed.result.result).toEqual({
+        ok: false,
+        error: expect.objectContaining({ code: "org_write_denied" }),
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rebinds an in-flight resume when a demoted browser decision joins it", () =>
+    Effect.gen(function* () {
+      const waitStarted = yield* Deferred.make<void>();
+      const releaseWait = yield* Deferred.make<void>();
+      let writeWorkspacePolicy: () => Effect.Effect<unknown, Cause.YieldableError> = () =>
+        Effect.die("workspace policy sink was not initialized");
+      const joinPlugin = definePlugin(() => ({
+        id: "resume-join-test" as const,
+        storage: () => ({}),
+        staticIntegrations: () => [
+          {
+            id: "resumeJoinTest.latch",
+            kind: "in-memory" as const,
+            name: "Resume latch",
+            tools: [
+              tool({
+                name: "write",
+                description: "Hold a resumed execution while another resume joins it.",
+                annotations: { requiresApproval: true } as const,
+                inputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+                ),
+                execute: () =>
+                  Deferred.succeed(waitStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseWait)),
+                    Effect.andThen(Effect.suspend(writeWorkspacePolicy)),
+                  ),
+              }),
+            ],
+          },
+        ],
+      }));
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          coreTools: {},
+          orgWrites: "request",
+          plugins: [joinPlugin()] as const,
+        }),
+      );
+      writeWorkspacePolicy = () =>
+        executor.policies.create({
+          owner: "org",
+          pattern: "resume-join-demotion.*",
+          action: "block",
+        });
+      const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
+      yield* Effect.addFinalizer(() =>
+        engine.shutdown.pipe(Effect.andThen(executor.close()), Effect.ignore),
+      );
+
+      const executionAccess = makeOrgWriteAccessState("allowed");
+      const started = yield* engine
+        .executeWithPause(
+          `
+          return await tools.resumeJoinTest.latch.write({});
+        `,
+        )
+        .pipe(Effect.provideService(CurrentOrgWriteAccess, executionAccess));
+      expect(started.status).toBe("paused");
+      if (started.status !== "paused") return;
+
+      const first = yield* engine
+        .resume(started.execution.id, { action: "accept", content: {} })
+        .pipe(
+          Effect.provideService(CurrentOrgWriteAccess, makeOrgWriteAccessState("allowed")),
+          Effect.forkChild,
+        );
+      yield* Deferred.await(waitStarted);
+
+      const joined = yield* engine
+        .resume(started.execution.id, { action: "accept", content: {} })
+        .pipe(
+          Effect.provideService(CurrentOrgWriteAccess, makeOrgWriteAccessState("denied")),
+          Effect.forkChild,
+        );
+      while ((yield* Ref.get(executionAccess.current)) !== "denied") {
+        yield* Effect.yieldNow;
+      }
+      yield* Deferred.succeed(releaseWait, undefined);
+
+      const [firstOutcome, joinedOutcome] = yield* Effect.all([
+        Fiber.join(first),
+        Fiber.join(joined),
+      ]);
+      expect(firstOutcome?.status).toBe("completed");
+      expect(joinedOutcome).toEqual(firstOutcome);
+      expect(yield* executor.policies.list()).toEqual([]);
+      if (firstOutcome?.status !== "completed") return;
+      expect(firstOutcome.result.result).toEqual({
+        ok: false,
+        error: expect.objectContaining({ code: "org_write_denied" }),
+      });
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("pausedExecutionCount", () => {
   it.effect("starts at zero", () =>
     Effect.gen(function* () {
@@ -106,7 +250,11 @@ describe("formatPausedExecution approval terms", () => {
   const paused = (request: FormElicitation) =>
     ({
       id: "exec_1",
-      elicitationContext: { address: "tools.x.org.default.y", args: {}, request },
+      elicitationContext: {
+        address: "tools.x.org.default.y",
+        args: {},
+        request,
+      },
     }) as Parameters<typeof formatPausedExecution>[0];
 
   it("states the terms an upstream attached to the approval", () => {
@@ -152,7 +300,11 @@ describe("formatExecuteResult output identity", () => {
     const formatted = formatExecuteResult({ result: value, logs: [] });
 
     expect(formatted.text).toBe(JSON.stringify(value, null, 2));
-    expect(formatted.structured).toEqual({ status: "completed", result: value, logs: [] });
+    expect(formatted.structured).toEqual({
+      status: "completed",
+      result: value,
+      logs: [],
+    });
     expect(formatted.structured["result"]).toBe(value);
     expect(formatted.isError).toBe(false);
   });
@@ -171,7 +323,10 @@ describe("formatExecuteResult output identity", () => {
   });
 
   it("returns a string result verbatim", () => {
-    const formatted = formatExecuteResult({ result: "plain — ✓", logs: ["l1", "l2"] });
+    const formatted = formatExecuteResult({
+      result: "plain — ✓",
+      logs: ["l1", "l2"],
+    });
 
     expect(formatted.text).toBe("plain — ✓\n\nLogs:\nl1\nl2");
     expect(formatted.structured).toEqual({
@@ -248,7 +403,9 @@ describe("execute outcome measurement cost", () => {
 
       // autoApprove runs the inline path (inner span annotation) and then
       // annotates the outer pausable span with the same result.
-      const outcome = yield* engine.executeWithPause("noop", { autoApprove: true });
+      const outcome = yield* engine.executeWithPause("noop", {
+        autoApprove: true,
+      });
 
       expect(outcome.status).toBe("completed");
       expect(fixture.walks()).toBe(1);

@@ -39,12 +39,21 @@ export const findKey = <T>(
   return undefined;
 };
 
+/**
+ * Memoize on object identity. The cache is a WeakMap so a memoized function
+ * installed at module scope (`generateType`, `getDefinitionsMemoized`) does
+ * not pin every AST and dereferenced schema it has ever seen for the lifetime
+ * of the isolate. Upstream uses a strong Map, which is harmless in a one-shot
+ * CLI but leaks the whole compiled graph per call inside a long-lived worker.
+ */
 export const memoize = <F extends (arg: any, ...rest: any[]) => any>(fn: F): F => {
-  const cache = new Map<Parameters<F>[0], ReturnType<F>>();
+  // Every caller keys on a schema or AST node, which is always an object.
+  const cache = new WeakMap<object, ReturnType<F>>();
   return ((arg: Parameters<F>[0], ...rest: unknown[]) => {
-    if (cache.has(arg)) return cache.get(arg);
+    const key = arg as object;
+    if (cache.has(key)) return cache.get(key);
     const value = fn(arg, ...rest);
-    cache.set(arg, value);
+    cache.set(key, value);
     return value;
   }) as F;
 };
