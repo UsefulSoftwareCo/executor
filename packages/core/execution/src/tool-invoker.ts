@@ -82,6 +82,13 @@ type DescribedTool = {
   readonly outputTypeScript?: string;
   readonly outputTypeScriptNote?: string;
   readonly typeScriptDefinitions?: Record<string, string>;
+  /** The tool's declared annotations, when it carries any. Lets code inside
+   *  `execute` branch on approval posture without parsing the description. */
+  readonly annotations?: {
+    readonly requiresApproval?: boolean;
+    readonly approvalDescription?: string;
+    readonly mayElicit?: boolean;
+  };
   /** Set when the path resolves to no tool — mirrors invoke's tool_not_found. */
   readonly error?: {
     readonly code: "tool_not_found";
@@ -135,7 +142,7 @@ const BUILTIN_TOOL_DESCRIPTIONS: ReadonlyMap<string, DescribedTool> = new Map<
       outputTypeScript: "DescribedTool",
       typeScriptDefinitions: {
         DescribedTool:
-          '{ path: string; name: string; description?: string; inputTypeScript?: string; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; error?: { code: "tool_not_found"; message: string; suggestions?: string[]; }; }',
+          '{ path: string; name: string; description?: string; inputTypeScript?: string; outputTypeScript?: string; typeScriptDefinitions?: { [k: string]: string; }; annotations?: { requiresApproval?: boolean; approvalDescription?: string; mayElicit?: boolean; }; error?: { code: "tool_not_found"; message: string; suggestions?: string[]; }; }',
       },
     },
   ],
@@ -883,6 +890,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
         }
       : {}),
     typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
+    ...(schema.annotations ? { annotations: schema.annotations } : {}),
   };
   return described;
 });

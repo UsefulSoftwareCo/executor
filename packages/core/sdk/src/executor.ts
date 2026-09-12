@@ -199,7 +199,7 @@ import {
   ORG_SUBJECT,
   type ExecutorOwnerPolicyContext,
 } from "./owner-policy";
-import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
+import { ToolAnnotationsView, ToolSchemaView, type IntegrationDetectionResult } from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
@@ -1217,6 +1217,30 @@ const rowToTool = (
     outputSchema: decodeJsonColumn(row.output_schema),
     annotations: annotations ?? (decodeJsonColumn(row.annotations) as ToolAnnotations | undefined),
   };
+};
+
+// Projects a tool's annotations onto the schema view. Plugins persist extra
+// keys alongside the declared contract (the mcp plugin stores its upstream tool
+// name and `_meta` there so they survive to invokeTool), so the three declared
+// fields are picked explicitly rather than spread: a caller reading the view
+// gets the contract in `tool.ts` and nothing a plugin keeps for itself.
+const toolAnnotationsView = (
+  annotations: ToolAnnotations | undefined,
+): ToolAnnotationsView | undefined => {
+  if (!annotations) return undefined;
+  const view: {
+    requiresApproval?: boolean;
+    approvalDescription?: string;
+    mayElicit?: boolean;
+  } = {};
+  if (typeof annotations.requiresApproval === "boolean") {
+    view.requiresApproval = annotations.requiresApproval;
+  }
+  if (typeof annotations.approvalDescription === "string") {
+    view.approvalDescription = annotations.approvalDescription;
+  }
+  if (typeof annotations.mayElicit === "boolean") view.mayElicit = annotations.mayElicit;
+  return Object.keys(view).length > 0 ? ToolAnnotationsView.make(view) : undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -5650,6 +5674,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
             outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
             typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
+            annotations: toolAnnotationsView(tool.annotations),
           });
         }
 
@@ -5760,6 +5785,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           inputTypeScript: Option.getOrUndefined(view)?.inputTypeScript,
           outputTypeScript: Option.getOrUndefined(view)?.outputTypeScript,
           typeScriptDefinitions: Option.getOrUndefined(view)?.typeScriptDefinitions,
+          annotations: toolAnnotationsView(tool.annotations),
         });
       });
 

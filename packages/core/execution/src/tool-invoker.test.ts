@@ -18,6 +18,7 @@ import {
   type AnyPlugin,
   type CredentialProvider,
   type Elicit,
+  type ToolAnnotations,
   type ToolDef,
 } from "@executor-js/sdk";
 import {
@@ -127,6 +128,7 @@ type TestToolSpec = {
   readonly outputJsonSchema?: unknown;
   /** Standard-schema validator applied to args in `invokeTool`. */
   readonly validator?: Validator;
+  readonly annotations?: ToolAnnotations;
   readonly handler: (input: ToolHandlerInput) => Effect.Effect<unknown, unknown>;
 };
 
@@ -179,6 +181,7 @@ const makeTestPlugin = (config: {
             description: spec.description,
             inputSchema: spec.inputJsonSchema,
             outputSchema: spec.outputJsonSchema,
+            ...(spec.annotations ? { annotations: spec.annotations } : {}),
           }),
         ),
       }),
@@ -238,6 +241,10 @@ const crmPlugin = makeTestPlugin({
       description: "Create a CRM contact record",
       inputJsonSchema: ContactInputJson,
       validator: ContactValidator,
+      annotations: {
+        requiresApproval: true,
+        approvalDescription: "Creates a contact record in the CRM",
+      },
       handler: () => Effect.succeed({ id: "contact_1" }),
     },
     {
@@ -875,6 +882,21 @@ describe("tool discovery", () => {
           '{ _tag: "ToolFile"; name?: string; mimeType: string; encoding: "base64"; data: string; byteLength: number; }',
         ToolHttpMeta: "{ status: number; headers: { [k: string]: string; } }",
       });
+    }),
+  );
+
+  it.effect("describes a tool's declared annotations, and omits the key when it has none", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+
+      const annotated = yield* describeTool(executor, "crm.org.main.createContact");
+      expect(annotated.annotations).toEqual({
+        requiresApproval: true,
+        approvalDescription: "Creates a contact record in the CRM",
+      });
+
+      const plain = yield* describeTool(executor, "crm.org.main.listContacts");
+      expect(plain.annotations).toBeUndefined();
     }),
   );
 
