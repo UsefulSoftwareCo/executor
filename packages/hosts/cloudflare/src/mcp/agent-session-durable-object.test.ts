@@ -153,6 +153,20 @@ type HarnessSession = {
   >;
   alarm: () => Promise<void>;
   ctx: MemoryStorage;
+  currentSessionEpoch: () => Promise<number>;
+  getStaleEpochStreamRequestIds: () => Promise<
+    ReadonlyArray<{
+      readonly streamId: string;
+      readonly requestIds: ReadonlyArray<string | number>;
+      readonly epoch: number;
+      readonly currentEpoch: number;
+    }>
+  >;
+  getStreamRequestIds: (streamId: string) => Promise<ReadonlyArray<string | number> | undefined>;
+  setStreamRequestIds: (
+    streamId: string,
+    requestIds: ReadonlyArray<string | number>,
+  ) => Promise<void>;
   dbHandle: { readonly end: () => void } | null;
   engine: ExecutionEngine<Cause.YieldableError> | null;
   getConnections?: () => Iterable<unknown>;
@@ -266,7 +280,14 @@ const approval = {
   content: { approved: true },
 } satisfies ResumeResponse;
 
-const makeHarnessSession = async (): Promise<HarnessSession> => {
+/**
+ * `storage` is a parameter so a test can build a SECOND session on the same
+ * durable storage — that is exactly what a Durable Object reset looks like from
+ * storage's point of view: same keys, brand new instance.
+ */
+const makeHarnessSession = async (
+  storage: MemoryStorage = new MemoryStorage(),
+): Promise<HarnessSession> => {
   const sessionId = "session-reconnect";
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
@@ -275,7 +296,6 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
     userId: "user-1",
     resource: defaultMcpResource,
   };
-  const storage = new MemoryStorage();
   const server = makeServer();
   await server.connect(new StaleCloseTransport());
 
@@ -1764,5 +1784,112 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     it("marking an eviction request on an entry that no longer exists is a no-op", () => {
       expect(() => markEvictionRequested("never-registered")).not.toThrow();
     });
+  });
+});
+
+// The request-id ledger (`__mcp_stream_reqs__:<streamId>`, written by the
+// patched McpAgent — see patches/agents@0.17.3.patch) is the only durable
+// record that a POST is still owed a response. A row exists from the moment the
+// request is accepted until its final response is written, so a row that
+// outlives the incarnation which accepted it is a request nothing will ever
+// answer: the isolate was reset mid-execute. Each row carries the epoch of the
+// incarnation that wrote it, and that is what separates "stranded" from
+// "legitimately still running" — a browser-approval pause holds a row open for
+// minutes inside ONE incarnation and must never be swept.
+describe("McpAgentSessionDOBase stranded-request ledger", () => {
+  const ledgerKey = (streamId: string) => `__mcp_stream_reqs__:${streamId}`;
+
+  it("stamps the accepting incarnation on every ledger row", async () => {
+    const session = await makeHarnessSession();
+
+    await session.setStreamRequestIds("stream-a", [1, "two"]);
+
+    expect(await session.ctx.storage.get(ledgerKey("stream-a"))).toEqual({
+      epoch: await session.currentSessionEpoch(),
+      requestIds: [1, "two"],
+    });
+    expect(
+      await session.getStreamRequestIds("stream-a"),
+      "readers still see a plain request-id list",
+    ).toEqual([1, "two"]);
+  });
+
+  it("does not treat a row from the running incarnation as stranded", async () => {
+    const session = await makeHarnessSession();
+
+    // What a browser-approval pause looks like: accepted, unanswered, and
+    // legitimately going to stay that way for minutes.
+    await session.setStreamRequestIds("stream-paused", [9]);
+
+    expect(await session.getStaleEpochStreamRequestIds()).toEqual([]);
+  });
+
+  it("reports a row left by a previous incarnation as stranded", async () => {
+    const storage = new MemoryStorage();
+    const beforeReset = await makeHarnessSession(storage);
+    await beforeReset.setStreamRequestIds("stream-lost", [42]);
+    await beforeReset.setStreamRequestIds("stream-also-lost", ["abc"]);
+
+    // The reset: same durable storage, a brand new Durable Object instance.
+    const afterReset = await makeHarnessSession(storage);
+    await afterReset.setStreamRequestIds("stream-live", [100]);
+
+    const stranded = await afterReset.getStaleEpochStreamRequestIds();
+
+    // Order follows storage's key order, which this fake does not model, so
+    // the assertion is on the set.
+    expect(
+      [...stranded].sort((a, b) => a.streamId.localeCompare(b.streamId)),
+      "only the rows the dead incarnation accepted",
+    ).toMatchObject([
+      { streamId: "stream-also-lost", requestIds: ["abc"] },
+      { streamId: "stream-lost", requestIds: [42] },
+    ]);
+    for (const row of stranded) expect(row.epoch).toBeLessThan(row.currentEpoch);
+  });
+
+  it("reports a pre-epoch ledger row as stranded", async () => {
+    const session = await makeHarnessSession();
+
+    // The shape rows had before they carried an epoch. One can only have been
+    // written by an earlier deployment, so it reads as epoch 0 and is swept.
+    await session.ctx.storage.put(ledgerKey("stream-legacy"), [7]);
+
+    expect(await session.getStaleEpochStreamRequestIds()).toEqual([
+      {
+        currentEpoch: await session.currentSessionEpoch(),
+        epoch: 0,
+        requestIds: [7],
+        streamId: "stream-legacy",
+      },
+    ]);
+    expect(
+      await session.getStreamRequestIds("stream-legacy"),
+      "and it is still readable as a request-id list",
+    ).toEqual([7]);
+  });
+
+  it("holds the idle lease for a request the running incarnation still owes", async () => {
+    const session = await makeHarnessSession();
+    await session.setStreamRequestIds("stream-live", [1]);
+
+    await session.alarm();
+
+    expect(session.initialized, "live work keeps the runtime resident").toBe(true);
+    expect(session.ctx.alarm, "and re-arms the lease").toBeGreaterThan(0);
+  });
+
+  it("does not let a stranded row extend the idle lease", async () => {
+    const storage = new MemoryStorage();
+    const beforeReset = await makeHarnessSession(storage);
+    await beforeReset.setStreamRequestIds("stream-lost", [1]);
+
+    const afterReset = await makeHarnessSession(storage);
+    await afterReset.alarm();
+
+    expect(
+      afterReset.initialized,
+      "a request nothing will ever answer is dead work, not running work",
+    ).toBe(false);
   });
 });
