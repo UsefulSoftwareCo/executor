@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Predicate, Result, Scheduler } from "effect";
+import { Data, Effect, Inspectable, Logger, Predicate, Result, Scheduler } from "effect";
 
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { ToolNotFoundError } from "./errors";
@@ -37,11 +37,13 @@ const memoryProvider = (): CredentialProvider => {
     writable: true,
     get: (id) => Effect.sync(() => store.get(String(id)) ?? null),
     set: (id, value) => Effect.sync(() => void store.set(String(id), value)),
+    delete: (id) => Effect.sync(() => void store.delete(String(id))),
   };
 };
 
 const INTEG = IntegrationSlug.make("demo");
 const PINNED = IntegrationSlug.make("demo-pinned");
+const COLLIDING_NONE_INTEG = IntegrationSlug.make("demo-legacy-none");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const CONN = ConnectionName.make("main");
 
@@ -91,6 +93,18 @@ const demoPlugin = definePlugin(() => ({
       },
     }),
   invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+  describeAuthMethods: (integration) =>
+    String(integration.slug) === String(COLLIDING_NONE_INTEG)
+      ? [
+          {
+            id: "none",
+            label: "Legacy API key",
+            kind: "apikey",
+            template: "none",
+            placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+          },
+        ]
+      : [],
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -106,6 +120,12 @@ const demoPlugin = definePlugin(() => ({
         description: "Demo (pinned)",
         config: {},
         canRemove: false,
+      }),
+    seedCollidingNone: () =>
+      ctx.core.integrations.register({
+        slug: COLLIDING_NONE_INTEG,
+        description: "Legacy colliding auth method",
+        config: {},
       }),
     storagePut: (owner: "org" | "user", key: string, value: string) =>
       ctx.storage.put(owner, key, value),
@@ -128,6 +148,22 @@ const demoPlugin = definePlugin(() => ({
 const diagnosticsPlugin = definePlugin(() => ({
   id: "diagnostics" as const,
   storage: () => ({}),
+  describeAuthMethods: () => [
+    {
+      id: "none",
+      label: "No authentication",
+      kind: "none",
+      template: "none",
+      placements: [{ carrier: "header", name: "X-Invalid-No-Auth-Placement", prefix: "" }],
+    },
+    {
+      id: "credential",
+      label: "Credential",
+      kind: "apikey",
+      template: "credential",
+      placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+    },
+  ],
   resolveTools: ({ connection }) =>
     Effect.succeed({
       tools: [],
@@ -375,6 +411,58 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("creates a provider-backed legacy slug-none connection through the core tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        coreTools: { webBaseUrl: "http://localhost:3000" },
+      });
+      yield* executor.demo.seed();
+      yield* executor.demo.seedCollidingNone();
+
+      const missingOrigin = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "missing",
+          integration: String(INTEG),
+          template: String(TEMPLATE),
+        },
+      );
+      expect(missingOrigin).toEqual({
+        ok: false,
+        error: {
+          code: "invalid_connection_input",
+          message: "A connection must supply at least one credential input.",
+        },
+      });
+
+      const created = yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.create"),
+        {
+          owner: "org",
+          name: "legacy",
+          integration: String(COLLIDING_NONE_INTEG),
+          template: "none",
+          from: { provider: "memory", id: "legacy-secret" },
+        },
+      );
+      expect(created).toMatchObject({
+        owner: "org",
+        name: "legacy",
+        integration: String(COLLIDING_NONE_INTEG),
+        template: "none",
+        address: "tools.demo-legacy-none.org.legacy",
+      });
+
+      const invoked = yield* executor.execute(
+        ToolAddress.make("tools.demo-legacy-none.org.legacy.run"),
+        {},
+      );
+      expect(invoked).toEqual({ ran: "run" });
+    }),
+  );
+
   it.effect("removes catalog integrations through the built-in Executor tools", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
@@ -435,24 +523,49 @@ describe("createExecutor", () => {
     }),
   );
 
-  it.effect("surfaces failed tool sync diagnostics through connection tools", () =>
+  it.effect("omits invalid auth methods and surfaces plugin and tool sync diagnostics", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
         plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
         coreTools: {},
       });
       yield* executor.diagnostics.seed();
-
-      yield* executor.execute(
-        ToolAddress.make("executor.coreTools.connections.create"),
+      const warnings: string[] = [];
+      const capture = Logger.make<unknown, void>((options) => {
+        if (options.logLevel === "Warn") {
+          warnings.push(Inspectable.toStringUnknown(options.message, 0));
+        }
+      });
+      const integration = yield* executor.integrations
+        .get(IntegrationSlug.make("diagnostics"))
+        .pipe(Effect.provide(Logger.layer([capture])));
+      yield* executor.integrations
+        .get(IntegrationSlug.make("diagnostics"))
+        .pipe(Effect.provide(Logger.layer([capture])));
+      expect(integration?.authMethods).toEqual([
         {
-          owner: "org",
-          name: "main",
-          integration: "diagnostics",
-          template: "none",
+          id: "credential",
+          label: "Credential",
+          kind: "apikey",
+          template: "credential",
+          placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
         },
-        { onElicitation: "accept-all" },
-      );
+      ]);
+      expect(
+        warnings.filter(
+          (line) =>
+            line.includes("executor omitted invalid plugin auth method") &&
+            line.includes("no-auth methods cannot declare credential placements"),
+        ),
+      ).toHaveLength(1);
+
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("diagnostics"),
+        template: AuthTemplateSlug.make("credential"),
+        value: "diagnostics-credential",
+      });
 
       const listed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.list"),
@@ -496,16 +609,13 @@ describe("createExecutor", () => {
       });
       yield* executor.diagnostics.seedExpired();
 
-      yield* executor.execute(
-        ToolAddress.make("executor.coreTools.connections.create"),
-        {
-          owner: "org",
-          name: "main",
-          integration: "diagnostics_expired",
-          template: "none",
-        },
-        { onElicitation: "accept-all" },
-      );
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("diagnostics_expired"),
+        template: AuthTemplateSlug.make("credential"),
+        value: "diagnostics-credential",
+      });
 
       const refreshed = yield* executor.execute(
         ToolAddress.make("executor.coreTools.connections.refresh"),

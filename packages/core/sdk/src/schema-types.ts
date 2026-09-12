@@ -789,6 +789,31 @@ export type ToolTypeScriptPreview = {
   typeScriptDefinitions?: Record<string, string>;
 };
 
+/**
+ * Upper bound on the number of schema nodes handed to the compiler for one
+ * tool preview. The compiler is fully synchronous, so nothing can interrupt
+ * it once it starts; a pre-check is the only protection a shared isolate has
+ * against a pathological schema. Sized well above any real operation (a
+ * PostHog or Stripe tool with its referenced definitions is a few thousand
+ * nodes) and well below where the compile would take seconds of CPU.
+ */
+export const MAX_PREVIEW_SCHEMA_NODES = 50_000;
+
+/** Count object/array nodes in a schema, stopping early once `limit` is hit. */
+const exceedsNodeLimit = (root: unknown, limit: number): boolean => {
+  let count = 0;
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || typeof node !== "object") continue;
+    if (++count > limit) return true;
+    for (const value of Array.isArray(node) ? node : Object.values(node as object)) {
+      if (value !== null && typeof value === "object") stack.push(value);
+    }
+  }
+  return false;
+};
+
 export const buildToolTypeScriptPreview = async (input: {
   inputSchema?: unknown;
   outputSchema?: unknown;
@@ -806,14 +831,19 @@ export const buildToolTypeScriptPreview = async (input: {
     return {};
   }
 
+  const unknownPreview: ToolTypeScriptPreview = {
+    ...(input.inputSchema !== undefined ? { inputTypeScript: "unknown" } : {}),
+    ...(input.outputSchema !== undefined ? { outputTypeScript: "unknown" } : {}),
+  };
+
   const wrappedSchema = buildWrappedObjectSchema(properties, input.defs);
+  if (exceedsNodeLimit(wrappedSchema, MAX_PREVIEW_SCHEMA_NODES)) {
+    return unknownPreview;
+  }
   return Promise.resolve()
     .then(() => compile(wrappedSchema, ROOT_WRAPPER_NAME, compilerOptionsFrom(input.options ?? {})))
     .then(
       (source) => previewToolFromCompiledTypeScript(source),
-      () => ({
-        ...(input.inputSchema !== undefined ? { inputTypeScript: "unknown" } : {}),
-        ...(input.outputSchema !== undefined ? { outputTypeScript: "unknown" } : {}),
-      }),
+      () => unknownPreview,
     );
 };

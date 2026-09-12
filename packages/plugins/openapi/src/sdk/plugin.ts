@@ -18,6 +18,7 @@ import {
   type IntegrationConfig,
   type IntegrationPreset,
   type IntegrationRecord,
+  type OrgWriteDeniedError,
   type PluginCtx,
   type StorageFailure,
 } from "@executor-js/sdk/core";
@@ -50,7 +51,11 @@ import {
 } from "./spec-format";
 import type { Authentication } from "./types";
 import { normalizeOpenApiAuthInputs, type AuthenticationInput } from "./types";
-import { ApiKeyAuthTemplate, describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
+import {
+  ApiKeyAuthTemplate,
+  describeApiKeyAuthMethod,
+  describeNoneAuthMethod,
+} from "@executor-js/sdk/http-auth";
 import {
   checkHealthOpenApi,
   compileAndPersistOpenApiSpecStreaming,
@@ -170,6 +175,7 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationAlreadyExistsError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
   /** Re-resolve the integration's spec (from its stored source URL, or the
@@ -185,9 +191,10 @@ export interface OpenApiPluginExtension {
     | OpenApiOAuthError
     | OpenApiSpecOverrideError
     | IntegrationNotFoundError
+    | OrgWriteDeniedError
     | StorageFailure
   >;
-  readonly removeSpec: (slug: string) => Effect.Effect<void, StorageFailure>;
+  readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
   /** Read the integration's full opaque config, including its
    *  `authenticationTemplate`. Returns null when the integration is absent. */
@@ -199,7 +206,7 @@ export interface OpenApiPluginExtension {
   readonly configure: (
     slug: string,
     input: OpenApiConfigureInput,
-  ) => Effect.Effect<readonly Authentication[], StorageFailure>;
+  ) => Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure>;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +333,19 @@ const AddIntegrationOutputSchema = Schema.Struct({
   toolCount: Schema.Number,
 });
 
+const UpdateIntegrationInputSchema = Schema.Struct({
+  slug: Schema.String,
+  spec: Schema.optional(OpenApiSpecInputSchema),
+  specOverrides: Schema.optional(SpecOverridesSchema),
+});
+
+const UpdateIntegrationOutputSchema = Schema.Struct({
+  slug: Schema.String,
+  toolCount: Schema.Number,
+  addedTools: Schema.Array(Schema.String),
+  removedTools: Schema.Array(Schema.String),
+});
+
 const PreviewSpecInputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(PreviewSpecInputSchema),
 );
@@ -337,6 +357,12 @@ const AddIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
 );
 const AddIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(AddIntegrationOutputSchema),
+);
+const UpdateIntegrationInputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(UpdateIntegrationInputSchema),
+);
+const UpdateIntegrationOutputStandardSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(UpdateIntegrationOutputSchema),
 );
 
 const openApiToolFailure = (code: string, message: string, details?: unknown) =>
@@ -581,26 +607,26 @@ export const describeOpenApiAuthMethods = (
 ): readonly AuthMethodDescriptor[] => {
   const config = decodeOpenApiIntegrationConfig(record.config);
   if (!config) return [];
-  return (config.authenticationTemplate ?? []).map(
-    (template: Authentication): AuthMethodDescriptor => {
-      if (template.kind === "oauth2") {
-        return {
-          id: String(template.slug),
-          label: template.label ?? "OAuth2",
-          kind: "oauth",
-          template: String(template.slug),
-          oauth: {
-            authorizationUrl: template.authorizationUrl,
-            tokenUrl: template.tokenUrl,
-            resource: template.resource ?? null,
-            scopes: template.scopes,
-            supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
-          },
-        };
-      }
-      return describeApiKeyAuthMethod(template);
-    },
-  );
+  const templates = config.authenticationTemplate ?? [];
+  if (templates.length === 0) return [describeNoneAuthMethod("none")];
+  return templates.map((template: Authentication): AuthMethodDescriptor => {
+    if (template.kind === "oauth2") {
+      return {
+        id: String(template.slug),
+        label: template.label ?? "OAuth2",
+        kind: "oauth",
+        template: String(template.slug),
+        oauth: {
+          authorizationUrl: template.authorizationUrl,
+          tokenUrl: template.tokenUrl,
+          resource: template.resource ?? null,
+          scopes: template.scopes,
+          supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+        },
+      };
+    }
+    return describeApiKeyAuthMethod(template);
+  });
 };
 
 export const describeOpenApiIntegrationDisplay = (
@@ -781,6 +807,7 @@ export const openApiPlugin = definePlugin<
 
       const addSpec = (config: OpenApiSpecConfig) =>
         Effect.gen(function* () {
+          yield* ctx.core.integrations.authorizeWrite();
           // Resolve URL → text and parse BEFORE opening a transaction. Holding
           // `BEGIN` across a network fetch is the Hyperdrive deadlock path.
           const resolved = yield* resolveSpecForInput(config, httpClientLayer);
@@ -899,6 +926,7 @@ export const openApiPlugin = definePlugin<
           // content-addressed (re-puts are idempotent) and an aborted register
           // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
+          yield* ctx.core.integrations.authorizeWrite();
           yield* ctx.storage.putSpec(specHash, resolved.specText);
           if (sourceSpecHash) {
             yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
@@ -968,6 +996,7 @@ export const openApiPlugin = definePlugin<
           if (!record || !current) {
             return yield* new IntegrationNotFoundError({ slug });
           }
+          yield* ctx.core.integrations.authorizeWrite();
 
           // The new spec source: explicit input wins; otherwise re-fetch from
           // where the spec originally came from. A pasted-blob integration has
@@ -1022,6 +1051,7 @@ export const openApiPlugin = definePlugin<
           const specHash = yield* sha256Hex(resolved.specText);
           const sourceSpecHash =
             nextOverrides.length > 0 ? yield* sha256Hex(resolved.sourceSpecText) : undefined;
+          yield* ctx.core.integrations.authorizeWrite();
           yield* ctx.storage.putSpec(specHash, resolved.specText);
           if (sourceSpecHash) {
             yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
@@ -1175,7 +1205,7 @@ export const openApiPlugin = definePlugin<
         configure: (
           slug: string,
           input: OpenApiConfigureInput,
-        ): Effect.Effect<readonly Authentication[], StorageFailure> =>
+        ): Effect.Effect<readonly Authentication[], OrgWriteDeniedError | StorageFailure> =>
           ctx.transaction(
             Effect.gen(function* () {
               const record = yield* ctx.core.integrations.get(IntegrationSlug.make(slug));
@@ -1285,6 +1315,52 @@ export const openApiPlugin = definePlugin<
                         openApiToolFailure(
                           "integration_already_exists",
                           `Integration ${slug} already exists; update it instead of re-adding.`,
+                        ),
+                      ),
+                  }),
+                ),
+          }),
+          tool({
+            name: "updateSpec",
+            description:
+              "Update an existing OpenAPI integration in place and rebuild its connected tools. Omit `spec` to re-fetch the integration's stored spec URL. Provide `spec` to replace an inline or URL source. Existing connections, credentials, policies, and curated integration metadata are preserved.",
+            annotations: {
+              requiresApproval: true,
+              approvalDescription: "Update an OpenAPI integration",
+            },
+            inputSchema: UpdateIntegrationInputStandardSchema,
+            outputSchema: UpdateIntegrationOutputStandardSchema,
+            execute: (input: typeof UpdateIntegrationInputSchema.Type) =>
+              self
+                .updateSpec(input.slug, {
+                  ...(input.spec === undefined ? {} : { spec: input.spec }),
+                  ...(input.specOverrides === undefined
+                    ? {}
+                    : { specOverrides: input.specOverrides }),
+                })
+                .pipe(
+                  Effect.map((result) =>
+                    ToolResult.ok({
+                      slug: String(result.slug),
+                      toolCount: result.toolCount,
+                      addedTools: [...result.addedTools],
+                      removedTools: [...result.removedTools],
+                    }),
+                  ),
+                  Effect.catchTags({
+                    OpenApiParseError: ({ message }: OpenApiParseError) =>
+                      Effect.succeed(openApiToolFailure("openapi_parse_failed", message)),
+                    OpenApiExtractionError: ({ message }: OpenApiExtractionError) =>
+                      Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
+                    OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
+                      Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                    OpenApiSpecOverrideError: ({ message }) =>
+                      Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
+                    IntegrationNotFoundError: ({ slug }: IntegrationNotFoundError) =>
+                      Effect.succeed(
+                        openApiToolFailure(
+                          "integration_not_found",
+                          `Integration ${slug} was not found.`,
                         ),
                       ),
                   }),

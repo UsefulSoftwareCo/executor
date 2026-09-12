@@ -36,7 +36,7 @@ jobs:
         include:
           - runner: blacksmith-4vcpu-ubuntu-2404
             target: executor-linux-x64
-          - runner: macos-14
+          - runner: blacksmith-6vcpu-macos-latest
             target: executor-darwin-arm64
     runs-on: ${{ matrix.runner }}
     steps:

@@ -89,6 +89,8 @@ export const singleAdminIdentityLayer = (
           name: "Admin",
           avatarUrl: null,
           roles: ["admin"],
+          orgRoleModel: "organization",
+          orgRole: "admin",
         }),
     }),
   );
@@ -126,6 +128,8 @@ export const headerIdentityLayer: Layer.Layer<IdentityProvider> = Layer.succeed(
         name: userId,
         avatarUrl: null,
         roles: ["admin"],
+        orgRoleModel: "organization",
+        orgRole: "admin",
       });
     },
   }),

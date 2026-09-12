@@ -47,6 +47,8 @@ export const principalFromAccessClaims = (
     name: typeof nameClaim === "string" ? nameClaim : commonName || null,
     avatarUrl: null,
     roles: isAdmin ? ["admin", ...groups] : groups.length > 0 ? groups : ["member"],
+    orgRoleModel: "organization",
+    orgRole: isAdmin ? "admin" : "member",
   };
 };
 
@@ -78,6 +80,8 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
     name: "Dev",
     avatarUrl: null,
     roles: ["admin"],
+    orgRoleModel: "organization",
+    orgRole: "admin",
   };
 
   const verify = (request: Request): Effect.Effect<Principal | null> =>

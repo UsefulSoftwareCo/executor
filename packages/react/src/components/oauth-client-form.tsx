@@ -3,10 +3,12 @@ import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import { ExternalLink } from "lucide-react";
 import {
+  isTokenEndpointAuthMethod,
   OAuthClientSlug,
   type IntegrationSlug,
   type OAuthGrant,
   type Owner,
+  type TokenEndpointAuthMethod,
 } from "@executor-js/sdk/shared";
 import { toast } from "sonner";
 
@@ -14,12 +16,13 @@ import { createOAuthClientOptimistic, probeOAuth, registerDynamicOAuthClient } f
 import { ownerLabelForHost } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useOrganizationId } from "../api/organization-context";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import { oauthClientWriteKeys } from "../api/reactivity-keys";
 import { optimisticDcrClientSlug, uniqueClientSlug } from "../plugins/use-effective-oauth-client";
 import { oauthCallbackUrl } from "../plugins/oauth-sign-in";
 import {
   ConnectionOwnerDropdown,
-  connectionOwnerOptionsForHost,
+  connectionOwnerOptionsForAccess,
   normalizeConnectionOwner,
 } from "../plugins/connection-owner";
 import { Button } from "./button";
@@ -67,7 +70,16 @@ export interface OAuthClientFormPrefill {
    *  prefilled "Register automatically" picks the right client-auth method
    *  instead of defaulting to public ("none"). */
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
+  /** Saved manual-client transport. Omitted means client_secret_post. */
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }
+
+export const preferredManualTokenEndpointAuthMethod = (
+  advertised: readonly string[] | undefined,
+): TokenEndpointAuthMethod =>
+  advertised?.includes("client_secret_basic") === true && !advertised.includes("client_secret_post")
+    ? "basic"
+    : "body";
 
 /** The scopes to register via DCR. The integration's DECLARED (template) scopes
  *  are authoritative and immutable, so they win. Otherwise the DISCOVERED set is
@@ -99,13 +111,24 @@ export const canSubmitOAuthClientForm = (input: {
   readonly clientSecret: string;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }): boolean =>
   !input.submitting &&
   input.name.trim().length > 0 &&
   input.clientId.trim().length > 0 &&
   (input.grant === "authorization_code" || input.clientSecret.trim().length > 0) &&
+  (input.tokenEndpointAuthMethod === undefined ||
+    input.tokenEndpointAuthMethod === "body" ||
+    input.clientSecret.trim().length > 0) &&
   input.tokenUrl.trim().length > 0 &&
   (input.grant === "client_credentials" || input.authorizationUrl.trim().length > 0);
+
+/** Preserve the Workspace default as the user's preference while role data is
+ * loading. The effective owner is clamped separately on every render, so a
+ * member still submits Personal; when an admin role resolves, Workspace is
+ * restored unless the user actively selected Personal. */
+export const initialOAuthClientOwner = (fixedOwner: Owner | undefined): Owner =>
+  fixedOwner ?? "org";
 
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
@@ -160,9 +183,10 @@ export function OAuthClientForm(props: {
   // Non-org hosts (local/desktop) have one local workspace. Offer only Local,
   // so the owner dropdown (which hides on a single option) disappears.
   const organizationId = useOrganizationId();
+  const canCreateWorkspaceConnections = useCanCreateWorkspaceConnections();
   const ownerOptions = useMemo(
-    () => connectionOwnerOptionsForHost(organizationId),
-    [organizationId],
+    () => connectionOwnerOptionsForAccess(organizationId, canCreateWorkspaceConnections),
+    [canCreateWorkspaceConnections, organizationId],
   );
 
   // The browser-facing callback the OAuth flow uses (this host's
@@ -172,16 +196,23 @@ export function OAuthClientForm(props: {
   // it is automatically correct per platform (cloud / self-host / local).
   const callbackUrl = useMemo(() => oauthCallbackUrl(), []);
 
-  // Explicit create-time choice (no ambient owner). Default Workspace (`org`) on
-  // an org host, Local (`org`) on a non-org host, or the locked owner when
-  // editing.
-  const [owner, setOwner] = useState<Owner>(
-    normalizeConnectionOwner(fixedOwner ?? "org", ownerOptions),
+  // Explicit create-time choice (no ambient owner). Admins default to Workspace
+  // (`org`) on an org host; members are clamped to Personal (`user`); non-org
+  // hosts use Local (`org`). Editing may lock the existing owner.
+  const [selectedOwner, setSelectedOwner] = useState<Owner>(() =>
+    initialOAuthClientOwner(fixedOwner),
   );
+  // Role loading and workspace switches can invalidate a prior selection.
+  // Derive the effective owner every render so no submit observes stale state.
+  const owner = normalizeConnectionOwner(selectedOwner, ownerOptions);
   const [name, setName] = useState(integrationName);
   const [grant, setGrant] = useState<OAuthGrant>(prefill?.grant ?? "authorization_code");
   const [clientId, setClientId] = useState(prefill?.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
+  const [tokenEndpointAuthMethod, setTokenEndpointAuthMethod] = useState<TokenEndpointAuthMethod>(
+    prefill?.tokenEndpointAuthMethod ??
+      preferredManualTokenEndpointAuthMethod(prefill?.tokenEndpointAuthMethodsSupported),
+  );
   const [issuerUrl, setIssuerUrl] = useState("");
   const [discoveredIssuer, setDiscoveredIssuer] = useState<string | null>(prefill?.issuer ?? null);
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
@@ -239,6 +270,7 @@ export function OAuthClientForm(props: {
     clientSecret,
     authorizationUrl,
     tokenUrl,
+    tokenEndpointAuthMethod,
   });
 
   // DCR is offered when the server advertises a registration endpoint AND we
@@ -344,6 +376,7 @@ export function OAuthClientForm(props: {
         grant,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
+        tokenEndpointAuthMethod,
         resource: normalizedResource,
         // Editing preserves the app's already-recorded origin (via
         // `intentIntegration`, passed verbatim by the caller); a fresh
@@ -552,6 +585,56 @@ export function OAuthClientForm(props: {
         </div>
       </div>
 
+      <div className="space-y-2">
+        <Label className="text-xs text-muted-foreground">Token endpoint authentication</Label>
+        <RadioGroup
+          value={tokenEndpointAuthMethod}
+          onValueChange={(next: string) => {
+            if (isTokenEndpointAuthMethod(next)) setTokenEndpointAuthMethod(next);
+          }}
+          className="grid gap-2 sm:grid-cols-3"
+        >
+          {(
+            [
+              {
+                value: "body",
+                label: "Request body",
+                hint: "client_secret_post",
+              },
+              {
+                value: "basic",
+                label: "HTTP Basic",
+                hint: "client_secret_basic",
+              },
+              {
+                value: "basic_raw",
+                label: "HTTP Basic (raw)",
+                hint: "provider compatibility",
+              },
+            ] as const
+          ).map((option) => (
+            <Label
+              key={option.value}
+              htmlFor={`token-auth-${option.value}`}
+              className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2 font-normal has-[:checked]:border-ring has-[:checked]:bg-accent/40"
+            >
+              <RadioGroupItem
+                id={`token-auth-${option.value}`}
+                value={option.value}
+                className="mt-0.5"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="block font-mono text-xs text-muted-foreground">{option.hint}</span>
+              </span>
+            </Label>
+          ))}
+        </RadioGroup>
+        {tokenEndpointAuthMethod !== "body" && clientSecret.trim().length === 0 ? (
+          <p className="text-xs text-destructive">HTTP Basic requires a client secret.</p>
+        ) : null}
+      </div>
+
       {/* endpoints */}
       {endpointsKnown && !showEndpoints ? (
         <Button
@@ -684,7 +767,7 @@ export function OAuthClientForm(props: {
         <div className="space-y-1.5">
           <Label className="text-[11px] text-muted-foreground">Owner</Label>
           <p className="text-sm">
-            {ownerLabelForHost(fixedOwner, organizationId)}
+            {ownerLabelForHost(owner, organizationId)}
             <span className="ml-2 text-xs text-muted-foreground">
               can&apos;t change after creation
             </span>
@@ -694,7 +777,7 @@ export function OAuthClientForm(props: {
         <ConnectionOwnerDropdown
           value={owner}
           options={ownerOptions}
-          onChange={(next: Owner) => setOwner(next)}
+          onChange={(next: Owner) => setSelectedOwner(next)}
           label="Register app for"
           help={`Personal apps are yours only; Workspace apps are shared with everyone (each ${ownerLabelForHost(
             "user",

@@ -18,7 +18,17 @@ afterAll(() => dispose());
 
 const BASE = "http://localhost:4788";
 
-const signUp = async (email: string): Promise<string> => {
+interface AuthenticatedIdentity {
+  readonly token: string;
+  readonly cookie: string;
+}
+
+const identityFromResponse = (response: Response): AuthenticatedIdentity => ({
+  token: response.headers.get("set-auth-token") ?? "",
+  cookie: response.headers.get("set-cookie")?.split(";", 1)[0] ?? "",
+});
+
+const signUpIdentity = async (email: string): Promise<AuthenticatedIdentity> => {
   const inviteCode = await mintInviteCode(handler);
   const res = await handler(
     new Request(`${BASE}/api/auth/sign-up/email`, {
@@ -28,12 +38,29 @@ const signUp = async (email: string): Promise<string> => {
     }),
   );
   expect(res.status).toBe(200);
-  return res.headers.get("set-auth-token") ?? "";
+  return identityFromResponse(res);
 };
 
-const mcp = (token: string, body: unknown, sessionId?: string) =>
+const signUp = async (email: string): Promise<string> => (await signUpIdentity(email)).token;
+
+const signInBootstrap = async (): Promise<AuthenticatedIdentity> => {
+  const response = await handler(
+    new Request(`${BASE}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
+        password: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
+      }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  return identityFromResponse(response);
+};
+
+const mcp = (token: string, body: unknown, sessionId?: string, browser = false) =>
   handler(
-    new Request(`${BASE}/mcp`, {
+    new Request(`${BASE}/mcp${browser ? "?elicitation_mode=browser" : ""}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -45,25 +72,41 @@ const mcp = (token: string, body: unknown, sessionId?: string) =>
     }),
   );
 
-const initSession = async (token: string): Promise<string> => {
-  const res = await mcp(token, {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: { name: "t", version: "1" },
+const initSession = async (token: string, browser = false): Promise<string> => {
+  const res = await mcp(
+    token,
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "t", version: "1" },
+      },
     },
-  });
+    undefined,
+    browser,
+  );
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toContain("application/json");
   const sessionId = res.headers.get("mcp-session-id") ?? "";
   expect(sessionId).not.toBe("");
   await res.text();
-  await mcp(token, { jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
+  await mcp(token, { jsonrpc: "2.0", method: "notifications/initialized" }, sessionId, browser);
   return sessionId;
 };
+
+const account = (token: string, path: string, init?: RequestInit) =>
+  handler(
+    new Request(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        ...Object.fromEntries(new Headers(init?.headers)),
+        authorization: `Bearer ${token}`,
+      },
+    }),
+  );
 
 test("an authenticated MCP client initializes, lists tools, and executes code", async () => {
   const token = await signUp("alice@mcp.test");
@@ -172,4 +215,143 @@ test("GET /mcp without a session id is 400; DELETE without a session id is 204",
   );
   expect(del.status).toBe(204);
   expect(await del.text()).toBe("");
+});
+
+test("a browser approval uses the bootstrap admin's demoted membership at the sink", async () => {
+  const controller = await signInBootstrap();
+  const actorEmail = "approval-role-actor@mcp.test";
+  const actor = await signUpIdentity(actorEmail);
+
+  const members = async (token: string) => {
+    const response = await account(token, "/api/account/members");
+    expect(response.status).toBe(200);
+    return (await response.json()) as {
+      readonly members: ReadonlyArray<{
+        readonly id: string;
+        readonly userId: string;
+        readonly email: string;
+        readonly role: string;
+      }>;
+    };
+  };
+  const setRole = (token: string, memberId: string, roleSlug: "admin" | "member") =>
+    account(token, `/api/account/members/${encodeURIComponent(memberId)}/role`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roleSlug }),
+    });
+
+  const actorMember = (await members(controller.token)).members.find(
+    (member) => member.email === actorEmail,
+  );
+  expect(actorMember?.role).toBe("member");
+  if (!actorMember) return;
+  expect((await setRole(controller.token, actorMember.id, "admin")).status).toBe(200);
+  const globalAdmin = await account(controller.token, "/api/auth/admin/set-role", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId: actorMember.userId, role: "admin" }),
+  });
+  expect(globalAdmin.status).toBe(200);
+
+  const actorSession = await account(actor.token, "/api/auth/get-session");
+  expect(actorSession.status).toBe(200);
+  expect(
+    ((await actorSession.json()) as { readonly user?: { readonly role?: string } }).user?.role,
+  ).toBe("admin");
+
+  const gateResponse = await account(actor.token, "/api/policies", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      owner: "org",
+      pattern: "executor.coreTools.policies.create",
+      action: "require_approval",
+    }),
+  });
+  expect(gateResponse.status).toBe(200);
+  const gate = (await gateResponse.json()) as { readonly id: string };
+
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: async HTTP integration test guarantees role and policy cleanup after every assertion failure
+  try {
+    const sessionId = await initSession(actor.token, true);
+    const pausedResponse = await mcp(
+      actor.token,
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "execute",
+          arguments: {
+            code: [
+              "return await tools.executor.coreTools.policies.create({",
+              '  owner: "org",',
+              '  pattern: "selfhost-live-role-regression.*",',
+              '  action: "block"',
+              "});",
+            ].join("\n"),
+          },
+        },
+      },
+      sessionId,
+      true,
+    );
+    const paused = (await pausedResponse.json()) as {
+      readonly result?: {
+        readonly structuredContent?: { readonly executionId?: string };
+      };
+    };
+    const executionId = paused.result?.structuredContent?.executionId;
+    expect(executionId).toBeTruthy();
+    if (!executionId) return;
+
+    expect((await setRole(controller.token, actorMember.id, "member")).status).toBe(200);
+
+    const resumePromise = mcp(
+      actor.token,
+      {
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: { name: "resume", arguments: { executionId } },
+      },
+      sessionId,
+      true,
+    );
+    await Promise.resolve();
+    const decision = await handler(
+      new Request(
+        `${BASE}/api/mcp-sessions/${encodeURIComponent(sessionId)}/executions/${encodeURIComponent(executionId)}/resume`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie: actor.cookie },
+          body: JSON.stringify({ action: "accept", content: {} }),
+        },
+      ),
+    );
+    expect(decision.status).toBe(200);
+    const resumed = await resumePromise;
+    expect(resumed.status).toBe(200);
+    await resumed.text();
+
+    const policiesResponse = await account(controller.token, "/api/policies");
+    expect(policiesResponse.status).toBe(200);
+    const policies = (await policiesResponse.json()) as ReadonlyArray<{ readonly pattern: string }>;
+    expect(policies.some((policy) => policy.pattern === "selfhost-live-role-regression.*")).toBe(
+      false,
+    );
+  } finally {
+    await setRole(controller.token, actorMember.id, "admin");
+    await account(actor.token, `/api/policies/${encodeURIComponent(gate.id)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner: "org" }),
+    });
+    await account(controller.token, "/api/auth/admin/set-role", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: actorMember.userId, role: "user" }),
+    });
+  }
 });

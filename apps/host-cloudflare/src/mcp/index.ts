@@ -1,7 +1,10 @@
 import { Effect } from "effect";
 
 import { decodeResumeResponse } from "@executor-js/host-mcp/browser-approval";
-import type { McpApprovalOwner } from "@executor-js/cloudflare/mcp/agent-durable-object";
+import type {
+  McpApprovalOwner,
+  McpApprovalPrincipal,
+} from "@executor-js/cloudflare/mcp/agent-durable-object";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
@@ -45,6 +48,10 @@ export const makeCloudflareApprovalHandler = (
 
     const resume = RESUME_PATH.exec(pathname);
     if (resume && request.method === "POST") {
+      const approver: McpApprovalPrincipal = {
+        ...owner,
+        orgRole: principal.orgRole === "admin" ? "admin" : "member",
+      };
       const raw = await Effect.runPromise(
         Effect.tryPromise({ try: () => request.json(), catch: () => null }).pipe(
           Effect.orElseSucceed(() => null),
@@ -55,7 +62,7 @@ export const makeCloudflareApprovalHandler = (
 
       const result = await stubFor(decodeURIComponent(resume[1]!)).resumeExecutionForApproval(
         decodeURIComponent(resume[2]!),
-        owner,
+        approver,
         response,
       );
       if (result.status !== "ok") return jsonResponse({ error: "Paused execution not found" }, 404);

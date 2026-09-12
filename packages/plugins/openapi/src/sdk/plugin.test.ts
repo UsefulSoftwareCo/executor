@@ -24,6 +24,7 @@ import {
   IntegrationAlreadyExistsError,
   IntegrationSlug,
   ToolAddress,
+  makeInMemoryBlobStore,
 } from "@executor-js/sdk";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,6 +55,21 @@ const TOOL_ERROR_TYPESCRIPT =
 
 const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
   [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
+
+const recordingBlobStore = () => {
+  const base = makeInMemoryBlobStore();
+  let writes = 0;
+  return {
+    store: {
+      ...base,
+      put: (namespace: string, key: string, value: string) =>
+        Effect.sync(() => {
+          writes += 1;
+        }).pipe(Effect.andThen(base.put(namespace, key, value))),
+    },
+    writeCount: () => writes,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Define a test API with Effect HttpApi
@@ -495,6 +511,56 @@ describe("OpenAPI Plugin", () => {
       expect(integration?.slug).toBe(IntegrationSlug.make("runtime"));
       expect((yield* executor.integrations.list()).map((i) => String(i.slug))).toContain("runtime");
     }),
+  );
+
+  it.effect("invokes static updateSpec through executor.execute", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "url", url: specServer.specUrl },
+          slug: "runtime_update",
+          baseUrl: specServer.baseUrl,
+          authenticationTemplate: [apiKeyTemplate],
+        });
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("runtime_update"),
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "secret-key-123",
+        });
+
+        const EvolvedItems = HttpApiGroup.make("items").add(
+          HttpApiEndpoint.get("listItems", "/items", { success: Schema.Array(Item) }),
+        );
+        const Widgets = HttpApiGroup.make("widgets").add(
+          HttpApiEndpoint.get("listWidgets", "/widgets", { success: Schema.Array(Item) }),
+        );
+        yield* specServer.setApi(HttpApi.make("testApi").add(EvolvedItems).add(Widgets));
+
+        const result = unwrapInvocation(
+          yield* executor.execute(ToolAddress.make("executor.openapi.updateSpec"), {
+            slug: "runtime_update",
+          }),
+        ).data as {
+          slug: string;
+          toolCount: number;
+          addedTools: readonly string[];
+          removedTools: readonly string[];
+        };
+
+        expect(result.slug).toBe("runtime_update");
+        expect(result.addedTools).toEqual(["widgets.listWidgets"]);
+        expect(result.removedTools).toContain("items.queryRows");
+
+        const toolNames = (yield* executor.tools.list()).map((item) => String(item.name));
+        expect(toolNames).toContain("widgets.listWidgets");
+        expect(toolNames).not.toContain("items.queryRows");
+      }),
+    ),
   );
 
   it.effect("static previewSpec returns actionable tool failures", () =>
@@ -1299,6 +1365,33 @@ paths:
         expect(connections.map((c) => String(c.name))).toEqual(["main"]);
       }),
     ),
+  );
+
+  it.effect("denies member updateSpec before writing an org blob", () =>
+    Effect.gen(function* () {
+      const blobs = recordingBlobStore();
+      const config = makeTestConfig({ plugins: testPlugins() });
+      const admin = yield* createExecutor({ ...config, blobs: blobs.store });
+      yield* admin.openapi.addSpec({
+        spec: { kind: "blob", value: testApiSpecText() },
+        slug: "guarded-update",
+      });
+      const writesBeforeDeniedUpdate = blobs.writeCount();
+      const member = yield* createExecutor({
+        ...config,
+        blobs: blobs.store,
+        orgWrites: "denied",
+      });
+
+      const error = yield* member.openapi
+        .updateSpec("guarded-update", {
+          spec: { kind: "blob", value: testApiSpecText() },
+        })
+        .pipe(Effect.flip);
+
+      expect(Predicate.isTagged(error, "OrgWriteDeniedError")).toBe(true);
+      expect(blobs.writeCount()).toBe(writesBeforeDeniedUpdate);
+    }),
   );
 
   it.effect("updateSpec accepts new inline content for blob-sourced integrations", () =>

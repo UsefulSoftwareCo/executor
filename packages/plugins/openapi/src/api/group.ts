@@ -7,6 +7,7 @@ import {
   IntegrationAlreadyExistsError,
   IntegrationNotFoundError,
   IntegrationSlug,
+  OrgWriteDeniedError,
 } from "@executor-js/sdk/shared";
 
 import {
@@ -33,6 +34,7 @@ const DomainErrors = [
   OpenApiOAuthError,
   OpenApiSpecOverrideError,
   IntegrationAlreadyExistsError,
+  OrgWriteDeniedError,
 ] as const;
 
 const IntegrationNotFound = IntegrationNotFoundError.annotate({ httpApiStatus: 404 });
@@ -44,6 +46,7 @@ const UpdateSpecErrors = [
   OpenApiOAuthError,
   OpenApiSpecOverrideError,
   IntegrationNotFound,
+  OrgWriteDeniedError,
 ] as const;
 
 const SlugParams = {

@@ -1,6 +1,6 @@
 // oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- boundary: the storage fake reproduces the plain Errors the Cloudflare runtime throws, and rejecting is the only way a DurableObjectStorage reports them
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -8,10 +8,13 @@ import type { JSONRPCMessage, MessageExtraInfo } from "@modelcontextprotocol/sdk
 
 import { defaultMcpResource } from "@executor-js/host-mcp";
 import type { ExecutionEngine, ExecutionResult, ResumeResponse } from "@executor-js/execution";
+import { FormElicitation, ToolAddress } from "@executor-js/sdk";
 
 import {
   McpAgentSessionDOBase,
   type McpApprovalOwner,
+  type McpApprovalPrincipal,
+  type McpSessionResumeApprovalResult,
   type McpSessionModelResumeResult,
   type SessionMeta,
 } from "./agent-session-durable-object";
@@ -137,8 +140,33 @@ class MemoryStorage {
 }
 
 type HarnessSession = {
+  approvalResponses: Map<
+    string,
+    { readonly response: ResumeResponse; readonly orgWriteAccess: "allowed" | "denied" }
+  >;
+  approvalWaiters: Map<
+    string,
+    Deferred.Deferred<{
+      readonly response: ResumeResponse;
+      readonly orgWriteAccess: "allowed" | "denied";
+    }>
+  >;
   alarm: () => Promise<void>;
   ctx: MemoryStorage;
+  currentSessionEpoch: () => Promise<number>;
+  getStaleEpochStreamRequestIds: () => Promise<
+    ReadonlyArray<{
+      readonly streamId: string;
+      readonly requestIds: ReadonlyArray<string | number>;
+      readonly epoch: number;
+      readonly currentEpoch: number;
+    }>
+  >;
+  getStreamRequestIds: (streamId: string) => Promise<ReadonlyArray<string | number> | undefined>;
+  setStreamRequestIds: (
+    streamId: string,
+    requestIds: ReadonlyArray<string | number>,
+  ) => Promise<void>;
   dbHandle: { readonly end: () => void } | null;
   engine: ExecutionEngine<Cause.YieldableError> | null;
   getConnections?: () => Iterable<unknown>;
@@ -158,6 +186,15 @@ type HarnessSession = {
     identity: McpApprovalOwner,
     response: ResumeResponse,
   ) => Promise<McpSessionModelResumeResult>;
+  resumeExecutionForApproval: (
+    executionId: string,
+    identity: McpApprovalPrincipal,
+    response: ResumeResponse,
+  ) => Promise<McpSessionResumeApprovalResult>;
+  waitForApprovalResponse: (executionId: string) => Effect.Effect<{
+    readonly response: ResumeResponse;
+    readonly orgWriteAccess: "allowed" | "denied";
+  } | null>;
   validateMcpSessionOwner: (identity: {
     readonly accountId: string;
     readonly organizationId: string;
@@ -243,19 +280,28 @@ const approval = {
   content: { approved: true },
 } satisfies ResumeResponse;
 
-const makeHarnessSession = async (): Promise<HarnessSession> => {
+/**
+ * `storage` is a parameter so a test can build a SECOND session on the same
+ * durable storage — that is exactly what a Durable Object reset looks like from
+ * storage's point of view: same keys, brand new instance.
+ */
+const makeHarnessSession = async (
+  storage: MemoryStorage = new MemoryStorage(),
+): Promise<HarnessSession> => {
   const sessionId = "session-reconnect";
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
-  const storage = new MemoryStorage();
   const server = makeServer();
   await server.connect(new StaleCloseTransport());
 
   const session = Object.create(McpAgentSessionDOBase.prototype) as HarnessSession;
+  session.approvalResponses = new Map();
+  session.approvalWaiters = new Map();
   session.ctx = storage;
   session.dbHandle = { end: () => undefined };
   session.engine = makeEngine().engine;
@@ -279,6 +325,38 @@ const makeHarnessSession = async (): Promise<HarnessSession> => {
   return session;
 };
 
+it("records a demoted browser approver's current role in a waiting decision", async () => {
+  const session = await makeHarnessSession();
+  const executionId = "exec-browser-demotion";
+  session.engine = {
+    ...makeEngine().engine,
+    getPausedExecution: (id) =>
+      Effect.succeed(
+        id === executionId
+          ? {
+              id,
+              elicitationContext: {
+                address: ToolAddress.make("executor.coreTools.policies.create"),
+                args: {},
+                request: FormElicitation.make({ message: "Approve?", requestedSchema: {} }),
+              },
+            }
+          : null,
+      ),
+  };
+
+  const waiting = Effect.runPromise(session.waitForApprovalResponse(executionId));
+  await Promise.resolve();
+  const result = await session.resumeExecutionForApproval(
+    executionId,
+    { accountId: "user-1", organizationId: "org-1", orgRole: "member" },
+    approval,
+  );
+
+  expect(result.status).toBe("ok");
+  await expect(waiting).resolves.toEqual({ response: approval, orgWriteAccess: "denied" });
+});
+
 // The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
 // in the rebuilt server's memory. These pin the storage round-trip that lets a
 // cold-restored session rebuild with it instead of silently downgrading every
@@ -294,6 +372,7 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
   const baseMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
@@ -326,6 +405,26 @@ describe("McpAgentSessionDOBase apps capability persistence", () => {
     await Effect.runPromise(session.persistAppsEnabled(false));
 
     expect(await storage.get<SessionMeta>("session-meta")).toMatchObject({ appsEnabled: false });
+  });
+
+  it("loads persisted pre-role-model metadata through the fail-closed arm", async () => {
+    const legacyStored = {
+      organizationId: "org-1",
+      organizationName: "Org 1",
+      userId: "user-1",
+      orgRole: "admin",
+      resource: defaultMcpResource,
+    } as const;
+    const { session } = await makeCapabilitySession(legacyStored);
+
+    const loaded = await Effect.runPromise(session.loadSessionMeta());
+
+    expect(loaded).toMatchObject({
+      organizationId: "org-1",
+      orgRoleModel: "organization",
+      resource: defaultMcpResource,
+    });
+    expect(loaded).not.toHaveProperty("orgRole");
   });
 
   // `init` runs again on every cold restore and rebuilds meta from the bearer
@@ -393,12 +492,14 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
     organizationId: "org-1",
     organizationName: "Org One",
     organizationSlug: "org-one",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
 
   const token = {
     organizationId: "org-1",
+    orgRoleModel: "organization" as const,
     userId: "user-1",
     elicitationMode: "model" as const,
     resource: defaultMcpResource,
@@ -428,6 +529,7 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
         organizationId: t.organizationId,
         organizationName: stored.organizationName,
         organizationSlug: stored.organizationSlug,
+        orgRoleModel: stored.orgRoleModel,
         userId: t.userId,
         resource: defaultMcpResource,
       } satisfies SessionMeta);
@@ -470,6 +572,7 @@ describe("McpAgentSessionDOBase cold-restore meta reuse", () => {
       return Effect.succeed({
         organizationId: t.organizationId,
         organizationName: "Freshly Resolved",
+        orgRoleModel: "organization",
         userId: t.userId,
         resource: defaultMcpResource,
       } satisfies SessionMeta);
@@ -716,6 +819,7 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
   const sessionMeta: SessionMeta = {
     organizationId: "org-1",
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   };
@@ -1019,6 +1123,7 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
   const residencySessionMeta = (organizationId: string): SessionMeta => ({
     organizationId,
     organizationName: "Org 1",
+    orgRoleModel: "organization",
     userId: "user-1",
     resource: defaultMcpResource,
   });
@@ -1679,5 +1784,112 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
     it("marking an eviction request on an entry that no longer exists is a no-op", () => {
       expect(() => markEvictionRequested("never-registered")).not.toThrow();
     });
+  });
+});
+
+// The request-id ledger (`__mcp_stream_reqs__:<streamId>`, written by the
+// patched McpAgent — see patches/agents@0.17.3.patch) is the only durable
+// record that a POST is still owed a response. A row exists from the moment the
+// request is accepted until its final response is written, so a row that
+// outlives the incarnation which accepted it is a request nothing will ever
+// answer: the isolate was reset mid-execute. Each row carries the epoch of the
+// incarnation that wrote it, and that is what separates "stranded" from
+// "legitimately still running" — a browser-approval pause holds a row open for
+// minutes inside ONE incarnation and must never be swept.
+describe("McpAgentSessionDOBase stranded-request ledger", () => {
+  const ledgerKey = (streamId: string) => `__mcp_stream_reqs__:${streamId}`;
+
+  it("stamps the accepting incarnation on every ledger row", async () => {
+    const session = await makeHarnessSession();
+
+    await session.setStreamRequestIds("stream-a", [1, "two"]);
+
+    expect(await session.ctx.storage.get(ledgerKey("stream-a"))).toEqual({
+      epoch: await session.currentSessionEpoch(),
+      requestIds: [1, "two"],
+    });
+    expect(
+      await session.getStreamRequestIds("stream-a"),
+      "readers still see a plain request-id list",
+    ).toEqual([1, "two"]);
+  });
+
+  it("does not treat a row from the running incarnation as stranded", async () => {
+    const session = await makeHarnessSession();
+
+    // What a browser-approval pause looks like: accepted, unanswered, and
+    // legitimately going to stay that way for minutes.
+    await session.setStreamRequestIds("stream-paused", [9]);
+
+    expect(await session.getStaleEpochStreamRequestIds()).toEqual([]);
+  });
+
+  it("reports a row left by a previous incarnation as stranded", async () => {
+    const storage = new MemoryStorage();
+    const beforeReset = await makeHarnessSession(storage);
+    await beforeReset.setStreamRequestIds("stream-lost", [42]);
+    await beforeReset.setStreamRequestIds("stream-also-lost", ["abc"]);
+
+    // The reset: same durable storage, a brand new Durable Object instance.
+    const afterReset = await makeHarnessSession(storage);
+    await afterReset.setStreamRequestIds("stream-live", [100]);
+
+    const stranded = await afterReset.getStaleEpochStreamRequestIds();
+
+    // Order follows storage's key order, which this fake does not model, so
+    // the assertion is on the set.
+    expect(
+      [...stranded].sort((a, b) => a.streamId.localeCompare(b.streamId)),
+      "only the rows the dead incarnation accepted",
+    ).toMatchObject([
+      { streamId: "stream-also-lost", requestIds: ["abc"] },
+      { streamId: "stream-lost", requestIds: [42] },
+    ]);
+    for (const row of stranded) expect(row.epoch).toBeLessThan(row.currentEpoch);
+  });
+
+  it("reports a pre-epoch ledger row as stranded", async () => {
+    const session = await makeHarnessSession();
+
+    // The shape rows had before they carried an epoch. One can only have been
+    // written by an earlier deployment, so it reads as epoch 0 and is swept.
+    await session.ctx.storage.put(ledgerKey("stream-legacy"), [7]);
+
+    expect(await session.getStaleEpochStreamRequestIds()).toEqual([
+      {
+        currentEpoch: await session.currentSessionEpoch(),
+        epoch: 0,
+        requestIds: [7],
+        streamId: "stream-legacy",
+      },
+    ]);
+    expect(
+      await session.getStreamRequestIds("stream-legacy"),
+      "and it is still readable as a request-id list",
+    ).toEqual([7]);
+  });
+
+  it("holds the idle lease for a request the running incarnation still owes", async () => {
+    const session = await makeHarnessSession();
+    await session.setStreamRequestIds("stream-live", [1]);
+
+    await session.alarm();
+
+    expect(session.initialized, "live work keeps the runtime resident").toBe(true);
+    expect(session.ctx.alarm, "and re-arms the lease").toBeGreaterThan(0);
+  });
+
+  it("does not let a stranded row extend the idle lease", async () => {
+    const storage = new MemoryStorage();
+    const beforeReset = await makeHarnessSession(storage);
+    await beforeReset.setStreamRequestIds("stream-lost", [1]);
+
+    const afterReset = await makeHarnessSession(storage);
+    await afterReset.alarm();
+
+    expect(
+      afterReset.initialized,
+      "a request nothing will ever answer is dead work, not running work",
+    ).toBe(false);
   });
 });

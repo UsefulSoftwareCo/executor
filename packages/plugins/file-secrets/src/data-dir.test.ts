@@ -83,9 +83,11 @@ describe("file secrets data directory", () => {
           const authPath = first.executor.fileSecrets.filePath;
           expect(authPath).toBe(join(dataDir, "auth.json"));
           expect(existsSync(authPath)).toBe(true);
-          expect(readFileSync(authPath, "utf8")).toContain(
-            '"connection:org:durable-secrets:main:token": "secret-token"',
+          const storedCredentials = readFileSync(authPath, "utf8");
+          expect(storedCredentials).toMatch(
+            /"connection:org:durable-secrets:main:[^"]+:token": "secret-token"/,
           );
+          expect(storedCredentials).not.toContain('"connection:org:durable-secrets:main:token"');
           expect(existsSync(join(dataDir, "test.db"))).toBe(true);
           return authPath;
         }),

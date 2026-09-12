@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, type Cause } from "effect";
 
 import type { ExecutionEngine } from "@executor-js/execution";
+import { FormElicitation, ToolAddress, createExecutor } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import {
   makeInMemoryMcpSessionStore,
@@ -20,6 +22,7 @@ const TEST_PRINCIPAL: Principal = {
   name: "Test",
   avatarUrl: null,
   roles: ["user"],
+  orgRoleModel: "organization",
 };
 
 it("preserves native elicitation mode when creating an in-memory MCP session", async () => {
@@ -104,7 +107,12 @@ const makeLatchedTestEngine = (): {
       shutdowns += 1;
     }),
   };
-  return { engine, started, release: () => openGate(), shutdowns: () => shutdowns };
+  return {
+    engine,
+    started,
+    release: () => openGate(),
+    shutdowns: () => shutdowns,
+  };
 };
 
 // A long TTL keeps the sweep's own timer out of the way; the assertions drive
@@ -115,10 +123,14 @@ const IDLE_TTL_MS = 60_000;
 type TestSessionStore = ReturnType<typeof makeInMemoryMcpSessionStore>;
 
 /** Open a session on `sessions` and return its minted id. */
-const openSession = async (sessions: TestSessionStore): Promise<string> => {
+const openSession = async (
+  sessions: TestSessionStore,
+  principal: Principal = TEST_PRINCIPAL,
+  requestUrl = "https://executor.test/mcp",
+): Promise<string> => {
   const response = (await Effect.runPromise(
     sessions.store.dispatch({
-      request: new Request("https://executor.test/mcp", {
+      request: new Request(requestUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -135,7 +147,7 @@ const openSession = async (sessions: TestSessionStore): Promise<string> => {
           },
         }),
       }),
-      principal: TEST_PRINCIPAL,
+      principal,
       resource: defaultMcpResource,
       sessionId: null,
       method: "POST",
@@ -146,6 +158,255 @@ const openSession = async (sessions: TestSessionStore): Promise<string> => {
   expect(sessionId).not.toBe("");
   return sessionId;
 };
+
+it("keeps overlapping warm-session workspace writes bound to their request roles", async () => {
+  const executor = await Effect.runPromise(
+    createExecutor({ ...makeTestConfig(), orgWrites: "request" }),
+  );
+  const started = new Map<string, () => void>();
+  const startedPromises = ["member", "admin"].map(
+    (name) =>
+      new Promise<void>((resolve) => {
+        started.set(name, resolve);
+      }),
+  );
+  let releaseWrites: () => void = () => {};
+  const writeGate = new Promise<void>((resolve) => {
+    releaseWrites = resolve;
+  });
+  const writePolicy = (pattern: string) =>
+    Effect.promise(async () => {
+      started.get(pattern)?.();
+      await writeGate;
+    }).pipe(
+      Effect.andThen(executor.policies.create({ owner: "org", pattern, action: "block" })),
+      Effect.map((policy) => ({ result: policy.pattern })),
+    );
+  const engine: ExecutionEngine<Cause.YieldableError> = {
+    ...makeIdleTestEngine(),
+    execute: writePolicy,
+    executeWithPause: (code) =>
+      writePolicy(code).pipe(Effect.map((result) => ({ status: "completed" as const, result }))),
+  };
+  const sessions = makeInMemoryMcpSessionStore(() =>
+    createExecutorMcpServer({ engine }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
+  );
+  const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
+  const sessionId = await openSession(sessions, admin);
+  const call = (id: number, role: "admin" | "member") =>
+    Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name: "execute", arguments: { code: role } },
+          }),
+        }),
+        principal: { ...admin, orgRole: role },
+        resource: defaultMcpResource,
+        sessionId,
+        method: "POST",
+      }),
+    ) as Promise<Response>;
+
+  // Start the demoted member first, then let a stale admin request overlap it.
+  // A session-global cell ends this interleaving at "allowed" and incorrectly
+  // lets both sinks commit; request-local bindings keep the member denied.
+  const memberCall = call(2, "member");
+  await startedPromises[0];
+  const adminCall = call(3, "admin");
+  await startedPromises[1];
+  releaseWrites();
+
+  const [memberResponse, adminResponse] = await Promise.all([memberCall, adminCall]);
+  const memberBody = (await memberResponse.json()) as {
+    result?: { isError?: boolean };
+  };
+  const adminBody = (await adminResponse.json()) as {
+    result?: { isError?: boolean };
+  };
+  expect(memberBody.result?.isError).toBe(true);
+  expect(adminBody.result?.isError).not.toBe(true);
+  const policies = await Effect.runPromise(executor.policies.list());
+  expect(policies.map((policy) => policy.pattern)).toEqual(["admin"]);
+
+  await sessions.close();
+  await Effect.runPromise(executor.close());
+});
+
+it("binds a paused workspace write to the resuming principal after demotion", async () => {
+  const executor = await Effect.runPromise(
+    createExecutor({ ...makeTestConfig(), orgWrites: "request" }),
+  );
+  const executionId = "exec_resume_demotion";
+  const pattern = "paused-resume-demotion.*";
+  const engine: ExecutionEngine<Cause.YieldableError> = {
+    ...makeIdleTestEngine(),
+    executeWithPause: () =>
+      Effect.succeed({
+        status: "paused",
+        execution: {
+          id: executionId,
+          elicitationContext: {
+            address: ToolAddress.make("executor.coreTools.policies.create"),
+            args: { owner: "org", pattern, action: "block" },
+            request: FormElicitation.make({
+              message: "Approve?",
+              requestedSchema: {},
+            }),
+          },
+        },
+      }),
+    resume: () =>
+      executor.policies.create({ owner: "org", pattern, action: "block" }).pipe(
+        Effect.map((policy) => ({
+          status: "completed",
+          result: { result: policy },
+        })),
+      ),
+  };
+  const sessions = makeInMemoryMcpSessionStore(() =>
+    createExecutorMcpServer({ engine }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
+  );
+  const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
+  const sessionId = await openSession(sessions, admin);
+  const call = (id: number, principal: Principal, name: "execute" | "resume", args: unknown) =>
+    Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        }),
+        principal,
+        resource: defaultMcpResource,
+        sessionId,
+        method: "POST",
+      }),
+    ) as Promise<Response>;
+
+  const paused = await call(2, admin, "execute", {
+    code: "create workspace policy",
+  });
+  expect(paused.status).toBe(200);
+  const demoted = { ...admin, orgRole: "member" as const };
+  const resumed = await call(3, demoted, "resume", {
+    executionId,
+    action: "accept",
+  });
+  const body = (await resumed.json()) as { result?: { isError?: boolean } };
+  expect(body.result?.isError).toBe(true);
+  expect(await Effect.runPromise(executor.policies.list())).toEqual([]);
+
+  await sessions.close();
+  await Effect.runPromise(executor.close());
+});
+
+it("uses the browser approver's demoted role after an admin starts waiting", async () => {
+  const executor = await Effect.runPromise(
+    createExecutor({ ...makeTestConfig({ coreTools: {} }), orgWrites: "request" }),
+  );
+  const executionId = "exec_browser_resume_demotion";
+  const pattern = "browser-resume-demotion.*";
+  const pausedExecution = {
+    id: executionId,
+    elicitationContext: {
+      address: ToolAddress.make("executor.coreTools.policies.create"),
+      args: { owner: "org", pattern, action: "block" },
+      request: FormElicitation.make({ message: "Approve?", requestedSchema: {} }),
+    },
+  };
+  const engine: ExecutionEngine<Cause.YieldableError> = {
+    ...makeIdleTestEngine(),
+    executeWithPause: () =>
+      Effect.succeed({ status: "paused" as const, execution: pausedExecution }),
+    getPausedExecution: (id) => Effect.succeed(id === executionId ? pausedExecution : null),
+    resume: (id) =>
+      id === executionId
+        ? executor.policies.create({ owner: "org", pattern, action: "block" }).pipe(
+            Effect.map((policy) => ({
+              status: "completed" as const,
+              result: { result: policy },
+            })),
+          )
+        : Effect.succeed(null),
+  };
+  const sessions = makeInMemoryMcpSessionStore((_principal, options) =>
+    createExecutorMcpServer({ engine, ...options }).pipe(
+      Effect.map((mcpServer) => ({ mcpServer, engine })),
+    ),
+  );
+  const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
+  const member = { ...admin, orgRole: "member" as const };
+  const sessionId = await openSession(
+    sessions,
+    admin,
+    "https://executor.test/mcp?elicitation_mode=browser",
+  );
+
+  const call = (id: number, name: "execute" | "resume", args: unknown) =>
+    Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name, arguments: args },
+          }),
+        }),
+        principal: admin,
+        resource: defaultMcpResource,
+        sessionId,
+        method: "POST",
+      }),
+    ) as Promise<Response>;
+
+  const pausedResponse = await call(2, "execute", { code: "create workspace policy" });
+  const pausedBody = (await pausedResponse.json()) as {
+    result?: { structuredContent?: { executionId?: string } };
+  };
+  const pausedExecutionId = pausedBody.result?.structuredContent?.executionId;
+  expect(pausedExecutionId).toBe(executionId);
+  if (!pausedExecutionId) return;
+
+  const firstResume = call(3, "resume", { executionId: pausedExecutionId });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const approvalResponse = await sessions.handleApprovalRequest(
+    new Request(
+      `https://executor.test/api/mcp-sessions/${sessionId}/executions/${pausedExecutionId}/resume`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "accept", content: {} }),
+      },
+    ),
+    member,
+  );
+  expect(approvalResponse?.status).toBe(200);
+
+  const resumeBody = (await (await firstResume).json()) as {
+    result?: { isError?: boolean };
+  };
+  expect(resumeBody.result?.isError).toBe(true);
+  expect(await Effect.runPromise(executor.policies.list())).toEqual([]);
+
+  await sessions.close();
+  await Effect.runPromise(executor.close());
+});
 
 it("evicts a session that goes idle past the TTL and keeps a busy one", async () => {
   const engine = makeIdleTestEngine();
@@ -316,7 +577,10 @@ const makeServingStore = () => {
       Effect.flatMap(() => createExecutorMcpServer({ engine: stubEngine })),
       Effect.map((mcpServer) => ({ mcpServer, engine: stubEngine })),
     );
-  return { sessions: makeInMemoryMcpSessionStore(buildServer), buildCount: (): number => builds };
+  return {
+    sessions: makeInMemoryMcpSessionStore(buildServer),
+    buildCount: (): number => builds,
+  };
 };
 
 const dispatchPost = (

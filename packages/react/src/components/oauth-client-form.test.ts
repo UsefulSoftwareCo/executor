@@ -4,9 +4,15 @@ import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
+  initialOAuthClientOwner,
+  preferredManualTokenEndpointAuthMethod,
   registrationScopes,
   resolveOriginIntegration,
 } from "./oauth-client-form";
+import {
+  connectionOwnerOptionsForAccess,
+  normalizeConnectionOwner,
+} from "../plugins/connection-owner";
 import { oauthAppSetupFor } from "./oauth-app-setup";
 
 const validBase = {
@@ -111,6 +117,52 @@ describe("canSubmitOAuthClientForm", () => {
         authorizationUrl: "",
       }),
     ).toBe(false);
+  });
+
+  it("requires a secret when HTTP Basic is selected", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "authorization_code",
+        clientSecret: "",
+        tokenEndpointAuthMethod: "basic",
+      }),
+    ).toBe(false);
+  });
+
+  it("requires a secret when raw HTTP Basic is selected", () => {
+    expect(
+      canSubmitOAuthClientForm({
+        ...validBase,
+        grant: "authorization_code",
+        clientSecret: "",
+        tokenEndpointAuthMethod: "basic_raw",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("OAuth client owner default", () => {
+  it("restores Workspace when loading resolves to admin unless Personal was chosen", () => {
+    const defaultChoice = initialOAuthClientOwner(undefined);
+    const loadingOptions = connectionOwnerOptionsForAccess("org_123", false);
+    expect(normalizeConnectionOwner(defaultChoice, loadingOptions)).toBe("user");
+
+    const adminOptions = connectionOwnerOptionsForAccess("org_123", true);
+    expect(normalizeConnectionOwner(defaultChoice, adminOptions)).toBe("org");
+    expect(normalizeConnectionOwner("user", adminOptions)).toBe("user");
+  });
+});
+
+describe("preferredManualTokenEndpointAuthMethod", () => {
+  it("selects Basic when it is the only advertised confidential method", () => {
+    expect(preferredManualTokenEndpointAuthMethod(["client_secret_basic"])).toBe("basic");
+  });
+
+  it("keeps the compatible request-body default when both methods are advertised", () => {
+    expect(
+      preferredManualTokenEndpointAuthMethod(["client_secret_basic", "client_secret_post"]),
+    ).toBe("body");
   });
 });
 

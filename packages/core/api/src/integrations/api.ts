@@ -19,6 +19,7 @@ import {
   IntegrationRemovalNotAllowedError,
   IntegrationSlug,
   InternalError,
+  OrgWriteDeniedError,
 } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
@@ -138,14 +139,14 @@ export const IntegrationsApi = HttpApiGroup.make("integrations")
       params: IntegrationParams,
       payload: UpdateIntegrationPayload,
       success: IntegrationResponse,
-      error: [InternalError, IntegrationNotFound],
+      error: [InternalError, IntegrationNotFound, OrgWriteDeniedError],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/integrations/:slug", {
       params: IntegrationParams,
       success: Schema.Struct({ removed: Schema.Boolean }),
-      error: [InternalError, IntegrationRemovalNotAllowed],
+      error: [InternalError, IntegrationRemovalNotAllowed, OrgWriteDeniedError],
     }),
   )
   .add(
@@ -178,6 +179,6 @@ export const IntegrationsApi = HttpApiGroup.make("integrations")
       params: IntegrationParams,
       payload: SetHealthCheckPayload,
       success: Schema.Struct({ ok: Schema.Boolean }),
-      error: [InternalError, IntegrationNotFound],
+      error: [InternalError, IntegrationNotFound, OrgWriteDeniedError],
     }),
   );
