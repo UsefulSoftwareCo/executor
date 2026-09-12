@@ -203,7 +203,6 @@ const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
-const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 const BrowserApprovalDecisionStorage = Schema.Struct({
   response: ResumeResponsePayload,
@@ -752,13 +751,20 @@ export abstract class McpAgentSessionDOBase<
     // which survives disposeIdleRuntime, so a later reconnect GET re-inits the
     // DO and replays it. Counting them would make every delivered-but-unacked
     // POST response pin the runtime alive indefinitely.
-    const rows = await this.ctx.storage.list<readonly JsonRpcRequestId[]>({
-      prefix: MCP_STREAM_REQS_KEY_PREFIX,
-      limit: 1_000,
-    });
+    //
+    // Rows stamped with an epoch older than this incarnation's are dead work,
+    // not running work: the isolate that was going to produce their response
+    // was reset, so nothing will ever answer them and they must not hold the
+    // runtime open. The transport's orphan sweep tells the client and removes
+    // the row on the next GET; until then they simply do not count.
+    const [openStreams, currentEpoch] = await Promise.all([
+      this.getOpenStreamRequestIds(),
+      this.currentSessionEpoch(),
+    ]);
     let count = 0;
-    for (const requestIds of rows.values()) {
-      if (Array.isArray(requestIds)) count += requestIds.length;
+    for (const stream of openStreams) {
+      if (stream.epoch < currentEpoch) continue;
+      count += stream.requestIds.length;
     }
     return count;
   }

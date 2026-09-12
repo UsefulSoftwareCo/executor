@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 
 import {
+  MAX_PREVIEW_SCHEMA_NODES,
   buildToolTypeScriptPreview,
   schemaToTypeScriptPreview,
   schemaToTypeScriptPreviewWithDefs,
@@ -383,6 +384,38 @@ describe("schema-types", () => {
         Contact: "{ id: string; address: Address; }",
       },
     });
+  });
+
+  it("falls back to unknown instead of compiling a schema over the node limit", async () => {
+    const defs = new Map<string, unknown>();
+    // One definition per node-limit slice, all referenced from the input, so the
+    // wrapped schema handed to the compiler is guaranteed to cross the cap.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < MAX_PREVIEW_SCHEMA_NODES / 2; i++) {
+      defs.set(`D${i}`, { type: "object", properties: { v: { type: "string" } } });
+      properties[`p${i}`] = { $ref: `#/$defs/D${i}` };
+    }
+    const preview = await buildToolTypeScriptPreview({
+      inputSchema: { type: "object", properties },
+      outputSchema: { type: "string" },
+      defs,
+    });
+    expect(preview).toEqual({ inputTypeScript: "unknown", outputTypeScript: "unknown" });
+  });
+
+  it("only compiles the definitions a tool references", async () => {
+    // A big pile of unrelated definitions must not change the output or the
+    // time it takes: the caller passes the referenced subgraph, and this pins
+    // the contract that the preview is a pure function of that subgraph.
+    const referenced = new Map<string, unknown>([
+      ["Person", { type: "object", properties: { name: { type: "string" } }, required: ["name"] }],
+    ]);
+    const preview = await buildToolTypeScriptPreview({
+      inputSchema: { type: "object", properties: { who: { $ref: "#/$defs/Person" } } },
+      defs: referenced,
+    });
+    expect(preview.inputTypeScript).toBe("{ who?: Person; }");
+    expect(preview.typeScriptDefinitions).toEqual({ Person: "{ name: string; }" });
   });
 
   it("renders unconstrained schemas as unknown", async () => {

@@ -243,6 +243,14 @@ export interface FirstPartyOAuthClientConfig {
    *  instead removes the config entry itself, which strands every existing
    *  connection on a client the host can no longer resolve. */
   readonly unlisted?: boolean;
+  /** Optional host policy for offering this app to the acting user. Evaluated
+   *  on each listing; false withholds the app without disrupting existing
+   *  connections. `unlisted: true` always withholds it. This controls discovery,
+   *  not authorization to resolve an already-known first-party client slug. */
+  readonly isListed?: (context: {
+    readonly userId: string | null;
+    readonly organizationId: string;
+  }) => Effect.Effect<boolean>;
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this

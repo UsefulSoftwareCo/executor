@@ -571,13 +571,14 @@ function OwnerAccounts(props: {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
+              aria-label="Remove connection"
               onClick={() => {
                 if (props.canManageConnections && removingConnection !== null) {
                   void handleRemove(removingConnection);
                 }
               }}
             >
-              Remove connection
+              Remove
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
