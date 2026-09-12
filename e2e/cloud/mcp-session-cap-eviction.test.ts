@@ -19,8 +19,8 @@
 // the whole boot (see that file for the value and its headroom story), so
 // this test can cross it with a bounded number of real sessions instead of
 // registering the production default of 32.
-import { expect } from "@effect/vitest";
-import { Effect, Schedule } from "effect";
+import { expect, it } from "@effect/vitest";
+import { Effect, Option, Schedule, Schema } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Mcp, Target, Telemetry } from "../src/services";
@@ -52,6 +52,68 @@ const postJson = (mcpUrl: string, bearer: string, body: unknown, sessionId?: str
     body: JSON.stringify(body),
   });
 
+const decodeRestartEnvelope = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      jsonrpc: Schema.Literal("2.0"),
+      id: Schema.Null,
+      error: Schema.Struct({
+        code: Schema.Literal(-32001),
+        message: Schema.Literal("MCP session is restarting, please retry"),
+      }),
+    }),
+  ),
+);
+
+const isRestartResponse = (status: number, body: string): boolean =>
+  status === 503 && Option.isSome(decodeRestartEnvelope(body));
+
+it.each([
+  [
+    503,
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32001, message: "MCP session is restarting, please retry" },
+    },
+    true,
+  ],
+  [
+    404,
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32001, message: "MCP session is restarting, please retry" },
+    },
+    false,
+  ],
+  [
+    503,
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32603, message: "MCP session is restarting, please retry" },
+    },
+    false,
+  ],
+  [
+    503,
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32001, message: "MCP session is restarting unexpectedly" },
+    },
+    false,
+  ],
+  [503, { error: "MCP session is restarting, please retry" }, false],
+] as const)("only retries the documented restart envelope (%s, %j)", (status, body, retry) => {
+  expect(isRestartResponse(status, JSON.stringify(body))).toBe(retry);
+});
+
+it("does not retry malformed restart responses", () => {
+  expect(isRestartResponse(503, "MCP session is restarting, please retry")).toBe(false);
+});
+
 /**
  * Opens one fresh MCP session under an already-minted bearer. `initialize`
  * without an existing `mcp-session-id` always mints a new session, the same
@@ -80,7 +142,7 @@ const openSession = async (
   // advertised delay. Treat it as transient here instead of failing the
   // scenario on a retryable platform blip.
   const RESTART_ATTEMPTS = 8;
-  const RESTART_DELAY_MS = 250;
+  const RESTART_DELAY_MS = 2_000; // The host advertises Retry-After: 2.
   let minted: { readonly response: Response; readonly sessionId: string } | undefined;
   for (let attempt = 0; attempt < RESTART_ATTEMPTS; attempt += 1) {
     const response = await postJson(mcpUrl, bearer, {
@@ -98,8 +160,8 @@ const openSession = async (
       minted = { response, sessionId: candidate };
       break;
     }
-    const body = await response.text().catch(() => "");
-    const isRestart = response.status === 503 && body.includes("MCP session is restarting");
+    const body = await response.text();
+    const isRestart = isRestartResponse(response.status, body);
     if (!isRestart) break;
     if (attempt === RESTART_ATTEMPTS - 1) break;
     await new Promise((resolve) => setTimeout(resolve, RESTART_DELAY_MS));
