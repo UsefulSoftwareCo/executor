@@ -20,7 +20,7 @@ import { visit } from "../src/surfaces/browser";
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
 scenario(
-  "MCP OAuth · advertised CIMD starts authorization without dynamic registration",
+  "MCP OAuth · CIMD advertises refresh support and completes connection without dynamic registration",
   { timeout: 180_000 },
   Effect.scoped(
     Effect.gen(function* () {
@@ -89,11 +89,48 @@ scenario(
             ).toMatchObject({
               grant_types: ["authorization_code", "refresh_token"],
             });
-            await popup.close();
+            expect(authorize).toBeDefined();
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test boundary: authorization must exist before completing the flow
+            if (authorize === undefined) throw new Error("Missing authorization request");
+            const completed = await Effect.runPromise(
+              oauth.completeAuthorizationCodeFlow({ authorizationUrl: authorize.url }),
+            );
+            await popup.goto(completed.callbackUrl);
+            await page
+              .getByRole("heading", { name: /Add connection/ })
+              .waitFor({ state: "hidden" });
+            await popup.close().catch(() => undefined);
           });
         });
 
+        const connections = yield* client.connections.list({ query: { integration: slug } });
+        expect(connections, "the OAuth callback saved the connection").toHaveLength(1);
+        const tools = yield* client.tools.list({ query: { integration: slug } });
+        expect(
+          tools.some((tool) => tool.name === "simple_echo"),
+          "authenticated discovery finds the upstream tool",
+        ).toBe(true);
+
+        const invoked = yield* client.executions.execute({
+          payload: {
+            code: `return await ${tools[0]?.address}({});`,
+            autoApprove: true,
+          },
+        });
+        expect(invoked.status).toBe("completed");
+        expect(invoked.text, "the connected tool runs through authenticated MCP").toContain(
+          "mcp-ok",
+        );
+
         const requests = yield* oauth.requests;
+        expect(
+          requests.some(
+            (request) =>
+              request.path === "/token" &&
+              new URLSearchParams(request.body).get("grant_type") === "authorization_code",
+          ),
+          "the callback exchanged the code using the advertised client",
+        ).toBe(true);
         expect(
           requests.filter((request) => request.method === "POST" && request.path === "/register"),
           "CIMD wins when the server also advertises DCR",
