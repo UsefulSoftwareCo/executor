@@ -1344,72 +1344,102 @@ export type RefreshAccessTokenInput = {
 
 export const refreshAccessToken = (
   input: RefreshAccessTokenInput,
-): Effect.Effect<OAuth2TokenResponse, OAuth2Error> =>
-  Effect.tryPromise({
-    try: async () => {
-      const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
-        idTokenSigningAlgValuesSupported: input.idTokenSigningAlgValuesSupported,
-        endpointUrlPolicy: input.endpointUrlPolicy,
-      });
-      const client: oauth.Client = { client_id: input.clientId };
-      const clientAuth = pickClientAuth(
-        input.clientSecret,
-        input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
-      );
-      const extraParams = new URLSearchParams();
-      if (input.scopes && input.scopes.length > 0) {
-        extraParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
-      }
-      if (input.resource) {
-        extraParams.set("resource", input.resource);
-      }
-      const additionalParameters =
-        Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
-      if (input.requestFormat === "json") {
-        const response = await jsonTokenEndpointRequest({
-          tokenUrl: input.tokenUrl,
-          clientId: input.clientId,
-          clientSecret: input.clientSecret,
-          clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
-          grantType: "refresh_token",
-          parameters: {
-            refresh_token: input.refreshToken,
-            ...(input.scopes && input.scopes.length > 0
-              ? { scope: input.scopes.join(input.scopeSeparator ?? " ") }
-              : {}),
-            ...(input.resource ? { resource: input.resource } : {}),
-          },
-          timeoutMs: input.timeoutMs,
+): Effect.Effect<OAuth2TokenResponse, OAuth2Error> => {
+  const requestedScopes = input.scopes && input.scopes.length > 0 ? input.scopes : undefined;
+  const scopeParameter = (scopes: readonly string[] | undefined): string | undefined =>
+    scopes === undefined ? undefined : scopes.join(input.scopeSeparator ?? " ");
+
+  const attempt = (
+    scopes: readonly string[] | undefined,
+  ): Effect.Effect<OAuth2TokenResponse, OAuth2Error> =>
+    Effect.tryPromise({
+      try: async () => {
+        const as = asFromTokenUrlAndIssuer(input.tokenUrl, input.issuerUrl, {
+          idTokenSigningAlgValuesSupported: input.idTokenSigningAlgValuesSupported,
           endpointUrlPolicy: input.endpointUrlPolicy,
-          fetch: input.fetch,
         });
-        return await processTokenEndpointResponse(as, client, response);
-      }
-      const response = await oauth.refreshTokenGrantRequest(
-        as,
-        client,
-        clientAuth,
-        input.refreshToken,
-        {
-          ...oauth4webapiRequestOptions(
-            input.tokenUrl,
-            input.timeoutMs,
-            input.endpointUrlPolicy,
-            input.fetch,
+        const client: oauth.Client = { client_id: input.clientId };
+        const clientAuth = pickClientAuth(
+          input.clientSecret,
+          input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+        );
+        const scope = scopeParameter(scopes);
+        const extraParams = new URLSearchParams();
+        if (scope !== undefined) {
+          extraParams.set("scope", scope);
+        }
+        if (input.resource) {
+          extraParams.set("resource", input.resource);
+        }
+        const additionalParameters =
+          Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
+        if (input.requestFormat === "json") {
+          const response = await jsonTokenEndpointRequest({
+            tokenUrl: input.tokenUrl,
+            clientId: input.clientId,
+            clientSecret: input.clientSecret,
+            clientAuth: input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
+            grantType: "refresh_token",
+            parameters: {
+              refresh_token: input.refreshToken,
+              ...(scope !== undefined ? { scope } : {}),
+              ...(input.resource ? { resource: input.resource } : {}),
+            },
+            timeoutMs: input.timeoutMs,
+            endpointUrlPolicy: input.endpointUrlPolicy,
+            fetch: input.fetch,
+          });
+          return await processTokenEndpointResponse(as, client, response);
+        }
+        const response = await oauth.refreshTokenGrantRequest(
+          as,
+          client,
+          clientAuth,
+          input.refreshToken,
+          {
+            ...oauth4webapiRequestOptions(
+              input.tokenUrl,
+              input.timeoutMs,
+              input.endpointUrlPolicy,
+              input.fetch,
+            ),
+            additionalParameters,
+          },
+        );
+        const result = await oauth.processRefreshTokenResponse(
+          as,
+          client,
+          (await stripIdToken(response)).response,
+        );
+        return tokenResponseFrom(as, result);
+      },
+      catch: (cause) => cause,
+    }).pipe(Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)));
+
+  // RFC 6749 §6 makes echoing the grant's own scope legal and omission mean
+  // "the scope originally granted". An AS whose stored grant is narrower than
+  // the connection's record — Railway answers any scope-bearing refresh with
+  // `invalid_scope: refresh token missing requested scope` — rejects that echo,
+  // leaving a live refresh token unusable. Retry once WITHOUT `scope`, the form
+  // whose meaning does not depend on our record being right. Only
+  // `invalid_scope` qualifies: `invalid_grant` means the token is dead, and
+  // retrying that spends a rotating refresh token to learn nothing.
+  const retryWithoutScope = (): Effect.Effect<OAuth2TokenResponse, OAuth2Error> =>
+    attempt(undefined).pipe(
+      Effect.tap(() =>
+        Effect.annotateCurrentSpan({ "executor.oauth.refresh_scope_omitted": true }),
+      ),
+    );
+
+  return (
+    requestedScopes === undefined
+      ? attempt(undefined)
+      : attempt(requestedScopes).pipe(
+          Effect.catch((cause) =>
+            cause.error === "invalid_scope" ? retryWithoutScope() : Effect.fail(cause),
           ),
-          additionalParameters,
-        },
-      );
-      const result = await oauth.processRefreshTokenResponse(
-        as,
-        client,
-        (await stripIdToken(response)).response,
-      );
-      return tokenResponseFrom(as, result);
-    },
-    catch: (cause) => cause,
-  }).pipe(
-    Effect.catch(failOAuth2WithHttpSummary(input.clientSecret)),
+        )
+  ).pipe(
     withTokenRequestSpan({
       grantType: "refresh_token",
       tokenUrl: input.tokenUrl,
@@ -1417,6 +1447,7 @@ export const refreshAccessToken = (
       hasResource: input.resource !== undefined,
     }),
   );
+};
 
 // ---------------------------------------------------------------------------
 // RFC 8693 token exchange → Identity Assertion JWT Authorization Grant
