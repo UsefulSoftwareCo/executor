@@ -185,7 +185,6 @@ const toolkitByRouteSlug = (
 };
 
 const toolkitCardStyle = { minHeight: "9rem" };
-const toolkitShelfStyle = { minHeight: "28.5rem" };
 const toolkitGridContainerStyle = { maxWidth: "80rem" };
 const toolkitToolTreeStyle = { width: "24rem" };
 
@@ -640,10 +639,7 @@ function ToolkitSection(props: {
         </div>
       ) : null}
 
-      <div
-        className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
-        style={toolkitShelfStyle}
-      >
+      <div className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
         {rows.map((toolkit) => (
           <ToolkitTile key={toolkit.id} showOwnerLabels={props.showOwnerLabels} toolkit={toolkit} />
         ))}
@@ -1211,10 +1207,7 @@ function ToolkitSectionSkeleton(props: { title?: string }) {
         </div>
       ) : null}
 
-      <div
-        className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3"
-        style={toolkitShelfStyle}
-      >
+      <div className="grid content-start grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
         <ToolkitTileSkeleton />
       </div>
     </section>
