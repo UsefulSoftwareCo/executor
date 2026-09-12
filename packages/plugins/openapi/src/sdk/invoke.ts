@@ -838,12 +838,8 @@ const applyRequestBody = (
   });
 
   if (isJsonContentType(contentType)) {
-    // Pre-serialized JSON strings pass through with the declared media
-    // type preserved (important for `application/vnd.foo+json` etc.).
-    if (typeof bodyValue === "string") {
-      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
-    }
-    return sent(HttpClientRequest.bodyJsonUnsafe(request, bodyValue));
+    const text = typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue);
+    return sent(HttpClientRequest.bodyText(request, text, contentType));
   }
 
   if (isFormUrlEncoded(contentType)) {
