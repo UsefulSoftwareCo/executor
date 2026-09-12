@@ -16,15 +16,23 @@ scenario(
     yield* browser.session({ label: "anonymous" }, async ({ page, step }) => {
       const interceptCallback = async (): Promise<string> => {
         let callback: string | undefined;
-        await page.route("**/api/auth/callback?**", async (route) => {
-          callback = route.request().url();
-          await route.abort();
+        // Pause the real provider response before its redirect reaches the app.
+        // Playwright does not route subsequent hops of a redirect chain.
+        await page.route("**/user_management/authorize/submit", async (route) => {
+          const response = await route.fetch({ maxRedirects: 0 });
+          expect(response.status()).toBe(302);
+          callback = response.headers().location;
+          await route.fulfill({
+            status: 200,
+            contentType: "text/plain",
+            body: "Authorization ready for callback validation",
+          });
         });
         await page.goto(new URL("/api/auth/login", target.baseUrl).toString());
         await page.getByPlaceholder("new-user@example.com").fill(email);
         await page.getByRole("button", { name: /Continue/ }).click();
         await expect.poll(() => callback).toBeDefined();
-        await page.unroute("**/api/auth/callback?**");
+        await page.unroute("**/user_management/authorize/submit");
         if (!callback) throw new Error("AuthKit did not return a callback");
         return callback;
       };
