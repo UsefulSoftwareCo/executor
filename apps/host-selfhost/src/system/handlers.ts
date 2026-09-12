@@ -6,6 +6,7 @@ import { SystemError, SystemHttpApi } from "./api";
 import { BetterAuth, countOrgMembers, type BetterAuthHandle } from "../auth/better-auth";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
 import { findRedeemableCode } from "../auth/invites";
+import { loadConfig } from "../config";
 
 // ---------------------------------------------------------------------------
 // Handlers for the public system API. Unauthenticated; every DB touch is an
@@ -38,6 +39,15 @@ export const SystemHandlers = HttpApiBuilder.group(SystemHttpApi, "system", (han
           catch: () => new SystemError({ message: "failed to read setup status" }),
         });
         return { needsSetup: count === 0 };
+      }),
+    )
+    .handle("authConfig", () =>
+      // Which SSO provider the operator configured — id + display name only, so
+      // the pre-login page knows which button to render. Config is env-derived
+      // and boot-validated, so this read cannot fail.
+      Effect.sync(() => {
+        const sso = loadConfig().sso;
+        return { ssoProviders: sso ? [{ id: sso.providerId, name: sso.providerName }] : [] };
       }),
     )
     .handle("inviteStatus", ({ params }) =>

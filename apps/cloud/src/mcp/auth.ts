@@ -171,6 +171,7 @@ export type AuthorizedMcpOrganization = {
   readonly id: string;
   readonly name: string;
   readonly slug?: string;
+  readonly memberRole: "admin" | "member";
 };
 
 export class McpOrganizationAuth extends Context.Service<
@@ -230,7 +231,14 @@ export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
         organizationId
           ? authorizeOrganization(accountId, organizationId).pipe(
               Effect.map((org) =>
-                org ? ({ id: org.id, name: org.name, slug: org.slug } as const) : null,
+                org
+                  ? ({
+                      id: org.id,
+                      name: org.name,
+                      slug: org.slug,
+                      memberRole: org.memberRole,
+                    } as const)
+                  : null,
               ),
             )
           : Effect.succeed(null),

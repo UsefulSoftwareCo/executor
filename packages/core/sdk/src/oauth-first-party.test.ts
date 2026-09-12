@@ -324,13 +324,58 @@ describe("first-party oauth clients", () => {
     ),
   );
 
+  it.effect("listing policies use the acting identity and re-evaluate within an executor", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        let enabled = true;
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          subject: "review-user",
+          tenant: "review-org",
+          firstPartyOAuthClients: [
+            {
+              ...firstPartyClientFor(server),
+              isListed: (context) =>
+                Effect.sync(() => {
+                  expect(context).toEqual({ userId: "review-user", organizationId: "review-org" });
+                  return enabled;
+                }),
+            },
+          ],
+        });
+        expect((yield* executor.oauth.listClients()).map((client) => String(client.slug))).toEqual([
+          "first-party:acme",
+        ]);
+        enabled = false;
+        expect(yield* executor.oauth.listClients()).toEqual([]);
+        yield* executor.acme.seed();
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: FIRST_PARTY,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+      }),
+    ),
+  );
+
   it.effect("an unlisted first-party app is withheld from listings but still refreshes", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const harness = yield* makeTestWorkspaceHarness({
           plugins,
-          firstPartyOAuthClients: [{ ...firstPartyClientFor(server), unlisted: true }],
+          firstPartyOAuthClients: [
+            {
+              ...firstPartyClientFor(server),
+              unlisted: true,
+              isListed: () => Effect.succeed(true),
+            },
+          ],
         });
         const { executor, config } = harness;
         yield* executor.acme.seed();

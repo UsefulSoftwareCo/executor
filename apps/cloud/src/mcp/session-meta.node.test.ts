@@ -23,6 +23,8 @@ import {
 
 const TOKEN: McpSessionInit = {
   organizationId: "org_test",
+  orgRoleModel: "organization",
+  orgRole: "member",
   userId: "user_test",
   elicitationMode: "model",
   resource: defaultMcpResource,
@@ -33,6 +35,8 @@ const STORED: SessionMeta = {
   organizationId: "org_test",
   organizationName: "Stored Org",
   organizationSlug: "stored-org",
+  orgRoleModel: "organization",
+  orgRole: "admin",
   userId: "user_test",
   resource: defaultMcpResource,
 };
@@ -104,7 +108,40 @@ describe("resolveSessionMetaForToken", () => {
 
     expect(meta.organizationName).toBe("Stored Org");
     expect(meta.organizationSlug).toBe("stored-org");
+    expect(meta.orgRole).toBe("member");
     expect(store.calls(), "a restore reuses what it persisted").toBe(0);
+  });
+
+  it("does not let a stored admin role authorize legacy init props", async () => {
+    const store = countingConnectTimeoutStore();
+    const { orgRole: _orgRole, ...legacyToken } = TOKEN;
+
+    const meta = await Effect.runPromise(
+      resolveSessionMetaForToken(legacyToken, STORED).pipe(
+        Effect.provide(Layer.mergeAll(store.layer, unusedWorkOS)),
+      ),
+    );
+
+    expect(meta.orgRole).toBeUndefined();
+    expect(store.calls()).toBe(0);
+  });
+
+  it("uses the fresh role when a warm session's principal is demoted", async () => {
+    const store = countingConnectTimeoutStore();
+    const admin = await Effect.runPromise(
+      resolveSessionMetaForToken({ ...TOKEN, orgRole: "admin" }, STORED).pipe(
+        Effect.provide(Layer.mergeAll(store.layer, unusedWorkOS)),
+      ),
+    );
+    const member = await Effect.runPromise(
+      resolveSessionMetaForToken(TOKEN, admin).pipe(
+        Effect.provide(Layer.mergeAll(store.layer, unusedWorkOS)),
+      ),
+    );
+
+    expect(admin.orgRole).toBe("admin");
+    expect(member.orgRole).toBe("member");
+    expect(store.calls()).toBe(0);
   });
 
   it("reads the database only when nothing else names the org", async () => {
@@ -117,6 +154,7 @@ describe("resolveSessionMetaForToken", () => {
     );
 
     expect(meta.organizationName).toBe("Database Org");
+    expect(meta.orgRole).toBe("member");
     expect(store.calls()).toBe(1);
   });
 

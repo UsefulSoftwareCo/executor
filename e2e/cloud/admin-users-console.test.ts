@@ -9,9 +9,9 @@
 // access rather than shown an empty workspace.
 //
 // Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation, in `./support/session`) and each connects their
-// own credential, so the two rows differ in what they've connected and the
-// summary has something to be right about.
+// invite → accept-invitation, in `./support/session`). Each connects a Personal
+// credential; the plain member's Workspace attempt is refused, so the directory
+// and connection UI prove the owner-aware permission boundary together.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -39,11 +39,12 @@ declare global {
 }
 
 const TEMPLATE_API_KEY = AuthTemplateSlug.make("apiKey");
+const INTEGRATION_TITLE = "Ping API";
 
 /** Minimal OpenAPI spec with a single GET /ping — never contacted here. */
 const pingSpec = JSON.stringify({
   openapi: "3.0.3",
-  info: { title: "Ping API", version: "1.0.0" },
+  info: { title: INTEGRATION_TITLE, version: "1.0.0" },
   paths: {
     "/ping": {
       get: { operationId: "ping", summary: "Ping", responses: { "200": { description: "pong" } } },
@@ -51,13 +52,19 @@ const pingSpec = JSON.stringify({
   },
 });
 
+const noProbeSpec = JSON.stringify({
+  openapi: "3.0.3",
+  info: { title: INTEGRATION_TITLE, version: "1.0.0" },
+  paths: {},
+});
+
 /** Registers a fresh apiKey-authenticated integration for connections to bind to. */
-const registerIntegration = (client: Client, label: string) =>
+const registerIntegration = (client: Client, label: string, spec = pingSpec) =>
   Effect.gen(function* () {
     const slug = IntegrationSlug.make(`${label}-${randomBytes(4).toString("hex")}`);
     yield* client.openapi.addSpec({
       payload: {
-        spec: { kind: "blob", value: pingSpec },
+        spec: { kind: "blob", value: spec },
         slug,
         baseUrl: "http://127.0.0.1:59999", // never contacted during registration
         authenticationTemplate: [
@@ -91,18 +98,19 @@ scenario(
     const adminId = yield* accountIdOf(target, admin);
     const memberId = yield* accountIdOf(target, member);
 
-    // Two integrations so the summary has a real available-vs-connected split:
-    // each member connects one, so each row shows one connected and one not.
+    // Two integrations so the member's summary has a real zero-of-two state.
     const connectedIntegration = yield* registerIntegration(adminClient, "admin-ui-conn");
-    const availableIntegration = yield* registerIntegration(adminClient, "admin-ui-avail");
+    const availableIntegration = yield* registerIntegration(
+      adminClient,
+      "admin-ui-avail",
+      noProbeSpec,
+    );
     const adminConnection = freshConnectionName();
     const memberConnection = freshConnectionName();
-
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Each member stores their OWN credential. Neither can see the other's
-        // through the product plane — the admin page is the only surface that
-        // reports both.
+        // Both roles may store Personal credentials. A member cannot promote
+        // theirs into a Workspace credential by bypassing the owner picker.
         yield* adminClient.connections.create({
           payload: {
             owner: "user",
@@ -112,6 +120,18 @@ scenario(
             value: "admin-personal-token",
           },
         });
+        const workspaceRefusal = yield* memberClient.connections
+          .create({
+            payload: {
+              owner: "org",
+              name: memberConnection,
+              integration: connectedIntegration,
+              template: TEMPLATE_API_KEY,
+              value: "member-personal-token",
+            },
+          })
+          .pipe(Effect.flip);
+        expect(workspaceRefusal).toMatchObject({ _tag: "OrgWriteDeniedError" });
         yield* memberClient.connections.create({
           payload: {
             owner: "user",
@@ -189,7 +209,7 @@ scenario(
             await summary.waitFor({ state: "visible", timeout: 30_000 });
             expect(
               await summary.textContent(),
-              "one of the two connectable integrations, with the built-in out of both numbers",
+              "one connectable integration is connected, with the built-in out of both numbers",
             ).toBe("1/2");
             expect(
               await memberRow.locator("[data-integration='executor']").count(),
@@ -199,7 +219,7 @@ scenario(
               await memberRow
                 .locator(`[data-integration='${connectedIntegration}'][data-connected='true']`)
                 .count(),
-              "the integration this member connected is lit in their summary",
+              "the member's Personal credential is lit in their summary",
             ).toBe(1);
             expect(
               await memberRow
@@ -209,7 +229,7 @@ scenario(
             ).toBe(1);
           });
 
-          await step("Open the member's detail and read their connections", async () => {
+          await step("Open the member's detail and confirm their Personal connection", async () => {
             await page
               .locator("[data-slot='admin-user-row']")
               .filter({ has: page.locator(`[data-slot='admin-user-id'][title='${memberId}']`) })
@@ -217,11 +237,9 @@ scenario(
             const detail = page.getByRole("dialog");
             await detail.waitFor({ state: "visible", timeout: 30_000 });
 
-            // Their own connection, by name, with the shared health vocabulary.
             await detail
               .getByText(memberConnection, { exact: true })
               .waitFor({ state: "visible", timeout: 30_000 });
-            // Never probed, so the honest verdict is Unchecked — not Healthy.
             expect(
               await detail.getByLabel("Status: Unchecked").count(),
               "a never-probed connection reads as unchecked, not healthy",
@@ -285,11 +303,12 @@ scenario(
                 .count(),
               "the org-free form is never rendered on a host that has orgs",
             ).toBe(0);
-            // Exactly one: the member connected one of the two connectable
-            // integrations, and the built-in offers no link at all.
+            // Only the unconnected integration is available; the member's
+            // Personal connection consumes the other slot. The built-in still
+            // offers no link at all.
             expect(
               await detail.getByRole("button", { name: "Copy link" }).count(),
-              "one link per not-connected connectable integration, and none for the built-in",
+              "one link for the not-connected integration, and none for the built-in",
             ).toBe(1);
             expect(
               await detail.getByText("/connect/executor", { exact: false }).count(),
@@ -316,6 +335,25 @@ scenario(
               new URL(page.url()).searchParams.get("addAccount"),
               "the link lands in the connect flow, not just on the page",
             ).toBe("1");
+            const dialog = page.getByRole("dialog");
+            await dialog
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
+            const credential = dialog.getByRole("textbox", { name: "authorization" });
+            await credential.waitFor({ state: "visible", timeout: 90_000 });
+            await credential.fill("admin-scope-proof-token");
+            await dialog.getByRole("button", { name: "Continue" }).click();
+            const owner = dialog.getByRole("combobox");
+            await owner.waitFor({ state: "visible", timeout: 30_000 });
+            expect(await owner.textContent(), "an admin is offered Personal scope").toContain(
+              "Personal",
+            );
+            await owner.click();
+            await page
+              .getByRole("option", { name: "Workspace", exact: true })
+              .waitFor({ state: "visible", timeout: 30_000 });
+            await page.keyboard.press("Escape");
+            await page.keyboard.press("Escape");
           });
         });
 
@@ -362,6 +400,38 @@ scenario(
               ).toBe(0);
             },
           );
+
+          await step(
+            "The member can add Personal connections without a scope dropdown",
+            async () => {
+              await visit(page, `/${slug}/integrations/${availableIntegration}?tab=accounts`);
+              const add = page.getByRole("button", { name: "Add connection" });
+              await add.waitFor({ state: "visible", timeout: 30_000 });
+              await add.click();
+              const dialog = page.getByRole("dialog");
+              await dialog
+                .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+                .waitFor({ state: "visible", timeout: 30_000 });
+              expect(
+                await dialog.getByText("Workspace", { exact: true }).count(),
+                "the member is forced to Personal rather than offered a scope picker",
+              ).toBe(0);
+              await page.keyboard.press("Escape");
+            },
+          );
+
+          await step("Their connect deep link opens the Personal add flow", async () => {
+            await visit(page, `/${slug}/connect/${availableIntegration}`);
+            await page.waitForURL(
+              (url) => url.pathname === `/${slug}/integrations/${availableIntegration}`,
+              { timeout: 30_000 },
+            );
+            expect(new URL(page.url()).searchParams.get("addAccount")).toBe("1");
+            await page
+              .getByRole("dialog")
+              .getByText(`Add connection · ${INTEGRATION_TITLE}`, { exact: false })
+              .waitFor({ state: "visible", timeout: 30_000 });
+          });
         });
       }),
       Effect.all(

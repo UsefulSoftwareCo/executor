@@ -22,7 +22,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Layer, Predicate } from "effect";
 
-import { McpAuthProvider } from "@executor-js/host-mcp";
+import { McpAuthProvider, orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
 
 import { WorkOSError } from "../auth/errors";
 import { cloudMcpAuthProviderLayer } from "./auth-provider";
@@ -74,7 +74,8 @@ const stubOrgAuthNoMembership = Layer.succeed(McpOrganizationAuth)({
 // record, not just the id: the session props carry the org's name and slug so
 // the session DO never re-reads the row.
 const stubOrgAuthActive = Layer.succeed(McpOrganizationAuth)({
-  authorize: () => Effect.succeed({ id: ORG_ID, name: "Stub Org", slug: "stub-org" }),
+  authorize: () =>
+    Effect.succeed({ id: ORG_ID, name: "Stub Org", slug: "stub-org", memberRole: "admin" }),
 });
 
 // A failure that is not a WorkOSError at all (e.g. the per-request DB layer
@@ -163,6 +164,14 @@ describe("cloud MCP org-authorization classification", () => {
       const principal = Predicate.isTagged(outcome, "Authenticated") ? outcome.principal : null;
       expect(principal?.accountId).toBe(ACCOUNT_ID);
       expect(principal?.organizationId).toBe(ORG_ID);
+      expect(principal?.orgRoleModel).toBe("organization");
+      expect(principal?.orgRole, "the live membership role reaches the MCP session").toBe("admin");
+      const legacyAccess = principal
+        ? orgWriteAccessForPrincipal(
+            (({ orgRole: _orgRole, ...legacyMissingRole }) => legacyMissingRole)(principal),
+          )
+        : null;
+      expect(legacyAccess).toBe("denied");
     }),
   );
 

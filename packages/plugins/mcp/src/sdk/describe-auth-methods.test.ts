@@ -225,11 +225,18 @@ describe("describeMcpAuthMethods", () => {
     ]);
   });
 
-  it("returns [] for a stdio transport", () => {
+  it("projects a legacy stdio transport without declared secrets as no-auth", () => {
     const methods = describeMcpAuthMethods(
       recordWith({ transport: "stdio", command: "run-server" }),
     );
-    expect(methods).toEqual([]);
+    expect(methods).toEqual([
+      {
+        id: "none",
+        label: "No authentication",
+        kind: "none",
+        template: "none",
+      },
+    ]);
   });
 
   it("returns [] for a malformed / foreign / pre-migration config blob", () => {

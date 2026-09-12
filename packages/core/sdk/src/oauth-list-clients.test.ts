@@ -60,6 +60,7 @@ describe("oauth.listClients", () => {
           grant: "authorization_code",
           clientId: "org-client-id",
           clientSecret: "org-super-secret",
+          tokenEndpointAuthMethod: "basic",
         });
         yield* executor.oauth.createClient({
           owner: "user",
@@ -91,6 +92,7 @@ describe("oauth.listClients", () => {
           tokenUrl: "https://acme.test/token",
           resource: null,
           clientId: "org-client-id",
+          tokenEndpointAuthMethod: "basic",
           // Manual apps carry a nullable recorded-intent integration; a client
           // created outside any integration dialog stamps null.
           origin: { kind: "manual", integration: null },
@@ -104,6 +106,34 @@ describe("oauth.listClients", () => {
           expect(Object.keys(client)).not.toContain("clientSecret");
           expect(JSON.stringify(client)).not.toContain("secret");
         }
+      }),
+    ),
+  );
+
+  it.effect("rejects HTTP Basic authentication without a client secret", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+
+        const error = yield* Effect.flip(
+          executor.oauth.createClient({
+            owner: "org",
+            slug: ORG_CLIENT,
+            authorizationUrl: "https://acme.test/authorize",
+            tokenUrl: "https://acme.test/token",
+            grant: "authorization_code",
+            clientId: "public-client-id",
+            clientSecret: "",
+            tokenEndpointAuthMethod: "basic",
+          }),
+        );
+
+        expect(error).toEqual(
+          expect.objectContaining({
+            _tag: "StorageError",
+            message: expect.stringContaining("requires a client secret"),
+          }),
+        );
       }),
     ),
   );

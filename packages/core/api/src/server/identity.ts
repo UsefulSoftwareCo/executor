@@ -28,7 +28,7 @@ import { Context, Effect, Schema } from "effect";
  * original `Principal` is the model — it carries `organizationName` (cloud's
  * resolver already yielded it) AND `roles` (cloud supplies `[]`).
  */
-export interface Principal {
+interface PrincipalBase {
   /** Discriminant of {@link ResolvedPrincipal}: an acting member, as opposed
    *  to the org-level `"platform"` credential. Required so every construction
    *  site declares which arm it is, and the union matches on a literal tag
@@ -49,6 +49,31 @@ export interface Principal {
   readonly avatarUrl: string | null;
   readonly roles: readonly string[];
 }
+
+/**
+ * The provider-neutral resolved member identity. The role-model discriminant
+ * makes it impossible for a role-less host to carry an authorizing org role.
+ */
+export type Principal = PrincipalBase &
+  (
+    | {
+        readonly orgRoleModel: "organization";
+        /**
+         * The member's NORMALIZED workspace role for an `"organization"` model:
+         * `"admin"` may configure workspace-level state (org-owned rows, the
+         * integration catalog), `"member"` may only use it. Cloud maps its WorkOS
+         * membership role (`admin` / `member`); self-host maps Better Auth's org
+         * membership role (`owner` and `admin` → `"admin"`). It may be absent only
+         * at a legacy serialized boundary; an organization role model then denies
+         * workspace writes. A host without roles declares `orgRoleModel: "none"`.
+         */
+        readonly orgRole?: "admin" | "member";
+      }
+    | {
+        readonly orgRoleModel: "none";
+        readonly orgRole?: never;
+      }
+  );
 
 /**
  * An ORG-level credential (cloud's org-scoped API key), resolved. Deliberately

@@ -48,6 +48,7 @@ import type {
   IntegrationNotFoundError,
   IntegrationRemovalNotAllowedError,
   InvalidConnectionInputError,
+  OrgWriteDeniedError,
 } from "./errors";
 import type { OAuthService } from "./oauth-client";
 import type { CredentialProvider, ProviderEntry } from "./provider";
@@ -163,8 +164,16 @@ export interface PluginCtx<TStore = unknown> {
 
   readonly core: {
     readonly integrations: {
-      /** Register / replace this plugin's integration in the catalog. */
-      readonly register: (input: RegisterIntegrationInput) => Effect.Effect<void, StorageFailure>;
+      /** Authorize a user-intent workspace catalog write before a plugin starts
+       *  external work or writes to storage outside the catalog transaction. */
+      readonly authorizeWrite: () => Effect.Effect<void, OrgWriteDeniedError>;
+      /** Register / replace this plugin's integration in the catalog. Both
+       *  operations are workspace-level changes gated by the executor's
+       *  `orgWrites` binding for end-user principals. Subjectless system
+       *  executors may re-register an existing row during boot convergence. */
+      readonly register: (
+        input: RegisterIntegrationInput,
+      ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
       readonly update: (
         slug: IntegrationSlug,
         patch: {
@@ -172,21 +181,24 @@ export interface PluginCtx<TStore = unknown> {
           readonly description?: string;
           readonly config?: IntegrationConfig;
         },
-      ) => Effect.Effect<void, StorageFailure>;
+      ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
       readonly list: () => Effect.Effect<readonly Integration[], StorageFailure>;
       readonly get: (
         slug: IntegrationSlug,
       ) => Effect.Effect<IntegrationRecord | null, StorageFailure>;
       readonly remove: (
         slug: IntegrationSlug,
-      ) => Effect.Effect<void, IntegrationRemovalNotAllowedError | StorageFailure>;
+      ) => Effect.Effect<
+        void,
+        IntegrationRemovalNotAllowedError | OrgWriteDeniedError | StorageFailure
+      >;
       /** Declare (or clear, with null) the integration's health check. Core
        *  owns this storage; plugins call it e.g. to install a zero-config
        *  default probe at registration time. */
       readonly setHealthCheck: (
         slug: IntegrationSlug,
         spec: HealthCheckSpec | null,
-      ) => Effect.Effect<void, StorageFailure>;
+      ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
       readonly detect: (
         url: string,
       ) => Effect.Effect<readonly IntegrationDetectionResult[], StorageFailure>;
@@ -195,9 +207,15 @@ export interface PluginCtx<TStore = unknown> {
     };
     readonly policies: {
       readonly list: () => Effect.Effect<readonly ToolPolicy[], StorageFailure>;
-      readonly create: (input: CreateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-      readonly update: (input: UpdateToolPolicyInput) => Effect.Effect<ToolPolicy, StorageFailure>;
-      readonly remove: (input: RemoveToolPolicyInput) => Effect.Effect<void, StorageFailure>;
+      readonly create: (
+        input: CreateToolPolicyInput,
+      ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+      readonly update: (
+        input: UpdateToolPolicyInput,
+      ) => Effect.Effect<ToolPolicy, OrgWriteDeniedError | StorageFailure>;
+      readonly remove: (
+        input: RemoveToolPolicyInput,
+      ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
     };
   };
 
@@ -212,6 +230,7 @@ export interface PluginCtx<TStore = unknown> {
       | ConnectionAlreadyExistsError
       | CredentialProviderNotRegisteredError
       | InvalidConnectionInputError
+      | OrgWriteDeniedError
       | StorageFailure
     >;
     readonly list: (filter?: {
@@ -223,15 +242,15 @@ export interface PluginCtx<TStore = unknown> {
     readonly update: (
       ref: ConnectionRef,
       input: UpdateConnectionInput,
-    ) => Effect.Effect<Connection, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<Connection, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly remove: (
       ref: ConnectionRef,
-    ) => Effect.Effect<void, ConnectionNotFoundError | StorageFailure>;
+    ) => Effect.Effect<void, ConnectionNotFoundError | OrgWriteDeniedError | StorageFailure>;
     readonly refresh: (
       ref: ConnectionRef,
     ) => Effect.Effect<
       readonly Tool[],
-      ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+      ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
     >;
     /** Run the integration's declared health check against a saved connection
      *  and persist the verdict. `ifStaleMs` serves the persisted verdict when

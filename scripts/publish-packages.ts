@@ -273,12 +273,20 @@ const applyPublishConfig = async (pkgDir: string): Promise<() => Promise<void>> 
   };
 };
 
-const publishPackage = async (
+type PackedPackage = {
+  readonly pkgDir: string;
+  readonly name: string;
+  readonly version: string;
+  readonly channel: Channel;
+  readonly tarball: string;
+};
+
+const packPackage = async (
   pkgDir: string,
   dryRun: boolean,
   publishable: ReadonlySet<string>,
   publishableVersions: ReadonlyMap<string, string>,
-) => {
+): Promise<PackedPackage> => {
   const { name, version } = await readPackageMeta(pkgDir);
   const channel = resolveChannel(version);
 
@@ -314,26 +322,62 @@ const publishPackage = async (
       `Expected exactly 1 .tgz in ${pkgDir}, found ${produced.length}: ${produced.join(", ")}`,
     );
   }
-  const tarball = produced[0]!;
 
-  if (dryRun) {
-    return;
-  }
+  return { pkgDir, name, version, channel, tarball: produced[0]! };
+};
 
+const publishPacked = async (packed: PackedPackage) => {
   // Skip publishing already-shipped versions. The pack still ran above so
   // smoke tests / pkg-pr-new previews always have a fresh tarball.
-  if (await packageAlreadyPublished(name, version)) {
-    console.log(`[skip] ${name}@${version} already on npm`);
+  if (await packageAlreadyPublished(packed.name, packed.version)) {
+    console.log(`[skip] ${packed.name}@${packed.version} already on npm`);
     return;
   }
 
-  console.log(`[publish] ${name}@${version} (${channel})`);
+  console.log(`[publish] ${packed.name}@${packed.version} (${packed.channel})`);
 
-  const args = ["publish", tarball, "--access", "public", "--tag", channel];
+  const args = ["publish", packed.tarball, "--access", "public", "--tag", packed.channel];
   if (process.env.GITHUB_ACTIONS === "true") {
     args.push("--provenance");
   }
-  await $`npm ${args}`.cwd(pkgDir);
+
+  // Buffer output and replay it prefixed: several publishes run at once and
+  // interleaved npm output is unreadable.
+  const result = await $`npm ${args}`.cwd(packed.pkgDir).nothrow().quiet();
+  const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+  if (output.length > 0) {
+    console.log(output.replace(/^/gm, `[${packed.name}] `));
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`npm publish failed for ${packed.name} (exit ${result.exitCode})`);
+  }
+};
+
+/** Publish concurrently: these are distinct packages, so no two publishes
+ *  touch the same npm packument (the 409 hazard that forces the executor CLI
+ *  platform variants to publish serially does not apply here). Each publish
+ *  is network + sigstore dominated (~15-25s), so this is where the release
+ *  job's minutes go. */
+const PUBLISH_CONCURRENCY = 4;
+
+const publishAll = async (packed: ReadonlyArray<PackedPackage>) => {
+  const queue = [...packed];
+  const failures: string[] = [];
+
+  const workers = Array.from({ length: Math.min(PUBLISH_CONCURRENCY, queue.length) }, async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      try {
+        await publishPacked(next);
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+  });
+  await Promise.all(workers);
+
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} package(s) failed to publish:\n${failures.join("\n")}`);
+  }
 };
 
 /**
@@ -386,9 +430,21 @@ const main = async () => {
     return;
   }
 
+  // Pack sequentially: packing rewrites each package.json in place and `bun
+  // pm pack` resolves against the shared workspace tree, so overlapping packs
+  // could observe each other's temporary manifests.
+  const packed: PackedPackage[] = [];
   for (const relDir of PUBLIC_PACKAGE_DIRS) {
-    await publishPackage(join(repoRoot, relDir), dryRun, publishable, publishableVersions);
+    packed.push(
+      await packPackage(join(repoRoot, relDir), dryRun, publishable, publishableVersions),
+    );
   }
+
+  if (dryRun) {
+    return;
+  }
+
+  await publishAll(packed);
 };
 
 await main();

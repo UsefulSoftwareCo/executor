@@ -25,6 +25,7 @@ import {
   type IntegrationConfig,
   type IntegrationRecord,
   type OAuthClientSummary,
+  type OrgWriteDeniedError,
   type Owner,
   type PluginCtx,
   type StaticToolSchema,
@@ -417,6 +418,40 @@ const normalizeSlug = (input: McpServerInput): string =>
 /** Slug for a stdio server's secret-env auth method (one per integration). */
 const STDIO_ENV_TEMPLATE = "env";
 
+/** Recover the inline credentials carried by a pre-auth-revamp stdio config.
+ *  A non-null result is the single predicate shared by catalog projection and
+ *  reconciliation: those values must never be mistaken for static env. */
+const legacyStdioInlineCredentials = (
+  config: McpStdioIntegrationConfig,
+): {
+  readonly values: Readonly<Record<string, string>>;
+  readonly vars: readonly string[];
+} | null => {
+  const values = config.env ?? {};
+  const vars = Object.keys(values);
+  return vars.length > 0 ? { values, vars } : null;
+};
+
+/** Project the auth methods a stored MCP config truthfully exposes. Legacy
+ *  stdio rows carried credentials inline and had no declared method, so both
+ *  catalog validation and runtime rendering must see the same synthetic
+ *  method until reconciliation canonicalizes the row. */
+const projectedMcpAuthMethods = (config: McpIntegrationConfigType): readonly McpAuthMethod[] => {
+  if (config.transport === "stdio" && config.authenticationTemplate === undefined) {
+    const credentials = legacyStdioInlineCredentials(config);
+    return credentials === null
+      ? [{ slug: "none", kind: "none" }]
+      : [
+          {
+            slug: STDIO_ENV_TEMPLATE,
+            kind: "stdio_env",
+            vars: credentials.vars,
+          },
+        ];
+  }
+  return config.authenticationTemplate ?? [];
+};
+
 /** The secret env var NAMES a stdio add declares: the explicit `envVars`
  *  declaration plus the keys of any one-shot `env` values, de-duplicated and
  *  order-preserving. */
@@ -631,7 +666,7 @@ const selectAuthMethod = (
   config: McpIntegrationConfigType,
   templateSlug: string | null,
 ): McpAuthMethod | undefined => {
-  const methods = config.authenticationTemplate ?? [];
+  const methods = projectedMcpAuthMethods(config);
   if (templateSlug !== null) {
     const match = methods.find((method: McpAuthMethod) => method.slug === templateSlug);
     if (match) return match;
@@ -846,9 +881,9 @@ export const describeMcpAuthMethods = (
   if (!config) return [];
 
   // Stdio servers declare a single `stdio_env` method (or `none`); remote
-  // servers declare header/query/oauth methods. Both project from the same
-  // optional `authenticationTemplate`.
-  const methods = config.authenticationTemplate ?? [];
+  // servers declare header/query/oauth methods. Runtime method selection uses
+  // this same truthful projection, including synthetic legacy stdio methods.
+  const methods = projectedMcpAuthMethods(config);
   return methods.map((method: McpAuthMethod): AuthMethodDescriptor => {
     if (method.kind === "stdio_env") return describeStdioEnvAuthMethod(method);
     if (method.kind === "apikey") return describeApiKeyAuthMethod(method);
@@ -1220,16 +1255,14 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               });
               if (connections.length > 0) return; // already connectable — nothing to heal.
 
-              const inlineEnv = config.env ?? {};
-              const envVars = Object.keys(inlineEnv);
-              const hasEnv = envVars.length > 0;
+              const credentials = legacyStdioInlineCredentials(config);
 
               yield* ctx.connections.create({
                 owner: "org",
                 name: ConnectionName.make("default"),
                 integration: integration.slug,
-                template: AuthTemplateSlug.make(hasEnv ? STDIO_ENV_TEMPLATE : "none"),
-                values: hasEnv ? { ...inlineEnv } : {},
+                template: AuthTemplateSlug.make(credentials === null ? "none" : STDIO_ENV_TEMPLATE),
+                values: credentials === null ? {} : { ...credentials.values },
               });
 
               // The secret is now on the connection: canonicalize this legacy
@@ -1241,9 +1274,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
                 args: config.args,
                 cwd: config.cwd,
                 versionNegotiation: config.versionNegotiation,
-                authenticationTemplate: hasEnv
-                  ? [{ slug: STDIO_ENV_TEMPLATE, kind: "stdio_env", vars: envVars }]
-                  : [{ slug: "none", kind: "none" }],
+                authenticationTemplate:
+                  credentials === null
+                    ? [{ slug: "none", kind: "none" }]
+                    : [
+                        {
+                          slug: STDIO_ENV_TEMPLATE,
+                          kind: "stdio_env",
+                          vars: credentials.vars,
+                        },
+                      ],
               };
               yield* ctx.core.integrations.update(integration.slug, { config: nextConfig });
             }).pipe(
@@ -2049,12 +2089,17 @@ export interface McpPluginExtension {
     input: McpServerInput,
   ) => Effect.Effect<
     { readonly slug: string },
-    McpExtensionFailure | IntegrationAlreadyExistsError
+    McpExtensionFailure | IntegrationAlreadyExistsError | OrgWriteDeniedError
   >;
-  readonly removeServer: (slug: string) => Effect.Effect<void, McpExtensionFailure>;
+  readonly removeServer: (
+    slug: string,
+  ) => Effect.Effect<void, McpExtensionFailure | OrgWriteDeniedError>;
   /** Ensure every stdio integration has its default connection (migrating any
    *  legacy inline env into the secret store). Idempotent; safe to run at boot. */
-  readonly reconcileStdioConnections: () => Effect.Effect<void, McpExtensionFailure>;
+  readonly reconcileStdioConnections: () => Effect.Effect<
+    void,
+    McpExtensionFailure | OrgWriteDeniedError
+  >;
   readonly getServer: (
     slug: string,
   ) => Effect.Effect<
@@ -2064,11 +2109,11 @@ export interface McpPluginExtension {
   readonly configureServer: (
     slug: string,
     config: McpIntegrationConfigType,
-  ) => Effect.Effect<void, McpExtensionFailure>;
+  ) => Effect.Effect<void, McpExtensionFailure | OrgWriteDeniedError>;
   readonly configureAuth: (
     slug: string,
     input: McpConfigureAuthInput,
-  ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure>;
+  ) => Effect.Effect<readonly McpAuthMethod[], McpExtensionFailure | OrgWriteDeniedError>;
   /** Locally installed Codex plugins with stdio MCP servers, as one-click
    *  presets. Empty when stdio is disabled. */
   readonly listCodexPlugins: () => Effect.Effect<readonly CodexPluginEntry[], never>;
