@@ -162,6 +162,12 @@ const validateArgs = (
   );
 };
 
+const withPrivateAnnotations = (annotations: ToolAnnotations) => ({
+  ...annotations,
+  upstreamToolName: "private-provider-tool",
+  _meta: { privateMarker: "not-public" },
+});
+
 const makeTestPlugin = (config: {
   readonly pluginId: string;
   readonly integration: string;
@@ -183,11 +189,7 @@ const makeTestPlugin = (config: {
             outputSchema: spec.outputJsonSchema,
             ...(spec.annotations
               ? {
-                  annotations: {
-                    ...spec.annotations,
-                    upstreamToolName: "private-provider-tool",
-                    _meta: { privateMarker: "not-public" },
-                  },
+                  annotations: withPrivateAnnotations(spec.annotations),
                 }
               : {}),
           }),
