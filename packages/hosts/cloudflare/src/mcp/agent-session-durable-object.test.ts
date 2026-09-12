@@ -360,6 +360,23 @@ it("records a demoted browser approver's current role in a waiting decision", as
   await expect(waiting).resolves.toEqual({ response: approval, orgWriteAccess: "denied" });
 });
 
+it("keeps the chosen approval lifetime when reading a stored decision", async () => {
+  const session = await makeHarnessSession();
+  const executionId = "exec-stored-persistence";
+  const response = {
+    action: "accept",
+    content: {},
+    meta: { persist: "session" },
+  } satisfies ResumeResponse;
+  await session.ctx.storage.put(`approval-response:${executionId}`, {
+    response,
+    orgWriteAccess: "allowed",
+  });
+  const decision = await Effect.runPromise(session.waitForApprovalResponse(executionId));
+  expect(decision).toEqual({ response, orgWriteAccess: "allowed" });
+  expect(await session.ctx.storage.get(`approval-response:${executionId}`)).toBeUndefined();
+});
+
 // The negotiated MCP-Apps capability arrives once, at `initialize`, and lives
 // in the rebuilt server's memory. These pin the storage round-trip that lets a
 // cold-restored session rebuild with it instead of silently downgrading every

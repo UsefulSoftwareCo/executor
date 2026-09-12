@@ -6,10 +6,15 @@ import type {
   Executor,
   InvokeOptions,
   ElicitationResponse,
+  ElicitationResponseMeta,
   ElicitationHandler,
   ElicitationContext,
 } from "@executor-js/sdk/core";
-import { CurrentOrgWriteAccess, type OrgWriteAccessState } from "@executor-js/sdk/core";
+import {
+  CurrentOrgWriteAccess,
+  offeredPersistence,
+  type OrgWriteAccessState,
+} from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
 import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
@@ -58,6 +63,9 @@ type InternalPausedExecution<E> = PausedExecution & {
 export type ResumeResponse = {
   readonly action: "accept" | "decline" | "cancel";
   readonly content?: Record<string, unknown>;
+  /** The answer's terms — `persist`, when the paused request offered a
+   *  choice of scopes and the approver picked one. */
+  readonly meta?: ElicitationResponseMeta;
 };
 
 // Auto-accept every elicitation. Used by the `autoApprove` path where the
@@ -215,10 +223,21 @@ export const formatPausedExecution = (
     : hasRequestedSchema
       ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
       : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
+  // When the upstream leaves the LIFETIME of an accept to the answer, the
+  // caller has to know that a bare accept is a one-time approval — the same
+  // prompt returns on the next call — and how to say otherwise.
+  const meta = req.meta;
+  const offered = offeredPersistence(meta);
+  const persistInstructions =
+    offered.length > 0
+      ? ` To have an accepted approval remembered, also pass persist as one of ${offered
+          .map((scope) => JSON.stringify(scope))
+          .join(", ")}; without it the approval is for this call only.`
+      : "";
   const deadlineInstructions = deadline
     ? ` Resume before ${deadline.expiresAt}; this approval window lasts ${formatTtlDuration(deadline.ttlMs)}.`
     : "";
-  const instructions = `${baseInstructions}${deadlineInstructions}`;
+  const instructions = `${baseInstructions}${persistInstructions}${deadlineInstructions}`;
 
   if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
@@ -237,7 +256,6 @@ export const formatPausedExecution = (
   // Terms the upstream attached to the approval. Stated plainly, because a
   // prompt whose schema is empty ("Allow X to access Y?") can still be
   // asking for a PERSISTENT grant, and the answer differs.
-  const meta = req.meta;
   if (meta !== undefined && Object.keys(meta).length > 0) {
     lines.push(`\nApproval terms:\n${JSON.stringify(meta, null, 2)}`);
   }
@@ -798,6 +816,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     yield* Deferred.succeed(paused.response, {
       action: response.action as typeof ElicitationResponse.Type.action,
       content: response.content,
+      ...(response.meta === undefined ? {} : { meta: response.meta }),
     });
 
     const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(

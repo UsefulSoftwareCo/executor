@@ -197,9 +197,11 @@ const toolFile = (input: {
 /** Build an engine whose execute triggers one elicitation and returns the handler's result. */
 const makeElicitingEngine = (
   request: FormElicitation | UrlElicitation,
-  formatResult: (response: { action: string; content?: Record<string, unknown> }) => unknown = (
-    r,
-  ) => r.action,
+  formatResult: (response: {
+    action: string;
+    content?: Record<string, unknown>;
+    meta?: { readonly persist?: string };
+  }) => unknown = (r) => r.action,
 ): ExecutionEngine =>
   makeStubEngine({
     execute: (_code, { onElicitation }) =>
@@ -1647,6 +1649,88 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
         const interaction = structured?.interaction as Record<string, unknown>;
         expect(interaction?.kind).toBe("url");
         expect(interaction?.url).toBe("https://auth.example.com/callback");
+      },
+      { elicitationMode: { mode: "model" } },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval terms — the request's ride out as `_meta`, the answer's ride back
+// ---------------------------------------------------------------------------
+
+describe("MCP host server — approval terms", () => {
+  const appApproval = FormElicitation.make({
+    message: 'Allow Computer Use to use "Finder"?',
+    requestedSchema: {},
+    meta: { persist: ["session", "always"], connector_name: "Computer Use" },
+  });
+
+  // The engine hands the response back as the execution's result, so the
+  // structured output carries it verbatim.
+  const responseOf = (structuredContent: unknown): unknown =>
+    (structuredContent as { readonly result: unknown }).result;
+
+  it("native mode shows the client the offered scopes and returns the one it chose", async () => {
+    const engine = makeElicitingEngine(appApproval, (r) => r);
+    let seen: unknown;
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      client.setRequestHandler(ElicitRequestSchema, async (request) => {
+        seen = request.params._meta;
+        return { action: "accept" as const, content: {}, _meta: { persist: "always" } };
+      });
+
+      const result = await client.callTool({ name: "execute", arguments: { code: "finder" } });
+      expect(seen).toEqual({ persist: ["session", "always"], connector_name: "Computer Use" });
+      expect(responseOf(result.structuredContent)).toEqual({
+        action: "accept",
+        content: {},
+        meta: { persist: "always" },
+      });
+    });
+  });
+
+  it("native mode invents no terms when the client states none", async () => {
+    const engine = makeElicitingEngine(appApproval, (r) => r);
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      client.setRequestHandler(ElicitRequestSchema, async () => ({
+        action: "accept" as const,
+        content: {},
+      }));
+
+      const result = await client.callTool({ name: "execute", arguments: { code: "finder" } });
+      expect(responseOf(result.structuredContent)).toEqual({ action: "accept", content: {} });
+    });
+  });
+
+  it("model mode passes the resume tool's persist choice to the engine", async () => {
+    const received: unknown[] = [];
+    const engine = makeStubEngine({
+      resume: (_id, response) =>
+        Effect.sync(() => {
+          received.push(response);
+          return { status: "completed", result: { result: "ok" } };
+        }),
+    });
+
+    await withClient(
+      engine,
+      NO_CAPS,
+      async (client) => {
+        await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_1", action: "accept", persist: "session" },
+        });
+        await client.callTool({
+          name: "resume",
+          arguments: { executionId: "exec_2", action: "accept" },
+        });
+        expect(received).toEqual([
+          { action: "accept", content: undefined, meta: { persist: "session" } },
+          { action: "accept", content: undefined },
+        ]);
       },
       { elicitationMode: { mode: "model" } },
     );

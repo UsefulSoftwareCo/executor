@@ -110,13 +110,22 @@ export const approvalUrlForRequest = (
 export const ResumeResponsePayload = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  persist: Schema.optional(Schema.String),
 });
 
 const decodeResumeResponsePayload = Schema.decodeUnknownOption(ResumeResponsePayload);
 
 /** Decode an untrusted resume payload, or `null` if it doesn't match the contract. */
-export const decodeResumeResponse = (raw: unknown): ResumeResponse | null =>
-  Option.getOrNull(decodeResumeResponsePayload(raw));
+export const decodeResumeResponse = (raw: unknown): ResumeResponse | null => {
+  const decoded = decodeResumeResponsePayload(raw);
+  if (Option.isNone(decoded)) return null;
+  const { action, content, persist } = decoded.value;
+  return {
+    action,
+    ...(content === undefined ? {} : { content }),
+    ...(action === "accept" && persist !== undefined ? { meta: { persist } } : {}),
+  };
+};
 
 const ACKNOWLEDGEMENT_TEXT = {
   accept: "I've approved it",

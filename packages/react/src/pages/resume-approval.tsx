@@ -5,11 +5,15 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { Check, ExternalLink, Loader2, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { offeredPersistence } from "@executor-js/sdk";
+
 import { pausedExecutionAtom, resumeExecution } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
 import { type ElicitationAction, useElicitationApproval } from "../components/elicitation-approval";
+import { Label } from "../components/label";
+import { NativeSelect, NativeSelectOption } from "../components/native-select";
 import { Skeleton } from "../components/skeleton";
 
 type PausedExecutionInfo = { readonly text: string; readonly structured: unknown };
@@ -52,6 +56,16 @@ type PausedInteractionView = {
   readonly url: string | null;
   readonly requestedSchema: unknown;
   readonly toolId: string | null;
+  /** Scopes the upstream offers to remember an approval for; empty when
+   *  accepting is one-time and there is nothing to choose. */
+  readonly offeredPersistence: readonly string[];
+};
+
+/** Labels for the persistence scopes Codex plugins use. An unfamiliar scope
+ *  is shown as the upstream spelled it rather than hidden. */
+const persistenceLabel: Record<string, string> = {
+  session: "For this session",
+  always: "Always",
 };
 
 const encodeJsonPreview = Schema.encodeUnknownOption(Schema.UnknownFromJsonString);
@@ -63,6 +77,7 @@ const PausedInteractionInfo = Schema.Struct({
   url: Schema.optional(Schema.String),
   requestedSchema: Schema.optional(Schema.Unknown),
   toolId: Schema.optional(Schema.String),
+  meta: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 const PausedStructured = Schema.Struct({
   executionId: Schema.optional(Schema.String),
@@ -111,6 +126,7 @@ const interactionFromPausedInfo = (paused: PausedExecutionInfo): PausedInteracti
     url: interaction.url ?? null,
     requestedSchema: interaction.requestedSchema,
     toolId: interaction.toolId ?? null,
+    offeredPersistence: offeredPersistence(interaction.meta),
   };
 };
 
@@ -122,10 +138,18 @@ export function ResumeApprovalPage(props: { executionId: string }) {
   const doResume = useAtomSet(resumeExecution, { mode: "promiseExit" });
 
   const resume = useCallback(
-    (executionId: string, action: ElicitationAction, content?: Record<string, unknown>) =>
+    (
+      executionId: string,
+      action: ElicitationAction,
+      content?: Record<string, unknown>,
+      persist?: string,
+    ) =>
       doResume({
         params: { executionId },
-        payload: action === "accept" ? { action, content: content ?? {} } : { action },
+        payload:
+          action === "accept"
+            ? { action, content: content ?? {}, ...(persist === undefined ? {} : { persist }) }
+            : { action },
       }),
     [doResume],
   );
@@ -140,6 +164,7 @@ export function ResumeApprovalPageView(props: {
     executionId: string,
     action: ElicitationAction,
     content?: Record<string, unknown>,
+    persist?: string,
   ) => Promise<Exit.Exit<ResumeExecutionResult, unknown>>;
   unavailableMessage?: string;
 }) {
@@ -147,6 +172,9 @@ export function ResumeApprovalPageView(props: {
   const [status, setStatus] = useState<ResumeStatus>({ state: "idle" });
   const [currentExecutionId, setCurrentExecutionId] = useState(executionId);
   const [nextPaused, setNextPaused] = useState<PausedExecutionInfo | null>(null);
+  // "" is the one-time approval; anything else is a scope the upstream
+  // offered. Reset with the execution, since the next pause may offer none.
+  const [persist, setPersist] = useState("");
   const displayedPaused = nextPaused ?? (AsyncResult.isSuccess(paused) ? paused.value : null);
   const approval = useElicitationApproval(requestedSchemaFromPausedInfo(displayedPaused));
   const interaction = displayedPaused ? interactionFromPausedInfo(displayedPaused) : null;
@@ -154,6 +182,7 @@ export function ResumeApprovalPageView(props: {
   useEffect(() => {
     setCurrentExecutionId(executionId);
     setNextPaused(null);
+    setPersist("");
     setStatus({ state: "idle" });
   }, [executionId]);
 
@@ -171,7 +200,12 @@ export function ResumeApprovalPageView(props: {
       if (content === null) return;
 
       setStatus({ state: "submitting", action });
-      const exit = await resume(currentExecutionId, action, content);
+      const exit = await resume(
+        currentExecutionId,
+        action,
+        content,
+        action === "accept" && persist !== "" ? persist : undefined,
+      );
 
       if (Exit.isFailure(exit)) {
         trackEvent("resume_approval_submitted", {
@@ -208,6 +242,7 @@ export function ResumeApprovalPageView(props: {
         });
         setCurrentExecutionId(nextExecutionId);
         setNextPaused({ text: exit.value.text, structured: exit.value.structured });
+        setPersist("");
         setStatus({ state: "idle" });
         return;
       }
@@ -224,7 +259,7 @@ export function ResumeApprovalPageView(props: {
         text: exit.value.text || "The paused execution has been resumed.",
       });
     },
-    [approval, currentExecutionId, interaction, resume],
+    [approval, currentExecutionId, interaction, persist, resume],
   );
 
   const busy = status.state === "submitting";
@@ -254,7 +289,12 @@ export function ResumeApprovalPageView(props: {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {nextPaused ? (
-            <PendingRequestDetails interaction={interaction} approvalFields={approval.fields} />
+            <PendingRequestDetails
+              interaction={interaction}
+              approvalFields={approval.fields}
+              persist={persist}
+              onPersistChange={setPersist}
+            />
           ) : (
             AsyncResult.match(paused, {
               onInitial: () => (
@@ -271,7 +311,12 @@ export function ResumeApprovalPageView(props: {
                 </div>
               ),
               onSuccess: () => (
-                <PendingRequestDetails interaction={interaction} approvalFields={approval.fields} />
+                <PendingRequestDetails
+                  interaction={interaction}
+                  approvalFields={approval.fields}
+                  persist={persist}
+                  onPersistChange={setPersist}
+                />
               ),
             })
           )}
@@ -355,9 +400,13 @@ export function ResumeApprovalPageView(props: {
 function PendingRequestDetails({
   interaction,
   approvalFields,
+  persist,
+  onPersistChange,
 }: {
   interaction: PausedInteractionView | null;
   approvalFields: ReactNode;
+  persist: string;
+  onPersistChange: (persist: string) => void;
 }) {
   if (!interaction) {
     return <div className="text-sm text-muted-foreground">No pending request details found.</div>;
@@ -401,6 +450,24 @@ function PendingRequestDetails({
 
       {approvalFields && (
         <div className="rounded-md border border-border bg-muted/30 p-3">{approvalFields}</div>
+      )}
+
+      {interaction.offeredPersistence.length > 0 && (
+        <div className="space-y-1.5">
+          <Label htmlFor="resume-approval-persist">Remember this approval</Label>
+          <NativeSelect
+            id="resume-approval-persist"
+            value={persist}
+            onChange={(event) => onPersistChange(event.target.value)}
+          >
+            <NativeSelectOption value="">Just this once</NativeSelectOption>
+            {interaction.offeredPersistence.map((scope) => (
+              <NativeSelectOption key={scope} value={scope}>
+                {persistenceLabel[scope] ?? scope}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </div>
       )}
     </div>
   );

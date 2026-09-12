@@ -704,6 +704,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               {
                 action: payload.action,
                 content: payload.content as Record<string, unknown> | undefined,
+                ...(payload.action === "accept" && payload.persist !== undefined
+                  ? { meta: { persist: payload.persist } }
+                  : {}),
               },
             ),
           );

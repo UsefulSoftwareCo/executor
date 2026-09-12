@@ -44,6 +44,10 @@ const ExecuteResponse = Schema.Union([CompletedResult, PausedResult]);
 const ResumeRequest = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Unknown),
+  /** How long an accepted approval lasts, when the paused interaction's
+   *  terms offer a choice (`interaction.meta.persist` lists the scopes).
+   *  Omitted, the approval is for this call only. */
+  persist: Schema.optional(Schema.String),
 });
 
 const ResumeResponse = Schema.Union([CompletedResult, PausedResult]);

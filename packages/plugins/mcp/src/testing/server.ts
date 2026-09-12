@@ -538,6 +538,37 @@ export const makeElicitationMcpServer = () => {
   );
 
   server.registerTool(
+    "remembered_echo",
+    {
+      description: "Asks for approval whose terms offer to remember it",
+      inputSchema: { value: z.string() },
+    },
+    async ({ value }: { value: string }) => {
+      // Shaped like Codex Computer Use's app approval: an empty schema, and
+      // the persistence scopes on offer in `_meta`. The answer's own
+      // `_meta.persist` is what the server would remember.
+      const response = await server.server.elicitInput({
+        mode: "form",
+        message: `Allow the echo of "${value}"?`,
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { persist: ["session", "always"] },
+      });
+      if (response.action !== "accept") {
+        return { content: [{ type: "text" as const, text: `denied:${value}` }] };
+      }
+      const persist = response._meta?.["persist"];
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `approved:${value}:${typeof persist === "string" ? persist : "once"}`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
     "simple_echo",
     {
       description: "Echoes a value without elicitation",

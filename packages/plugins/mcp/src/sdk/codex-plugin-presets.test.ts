@@ -75,8 +75,18 @@ describe("approval terms", () => {
     ).toEqual({ meta: { persist: "always" } });
   });
 
-  it("ignores non-string values and contributes nothing when no term applies", () => {
+  it("keeps the scopes an upstream OFFERS, not just the one it states", () => {
+    // Computer Use leaves the lifetime of an accept to the answer. Without
+    // the list, the approver cannot know a bare accept is one-time, nor
+    // which scopes it may answer with.
+    expect(approvalTerms({ persist: ["session", "always"], connector_id: "computer-use" })).toEqual(
+      { meta: { persist: ["session", "always"], connector_id: "computer-use" } },
+    );
+  });
+
+  it("ignores non-term values and contributes nothing when no term applies", () => {
     expect(approvalTerms({ persist: { always: true }, origin: 42 })).toEqual({});
+    expect(approvalTerms({ persist: ["session", 7] })).toEqual({});
     expect(approvalTerms({ progressToken: "tok" })).toEqual({});
     expect(approvalTerms(undefined)).toEqual({});
   });

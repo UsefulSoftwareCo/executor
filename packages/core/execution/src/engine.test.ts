@@ -279,6 +279,34 @@ describe("formatPausedExecution approval terms", () => {
     });
   });
 
+  it("says how to answer when the terms leave the approval's lifetime to the caller", () => {
+    // Computer Use's app approval: a bare accept is one-time and the same
+    // prompt returns on the next call, so the caller has to be told the
+    // scopes on offer and how to pick one.
+    const result = formatPausedExecution(
+      paused(
+        FormElicitation.make({
+          message: 'Allow Computer Use to use "Finder"?',
+          requestedSchema: {},
+          meta: { persist: ["session", "always"], connector_name: "Computer Use" },
+        }),
+      ),
+    );
+
+    const interaction = result.structured["interaction"] as {
+      readonly meta?: unknown;
+      readonly instructions: string;
+    };
+    expect(interaction.meta).toEqual({
+      persist: ["session", "always"],
+      connector_name: "Computer Use",
+    });
+    expect(interaction.instructions).toContain(
+      'pass persist as one of "session", "always"; without it the approval is for this call only',
+    );
+    expect(result.text).toContain(interaction.instructions);
+  });
+
   it("says nothing about terms when the upstream attached none", () => {
     const result = formatPausedExecution(
       paused(FormElicitation.make({ message: "Proceed?", requestedSchema: {} })),

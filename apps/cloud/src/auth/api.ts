@@ -115,6 +115,7 @@ const McpSessionExecutionParams = {
 const ResumeMcpExecutionBody = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Unknown),
+  persist: Schema.optional(Schema.String),
 });
 
 const McpPausedExecutionResponse = Schema.Struct({

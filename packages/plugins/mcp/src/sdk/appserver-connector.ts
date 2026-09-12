@@ -159,6 +159,7 @@ const decodeElicitResult = Schema.decodeUnknownOption(
   Schema.Struct({
     action: Schema.Literals(["accept", "decline", "cancel"]),
     content: Schema.optional(Schema.Unknown),
+    _meta: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
   }),
 );
 
@@ -708,12 +709,19 @@ class AppServerClientTransport implements Transport {
     const decoded =
       "result" in message ? Option.getOrUndefined(decodeElicitResult(message.result)) : undefined;
     // An error or unreadable answer cancels: never fabricate an approval.
+    //
+    // The answer's `_meta` goes down with it: that is where Codex reads the
+    // terms of an accept. Computer Use's app approval is the case — its
+    // request OFFERS `persist: ["session", "always"]`, and only an answer
+    // that names one is remembered. Dropping it here turned every accept
+    // into a one-time approval, so the same app prompted on every call.
     const result =
       decoded === undefined
         ? { action: "cancel" }
         : {
             action: decoded.action,
             ...(decoded.content === undefined ? {} : { content: decoded.content }),
+            ...(decoded._meta == null ? {} : { _meta: decoded._meta }),
           };
     this.#sendDownstream({ jsonrpc: "2.0", id: downstreamId, result });
   }
