@@ -91,11 +91,20 @@ describe("classifyDurableObjectError", () => {
     ).toEqual({ kind: "cpu_limit", disposition: "transient" });
   });
 
-  // The memory-limit reset is the CPU limit's sibling and is deliberately NOT
-  // classified: the runtime names the application as the cause (un-awaited
-  // writes, an oversized read), so a retry reproduces it. It has to keep being
-  // rethrown and reported rather than disappearing into a 503.
-  it("refuses to classify the sibling memory-limit reset as retryable", () => {
+  it("reads a plain memory-limit reset as transient", () => {
+    expect(
+      classifyDurableObjectError(
+        new Error("Durable Object's isolate exceeded its memory limit and was reset."),
+      ),
+    ).toEqual({ kind: "memory_limit", disposition: "transient" });
+  });
+
+  // The storage-cache variant shares the "exceeded its memory limit" phrase but
+  // is a USER error the runtime names the cause of (un-awaited writes, an
+  // oversized read), so a retry reproduces it. It has to keep being rethrown and
+  // reported rather than disappearing into a 503 — the qualifier is the only
+  // thing separating it from the platform reset above.
+  it("refuses to classify the storage-cache memory-limit variant as retryable", () => {
     expect(
       classifyDurableObjectError(
         new Error(
