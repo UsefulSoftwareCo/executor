@@ -305,6 +305,11 @@ describe("oauth.start / oauth.complete", () => {
           plugins: [memoryCredentialsPlugin(), slowOAuthPlugin] as const,
           waitUntil: (promise) => keptAlive.push(promise),
         });
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(releaseDiscovery, undefined).pipe(
+            Effect.andThen(Effect.promise(() => Promise.all(keptAlive))),
+          ),
+        );
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
