@@ -13,6 +13,7 @@ describe("skills registry", () => {
     expect(EXECUTE_SKILL.body).toContain(
       "Do not use `fetch` — all API calls go through `tools.*`.",
     );
+    expect(EXECUTE_SKILL.body).toContain("read `result.data.connections`");
   });
 
   it("finds a skill by exact name and misses unknown names", () => {
