@@ -181,7 +181,15 @@ const makeTestPlugin = (config: {
             description: spec.description,
             inputSchema: spec.inputJsonSchema,
             outputSchema: spec.outputJsonSchema,
-            ...(spec.annotations ? { annotations: spec.annotations } : {}),
+            ...(spec.annotations
+              ? {
+                  annotations: {
+                    ...spec.annotations,
+                    upstreamToolName: "private-provider-tool",
+                    _meta: { privateMarker: "not-public" },
+                  },
+                }
+              : {}),
           }),
         ),
       }),
@@ -244,6 +252,7 @@ const crmPlugin = makeTestPlugin({
       annotations: {
         requiresApproval: true,
         approvalDescription: "Creates a contact record in the CRM",
+        mayElicit: false,
       },
       handler: () => Effect.succeed({ id: "contact_1" }),
     },
@@ -893,6 +902,7 @@ describe("tool discovery", () => {
       expect(annotated.annotations).toEqual({
         requiresApproval: true,
         approvalDescription: "Creates a contact record in the CRM",
+        mayElicit: false,
       });
 
       const plain = yield* describeTool(executor, "crm.org.main.listContacts");
