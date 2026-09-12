@@ -37,17 +37,10 @@ describe("toolCanAppearInToolkit", () => {
     name: "repos.list",
   };
 
-  it("allows all tools when showOwnerLabels is false (single-player / desktop host)", () => {
-    expect(toolCanAppearInToolkit(sampleOrgToolkit, userTool, false)).toBe(true);
-    expect(toolCanAppearInToolkit(sampleOrgToolkit, orgTool, false)).toBe(true);
-    expect(toolCanAppearInToolkit(sampleUserToolkit, userTool, false)).toBe(true);
-    expect(toolCanAppearInToolkit(sampleUserToolkit, orgTool, false)).toBe(true);
-  });
-
-  it("hides personal tools in org toolkits when showOwnerLabels is true (multiplayer / cloud host)", () => {
-    expect(toolCanAppearInToolkit(sampleOrgToolkit, userTool, true)).toBe(false);
-    expect(toolCanAppearInToolkit(sampleOrgToolkit, orgTool, true)).toBe(true);
-    expect(toolCanAppearInToolkit(sampleUserToolkit, userTool, true)).toBe(true);
-    expect(toolCanAppearInToolkit(sampleUserToolkit, orgTool, true)).toBe(true);
+  it("hides personal tools in org toolkits regardless of display settings", () => {
+    expect(toolCanAppearInToolkit(sampleOrgToolkit, userTool)).toBe(false);
+    expect(toolCanAppearInToolkit(sampleOrgToolkit, orgTool)).toBe(true);
+    expect(toolCanAppearInToolkit(sampleUserToolkit, userTool)).toBe(true);
+    expect(toolCanAppearInToolkit(sampleUserToolkit, orgTool)).toBe(true);
   });
 });

@@ -2,4 +2,4 @@
 "@executor-js/plugin-toolkits": patch
 ---
 
-Allow toolkits on single-player/desktop hosts to display and manage personal connections without multi-tenant workspace isolation restrictions.
+Create personal toolkits by default on desktop and local hosts so new toolkits can use personal connections. Existing workspace toolkits retain their ownership restrictions.
