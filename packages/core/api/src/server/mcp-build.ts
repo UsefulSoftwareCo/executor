@@ -48,7 +48,10 @@ export const makeMcpBuildServer =
         principal.accountId,
         principal.organizationId,
         principal.organizationName,
-        { mcpResource: options?.resource },
+        {
+          mcpResource: options?.resource,
+          orgWrites: "request",
+        },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));
       // Read inside the provided boundary: `webBaseUrl` is a host seam, and
       // hosts that can't know their public URL at boot leave it unset — in

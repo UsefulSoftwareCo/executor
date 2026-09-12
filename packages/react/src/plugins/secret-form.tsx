@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAtomSet } from "@effect/atom-react";
+import { Option, Schema } from "effect";
 import * as Exit from "effect/Exit";
 
 import { createConnection } from "../api/atoms";
@@ -15,6 +16,7 @@ import { connectionWriteKeys } from "../api/reactivity-keys";
 import {
   AuthTemplateSlug,
   ConnectionName,
+  InternalError,
   IntegrationSlug,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -72,6 +74,20 @@ interface SecretFormContextValue {
 }
 
 const SecretFormContext = createContext<SecretFormContextValue | null>(null);
+const isInternalError = Schema.is(InternalError);
+
+/** Project a connection-create failure into safe, actionable form copy. */
+export const credentialSaveErrorMessage = (exit: Exit.Exit<unknown, unknown>): string =>
+  Option.match(Exit.findErrorOption(exit), {
+    onNone: () => "Failed to save credential",
+    onSome: (error) => {
+      if (!isInternalError(error) || error.retryable !== true) return "Failed to save credential";
+      const traceId = error.traceId.trim();
+      return traceId.length > 0
+        ? `The credential save didn't complete. Try again. Reference ID: ${traceId}`
+        : "The credential save didn't complete. Try again.";
+    },
+  });
 
 function useSecretForm(): SecretFormContextValue {
   const ctx = use(SecretFormContext);
@@ -165,7 +181,7 @@ function SecretFormProvider(props: SecretFormProviderProps) {
         ...s,
         status: {
           kind: "error",
-          message: "Failed to save credential",
+          message: credentialSaveErrorMessage(exit),
         },
       }));
       return;

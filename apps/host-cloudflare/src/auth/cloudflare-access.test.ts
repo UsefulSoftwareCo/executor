@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
+
 import type { CloudflareConfig } from "../config";
 import { principalFromAccessClaims } from "./cloudflare-access";
 
@@ -34,6 +36,9 @@ describe("principalFromAccessClaims", () => {
   it("grants admin when the email is in the allowlist", () => {
     const p = principalFromAccessClaims({ sub: "u", email: "ADMIN@example.com" }, config);
     expect(p.roles).toContain("admin");
+    expect(p.orgRoleModel).toBe("organization");
+    expect(p.orgRole).toBe("admin");
+    expect(orgWriteAccessForPrincipal(p)).toBe("allowed");
   });
 
   it("gives a SERVICE TOKEN (common_name, no email/sub) a stable identity", () => {
@@ -49,5 +54,8 @@ describe("principalFromAccessClaims", () => {
   it("defaults to member when there are no groups and no admin match", () => {
     const p = principalFromAccessClaims({ sub: "u", email: "nobody@other.com" }, config);
     expect(p.roles).toEqual(["member"]);
+    expect(p.orgRoleModel).toBe("organization");
+    expect(p.orgRole).toBe("member");
+    expect(orgWriteAccessForPrincipal(p)).toBe("denied");
   });
 });

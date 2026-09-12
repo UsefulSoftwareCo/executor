@@ -147,6 +147,7 @@ jobs:
       # triggers publish-executor-package.yml. A second workflow_dispatch path
       # races a duplicate publish for the same release.
 
-      # Desktop build downloads CLI binaries from the release, so it must
-      # run after CLI publish completes. Trigger it from the CLI workflow
-      # or manually via: gh workflow run publish-desktop.yml -f tag=vX.Y.Z
+      # Desktop compiles its own sidecar from the tag's source; it needs only
+      # the tag and the staged draft release, so publish-executor-package.yml
+      # triggers it as soon as those exist. Manual repair:
+      # gh workflow run publish-desktop.yml -f tag=vX.Y.Z

@@ -287,7 +287,12 @@ export const createMcpRequestHandler = (
       const response = await readResumeResponse(request);
       if (!response) return json({ error: "Invalid approval response" }, 400);
 
-      await Effect.runPromise(approvals.recordResponse(executionId, response));
+      await Effect.runPromise(
+        approvals.recordResponse(executionId, {
+          response,
+          orgWriteAccess: "allowed",
+        }),
+      );
       return json(resumeApprovalResult(executionId, response));
     },
 

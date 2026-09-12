@@ -312,7 +312,7 @@ describe("exchangeAuthorizationCode", () => {
         yield* exchangeAuthorizationCode({
           tokenUrl,
           clientId: "cid",
-          clientSecret: "csecret",
+          clientSecret: "c-secret",
           redirectUrl: "https://app.example.com/cb",
           codeVerifier: "verifier",
           code: "abc",
@@ -321,7 +321,7 @@ describe("exchangeAuthorizationCode", () => {
         });
         const call = (yield* calls)[0]!;
         expect(call.headers["content-type"]).toBe("application/json");
-        expect(call.headers["authorization"]).toBe("Basic Y2lkOmNzZWNyZXQ=");
+        expect(call.headers["authorization"]).toBe("Basic Y2lkOmMlMkRzZWNyZXQ=");
         expect(call.jsonBody).toEqual({
           grant_type: "authorization_code",
           code: "abc",
@@ -811,14 +811,37 @@ describe("exchangeAuthorizationCode", () => {
         yield* exchangeAuthorizationCode({
           tokenUrl,
           clientId: "cid",
-          clientSecret: "csecret",
+          clientSecret: "c-secret",
           redirectUrl: "https://app.example.com/cb",
           codeVerifier: "verifier",
           code: "abc",
           clientAuth: "basic",
         });
         const call = (yield* calls)[0]!;
-        const expected = `Basic ${Buffer.from("cid:csecret").toString("base64")}`;
+        const expected = `Basic ${Buffer.from("cid:c%2Dsecret").toString("base64")}`;
+        expect(call.headers["authorization"]).toBe(expected);
+        expect(call.body.has("client_id")).toBe(false);
+        expect(call.body.has("client_secret")).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("uses literal Basic credentials when clientAuth=basic_raw", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        const clientId = "client-id";
+        const clientSecret = "secret-_~.!*'()";
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId,
+          clientSecret,
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          clientAuth: "basic_raw",
+        });
+        const call = (yield* calls)[0]!;
+        const expected = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
         expect(call.headers["authorization"]).toBe(expected);
         expect(call.body.has("client_id")).toBe(false);
         expect(call.body.has("client_secret")).toBe(false);

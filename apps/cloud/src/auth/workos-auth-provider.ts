@@ -154,6 +154,8 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
       name: null,
       avatarUrl: null,
       roles: [],
+      orgRoleModel: "organization",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 
@@ -253,6 +255,8 @@ export const resolveBearerAuth = (
       name: null,
       avatarUrl: null,
       roles: [],
+      orgRoleModel: "organization",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 
@@ -326,6 +330,8 @@ export const resolveSessionPrincipal = (request: Request) =>
       name: sealedSessionDisplayName(session),
       avatarUrl: session.avatarUrl ?? null,
       roles: [],
+      orgRoleModel: "organization",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 

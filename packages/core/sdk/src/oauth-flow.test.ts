@@ -264,6 +264,131 @@ describe("oauth.start / oauth.complete", () => {
       ),
   );
 
+  it.effect("persists HTTP Basic client auth for code exchange and refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          defaultTokenEndpointAuthMethod: "client_secret_basic",
+        });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          tokenEndpointAuthMethod: "basic",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("basic-client"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "basicClient"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        const refreshed = (yield* executor.execute(
+          ToolAddress.make("tools.acme.org.basicClient.whoami"),
+          {},
+        )) as { token: string };
+        expect(refreshed.token).toMatch(/^at_/);
+
+        const tokenRequests = (yield* server.requests).filter(
+          (request) => request.path === "/token" && request.method === "POST",
+        );
+        expect(tokenRequests).toHaveLength(2);
+        for (const request of tokenRequests) {
+          expect(request.headers.authorization).toMatch(/^Basic /);
+          expect(request.body).not.toContain("client_secret=");
+        }
+        expect(tokenRequests[0]?.body).toContain("grant_type=authorization_code");
+        expect(tokenRequests[1]?.body).toContain("grant_type=refresh_token");
+      }),
+    ),
+  );
+
+  it.effect("persists raw HTTP Basic credentials for code exchange and refresh", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clientId = "test-client";
+        const clientSecret = "test-secret";
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          defaultTokenEndpointAuthMethod: "client_secret_basic",
+        });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId,
+          clientSecret,
+          tokenEndpointAuthMethod: "basic_raw",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("raw-basic-client"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "rawBasicClient"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        yield* executor.execute(ToolAddress.make("tools.acme.org.rawBasicClient.whoami"), {});
+
+        const tokenRequests = (yield* server.requests).filter(
+          (request) => request.path === "/token" && request.method === "POST",
+        );
+        expect(tokenRequests).toHaveLength(2);
+        const expectedAuthorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+        for (const request of tokenRequests) {
+          expect(request.headers.authorization).toBe(expectedAuthorization);
+          expect(request.body).not.toContain("client_secret=");
+        }
+        expect(tokenRequests[0]?.body).toContain("grant_type=authorization_code");
+        expect(tokenRequests[1]?.body).toContain("grant_type=refresh_token");
+      }),
+    ),
+  );
+
   it.effect("carries the URL org selector in provider state without changing redirect_uri", () =>
     Effect.scoped(
       Effect.gen(function* () {

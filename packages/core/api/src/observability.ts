@@ -7,8 +7,8 @@
 // and can decide what to do. Here, at the HTTP edge, we define:
 //
 //   1. `InternalError` — public opaque 500 schema, narrow by design
-//      (only `traceId`), so no internal cause/message/stack ever
-//      crosses the wire.
+//      (`traceId` plus an optional literal retry signal), so no internal
+//      cause/message/stack ever crosses the wire.
 //   2. `ErrorCapture` — pluggable service the host wires up (Sentry in
 //      the cloud Worker, console in the CLI, in-memory in tests) to
 //      record causes and return correlation ids. Optional; absent →
@@ -71,9 +71,11 @@ const resolveCapture = Effect.serviceOption(ErrorCapture).pipe(
 );
 
 /**
- * HTTP-edge translator for `StorageFailure` on a single Effect. Two
+ * HTTP-edge translator for `StorageFailure` on a single Effect. Four
  * cases:
  *
+ *   - `CredentialWriteIncompleteError` — a committed executor-owned write did
+ *     not finish. Capture it and expose only `retryable: true` plus trace id.
  *   - `StorageError` — known backend failure. Capture the cause via
  *     `ErrorCapture`, fail with `InternalError({ traceId })`.
  *   - `StorageConnectionError` — the database connection failed, so the
@@ -96,6 +98,12 @@ export const capture = <A, E, R>(
   (eff as Effect.Effect<A, E | StorageFailure, R>).pipe(
     // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unique conflicts that reach the HTTP edge are unexpected defects captured by observabilityMiddleware
     Effect.catchTag("UniqueViolationError", (err) => Effect.die(err)),
+    Effect.catchTag("CredentialWriteIncompleteError", (err) =>
+      resolveCapture.pipe(
+        Effect.flatMap((c) => c.captureException(Cause.fail(err))),
+        Effect.flatMap((traceId) => Effect.fail(new InternalError({ traceId, retryable: true }))),
+      ),
+    ),
     Effect.catchTag("StorageError", (err) =>
       resolveCapture.pipe(
         Effect.flatMap((c) => c.captureException(Cause.fail(err))),

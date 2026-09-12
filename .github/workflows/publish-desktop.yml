@@ -13,6 +13,19 @@ on:
         description: Git tag to publish (e.g. v1.4.1)
         required: true
         type: string
+      dry_run:
+        description: Build all distributables but do not touch the GitHub release
+        required: false
+        default: false
+        type: boolean
+      executor_run_id:
+        description: >-
+          Publish Executor run id for this tag. Set by the automatic trigger;
+          the promote gate waits for exactly this run. Leave empty for manual
+          dispatches.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -44,22 +57,22 @@ jobs:
           # smoke: run the compiled-sidecar smoke test on legs whose target
           # matches the runner (the mac x64 leg cross-compiles on an arm64
           # runner, so its binary can't be executed natively there).
-          - os: macos-latest
+          - os: blacksmith-6vcpu-macos-latest
             arch: arm64
             platform: mac
             bun-target: bun-darwin-arm64
             smoke: true
-          - os: macos-latest
+          - os: blacksmith-6vcpu-macos-latest
             arch: x64
             platform: mac
             bun-target: bun-darwin-x64
             smoke: false
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404
             arch: x64
             platform: linux
             bun-target: bun-linux-x64
             smoke: true
-          - os: windows-latest
+          - os: blacksmith-8vcpu-windows-2025
             arch: x64
             platform: win
             bun-target: bun-windows-x64
@@ -103,6 +116,11 @@ jobs:
         with:
           node-version: 24
 
+      # No package/electron caches here on purpose: on Blacksmith's NVMe
+      # runners a cold `bun install` (8-55s) is as fast as a cache
+      # restore + warm install, and bun.lock changes on every release
+      # (Version Packages), so each publish would pay the cache-save tail
+      # (~45s on the mac critical path) for nothing.
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -215,9 +233,14 @@ jobs:
 
   release:
     needs: build
+    # dry_run builds and uploads workflow artifacts but never touches the
+    # GitHub release — used to rehearse workflow changes against a real tag.
+    if: ${{ !inputs.dry_run }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
+      # Read Publish Executor run state for the promote gate below.
+      actions: read
 
     steps:
       - name: Checkout validation script
@@ -255,14 +278,61 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          while IFS= read -r file; do
-            echo "Uploading: $file"
-            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
-          done < <(find artifacts -type f \
+          # Parallel uploads; xargs exits non-zero if any single upload fails,
+          # which keeps the promote step below from running on a partial set.
+          find artifacts -type f \
             \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \
             -o -name "*.blockmap" \
-            -o -name "latest*.yml" \))
+            -o -name "latest*.yml" \) -print0 \
+            | xargs -0 -n1 -P8 -I{} sh -c \
+              'echo "Uploading: $1"; exec gh release upload "$RELEASE_TAG" "$1" --repo "$GITHUB_REPOSITORY" --clobber' _ {}
+
+      # A published release must imply the npm packages for this tag exist.
+      # Publish Executor triggers this workflow before its npm publishes (to
+      # overlap them with the desktop build) and hands over its own run id,
+      # so wait for exactly that run to conclude successfully before going
+      # public. A run-name search would fail open whenever the run fell
+      # outside the listing window, so only an explicitly empty run id (a
+      # manual dispatch) skips the gate — the operator owns the invariant
+      # then.
+      - name: Wait for executor package publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXECUTOR_RUN_ID: ${{ inputs.executor_run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXECUTOR_RUN_ID" ]; then
+            echo "No executor_run_id given (manual dispatch); skipping the publish gate."
+            exit 0
+          fi
+          deadline=$((SECONDS + 1200))
+          while :; do
+            run=$(gh run view "$EXECUTOR_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --json status,conclusion,url,displayTitle)
+            title=$(echo "$run" | jq -r .displayTitle)
+            if [ "$title" != "publish executor $RELEASE_TAG" ]; then
+              echo "Run $EXECUTOR_RUN_ID is '$title', not 'publish executor $RELEASE_TAG' — refusing to promote."
+              exit 1
+            fi
+            status=$(echo "$run" | jq -r .status)
+            if [ "$status" = "completed" ]; then
+              conclusion=$(echo "$run" | jq -r .conclusion)
+              if [ "$conclusion" = "success" ]; then
+                echo "Publish Executor succeeded."
+                break
+              fi
+              echo "Publish Executor concluded '$conclusion' — leaving the release in draft."
+              echo "$run" | jq -r .url
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Timed out waiting for Publish Executor — leaving the release in draft."
+              exit 1
+            fi
+            echo "Publish Executor status: $status; waiting..."
+            sleep 15
+          done
 
       # Flip draft → published only after every desktop asset is uploaded —
       # this is the atomic point where the new tag becomes "latest".

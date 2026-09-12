@@ -2,7 +2,7 @@ import type { Effect } from "effect";
 import { Schema } from "effect";
 
 import type { Connection } from "./connection";
-import type { UserActionableError } from "./errors";
+import type { OrgWriteDeniedError, UserActionableError } from "./errors";
 import type { StorageFailure } from "./fuma-runtime";
 import {
   type AuthTemplateSlug,
@@ -37,6 +37,28 @@ export type SubjectTokenType = typeof SubjectTokenTypeSchema.Type;
  *  every IdP to accept, so it is the only defensible default. */
 export const DEFAULT_SUBJECT_TOKEN_TYPE: SubjectTokenType =
   "urn:ietf:params:oauth:token-type:id_token";
+
+/** How a confidential OAuth client authenticates to its token endpoint. */
+export const TokenEndpointAuthMethodSchema = Schema.Literals([
+  "body",
+  "basic",
+  "basic_raw",
+]).annotate({
+  identifier: "TokenEndpointAuthMethod",
+  description:
+    "Transport for a confidential OAuth client secret: request body (client_secret_post), standards-based HTTP Basic (client_secret_basic), or raw HTTP Basic for providers that reject form-encoded credentials.",
+});
+export type TokenEndpointAuthMethod = typeof TokenEndpointAuthMethodSchema.Type;
+
+export const isTokenEndpointAuthMethod = (value: unknown): value is TokenEndpointAuthMethod =>
+  value === "body" || value === "basic" || value === "basic_raw";
+
+/** Decode a nullable stored value. `undefined` is the legacy/default body
+ *  method; `null` means the row contains an invalid non-null value. */
+export const parseStoredTokenEndpointAuthMethod = (
+  value: unknown,
+): TokenEndpointAuthMethod | undefined | null =>
+  value == null ? undefined : isTokenEndpointAuthMethod(value) ? value : null;
 
 /** Which registered OAuth app stands for an integration's enterprise identity
  *  provider, so a connect request can name it. Carries no assertion and no
@@ -112,6 +134,8 @@ export interface OAuthClient {
   /** The literal client secret. Stored out-of-band in the credential provider
    *  (vault item id), never inline. Empty string for public / PKCE clients. */
   readonly clientSecret: string;
+  /** Token endpoint client-auth transport. Omitted means client_secret_post. */
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   /** RFC 8707 Resource Indicator (MCP). Carried so the refresh request can keep
    *  the re-minted token bound to the same resource. Null/omitted otherwise. */
   readonly resource?: string | null;
@@ -201,8 +225,10 @@ export interface FirstPartyOAuthClientConfig {
    *  them. */
   readonly authorizationExtraParams?: Readonly<Record<string, string>>;
   /** Token endpoint client-auth transport. Omitted means
-   *  `client_secret_post`; `basic` sends the secret only in HTTP Basic auth. */
-  readonly tokenEndpointAuthMethod?: "body" | "basic";
+   *  `client_secret_post`; `basic` uses the RFC form-encoded HTTP Basic form;
+   *  `basic_raw` is an explicit compatibility mode for providers that require
+   *  the literal client id and secret before Base64 encoding. */
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   /** Token endpoint request encoding. OAuth defaults to URL-encoded form;
    *  providers such as Atlassian, ClickUp, and Notion require JSON. */
   readonly tokenRequestFormat?: "form" | "json";
@@ -217,6 +243,14 @@ export interface FirstPartyOAuthClientConfig {
    *  instead removes the config entry itself, which strands every existing
    *  connection on a client the host can no longer resolve. */
   readonly unlisted?: boolean;
+  /** Optional host policy for offering this app to the acting user. Evaluated
+   *  on each listing; false withholds the app without disrupting existing
+   *  connections. `unlisted: true` always withholds it. This controls discovery,
+   *  not authorization to resolve an already-known first-party client slug. */
+  readonly isListed?: (context: {
+    readonly userId: string | null;
+    readonly organizationId: string;
+  }) => Effect.Effect<boolean>;
   /** OAuth scopes this deployment permits the app to request. Omit to allow
    *  every scope declared by a matching integration. For declared scopes,
    *  start and completion fail unless every requested scope belongs to this
@@ -262,6 +296,8 @@ export interface OAuthClientSummary {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly clientId: string;
+  /** Omitted for legacy rows, which use client_secret_post. */
+  readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly origin: OAuthClientOrigin;
 }
 
@@ -473,12 +509,15 @@ export class OAuthSessionNotFoundError extends Schema.TaggedErrorClass<OAuthSess
 export interface OAuthService {
   readonly createClient: (
     input: CreateOAuthClientInput,
-  ) => Effect.Effect<OAuthClientSlug, StorageFailure>;
+  ) => Effect.Effect<OAuthClientSlug, OrgWriteDeniedError | StorageFailure>;
   /** Mint a client via RFC 7591 Dynamic Client Registration (no pre-shared
    *  client id/secret) and persist it as an owner-scoped `oauth_client`. */
   readonly registerDynamicClient: (
     input: RegisterDynamicClientInput,
-  ) => Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure>;
+  ) => Effect.Effect<
+    OAuthClientSlug,
+    OAuthRegisterDynamicError | OrgWriteDeniedError | StorageFailure
+  >;
   /** All registered clients visible to the caller (their org's shared clients +
    *  their own user clients), as metadata-only summaries — never the secret. */
   readonly listClients: () => Effect.Effect<readonly OAuthClientSummary[], StorageFailure>;
@@ -490,13 +529,16 @@ export interface OAuthService {
   readonly removeClient: (
     owner: Owner,
     slug: OAuthClientSlug,
-  ) => Effect.Effect<void, StorageFailure>;
+  ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly start: (
     input: OAuthStartInput,
-  ) => Effect.Effect<ConnectResult, OAuthStartError | StorageFailure>;
+  ) => Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure>;
   readonly complete: (
     input: OAuthCompleteInput,
-  ) => Effect.Effect<Connection, OAuthCompleteError | OAuthSessionNotFoundError | StorageFailure>;
+  ) => Effect.Effect<
+    Connection,
+    OAuthCompleteError | OAuthSessionNotFoundError | OrgWriteDeniedError | StorageFailure
+  >;
   readonly cancel: (state: OAuthState) => Effect.Effect<void, StorageFailure>;
   readonly probe: (
     input: OAuthProbeInput,

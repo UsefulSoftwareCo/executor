@@ -1,5 +1,30 @@
 @import "tailwindcss";
 
+/* Fonts: vendored and served with the app, never fetched from a third party.
+   Every host loads this stylesheet, so the faces are declared once here rather
+   than in each entry document. A self-hosted deployment may not be able to
+   reach Google Fonts at all; a synchronous stylesheet from there used to hold
+   the whole console blank until the request timed out. The bundler resolves
+   these url()s into content-hashed assets next to the rest of the build, and
+   `swap` means text paints in the system stack the instant the document does.
+   Variable faces cover every weight the console uses (300 to 700) in one file
+   each. Source: the `geist` npm package (SIL OFL, see fonts/LICENSE.txt). */
+@font-face {
+  font-family: "Geist";
+  src: url("./fonts/geist-sans.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/geist-mono.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @source "../**/*.{ts,tsx}";

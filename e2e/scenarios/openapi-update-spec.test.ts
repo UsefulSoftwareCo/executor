@@ -19,7 +19,8 @@ import {
 } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
-import { Api, Target } from "../src/services";
+import { Api, Mcp, Target } from "../src/services";
+import type { McpSession } from "../src/surfaces/mcp";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -98,15 +99,43 @@ const serveMutableSpec = (initial: string) =>
     (server) => Effect.sync(server.close),
   );
 
+const updateSpecCode = (slug: string) => `
+const updated = await tools.executor.openapi.updateSpec({
+  slug: ${JSON.stringify(slug)},
+});
+return updated.ok ? {
+  ok: true,
+  slug: updated.data.slug,
+  toolCount: updated.data.toolCount,
+  addedTools: updated.data.addedTools,
+  removedTools: updated.data.removedTools,
+} : { ok: false, error: updated.error };
+`;
+
+/** Run the agent tool and approve its catalog-changing action. */
+const executeJson = (session: McpSession, code: string) =>
+  Effect.gen(function* () {
+    let result = yield* session.call("execute", { code });
+    let guard = 0;
+    while (result.text.includes("executionId:") && guard < 10) {
+      result = yield* session.approvePaused(result.text);
+      guard += 1;
+    }
+    expect(result.ok, `execute completed (got: ${result.text.slice(0, 400)})`).toBe(true);
+    return JSON.parse(result.text) as Record<string, unknown>;
+  });
+
 scenario(
   "OpenAPI · updating the spec rebuilds tools without re-adding the integration",
   {},
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
+      const mcp = yield* Mcp;
       const { client } = yield* Api;
       const identity = yield* target.newIdentity();
       const apiClient = yield* client(api, identity);
+      const session = mcp.session(identity);
 
       const slug = `update-spec-${randomBytes(4).toString("hex")}`;
       const specServer = yield* serveMutableSpec(specV1);
@@ -154,10 +183,9 @@ scenario(
 
           // The upstream API ships v2: legacyOp is gone, listWidgets appears.
           specServer.setBody(specV2);
-          const updated = yield* apiClient.openapi.updateSpec({
-            params: { slug },
-            payload: {},
-          });
+          const updated = yield* executeJson(session, updateSpecCode(slug));
+
+          expect(updated.ok, "the agent update tool succeeded").toBe(true);
 
           expect(updated.addedTools, "the diff names the new tool").toEqual([
             "widgets.listWidgets",

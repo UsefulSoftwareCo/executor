@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
-import { MAX_SSE_AGE_MS, McpAgent } from "agents/mcp";
+import { MAX_SSE_AGE_MS, MCP_POST_RESPONSE_DEADLINE_MS, McpAgent } from "agents/mcp";
 import { Effect, Option, Schema } from "effect";
 
 import { SESSION_TIMEOUT_MS } from "./session-alarm-policy";
@@ -377,12 +377,17 @@ describe("agents SSE max-age rotation", () => {
     await expect(drained).resolves.toContain(": max-age rotation, reconnect\n\n");
   });
 
-  it("does not rotate an in-flight POST response past max age", async () => {
+  // Max-age rotation applies only to GET streams. A POST is bounded by its own,
+  // much shorter response deadline (MCP_POST_RESPONSE_DEADLINE_MS — see
+  // agents-post-stream-loss.test.ts), so max age is never reachable on one; this
+  // pins that rotation stays out of the way for as long as a POST may legitimately
+  // run.
+  it("does not rotate an in-flight POST response", async () => {
     const { response, ws } = await openPostSse();
     const drained = drainResponse(response);
 
     emitAgentEvent(ws, `event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n`);
-    await vi.advanceTimersByTimeAsync(MAX_SSE_AGE_MS + KEEPALIVE_INTERVAL_MS * 4);
+    await vi.advanceTimersByTimeAsync(MCP_POST_RESPONSE_DEADLINE_MS - KEEPALIVE_INTERVAL_MS);
     await flushMicrotasks();
 
     expect(ws.closeCode).toBeUndefined();

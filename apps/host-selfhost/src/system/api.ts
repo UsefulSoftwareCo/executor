@@ -7,8 +7,10 @@ import { Schema } from "effect";
 //   GET /api/health        readiness probe (used by the container healthcheck)
 //   GET /api/setup-status  whether the instance still needs first-run setup, so
 //                          the pre-login SPA can route a fresh operator to /setup
+//   GET /api/auth-config   which SSO sign-in providers are configured, so the
+//                          login page knows which provider buttons to render
 //
-// Both are deliberately unauthenticated and return only booleans/status — no
+// All are deliberately unauthenticated and return only booleans/status — no
 // sensitive data — so they can be read before anyone has signed in.
 // ---------------------------------------------------------------------------
 
@@ -21,6 +23,10 @@ export class SystemError extends Schema.TaggedErrorClass<SystemError>()(
 export const HealthResponse = Schema.Struct({ status: Schema.String });
 export const SetupStatusResponse = Schema.Struct({ needsSetup: Schema.Boolean });
 export const InviteStatusResponse = Schema.Struct({ valid: Schema.Boolean });
+// Provider ids + display names only — never credentials or allowlists.
+export const AuthConfigResponse = Schema.Struct({
+  ssoProviders: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+});
 
 const InviteStatusParams = { code: Schema.String };
 
@@ -34,6 +40,12 @@ export const SystemApi = HttpApiGroup.make("system")
   .add(
     HttpApiEndpoint.get("setupStatus", "/setup-status", {
       success: SetupStatusResponse,
+      error: [SystemError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("authConfig", "/auth-config", {
+      success: AuthConfigResponse,
       error: [SystemError],
     }),
   )

@@ -18,6 +18,16 @@ serveStdio(
       { description: "Add two numbers", inputSchema: z.object({ a: z.number(), b: z.number() }) },
       async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
     );
+    server.registerTool(
+      "read_env",
+      {
+        description: "Read an environment variable",
+        inputSchema: z.object({ name: z.string() }),
+      },
+      async ({ name }) => ({
+        content: [{ type: "text", text: process.env[name] ?? "" }],
+      }),
+    );
     return server;
   },
   { legacy: process.argv.includes("--legacy-reject") ? "reject" : "serve" },
