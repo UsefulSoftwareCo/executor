@@ -26,7 +26,7 @@ import {
 } from "@executor-js/api/server";
 
 import { AutumnService } from "../extensions/billing/service";
-import { hasPaidOrganizationSubscription } from "../extensions/billing/plans";
+import { hasNonFreeOrganizationSubscription } from "../extensions/billing/plans";
 import type { DbService } from "../db/db";
 import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
 import { makeExecutionLimitGate } from "./execution-gate";
@@ -35,8 +35,8 @@ import { withExecutionUsageTracking } from "./execution-usage";
 
 // Usage-metering decorator bound to the billing service, plus the two
 // pre-execution guards this layer owns, ordered cheapest first:
-//   1. rate-limit backstop (counter DO; free-tier abuse only — paid orgs are
-//      exempt via the subscription lookup below)
+//   1. rate-limit backstop (counter DO; free-tier abuse only — any org on a
+//      plan other than Free is exempt via the subscription lookup below)
 //   2. execution balance gate (Autumn check, cached 60s, fails open)
 //   3. usage tracking — fire-and-forget (`Effect.runFork`) so the billing
 //      call can't stall a user-facing execution.
@@ -50,16 +50,17 @@ export const CloudMeteringEngineDecorator: Layer.Layer<EngineDecorator, never, A
       const balanceGate = makeExecutionLimitGate((organizationId) =>
         autumn.checkExecutionBalance(organizationId),
       );
-      // The limiter's paid-org exemption. This is the billing coupling the
-      // limiter module deliberately avoids owning, and it reads the same
-      // `PAID_AUTUMN_PLAN_IDS` config as the org-creation and seat gates so
-      // "paid" means one thing across the app. The limiter calls this only
-      // for orgs already over the cap and caches the answer, so the extra
-      // Autumn round trip stays off the hot path.
+      // The limiter's exemption. This is the billing coupling the limiter
+      // module deliberately avoids owning. Any active subscription other than
+      // Free exempts the org: the backstop is for free-tier abuse, and the
+      // narrower "is on a plan we sell today" predicate the org-creation gate
+      // uses capped grandfathered and pay-as-you-go customers. The limiter
+      // calls this only for orgs already over the cap and caches the answer,
+      // so the extra Autumn round trip stays off the hot path.
       const rateLimiter = makeCloudExecutionRateLimiter((organizationId) =>
         Effect.map(
           autumn.use((client) => client.customers.getOrCreate({ customerId: organizationId })),
-          (customer) => hasPaidOrganizationSubscription(customer.subscriptions),
+          (customer) => hasNonFreeOrganizationSubscription(customer.subscriptions),
         ),
       );
       return {

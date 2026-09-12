@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/host-selfhost",
-  "version": "0.0.49",
+  "version": "0.0.50",
   "private": true,
   "type": "module",
   "exports": {
@@ -52,6 +52,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/emulate": "^0.14.0",
     "@executor-js/vite-plugin": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",
