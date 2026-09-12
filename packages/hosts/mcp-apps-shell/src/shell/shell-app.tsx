@@ -546,6 +546,9 @@ export function McpAppsShell({
       };
 
       if (data.type === "executor.renderer.ready") {
+        // The bootstrap runs before generated code. A later ready message is
+        // untrusted and must not replace its private click authorization.
+        if (openLinkAuthorizationRef.current?.token === current.token) return;
         if (typeof data.openLinkNonce !== "string" || data.openLinkNonce === "") return;
         openLinkAuthorizationRef.current = {
           token: current.token,

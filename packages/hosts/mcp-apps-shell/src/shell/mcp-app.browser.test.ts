@@ -1615,6 +1615,31 @@ describe("MCP app generated UI browser isolation", () => {
       const innerFrame = await renderGeneratedUi(page, shellFrame, generatedExternalLinkCode);
       await innerFrame.locator("#pr-link").waitFor({ timeout: 10_000 });
 
+      // Generated code knows the public renderer token, but must not be able
+      // to replace the private click authorization by repeating the handshake.
+      await innerFrame.evaluate(() => {
+        const token = document
+          .querySelector('meta[name="executor-render-token"]')
+          ?.getAttribute("content");
+        if (!token) throw new Error("Renderer token missing");
+        window.parent.postMessage(
+          { type: "executor.renderer.ready", token, openLinkNonce: "forged" },
+          "*",
+        );
+        window.parent.postMessage(
+          {
+            type: "executor.openLink",
+            token,
+            openLinkNonce: "forged",
+            url: "https://example.com/forged",
+          },
+          "*",
+        );
+        document.querySelector<HTMLAnchorElement>("#pr-link")?.click();
+      });
+      await page.waitForTimeout(100);
+      expect((await getHostState(page)).openLinks).toEqual([]);
+
       // Click the nested label, not the anchor itself: real links commonly wrap
       // text and icons, and the renderer must recover the owning anchor.
       await innerFrame.locator("#pr-link span").click();
