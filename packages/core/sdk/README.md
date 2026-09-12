@@ -42,7 +42,7 @@ const executor = await createExecutor({ onElicitation: "accept-all" });
 const tools = await executor.tools.list();
 const target = tools[0];
 if (target) {
-  const result = await executor.tools.invoke(target.id, {
+  const result = await executor.tools.invoke(target.address, {
     /* args matching target.inputSchema */
   });
   console.log(result);
@@ -54,7 +54,7 @@ await executor.close();
 Pass an `options` object only if you need to override the executor-level handler for a single call (rare — typically used by hosts that bridge per-client elicitation channels):
 
 ```ts
-await executor.tools.invoke(target.id, args, {
+await executor.tools.invoke(target.address, args, {
   onElicitation: customHandler,
 });
 ```

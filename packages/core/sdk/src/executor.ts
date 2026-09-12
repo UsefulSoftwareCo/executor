@@ -5724,12 +5724,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
         const referenced = collectReferencedDefinitions([inputSchema, effectiveOutputSchema], defs);
+        // Compile against the referenced subgraph only. The compiler walks
+        // every definition it is handed (its parser scans the whole `$defs`
+        // map per node), so passing the connection's full component set made a
+        // single describe of a large spec cost seconds of CPU on the shared
+        // session isolate. Unreferenced definitions never appear in the output.
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
               inputSchema,
               outputSchema: effectiveOutputSchema,
-              defs,
+              defs: new Map(Object.entries(referenced)),
             }),
           catch: (cause) =>
             storageFailureFromUnknown("Failed to build tool TypeScript preview", cause),
