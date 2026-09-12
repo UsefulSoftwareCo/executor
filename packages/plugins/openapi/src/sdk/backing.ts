@@ -727,7 +727,7 @@ export const invokeOpenApiBackedTool = (input: {
                   details: error.cause ?? error,
                 }),
               })
-            : error.cause !== undefined && Option.isNone(error.statusCode)
+            : error.reason === "transport_error"
               ? Effect.succeed({
                   ok: false as const,
                   failure: ToolResult.fail({

@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
+import { Effect, Exit, Fiber, Layer, Option, Predicate, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
@@ -1183,6 +1183,9 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         (err) =>
           new OpenApiInvocationError({
             message: "HTTP request failed",
+            ...(Predicate.isTagged(err.reason, "TransportError")
+              ? { reason: "transport_error" as const }
+              : {}),
             statusCode: Option.none(),
             cause: err,
           }),
@@ -1197,7 +1200,6 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         }),
       ),
     );
-    const fiber = runFork(responseEffect);
     const interrupt = () => {
       runFork(Fiber.interrupt(fiber));
     };
@@ -1207,6 +1209,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
       interrupt();
       resume(Effect.succeed(Option.none()));
     }, responseHeadersTimeoutMs);
+    const fiber = runFork(responseEffect);
     signal.addEventListener("abort", interrupt, { once: true });
     return Effect.sync(() => {
       clearTimeout(timer);
@@ -1257,7 +1260,6 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
             }),
           ),
         );
-        const fiber = runFork(bodyEffect);
         const interrupt = () => {
           runFork(Fiber.interrupt(fiber));
         };
@@ -1267,6 +1269,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
           interrupt();
           resume(Effect.succeed(Option.none()));
         }, responseBodyTimeoutMs);
+        const fiber = runFork(bodyEffect);
         signal.addEventListener("abort", interrupt, { once: true });
         return Effect.sync(() => {
           clearTimeout(timer);

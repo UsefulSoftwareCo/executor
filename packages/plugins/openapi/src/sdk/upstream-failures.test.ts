@@ -11,8 +11,14 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
-import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Cause, Data, Effect, Exit, Layer, Schema } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
 import {
   HttpApi,
   HttpApiBuilder,
@@ -43,8 +49,10 @@ import {
 
 import { openApiPlugin } from "./plugin";
 
-const testPlugins = () =>
-  [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
+class AdapterDefect extends Data.TaggedError("AdapterDefect") {}
+
+const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
+  [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
 
 // `/things` GET op `listThings` under group "things" → tool path
 // `things.listThings`, used verbatim (dots and all) as the address tool segment.
@@ -114,9 +122,11 @@ const FailureApi = HttpApi.make("failuresTest")
 
 // Build an executor + connection from the FailureApi HttpApi against an
 // arbitrary baseUrl (used for the Node-transport socket-drop / slow cases).
-const buildExecutor = (baseUrl: string) =>
+const buildExecutor = (baseUrl: string, httpClientLayer = FetchHttpClient.layer) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ plugins: testPlugins(httpClientLayer) }),
+    );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(FailureApi, { slug: "f", baseUrl }),
     );
@@ -447,6 +457,62 @@ describe("OpenAPI upstream failure modes", () => {
 
       const result = unwrapInvocation(yield* executor.execute(address, {}));
       expect(result.data).toEqual([]);
+    }),
+  );
+
+  it.effect("request encoding failures remain invocation failures", () =>
+    Effect.gen(function* () {
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.EncodeError({ request, cause: new AdapterDefect() }),
+            }),
+          ),
+        ),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+    }),
+  );
+
+  it.effect("transport defects remain defects", () =>
+    Effect.gen(function* () {
+      const defect = new AdapterDefect();
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die(defect)),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.match(exit, { onFailure: Cause.hasDies, onSuccess: () => false })).toBe(true);
+    }),
+  );
+
+  it.effect("interrupted transport remains interrupted", () =>
+    Effect.gen(function* () {
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.interrupt),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.match(exit, { onFailure: Cause.hasInterrupts, onSuccess: () => false })).toBe(
+        true,
+      );
     }),
   );
 
