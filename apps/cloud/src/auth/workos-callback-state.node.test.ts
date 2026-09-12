@@ -10,7 +10,7 @@
 // HTTP surface (see api.request-scope.node.test.ts).
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "@effect/vitest";
+import { afterAll, describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -91,11 +91,13 @@ const App = HttpApiBuilder.layer(PublicApi).pipe(
   Layer.provide(HttpServer.layerServices),
 );
 
+const app = HttpRouter.toWebHandler(App, { disableLogger: true });
+afterAll(() => app.dispose());
+
 const run = (request: Request) => {
-  const handler = HttpRouter.toWebHandler(App, { disableLogger: true }).handler;
   // beta.59: the handler type expects a context argument; this layer stack
   // needs none at runtime — pass undefined like the api.request-scope tests.
-  return handler(request, undefined as never);
+  return app.handler(request, undefined as never);
 };
 
 const callbackUrl = (state?: string, code = "code_1") =>
@@ -109,9 +111,24 @@ describe("workos callback · CSRF state hardening", () => {
     expect(res.headers.get("set-cookie") ?? "").not.toContain(SESSION_COOKIE);
   });
 
+  it("rejects missing state even when the browser has a login cookie", async () => {
+    const res = await run(
+      new Request(callbackUrl(undefined), {
+        headers: { cookie: `${STATE_COOKIE}=victim-login-state` },
+        redirect: "manual",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid login state");
+    expect(res.headers.get("set-cookie") ?? "").not.toContain(SESSION_COOKIE);
+  });
+
   it("rejects a state that does not match the login cookie", async () => {
     const res = await run(
-      new Request(callbackUrl("attacker-controlled-state"), { redirect: "manual" }),
+      new Request(callbackUrl("attacker-controlled-state"), {
+        headers: { cookie: `${STATE_COOKIE}=victim-login-state` },
+        redirect: "manual",
+      }),
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("Invalid login state");

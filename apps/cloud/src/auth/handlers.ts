@@ -210,7 +210,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           let sealedSession = result.sealedSession;
 
           // Resume where the SSR gate interrupted them. The state passed the
-          // CSRF check above whenever it's present, but it's still a
+          // CSRF check above, but it's still a
           // round-tripped value, so the returnTo inside it is re-validated like
           // any other untrusted path.
           const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
