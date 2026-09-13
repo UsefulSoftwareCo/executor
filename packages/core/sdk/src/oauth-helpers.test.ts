@@ -45,6 +45,11 @@ type TokenHandler = (call: TokenCall) => HttpServerResponse.HttpServerResponse;
 const json = (status: number, body: unknown): HttpServerResponse.HttpServerResponse =>
   HttpServerResponse.jsonUnsafe(body, { status });
 
+/** A JSON-format token request carried a `scope`, without narrowing `unknown`
+ *  for every handler that only needs to branch on its presence. */
+const hasJsonScope = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && "scope" in body;
+
 const serveTokenEndpoint = (handler: TokenHandler) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<readonly TokenCall[]>([]);
@@ -1458,6 +1463,138 @@ describe("refreshAccessToken", () => {
         });
         expect((yield* calls)[0]!.body.has("scope")).toBe(false);
       }),
+    ),
+  );
+
+  // Railway (issue #1969, 2026-09-09) refuses any scope-bearing refresh with
+  // `invalid_scope: refresh token missing requested scope` even though echoing
+  // the grant's own scope is legal under RFC 6749 §6. Without the fallback a
+  // live refresh token reads as permanently dead and the connection can never
+  // recover on its own.
+  it.effect("retries without scope when the AS refuses the echoed grant scope", () =>
+    withTokenEndpoint(
+      (call) =>
+        call.body.has("scope")
+          ? json(400, {
+              error: "invalid_scope",
+              error_description: "refresh token missing requested scope",
+            })
+          : json(200, validRefreshBody),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const result = yield* refreshAccessToken({
+            tokenUrl,
+            clientId: "cid",
+            refreshToken: "old",
+            scopes: ["issues.read", "issues.write"],
+          });
+
+          expect(result.access_token).toBe("tok2");
+          const seen = yield* calls;
+          expect(seen).toHaveLength(2);
+          expect(seen[0]!.body.get("scope")).toBe("issues.read issues.write");
+          expect(seen[1]!.body.has("scope")).toBe(false);
+          expect(seen[1]!.body.get("grant_type")).toBe("refresh_token");
+          expect(seen[1]!.body.get("refresh_token")).toBe("old");
+        }),
+    ),
+  );
+
+  it.effect("retries a JSON-format refresh without scope as well", () =>
+    withTokenEndpoint(
+      (call) =>
+        hasJsonScope(call.jsonBody)
+          ? json(400, {
+              error: "invalid_scope",
+              error_description: "refresh token missing requested scope",
+            })
+          : json(200, validRefreshBody),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const result = yield* refreshAccessToken({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "csecret",
+            refreshToken: "old",
+            scopes: ["issues.read"],
+            requestFormat: "json",
+          });
+
+          expect(result.access_token).toBe("tok2");
+          const seen = yield* calls;
+          expect(seen).toHaveLength(2);
+          expect(seen[0]!.jsonBody).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "old",
+            scope: "issues.read",
+            client_id: "cid",
+            client_secret: "csecret",
+          });
+          expect(seen[1]!.jsonBody).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "old",
+            client_id: "cid",
+            client_secret: "csecret",
+          });
+        }),
+    ),
+  );
+
+  it.effect("does not retry a scope-less refresh the AS refuses", () =>
+    withTokenEndpoint(
+      () => json(400, { error: "invalid_scope", error_description: "scope is required" }),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+          );
+
+          expect((error as OAuth2Error).error).toBe("invalid_scope");
+          expect(yield* calls).toHaveLength(1);
+        }),
+    ),
+  );
+
+  it.effect("does not retry invalid_grant, which no scope change can fix", () =>
+    withTokenEndpoint(
+      () => json(400, { error: "invalid_grant", error_description: "refresh token expired" }),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({
+              tokenUrl,
+              clientId: "cid",
+              refreshToken: "old",
+              scopes: ["issues.read"],
+            }),
+          );
+
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+          expect(yield* calls).toHaveLength(1);
+        }),
+    ),
+  );
+
+  it.effect("surfaces the scope-less retry's verdict when the AS refuses that too", () =>
+    withTokenEndpoint(
+      (call) =>
+        call.body.has("scope")
+          ? json(400, { error: "invalid_scope", error_description: "refresh token missing scope" })
+          : json(400, { error: "invalid_grant", error_description: "refresh token expired" }),
+      ({ tokenUrl, calls }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            refreshAccessToken({
+              tokenUrl,
+              clientId: "cid",
+              refreshToken: "old",
+              scopes: ["issues.read"],
+            }),
+          );
+
+          expect((error as OAuth2Error).error).toBe("invalid_grant");
+          expect(yield* calls).toHaveLength(2);
+        }),
     ),
   );
 
