@@ -6617,7 +6617,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // OAuth service seam.
     // ------------------------------------------------------------------
 
-    const oauth = makeOAuthService({
+    const oauthService = makeOAuthService({
       fuma,
       owner: ownerBinding,
       tenant,
@@ -6676,6 +6676,26 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // Plugin wiring — build ctx, run extension, populate static pools,
     // register credential providers.
     // ------------------------------------------------------------------
+
+    const oauth: OAuthService = {
+      ...oauthService,
+      probe: (input) =>
+        Effect.gen(function* () {
+          if (input.integration && input.template) {
+            const row = yield* findIntegrationRow(input.integration);
+            const runtime = row ? runtimes.get(row.plugin_id) : undefined;
+            if (row && runtime?.plugin.recoverOAuthDiscovery) {
+              const recovered = yield* runtime.plugin.recoverOAuthDiscovery({
+                ctx: runtime.ctx,
+                integration: rowToIntegrationRecord(row),
+                template: input.template,
+              });
+              if (recovered) return recovered;
+            }
+          }
+          return yield* oauthService.probe(input);
+        }),
+    };
 
     const blobPartitions: OwnerPartitions = {
       org: `o:${tenant}`,

@@ -2438,7 +2438,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
           // must not register a client or launch the popup afterwards.
           isActive: () => viewMountedRef.current,
           probe: async (url: string): Promise<OAuthProbeResult | null> => {
-            const exit = await doProbe({ payload: { url }, reactivityKeys: [] });
+            const exit = await doProbe({
+              payload: { url, integration, template: requestMethod.template },
+              reactivityKeys: [],
+            });
             if (Exit.isFailure(exit)) return null;
             return exit.value;
           },

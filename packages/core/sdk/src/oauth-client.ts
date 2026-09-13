@@ -382,6 +382,9 @@ export interface OAuthCompleteInput {
  *  onboarding UI can pre-fill a client's endpoints. */
 export interface OAuthProbeInput {
   readonly url: string;
+  /** Resolve discovery from a stored integration method when available. */
+  readonly integration?: IntegrationSlug;
+  readonly template?: AuthTemplateSlug;
 }
 
 export interface OAuthProbeResult {

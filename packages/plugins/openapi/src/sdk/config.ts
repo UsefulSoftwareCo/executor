@@ -82,6 +82,16 @@ export type OpenApiIntegrationConfig = Omit<
   readonly specOverrides?: SpecOverrides;
 };
 
+/** Legacy templates need connect-time recovery from the original spec. */
+export const openApiOAuthDiscoveryUrl = (
+  template: Extract<Authentication, { kind: "oauth2" }>,
+  config?: Pick<OpenApiIntegrationConfig, "baseUrl" | "specUrl">,
+): string | undefined =>
+  template.discoveryUrl ??
+  (template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2"
+    ? (template.resource ?? config?.baseUrl ?? config?.specUrl)
+    : undefined);
+
 const decodeConfig = Schema.decodeUnknownOption(OpenApiIntegrationConfigSchema);
 
 /** Decode the opaque integration config blob into the openapi shape.

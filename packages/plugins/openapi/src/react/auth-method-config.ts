@@ -17,6 +17,8 @@ import {
   wirePlacementsFromEditor,
 } from "@executor-js/react/lib/shared-auth-method-codec";
 
+import { openApiOAuthDiscoveryUrl, type OpenApiIntegrationConfig } from "../sdk/config";
+
 import type { APIKeyAuthentication, Authentication, AuthenticationInput } from "../sdk/types";
 
 /** Serialize a canonical method into the wire input union (apikey → the
@@ -27,7 +29,10 @@ export const openApiWireAuthInput = (method: Authentication): AuthenticationInpu
 export const placementsFromApiKey = (template: APIKeyAuthentication): readonly Placement[] =>
   editorPlacementsFromWire(template.placements);
 
-const oauthAuthMethod = (template: Extract<Authentication, { kind: "oauth2" }>): AuthMethod => {
+const oauthAuthMethod = (
+  template: Extract<Authentication, { kind: "oauth2" }>,
+  config?: Pick<OpenApiIntegrationConfig, "baseUrl" | "specUrl">,
+): AuthMethod => {
   const slug = String(template.slug);
   return {
     id: slug,
@@ -44,20 +49,18 @@ const oauthAuthMethod = (template: Extract<Authentication, { kind: "oauth2" }>):
       resource: template.resource ?? null,
       scopes: template.scopes,
       supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
-      // Older discovered templates predate discoveryUrl, including ones added with CIMD disabled.
-      discoveryUrl:
-        template.discoveryUrl ??
-        (template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2"
-          ? (template.resource ?? template.tokenUrl)
-          : undefined),
+      discoveryUrl: openApiOAuthDiscoveryUrl(template, config),
     },
   };
 };
 
 /** Map each stored auth template to a generic `AuthMethod`. */
-export function authMethodsFromConfig(templates: readonly Authentication[]): AuthMethod[] {
+export function authMethodsFromConfig(
+  templates: readonly Authentication[],
+  config?: Pick<OpenApiIntegrationConfig, "baseUrl" | "specUrl">,
+): AuthMethod[] {
   return templates.map((template: Authentication): AuthMethod => {
-    if (template.kind === "oauth2") return oauthAuthMethod(template);
+    if (template.kind === "oauth2") return oauthAuthMethod(template, config);
     return authMethodFromSharedTemplate(template);
   });
 }

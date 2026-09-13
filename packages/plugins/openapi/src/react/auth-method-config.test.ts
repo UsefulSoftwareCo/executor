@@ -10,6 +10,24 @@ import {
 import type { Authentication } from "../sdk/types";
 
 describe("authMethodsFromConfig", () => {
+  it("uses the original base URL for issuer-only legacy discovery", () => {
+    const methods = authMethodsFromConfig(
+      [
+        {
+          kind: "oauth2",
+          slug: AuthTemplateSlug.make("oauth-DiscoveredOAuth2"),
+          authorizationUrl: "https://provider.example/tenant/oauth/authorize",
+          tokenUrl: "https://provider.example/tenant/oauth/token",
+          resource: null,
+          scopes: [],
+          supportsClientIdMetadataDocument: true,
+        },
+      ],
+      { baseUrl: "https://provider.example/tenant" },
+    );
+    expect(methods[0]?.oauth?.discoveryUrl).toBe("https://provider.example/tenant");
+  });
+
   it("projects oauth templates with their stored endpoints + scopes", () => {
     const methods = authMethodsFromConfig([
       {

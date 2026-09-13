@@ -201,6 +201,27 @@ hosted instances; the same browser, token, and authenticated-operation assertion
 still run. Runtime `/_emulate/seed` bodies contain the service configuration
 directly, without the service-name wrapper used by startup configuration.
 
+The separate `selfhost-docker-cimd-legacy` project checks an upgrade from an
+image that stored discovered CIMD templates without `discoveryUrl`. Set
+`E2E_CIMD_LEGACY_IMAGE` to that older image and `E2E_SELFHOST_DOCKER_IMAGE` to the
+image under review, using the same port, URL, and optional local provider settings
+above. It uses the emulator's fault control to return 404 for protected-resource
+metadata while retaining issuer discovery. The old image must create the template
+and complete real CIMD authorization; the upgraded image must preserve the existing
+connection and complete another authorization on the same integration. It also
+checks persistence of the recovered URL and rejection of mismatched OAuth endpoints.
+Set `E2E_CIMD_OPENAPI_PATH_URL` to a second emulator mounted at a path-based issuer
+(e.g. `https://provider.example/tenant`) to run the same upgrade for both issuer shapes.
+
+```sh
+E2E_CIMD_LEGACY_IMAGE=executor-cimd:before \
+E2E_CIMD_OPENAPI_PATH_URL=https://provider.example/tenant \
+E2E_SELFHOST_DOCKER_IMAGE=executor-cimd:legacy-fixed \
+E2E_SELFHOST_DOCKER_PORT=42905 \
+E2E_SELFHOST_DOCKER_URL=https://your-test-instance.example \
+bunx vitest run --project selfhost-docker-cimd-legacy
+```
+
 ## Desktop targets (the app on real OSes, filmed)
 
 The packaged desktop app runs as its own targets, each landing in its own
