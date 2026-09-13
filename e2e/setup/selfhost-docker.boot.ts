@@ -74,6 +74,9 @@ export interface RunContainerOptions {
   readonly webBaseUrl: string;
   readonly admin: { readonly email: string; readonly password: string };
   readonly logFile?: string;
+  readonly oauthCimdEnabled?: boolean;
+  /** Hosted emulators need no access to the runner's loopback helper servers. */
+  readonly publishPort?: boolean;
 }
 
 /**
@@ -90,8 +93,9 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     "--detach",
     "--name",
     name,
-    "--network",
-    "host",
+    ...(options.publishPort
+      ? ["--publish", `127.0.0.1:${options.port}:${options.port}`]
+      : ["--network", "host"]),
     "--volume",
     `${volume}:/data`,
     "-e",
@@ -108,6 +112,9 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     // test servers and points the instance at them.
     "-e",
     "EXECUTOR_ALLOW_LOCAL_NETWORK=true",
+    ...(options.oauthCimdEnabled === undefined
+      ? []
+      : ["-e", `EXECUTOR_OAUTH_CIMD_ENABLED=${options.oauthCimdEnabled}`]),
     options.image,
   ];
   log(options.logFile, `docker ${args.join(" ")}`);

@@ -651,6 +651,8 @@ export type IntegrationPresetAuthentication =
       readonly resource?: string | null;
       readonly scopes: readonly string[];
       readonly supportsClientIdMetadataDocument?: boolean;
+      /** Endpoint to re-probe before choosing CIMD or dynamic registration. */
+      readonly discoveryUrl?: string;
     }
   | {
       readonly kind: "apiKey";

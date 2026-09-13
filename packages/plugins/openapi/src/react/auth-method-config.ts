@@ -44,6 +44,12 @@ const oauthAuthMethod = (template: Extract<Authentication, { kind: "oauth2" }>):
       resource: template.resource ?? null,
       scopes: template.scopes,
       supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+      // Older discovered templates predate discoveryUrl, including ones added with CIMD disabled.
+      discoveryUrl:
+        template.discoveryUrl ??
+        (template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2"
+          ? (template.resource ?? template.tokenUrl)
+          : undefined),
     },
   };
 };
@@ -84,6 +90,7 @@ export function editorValueFromAuthentication(template: Authentication): AuthTem
       resource: template.resource ?? null,
       scopes: template.scopes ?? [],
       supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+      discoveryUrl: template.discoveryUrl,
     };
   }
   return editorValueFromSharedMethod(template);
@@ -101,6 +108,7 @@ const oauthTemplateFromEditorValue = (
   tokenUrl: value.tokenUrl,
   resource: value.resource ?? null,
   scopes: [...value.scopes],
+  ...(value.discoveryUrl ? { discoveryUrl: value.discoveryUrl } : {}),
   ...(value.supportsClientIdMetadataDocument === true
     ? { supportsClientIdMetadataDocument: true }
     : {}),

@@ -196,9 +196,8 @@ export interface OpenApiPluginExtension {
   >;
   readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
-  /** Read the integration config with OAuth templates' CIMD support limited to
-   *  the catalog's effective capabilities. This is a read projection; stored
-   *  config is unchanged. Returns null when the integration is absent. */
+  /** Read the stored integration config, including authentication templates.
+   *  Returns null when the integration is absent. */
   readonly getConfig: (
     slug: string,
   ) => Effect.Effect<OpenApiIntegrationConfig | null, StorageFailure>;
@@ -271,6 +270,7 @@ const StaticPreviewOAuth2PresetSchema = Schema.Struct({
     Schema.Array(Schema.String),
   ]),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  discoveryUrl: Schema.optional(Schema.String),
 });
 const StaticPreviewSpecOutputSchema = Schema.Struct({
   title: Schema.NullOr(Schema.String),
@@ -306,6 +306,7 @@ const AuthenticationSchema = Schema.Union([
     resource: Schema.optional(Schema.NullOr(Schema.String)),
     scopes: Schema.Array(Schema.String),
     supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+    discoveryUrl: Schema.optional(Schema.String),
   }),
   // Credential methods are authored request-shaped - the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
@@ -436,6 +437,7 @@ const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => (
     scopes: preset.scopes,
     identityScopes: preset.identityScopes,
     supportsClientIdMetadataDocument: preset.supportsClientIdMetadataDocument,
+    discoveryUrl: preset.discoveryUrl,
   })),
 });
 
@@ -546,7 +548,7 @@ const discoveredOAuthPreview = (input: {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly scopes: readonly string[];
-  readonly supportsClientIdMetadataDocument?: boolean;
+  readonly discoveryUrl: string;
 }): SpecPreview => {
   const scopes = Object.fromEntries(input.scopes.map((scope) => [scope, ""]));
   const flow = OAuth2AuthorizationCodeFlow.make({
@@ -587,9 +589,7 @@ const discoveredOAuthPreview = (input: {
         refreshUrl: Option.none(),
         scopes,
         identityScopes: "auto",
-        ...(input.supportsClientIdMetadataDocument === true
-          ? { supportsClientIdMetadataDocument: true }
-          : {}),
+        discoveryUrl: input.discoveryUrl,
       }),
     ],
   };
@@ -623,6 +623,12 @@ export const describeOpenApiAuthMethods = (
           resource: template.resource ?? null,
           scopes: template.scopes,
           supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+          // Older discovered templates predate discoveryUrl, including ones added with CIMD disabled.
+          discoveryUrl:
+            template.discoveryUrl ??
+            (template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2"
+              ? (template.resource ?? template.tokenUrl)
+              : undefined),
         },
       };
     }
@@ -798,8 +804,7 @@ export const openApiPlugin = definePlugin<
               tokenUrl: oauth.result.tokenUrl,
               resource: oauth.result.resource ?? null,
               scopes,
-              supportsClientIdMetadataDocument:
-                oauth.result.clientIdMetadataDocumentSupported === true,
+              discoveryUrl: candidate,
             });
           }
 
@@ -857,12 +862,14 @@ export const openApiPlugin = definePlugin<
                 ? yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem)
                 : yield* previewSpecText(resolved.specText).pipe(
                     Effect.flatMap((rawPreview) =>
-                      enrichPreviewWithDiscoveredOAuth({
-                        specText: resolved.specText,
-                        preview: rawPreview,
-                        specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
-                        baseUrl: explicitBaseUrl,
-                      }),
+                      needsDerivedAuth
+                        ? enrichPreviewWithDiscoveredOAuth({
+                            specText: resolved.specText,
+                            preview: rawPreview,
+                            specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
+                            baseUrl: explicitBaseUrl,
+                          })
+                        : Effect.succeed(rawPreview),
                     ),
                   )
               : undefined;
@@ -1195,30 +1202,13 @@ export const openApiPlugin = definePlugin<
           ),
 
         getConfig: (slug: string): Effect.Effect<OpenApiIntegrationConfig | null, StorageFailure> =>
-          ctx.core.integrations.get(IntegrationSlug.make(slug)).pipe(
-            Effect.map((record) => {
-              if (!record) return null;
-              const config = decodeOpenApiIntegrationConfig(record.config);
-              if (!config?.authenticationTemplate) return config;
-              return {
-                ...config,
-                // The connection UI needs the catalog's deployment-aware capabilities.
-                authenticationTemplate: config.authenticationTemplate.map((template) =>
-                  template.kind === "oauth2" && template.supportsClientIdMetadataDocument === true
-                    ? {
-                        ...template,
-                        supportsClientIdMetadataDocument: record.authMethods.some(
-                          (method) =>
-                            method.kind === "oauth" &&
-                            method.template === String(template.slug) &&
-                            method.oauth?.supportsClientIdMetadataDocument === true,
-                        ),
-                      }
-                    : template,
-                ),
-              };
-            }),
-          ),
+          ctx.core.integrations
+            .get(IntegrationSlug.make(slug))
+            .pipe(
+              Effect.map((record) =>
+                record ? decodeOpenApiIntegrationConfig(record.config) : null,
+              ),
+            ),
 
         configure: (
           slug: string,

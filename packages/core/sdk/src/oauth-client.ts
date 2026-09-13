@@ -117,6 +117,8 @@ export interface OAuthAuthentication {
    *  `client_id` is this host's metadata-document URL, not a provider-side
    *  registered app id. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** Endpoint to re-probe before choosing CIMD or dynamic registration. */
+  readonly discoveryUrl?: string;
 }
 
 /** A registered OAuth app — pure app identity: clientId/secret + its endpoints.

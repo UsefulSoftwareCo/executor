@@ -38,6 +38,7 @@ const OAuthAuthenticationSchema = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  discoveryUrl: Schema.optional(Schema.String),
 });
 
 export const AuthenticationSchema = Schema.Union([OAuthAuthenticationSchema, ApiKeyAuthMethod]);

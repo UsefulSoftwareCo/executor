@@ -77,6 +77,7 @@ describe("describeOpenApiAuthMethods", () => {
           authorizationUrl: "https://auth.example/authorize",
           tokenUrl: "https://auth.example/token",
           resource: "https://api.example",
+          discoveryUrl: "https://api.example",
           scopes: ["read", "write"],
           supportsClientIdMetadataDocument: true,
         },

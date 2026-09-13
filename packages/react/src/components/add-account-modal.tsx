@@ -1751,10 +1751,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     method != null &&
     method.placements.length > 0 &&
     method.placements.every((p) => p.carrier === "env");
-  // CIMD-capable: the provider accepts a client_id that is a metadata-document
-  // URL, so we can create a public local client and skip provider app
-  // registration entirely.
-  const isCimd = isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true;
+  // Discovery-backed methods choose CIMD or DCR from a fresh server probe.
+  // Only static CIMD methods use the direct metadata-client path.
+  const isCimd =
+    isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true && !hasDcr(method);
   const cimdActive = isCimd;
   // Single-input header/query methods: the placement's lead + prefix (e.g.
   // "Authorization: Bearer ") merges INTO the credential field as a non-editable
@@ -2522,10 +2522,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
         },
         {
           discoveryUrl,
-          // Only a genuine discovery URL (MCP) seeds the RFC 8707 resource
-          // indicator; the token-endpoint fallback baked into `discoveryUrl` must
-          // not, so pass the un-collapsed method value here.
-          resourceFallback: requestMethod.oauth?.discoveryUrl,
+          // MCP's discovery URL identifies its protected resource. OpenAPI
+          // discovery may identify an issuer or token endpoint instead; use
+          // its declared resource rather than treating that URL as a resource.
+          resourceFallback: requestMethod.oauth?.tokenUrl
+            ? (requestMethod.oauth.resource ?? undefined)
+            : requestMethod.oauth?.discoveryUrl,
           owner: dcrOwner,
           // DCR slugs are server-keyed (Part A): the connect path no longer depends
           // on the picker's app list, so it need not be threaded here.
