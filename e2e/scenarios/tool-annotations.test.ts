@@ -23,7 +23,7 @@ scenario(
     const identity = yield* target.newIdentity();
     const client = yield* makeClient(api, identity);
     const session = mcp.session(identity);
-    const address = ToolAddress.make("tools.executor.coreTools.connections.create");
+    const address = ToolAddress.make("executor.coreTools.connections.create");
     const view = yield* client.tools.schema({ query: { address } });
     expect(view.annotations).toEqual({ requiresApproval: true });
     const described = yield* session.call("execute", {
