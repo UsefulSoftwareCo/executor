@@ -40,86 +40,49 @@ const cimdPlugin = definePlugin(() => ({
 const plugins = [memoryCredentialsPlugin(), cimdPlugin] as const;
 
 describe("oauth Client ID Metadata Document deployment capability", () => {
-  it.effect("probe reports CIMD when the AS advertises it and the deployment can serve it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* serveOAuthTestServer({
-          clientIdMetadataDocumentSupported: true,
-        });
-        const { executor } = yield* makeTestWorkspaceHarness();
+  for (const enabled of [undefined, false]) {
+    it.effect(`probe reports the deployment capability (enabled: ${enabled})`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({
+            clientIdMetadataDocumentSupported: true,
+          });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            oauthClientIdMetadataDocumentEnabled: enabled,
+          });
 
-        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
-        expect(probe.clientIdMetadataDocumentSupported).toBe(true);
-        expect(probe.registrationEndpoint).toBe(server.registrationEndpoint);
-      }),
-    ),
-  );
+          const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+          expect(probe.clientIdMetadataDocumentSupported).toBe(enabled ?? true);
+          expect(probe.registrationEndpoint).toBe(server.registrationEndpoint);
+        }),
+      ),
+    );
 
-  it.effect("probe hides CIMD when the deployment cannot serve the document", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* serveOAuthTestServer({
-          clientIdMetadataDocumentSupported: true,
-        });
-        const { executor } = yield* makeTestWorkspaceHarness({
-          oauthClientIdMetadataDocumentEnabled: false,
-        });
+    it.effect(`catalog oauth methods reflect the deployment capability (enabled: ${enabled})`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            oauthClientIdMetadataDocumentEnabled: enabled,
+          });
+          yield* executor.acme.seed();
 
-        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
-        expect(probe.clientIdMetadataDocumentSupported).toBe(false);
-        expect(probe.registrationEndpoint).toBe(server.registrationEndpoint);
-      }),
-    ),
-  );
-
-  it.effect("catalog oauth methods keep the CIMD flag when the deployment can serve it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
-        yield* executor.acme.seed();
-
-        const integration = yield* executor.integrations.get(INTEG);
-        expect(integration?.authMethods).toEqual([
-          {
-            id: "oauth",
-            label: "OAuth",
-            kind: "oauth",
-            template: "oauth",
-            oauth: {
-              authorizationUrl: AUTHORIZATION_URL,
-              tokenUrl: TOKEN_URL,
-              supportsClientIdMetadataDocument: true,
+          const integration = yield* executor.integrations.get(INTEG);
+          expect(integration?.authMethods).toEqual([
+            {
+              id: "oauth",
+              label: "OAuth",
+              kind: "oauth",
+              template: "oauth",
+              oauth: {
+                authorizationUrl: AUTHORIZATION_URL,
+                tokenUrl: TOKEN_URL,
+                supportsClientIdMetadataDocument: enabled ?? true,
+              },
             },
-          },
-        ]);
-      }),
-    ),
-  );
-
-  it.effect("catalog oauth methods drop the CIMD flag when the deployment cannot serve it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({
-          plugins,
-          oauthClientIdMetadataDocumentEnabled: false,
-        });
-        yield* executor.acme.seed();
-
-        const integration = yield* executor.integrations.get(INTEG);
-        expect(integration?.authMethods).toEqual([
-          {
-            id: "oauth",
-            label: "OAuth",
-            kind: "oauth",
-            template: "oauth",
-            oauth: {
-              authorizationUrl: AUTHORIZATION_URL,
-              tokenUrl: TOKEN_URL,
-              supportsClientIdMetadataDocument: false,
-            },
-          },
-        ]);
-      }),
-    ),
-  );
+          ]);
+        }),
+      ),
+    );
+  }
 });

@@ -203,11 +203,7 @@ for (const protocol of ["MCP", "OpenAPI"] as const) {
                 const session = mcp.session(identity);
                 let result = await Effect.runPromise(
                   session.call("execute", {
-                    code: `
-              let callable = tools;
-              for (const part of ${JSON.stringify(String(tool?.address))}.split(".").slice(1)) callable = callable[part];
-              return await callable({});
-            `,
+                    code: `return await ${tool?.address}({});`,
                   }),
                 );
                 for (
