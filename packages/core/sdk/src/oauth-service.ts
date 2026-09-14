@@ -227,6 +227,11 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Whether `slug` is in the tenant's integration catalog. `start` refuses a
+   *  flow for a missing integration up front — otherwise the user authorizes
+   *  at the provider and only the mint at `complete` discovers there is
+   *  nothing to mint against (the reconnect-an-orphan failure). */
+  readonly integrationExists: (slug: IntegrationSlug) => Effect.Effect<boolean, StorageFailure>;
   /** Whether a connection row exists under `(owner, integration, name)`: the
    *  raw row, not the policy-filtered list, so `start` can resolve a free
    *  name for `newConnection` flows against what is actually stored. */
@@ -1659,6 +1664,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             cause,
           }),
       });
+      // The integration must exist BEFORE any session or provider round trip.
+      // A stale reference (a connection whose integration was removed, or an
+      // agent replaying an old slug) would otherwise complete authorization at
+      // the provider and fail only at the mint.
+      if (!(yield* deps.integrationExists(input.integration))) {
+        return yield* new OAuthStartError({
+          message: `Integration not found: ${String(input.integration)}`,
+        });
+      }
       // Sharing is one-directional (org → members): a Workspace (org) connection
       // cannot be backed by a member's private (user) app. The connection owner
       // and the app owner are otherwise independent — a Personal connection

@@ -1003,6 +1003,45 @@ describe("oauth.start / oauth.complete", () => {
       }),
     ),
   );
+
+  it.effect("start refuses an integration that is not in the catalog, before any session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        // Deliberately NOT seeded: the slug names nothing in the catalog — the
+        // shape of a reconnect against a connection whose integration was
+        // removed, or an agent replaying a stale slug.
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const error = yield* Effect.flip(
+          executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: IntegrationSlug.make("removed_mcp"),
+            template: TEMPLATE,
+          }),
+        );
+        expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
+        if (!Predicate.isTagged("OAuthStartError")(error)) return;
+        const startError = error as OAuthStartError;
+        expect(startError.message).toBe("Integration not found: removed_mcp");
+        // Refused up front: no session row was created for the doomed flow.
+        const sessions = yield* Effect.promise(() => config.db.findMany("oauth_session", {}));
+        expect(sessions).toHaveLength(0);
+      }),
+    ),
+  );
 });
 
 describe("oauth token refresh in resolveConnectionValue", () => {
