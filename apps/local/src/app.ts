@@ -11,6 +11,7 @@ import {
 import { withExecutionAnalytics } from "@executor-js/analytics";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { composeExecutionObservers, type AnyPlugin } from "@executor-js/sdk";
 
 import { localAnalytics } from "./analytics";
 import { getExecutorBundle, type LocalExecutor } from "./executor";
@@ -53,7 +54,10 @@ import { ErrorCaptureLive } from "./observability";
  * `HostConfig`/`CodeExecutorProvider` seams — the fixed executor is the whole
  * execution model.
  */
-const localFixedExecutionLayer = (executor: LocalExecutor): Layer.Layer<FixedExecutionProvider> =>
+const localFixedExecutionLayer = (
+  executor: LocalExecutor,
+  plugins: readonly AnyPlugin[],
+): Layer.Layer<FixedExecutionProvider> =>
   Layer.succeed(FixedExecutionProvider)({
     executor,
     // This engine serves the HTTP executions API (`executor call`/`resume`,
@@ -62,6 +66,8 @@ const localFixedExecutionLayer = (executor: LocalExecutor): Layer.Layer<FixedExe
       createExecutionEngine({
         executor,
         codeExecutor: makeQuickJsExecutor(),
+        // Local bypasses makeExecutionStack, so compose plugin observers here.
+        observer: composeExecutionObservers(plugins, executor),
       }),
       localAnalytics,
       { plane: "api", toolkit: false },
@@ -95,7 +101,7 @@ export const makeLocalApiHandler = async (token: string): Promise<LocalApiHandle
   // Layer is the `fixedExecution` seam declaration AND lives in `boot` so the
   // fixed middleware's residual `FixedExecutionProvider` resolves there — exactly
   // as self-host declares `db: SelfHostDbProvider` and puts the handle in `boot`.
-  const fixedExecution = localFixedExecutionLayer(executor);
+  const fixedExecution = localFixedExecutionLayer(executor, plugins);
 
   // The authoritative identity gate for the typed `/api`: validates the boot
   // bearer token and resolves the one local Principal. The Bun shell

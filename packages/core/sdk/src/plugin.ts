@@ -50,6 +50,7 @@ import type {
   InvalidConnectionInputError,
   OrgWriteDeniedError,
 } from "./errors";
+import type { ExecutionObserver } from "./execution-observer";
 import type { OAuthService } from "./oauth-client";
 import type { CredentialProvider, ProviderEntry } from "./provider";
 import type { PluginStorageConfig, PluginStorageFacade } from "./plugin-storage";
@@ -840,6 +841,13 @@ export interface PluginSpec<
     | readonly CredentialProvider[]
     | ((ctx: PluginCtx<TStore>) => readonly CredentialProvider[])
     | ((ctx: PluginCtx<TStore>) => Effect.Effect<readonly CredentialProvider[]>);
+
+  /** Runtime hooks invoked while the engine executes code. `executionObserver`
+   *  receives this plugin's extension and returns an observer for every
+   *  {@link ExecutionEvent}, the seam history/metrics sinks build on. */
+  readonly runtime?: {
+    readonly executionObserver?: (self: NoInfer<TExtension>) => ExecutionObserver<unknown>;
+  };
 
   readonly close?: () => Effect.Effect<void, unknown>;
 }
