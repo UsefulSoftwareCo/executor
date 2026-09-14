@@ -48,6 +48,10 @@ export class OpenApiInvocationError extends Data.TaggedError("OpenApiInvocationE
   // integration's configured origin, so it is safe to show; the path, query,
   // and headers stay on `cause`.
   readonly upstreamHost?: string | undefined;
+  // Errno-style code behind a transport failure (`ECONNREFUSED`, `ENOTFOUND`,
+  // `UND_ERR_SOCKET`, …) when the runtime exposes one. Tells DNS from refused
+  // from TLS without exposing the request.
+  readonly transportCode?: string | undefined;
   readonly cause?: unknown;
 }> {}
 

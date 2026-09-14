@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Data, Effect, Exit, Layer, Schema } from "effect";
+import { Cause, Data, Effect, Exit, Layer, Logger, References, Schema } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -109,6 +109,30 @@ const startDroppingServer = () =>
     }),
     (s) => Effect.sync(() => s.close()),
   );
+
+// Bind an ephemeral port, then release it so nothing listens there and the
+// kernel refuses the connection (`ECONNREFUSED`). Port 1 is not equivalent:
+// `fetch` rejects it as a bad port before dialing, with no errno.
+const refusedBaseUrl = () =>
+  Effect.callback<string>((resume) => {
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      server.close(() => resume(Effect.succeed(`http://127.0.0.1:${port}`)));
+    });
+  });
+
+type CapturedLog = { readonly message: string; readonly annotations: Record<string, unknown> };
+
+const capturingLogger = (sink: Array<CapturedLog>) =>
+  Logger.layer([
+    Logger.make<unknown, void>((options) => {
+      sink.push({
+        message: String(options.message),
+        annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+      });
+    }),
+  ]);
 
 const ThingsGroup = HttpApiGroup.make("things").add(
   HttpApiEndpoint.get("listThings", "/things", {
@@ -408,7 +432,7 @@ describe("OpenAPI upstream failure modes", () => {
 
       expect(result).toMatchObject({
         ok: false,
-        error: { code: "upstream_unreachable" },
+        error: { code: "upstream_unreachable", details: { code: expect.any(String) } },
       });
     }),
   );
@@ -537,12 +561,48 @@ describe("OpenAPI upstream failure modes", () => {
       });
       const failure = result as {
         readonly ok: false;
-        readonly error: { readonly message: string };
+        readonly error: { readonly message: string; readonly details?: unknown };
       };
+      // No errno here (`fetch` rejects port 1 before dialing). The result
+      // crosses a JSON boundary, so the missing code must be absent rather
+      // than an `undefined` property.
+      expect(failure.error.details).toStrictEqual({ host: "127.0.0.1:1" });
       expect(failure.error.message).toContain("base URL");
       expect(failure.error.message).not.toContain("your network");
       expect(failure.error.message).not.toContain("Internal tool error");
       expect(failure.error.message).not.toContain("/things");
+    }),
+  );
+
+  // Classifying the failure took it off the hosts' correlation-id defect log,
+  // so the sanitized cause must reach both the caller (details) and operators
+  // (log) — and never the request, which carries the resolved auth header.
+  it.effect("connection refused reports the errno code to the caller and the log", () =>
+    Effect.gen(function* () {
+      const baseUrl = yield* refusedBaseUrl();
+      const { executor, address } = yield* buildExecutor(baseUrl);
+      const logged: Array<CapturedLog> = [];
+
+      const result = yield* executor
+        .execute(address, {})
+        .pipe(Effect.provide(capturingLogger(logged)));
+
+      const host = new URL(baseUrl).host;
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_unreachable", details: { host, code: "ECONNREFUSED" } },
+      });
+      const rendered = JSON.stringify(result);
+      expect(rendered).not.toContain("/things");
+      // The apiKey value `buildExecutor` puts on the connection.
+      expect(rendered).not.toContain("token");
+
+      const warning = logged.find((entry) => entry.message.includes("upstream unreachable"));
+      expect(warning?.annotations).toMatchObject({
+        "plugin.openapi.integration": "f",
+        "plugin.openapi.upstream.host": host,
+        "plugin.openapi.upstream.transport_code": "ECONNREFUSED",
+      });
     }),
   );
 });

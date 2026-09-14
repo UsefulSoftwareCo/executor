@@ -1159,15 +1159,35 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
 
 const urlHost = Option.liftThrowable((url: string) => new URL(url).host);
 
+// `fetch` rejects with a generic `TypeError("fetch failed")`; the errno-style
+// code (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …) sits on the innermost
+// link of its `cause` chain. The walk is bounded so a cyclic cause cannot spin.
+const TransportCauseLink = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+});
+const decodeTransportCauseLink = Schema.decodeUnknownOption(TransportCauseLink);
+const TRANSPORT_CAUSE_MAX_DEPTH = 5;
+
+const transportFailureCode = (cause: unknown, depth = 0): string | undefined =>
+  Option.match(decodeTransportCauseLink(cause), {
+    onNone: () => undefined,
+    onSome: (link) =>
+      (link.cause !== undefined && depth < TRANSPORT_CAUSE_MAX_DEPTH
+        ? transportFailureCode(link.cause, depth + 1)
+        : undefined) ?? link.code,
+  });
+
 // A transport failure produced no response: DNS, connection refused, TLS, or a
 // socket dropped before headers. The TransportError carries the whole request
-// (URL, headers, credentials), so only the origin is lifted onto the
-// invocation error for user-facing copy.
+// (URL, headers, credentials), so only the origin and the errno-style code are
+// lifted onto the invocation error.
 const transportFailureFields = (reason: HttpClientError.HttpClientError["reason"]) =>
   Predicate.isTagged(reason, "TransportError")
     ? {
         reason: "transport_error" as const,
         upstreamHost: Option.getOrUndefined(urlHost(reason.request.url)),
+        transportCode: transportFailureCode(reason.cause),
       }
     : {};
 

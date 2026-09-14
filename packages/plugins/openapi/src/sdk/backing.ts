@@ -629,6 +629,22 @@ export const resolveOpenApiBackedTools = ({
     };
   });
 
+// Transport failures used to escape as defects, which the hosts log with a
+// correlation id. As a typed tool failure nothing else records them, so log
+// and annotate the span with the sanitized classification operators need to
+// tell DNS from refused from TLS.
+const recordUpstreamUnreachable = (integration: string, error: OpenApiInvocationError) => {
+  const annotations = {
+    "plugin.openapi.integration": integration,
+    "plugin.openapi.upstream.host": error.upstreamHost ?? "unknown",
+    "plugin.openapi.upstream.transport_code": error.transportCode ?? "unknown",
+  };
+  return Effect.logWarning("OpenAPI upstream unreachable").pipe(
+    Effect.annotateLogs(annotations),
+    Effect.andThen(Effect.annotateCurrentSpan(annotations)),
+  );
+};
+
 export const invokeOpenApiBackedTool = (input: {
   readonly ctx: PluginCtx<OpenapiStore>;
   readonly toolRow: { readonly integration: string; readonly name: string };
@@ -728,16 +744,26 @@ export const invokeOpenApiBackedTool = (input: {
                 }),
               })
             : error.reason === "transport_error"
-              ? Effect.succeed({
-                  ok: false as const,
-                  failure: ToolResult.fail({
-                    code: "upstream_unreachable",
-                    // Executor sends the request, not the user's browser, so
-                    // point at what the user can act on: the configured
-                    // origin and the service behind it.
-                    message: `Could not reach the upstream server for "${integration}"${error.upstreamHost ? ` at ${error.upstreamHost}` : ""}. Verify the integration's base URL and that the service is online, then try again.`,
+              ? recordUpstreamUnreachable(integration, error).pipe(
+                  Effect.as({
+                    ok: false as const,
+                    failure: ToolResult.fail({
+                      code: "upstream_unreachable",
+                      // Executor sends the request, not the user's browser, so
+                      // point at what the user can act on: the configured
+                      // origin and the service behind it.
+                      message: `Could not reach the upstream server for "${integration}"${error.upstreamHost ? ` at ${error.upstreamHost}` : ""}. Verify the integration's base URL and that the service is online, then try again.`,
+                      // Unlike the timeout branches, `error.cause` is withheld:
+                      // the TransportError carries the whole request, including
+                      // resolved auth headers. Absent fields are dropped, not
+                      // `undefined`: the result must stay a JSON value.
+                      details: {
+                        ...(error.upstreamHost !== undefined ? { host: error.upstreamHost } : {}),
+                        ...(error.transportCode !== undefined ? { code: error.transportCode } : {}),
+                      },
+                    }),
                   }),
-                })
+                )
               : Effect.fail(error),
       ),
     );
