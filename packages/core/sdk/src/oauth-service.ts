@@ -18,6 +18,7 @@ import { Duration, Effect, Exit, Layer, Match, Option, Predicate, Schema } from 
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
+import type { AuditEventInput } from "./audit";
 import type { Connection } from "./connection";
 import type { OrgWriteDeniedError } from "./errors";
 import type { IFumaClient, StorageFailure } from "./fuma-runtime";
@@ -128,8 +129,8 @@ export interface MintOAuthConnectionInput {
   /** Credential provider key + item id the access token is stored under. */
   readonly provider: string;
   readonly itemId: string;
-  /** Credential material to persist only after the row transaction commits.
-   * Values remain internal to the executor/provider boundary. */
+  /** Credential material to persist only after the row + audit transaction
+   * commits. Values remain internal to the executor/provider boundary. */
   readonly credentialValues: readonly {
     readonly itemId: string;
     readonly value: string;
@@ -222,6 +223,7 @@ export interface OAuthServiceDeps {
    *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
    *  user-intent client/connect surfaces. */
   readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
+  readonly recordAuditEvent: (input: AuditEventInput) => Effect.Effect<void, StorageFailure>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */
   readonly mintOAuthConnection: (
@@ -910,7 +912,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const now = new Date();
 
       // Resolve the out-of-band write up front, but do not mutate the provider
-      // until the database transaction commits.
+      // until the database transaction (including its audit row) commits.
+      // This is the same ordering as connection creation: a failed audit insert
+      // cannot leave an unaudited secret behind.
       let clientSecretItemIdValue: string | null = null;
       let credentialWrite: CredentialWriteAttempt | null = null;
       let secretWrite: CredentialWriteSnapshot | undefined;
@@ -1000,6 +1004,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               cause: undefined,
             });
           }
+          yield* deps.recordAuditEvent({
+            action: existing ? "updated" : "created",
+            resourceType: "oauth_client",
+            resourceOwner: input.owner,
+            resourceId: String(input.slug),
+          });
           return { existing, rowId };
         }),
       );
@@ -1037,6 +1047,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                         looseDb(db).create("oauth_client", existing),
                       );
                     }
+                    yield* deps.recordAuditEvent({
+                      action: "rolled_back",
+                      resourceType: "oauth_client",
+                      resourceOwner: input.owner,
+                      resourceId: String(input.slug),
+                    });
                     return true;
                   }),
                 )
@@ -1088,6 +1104,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 });
               }
               if (Predicate.isTagged(restoredCredential, "Failed")) {
+                yield* deps.recordAuditEvent({
+                  action: "rollback_failed",
+                  resourceType: "oauth_client",
+                  resourceOwner: input.owner,
+                  resourceId: String(input.slug),
+                });
                 return yield* new StorageError({
                   message: `Failed to store the OAuth client secret for ${input.owner}/${String(input.slug)}, and credential compensation also failed.`,
                   cause: restoredCredential.cause,
@@ -1161,6 +1183,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
             )
             .pipe(Effect.asVoid);
+          if (existing) {
+            yield* deps.recordAuditEvent({
+              action: "removed",
+              resourceType: "oauth_client",
+              resourceOwner: owner,
+              resourceId: String(slug),
+            });
+          }
           return existing;
         }),
       );
@@ -2268,7 +2298,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
 
   // -----------------------------------------------------------------------
   // Mint the connection from a freshly exchanged token: hand the access value
-  // (+ refresh) to the executor, which commits the row first, persists the
+  // (+ refresh) to the executor, which commits row + audit first, persists the
   // credentials with compensation, then produces the connection's tools.
   // -----------------------------------------------------------------------
   const mintFromToken = (

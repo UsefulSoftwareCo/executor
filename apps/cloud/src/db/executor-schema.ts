@@ -49,6 +49,26 @@ export const subject = pgTable(
   (table) => [uniqueIndex("subject_uidx").on(table.tenant, table.external_id)],
 );
 
+export const audit_event = pgTable(
+  "audit_event",
+  {
+    id: text("id").notNull(),
+    actor_id: text("actor_id"),
+    action: text("action").notNull(),
+    resource_type: text("resource_type").notNull(),
+    resource_owner: text("resource_owner"),
+    resource_parent: text("resource_parent"),
+    resource_id: text("resource_id").notNull(),
+    created_at: timestamp("created_at").notNull(),
+    row_id: text("row_id")
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: text("tenant").notNull(),
+  },
+  (table) => [uniqueIndex("audit_event_uidx").on(table.tenant, table.created_at, table.id)],
+);
+
 export const connection = pgTable(
   "connection",
   {

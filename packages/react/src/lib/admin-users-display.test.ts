@@ -2,6 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import type { IntegrationSlug } from "@executor-js/sdk/shared";
 
 import {
+  adminAuditActorLabel,
+  adminAuditResourceLabel,
+  adminAuditScopeLabel,
+  auditActionLabel,
   adminUserCopyableEmail,
   adminUserTitle,
   connectionHealthStatus,
@@ -17,6 +21,53 @@ import {
   type AdminCatalogRow,
   type AdminConnectionRow,
 } from "./admin-users-display";
+
+describe("audit activity display", () => {
+  it("distinguishes a completed rollback from a failed credential restore", () => {
+    expect(auditActionLabel("rolled_back")).toBe("Rolled back");
+    expect(auditActionLabel("rollback_failed")).toBe("Rollback failed");
+  });
+
+  it("names actors without inventing an identity for system events", () => {
+    expect(
+      adminAuditActorLabel({
+        actorId: "user_1",
+        actorEmail: "admin@example.test",
+        actorDisplayName: "Admin",
+      }),
+    ).toBe("admin@example.test");
+    expect(adminAuditActorLabel({ actorId: null, actorEmail: null, actorDisplayName: null })).toBe(
+      "System",
+    );
+  });
+
+  it("renders safe resource identifiers and personal versus workspace scope", () => {
+    expect(
+      adminAuditResourceLabel({
+        resourceType: "connection",
+        resourceParent: "github",
+        resourceId: "main",
+      }),
+    ).toBe("Connection: github / main");
+    expect(
+      adminAuditResourceLabel({
+        resourceType: "oauth_client",
+        resourceParent: null,
+        resourceId: "workspace-app",
+      }),
+    ).toBe("OAuth app: workspace-app");
+    expect(
+      adminAuditResourceLabel({
+        resourceType: "tool_policy",
+        resourceParent: "github",
+        resourceId: "policy-1",
+      }),
+    ).toBe("Tool policy: github / policy-1");
+    expect(adminAuditScopeLabel("user")).toBe("Personal");
+    expect(adminAuditScopeLabel("org")).toBe("Workspace");
+    expect(adminAuditScopeLabel(null)).toBe("Workspace");
+  });
+});
 
 const slug = (value: string): IntegrationSlug => value as IntegrationSlug;
 

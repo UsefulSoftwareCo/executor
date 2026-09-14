@@ -35,6 +35,7 @@ import {
   HostConfig,
   PluginsProvider,
   getAdminUser,
+  listAdminAuditEvents,
   listAdminUserConnections,
   listAdminUsers,
   listAdminUsersWithConnections,
@@ -286,6 +287,14 @@ export const workosAdminUsersProvider: Layer.Layer<
       WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
     >();
     return AdminUsersProvider.of({
+      listAuditEvents: (headers, options) =>
+        withPlatformView(headers, (executor, organizationId) =>
+          platformViewOf(executor).pipe(
+            Effect.flatMap((admin) =>
+              listAdminAuditEvents(admin, options, userDirectory(organizationId, context)),
+            ),
+          ),
+        ).pipe(Effect.provideContext(context)),
       listUsers: (headers, options) =>
         withPlatformView(headers, (executor, organizationId) =>
           platformViewOf(executor).pipe(
