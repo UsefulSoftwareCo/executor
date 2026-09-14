@@ -18,7 +18,7 @@ const ORG_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){1,47}$/;
  *  - App planes:        api, mcp, .well-known (cloud `app-paths.ts`, selfhost
  *                       envelope, cloudflare `run_worker_first`)
  *  - Console routes:    connect, integrations, policies, secrets, tools, users,
- *                       toolkits, artifacts, resume, plugins (the shared
+ *                       toolkits, artifacts, skills, resume, plugins (the shared
  *                       contract, i.e. every entry in `CONSOLE_ROUTE_PATHS`),
  *                       plus host extras:
  *                       api-keys, org, billing, create-org, setup-mcp (cloud),
@@ -50,6 +50,7 @@ export const RESERVED_ORG_SLUGS: ReadonlySet<string> = new Set([
   "tools",
   "toolkits",
   "artifacts",
+  "skills",
   "resume",
   "plugins",
   "api-keys",

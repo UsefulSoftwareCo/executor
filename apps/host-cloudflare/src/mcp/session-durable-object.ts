@@ -164,6 +164,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         artifacts: executor.artifacts,
+        skills: executor.skills,
         connections: executor.connections,
         // Artifacts are on by default, opt-out per connection. A session
         // persisted without a value restores to the default, same as a fresh

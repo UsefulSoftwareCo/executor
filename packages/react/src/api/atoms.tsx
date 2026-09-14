@@ -12,6 +12,7 @@ import {
   type OAuthGrant,
   type Owner,
   type ProviderItemId,
+  type SkillName,
   type TokenEndpointAuthMethod,
   type ToolAddress,
 } from "@executor-js/sdk/shared";
@@ -174,6 +175,32 @@ export const artifactAtom = Atom.family((artifactId: ArtifactId) =>
 );
 
 // ---------------------------------------------------------------------------
+// Agent Skills — SKILL.md directories saved to the workspace, owner-scoped the
+// same way connections are.
+// ---------------------------------------------------------------------------
+
+export const skillsAtom = ExecutorApiClient.query("skills", "list", {
+  timeToLive: "30 seconds",
+  reactivityKeys: [ReactivityKey.skills],
+});
+
+/**
+ * One skill WITH the content of every file it bundles. `skills.list` returns
+ * the manifest only (path, size, digest), so the detail and edit views have to
+ * fetch the row rather than derive it from the list.
+ *
+ * `Atom.family` (not a bare arrow) because the pages rebuild the `{owner,name}`
+ * key object on every render — a fresh atom per render would refetch in a loop.
+ */
+export const skillAtom = Atom.family((ref: { readonly owner: Owner; readonly name: SkillName }) =>
+  ExecutorApiClient.query("skills", "get", {
+    params: { owner: ref.owner, name: ref.name },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.skills],
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Mutation atoms — reactivityKeys must be passed at call site (effect-atom
 // does not accept them at definition time). See `reactivity-keys.tsx` for the
 // canonical key arrays.
@@ -280,6 +307,17 @@ export const removeArtifact = ExecutorApiClient.mutation("artifacts", "remove");
  * keeps showing its layout preview, which is a perfectly good picture.
  */
 export const setArtifactPreview = ExecutorApiClient.mutation("artifacts", "setPreview");
+
+/** Create or replace a skill in place. The name is read from the uploaded
+ *  SKILL.md, never sent separately, so a renamed frontmatter saves a NEW skill.
+ *  Pass `reactivityKeys: skillWriteKeys` at the call site. */
+export const saveSkill = ExecutorApiClient.mutation("skills", "save");
+
+export const removeSkill = ExecutorApiClient.mutation("skills", "remove");
+
+/** Read-only: lists the skills found at a GitHub URL. Saving is a separate
+ *  `saveSkill` per pick, so this carries no reactivity keys of its own. */
+export const importSkills = ExecutorApiClient.mutation("skills", "import");
 
 export const resumeExecution = ExecutorApiClient.mutation("executions", "resume");
 

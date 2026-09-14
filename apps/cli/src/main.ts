@@ -86,6 +86,7 @@ import {
   normalizeExecutorServerOrigin,
   resolveExecutorServerConfiguredHeaders,
   resolveExecutorServerRequestHeaders,
+  SkillName,
   type ExecutorLocalServerKind,
   type ExecutorLocalServerManifest,
   type ExecutorServerConnection,
@@ -184,6 +185,21 @@ import {
   sanitizeCliOutputText,
   shellQuoteArg,
 } from "./tooling";
+import {
+  defaultClaudeSkillsDir,
+  defaultSkillsDir,
+  formatSkillPullSummaryLine,
+  formatSkillsTable,
+  planSkillsPull,
+  readExistingSkillEntries,
+  removeSkillDirectory,
+  resolveEffectiveSkills,
+  summarizeSkillPullActions,
+  writeSkillDirectory,
+  type SkillDetail,
+  type SkillPullAction,
+  type SkillSummary,
+} from "./skills";
 
 // Embedded web UI — baked into compiled binaries via `with { type: "file" }`
 import embeddedWebUI from "./embedded-web-ui.gen";
@@ -2209,6 +2225,125 @@ const toolsCommand = Command.make("tools").pipe(
   Command.withDescription("Discover available tools and integrations"),
 );
 
+// ---------------------------------------------------------------------------
+// Skills — `executor skills list` / `executor skills pull`
+// ---------------------------------------------------------------------------
+
+const skillsListCommand = Command.make(
+  "list",
+  {
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ baseUrl, server, scope }) =>
+    Effect.gen(function* () {
+      applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
+      const connection = yield* resolveExecutorServerConnection(target);
+      const client = yield* makeApiClient(connection, target);
+      const skills = yield* client.skills.list();
+      for (const line of formatSkillsTable(skills)) {
+        console.log(line);
+      }
+    }).pipe(Effect.mapError(toError)),
+).pipe(Command.withDescription("List Agent Skills visible to this owner scope"));
+
+const skillsPullDirOption = Options.string("dir").pipe(
+  Options.optional,
+  Options.withDescription("Directory to write skills into. Defaults to ~/.agents/skills."),
+);
+
+const skillsPullNoClaudeOption = Options.boolean("no-claude").pipe(
+  Options.withDefault(false),
+  Options.withDescription("Skip mirroring skills into ~/.claude/skills."),
+);
+
+/** Pull every skill this owner scope can see into `root`, applying the
+ *  marker-file safety rules from `planSkillsPull`. Returns the actions taken
+ *  so the caller can print one combined summary across every target root. */
+const pullSkillsIntoRoot = (input: {
+  readonly root: string;
+  readonly origin: string;
+  readonly effectiveSkills: readonly SkillSummary[];
+  readonly fetchSkill: (skill: SkillSummary) => Effect.Effect<SkillDetail, Error>;
+}) =>
+  Effect.gen(function* () {
+    const existing = yield* readExistingSkillEntries(input.root).pipe(Effect.mapError(toError));
+    const actions = planSkillsPull({
+      origin: input.origin,
+      skills: input.effectiveSkills,
+      existing,
+    });
+    const skillsByName = new Map(input.effectiveSkills.map((skill) => [skill.name, skill]));
+
+    for (const action of actions) {
+      if (action.kind === "add" || action.kind === "update") {
+        const skill = skillsByName.get(action.name);
+        if (!skill) continue;
+        const detail = yield* input.fetchSkill(skill);
+        yield* writeSkillDirectory({ root: input.root, origin: input.origin, skill: detail }).pipe(
+          Effect.mapError(toError),
+        );
+      } else if (action.kind === "remove") {
+        yield* removeSkillDirectory(input.root, action.name).pipe(Effect.mapError(toError));
+      }
+    }
+
+    return actions;
+  });
+
+const skillsPullCommand = Command.make(
+  "pull",
+  {
+    dir: skillsPullDirOption,
+    noClaude: skillsPullNoClaudeOption,
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ dir, noClaude, baseUrl, server, scope }) =>
+    Effect.gen(function* () {
+      applyScope(scope);
+      const target = serverTargetFromOptions({ baseUrl, server });
+      const connection = yield* resolveExecutorServerConnection(target);
+      const client = yield* makeApiClient(connection, target);
+
+      const skills = yield* client.skills.list();
+      const effectiveSkills = resolveEffectiveSkills(skills);
+      const fetchSkill = (skill: SkillSummary) =>
+        client.skills
+          .get({ params: { owner: skill.owner, name: SkillName.make(skill.name) } })
+          .pipe(Effect.mapError(toError));
+
+      const targetRoot = Option.getOrElse(dir, defaultSkillsDir);
+      const roots = noClaude ? [targetRoot] : [targetRoot, defaultClaudeSkillsDir()];
+
+      const allActions: SkillPullAction[] = [];
+      for (const root of roots) {
+        const actions = yield* pullSkillsIntoRoot({
+          root,
+          origin: connection.origin,
+          effectiveSkills,
+          fetchSkill,
+        });
+        allActions.push(...actions);
+      }
+
+      const summary = summarizeSkillPullActions(allActions);
+      console.log(`Pulled ${effectiveSkills.length} skill(s) into ${roots.join(", ")}.`);
+      console.log(formatSkillPullSummaryLine(summary));
+      for (const action of allActions) {
+        if (action.reason) console.log(`  ${action.kind}: ${action.name} (${action.reason})`);
+      }
+    }).pipe(Effect.mapError(toError)),
+).pipe(Command.withDescription("Pull Agent Skills from the server into a local directory"));
+
+const skillsCommand = Command.make("skills").pipe(
+  Command.withSubcommands([skillsListCommand, skillsPullCommand] as const),
+  Command.withDescription("List and pull Agent Skills from the connected server"),
+);
+
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -3299,6 +3434,7 @@ const root = Command.make("executor").pipe(
     callCommand,
     resumeCommand,
     toolsCommand,
+    skillsCommand,
     installCommand,
     loginCommand,
     logoutCommand,

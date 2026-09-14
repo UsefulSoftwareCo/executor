@@ -192,6 +192,12 @@ const methodAttrs = (envelope: JsonRpcEnvelope): Record<string, unknown> => {
         onSome: ({ uri }) => (uri ? { "mcp.resource.uri": uri } : {}),
       }),
     ),
+    Match.when("skills/get", () =>
+      Option.match(decodeUriParams(params), {
+        onNone: () => ({}) as Record<string, unknown>,
+        onSome: ({ uri }) => (uri ? { "mcp.resource.uri": uri } : {}),
+      }),
+    ),
     Match.when("prompts/get", () =>
       Option.match(decodeNamedParams(params), {
         onNone: () => ({}) as Record<string, unknown>,

@@ -10,6 +10,7 @@ import {
   Option,
   Predicate,
   Ref,
+  Result,
   Schema,
   Semaphore,
 } from "effect";
@@ -97,6 +98,17 @@ import {
   type SetArtifactPreviewInput,
 } from "./artifact";
 import {
+  rowToSkill,
+  toSkillSummary,
+  prepareSkillFiles,
+  type SaveSkillInput,
+  type Skill,
+  type SkillRef,
+  type SkillSummary,
+} from "./skill";
+import {
+  SkillNotFoundError,
+  InvalidSkillError,
   ArtifactNotFoundError,
   ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
@@ -115,6 +127,7 @@ import {
 } from "./errors";
 import {
   ArtifactId,
+  SkillName,
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
@@ -516,6 +529,22 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly setPreview: (
       input: SetArtifactPreviewInput,
     ) => Effect.Effect<void, ArtifactNotFoundError | StorageFailure>;
+  };
+
+  /**
+   * Agent Skills saved to the workspace, visible to the bound owner scope: this
+   * subject's personal skills plus the org's shared ones.
+   */
+  readonly skills: {
+    /** Newest first, manifests only — file contents stay out of lists. */
+    readonly list: () => Effect.Effect<readonly SkillSummary[], StorageFailure>;
+    readonly get: (ref: SkillRef) => Effect.Effect<Skill, SkillNotFoundError | StorageFailure>;
+    /** Create, or replace in place the skill with the same `(owner, name)`.
+     *  The name is read from the SKILL.md frontmatter. */
+    readonly save: (
+      input: SaveSkillInput,
+    ) => Effect.Effect<Skill, InvalidSkillError | OrgWriteDeniedError | StorageFailure>;
+    readonly remove: (ref: SkillRef) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   };
 
   /**
@@ -6161,6 +6190,85 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       core.deleteMany("artifact", { where: artifactById(input.id) });
 
     // ------------------------------------------------------------------
+    // Skills
+    // ------------------------------------------------------------------
+
+    // Reads take no explicit owner beyond the ref: the owner policy already
+    // narrows to the rows this binding may see (org rows plus this subject's
+    // own), so `(owner, name)` is enough to pin one visible row.
+    const skillByRef =
+      (ref: SkillRef): CoreWhere =>
+      (b: AnyCb) =>
+        b.and(b("owner", "=", ref.owner), b("name", "=", ref.name));
+
+    const skillsList = (): Effect.Effect<readonly SkillSummary[], StorageFailure> =>
+      core
+        .findMany("skill", {
+          orderBy: [
+            ["updated_at", "desc"],
+            ["name", "asc"],
+          ],
+        })
+        .pipe(Effect.map((rows) => rows.map((row) => toSkillSummary(rowToSkill(row)))));
+
+    const skillsGet = (ref: SkillRef): Effect.Effect<Skill, SkillNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("skill", { where: skillByRef(ref) });
+        if (!row) {
+          return yield* new SkillNotFoundError({
+            owner: ref.owner,
+            name: SkillName.make(ref.name),
+          });
+        }
+        return rowToSkill(row);
+      });
+
+    const skillsSave = (
+      input: SaveSkillInput,
+    ): Effect.Effect<Skill, InvalidSkillError | OrgWriteDeniedError | StorageFailure> =>
+      Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
+        yield* requireUserSubject(input.owner);
+        const prepared = yield* Effect.promise(() => prepareSkillFiles(input.files));
+        if (Result.isFailure(prepared)) return yield* prepared.failure;
+        const { parsed, files } = prepared.success;
+        const now = new Date();
+        const ref: SkillRef = { owner: input.owner, name: parsed.name };
+        const set = {
+          description: parsed.description,
+          frontmatter: parsed.frontmatter,
+          files,
+          updated_at: now,
+        };
+        const existing = yield* core.findFirst("skill", { where: skillByRef(ref) });
+        if (existing) {
+          yield* core.updateMany("skill", { where: skillByRef(ref), set });
+          return rowToSkill({ ...existing, ...set });
+        }
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(input.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
+        });
+        const created = yield* core.create("skill", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          name: parsed.name,
+          ...set,
+          created_at: now,
+        });
+        return rowToSkill(created);
+      });
+
+    const skillsRemove = (
+      ref: SkillRef,
+    ): Effect.Effect<void, OrgWriteDeniedError | StorageFailure> =>
+      Effect.gen(function* () {
+        yield* guardOrgWrite(ref.owner);
+        yield* core.deleteMany("skill", { where: skillByRef(ref) });
+      });
+
+    // ------------------------------------------------------------------
     // Elicitation
     // ------------------------------------------------------------------
 
@@ -7131,6 +7239,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         rename: artifactsRename,
         remove: artifactsRemove,
         setPreview: artifactsSetPreview,
+      },
+      skills: {
+        list: skillsList,
+        get: skillsGet,
+        save: skillsSave,
+        remove: skillsRemove,
       },
       pendingApprovals,
       execute,

@@ -11,6 +11,7 @@
 // Branded ids + the owner literal.
 export {
   ArtifactId,
+  SkillName,
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
@@ -66,6 +67,9 @@ export {
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
   ArtifactNotFoundError,
+  SkillNotFoundError,
+  InvalidSkillError,
+  SkillSourceError,
   isUserActionableError,
   type ExecuteError,
   type ExecutorError,
@@ -119,6 +123,37 @@ export type {
   SetArtifactPreviewInput,
 } from "./artifact";
 export { ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
+
+// Agent Skills — the pure parts the console and CLI share with the server.
+export {
+  parseSkillMarkdown,
+  isValidSkillName,
+  isValidSkillFilePath,
+  skillRootUri,
+  skillFileUri,
+  parseSkillUri,
+  SKILL_MD_PATH,
+  SKILL_MAX_FILES,
+  SKILL_MAX_TOTAL_BYTES,
+  SKILL_RESERVED_NAMES,
+  SKILL_URI_SCHEME,
+} from "./skill";
+export {
+  parseGitHubSkillSource,
+  formatGitHubSkillSource,
+  type GitHubSkillSource,
+} from "./skill-source";
+export type {
+  Skill,
+  SkillSummary,
+  SkillFile,
+  SkillFileEntry,
+  SkillFileInput,
+  SkillRef,
+  SaveSkillInput,
+  ParsedSkillMarkdown,
+  ParsedSkillUri,
+} from "./skill";
 
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";

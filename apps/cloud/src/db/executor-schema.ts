@@ -251,6 +251,26 @@ export const artifact = pgTable(
   (table) => [uniqueIndex("artifact_uidx").on(table.tenant, table.owner, table.subject, table.id)],
 );
 
+export const skill = pgTable(
+  "skill",
+  {
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description").notNull(),
+    frontmatter: json("frontmatter").notNull(),
+    files: json("files").notNull(),
+    created_at: timestamp("created_at").notNull(),
+    updated_at: timestamp("updated_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("skill_uidx").on(table.tenant, table.owner, table.subject, table.name)],
+);
+
 export const plugin_storage = pgTable(
   "plugin_storage",
   {

@@ -63,6 +63,11 @@ export type PolicyId = typeof PolicyId.Type;
 export const ArtifactId = Schema.String.pipe(Schema.brand("ArtifactId"));
 export type ArtifactId = typeof ArtifactId.Type;
 
+/** An Agent Skill's name — the `name` in its SKILL.md frontmatter, unique within
+ *  its owner partition. Lowercase letters, digits, and single hyphens. */
+export const SkillName = Schema.String.pipe(Schema.brand("SkillName"));
+export type SkillName = typeof SkillName.Type;
+
 /**
  * The isolation partition (the org/workspace). Owns the catalog and namespaces
  * every connection. The executor is bound to one; `owner: "org"` files at this

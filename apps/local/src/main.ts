@@ -122,6 +122,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
       defaultConfig: {
         engine,
         artifacts: executor.artifacts,
+        skills: executor.skills,
         connections: executor.connections,
         ...appsConfig,
       },
@@ -131,6 +132,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             config: {
               engine,
               artifacts: executor.artifacts,
+              skills: executor.skills,
               connections: executor.connections,
               ...appsConfig,
             },
@@ -156,6 +158,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
           config: {
             engine: toolkitEngine,
             artifacts: handle.executor.artifacts,
+            skills: handle.executor.skills,
             connections: handle.executor.connections,
             ...appsConfig,
           },

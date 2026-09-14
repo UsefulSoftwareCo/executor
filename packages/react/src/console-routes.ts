@@ -46,6 +46,9 @@ export const CONSOLE_ROUTE_PATHS = [
   "/toolkits/$toolkitSlug",
   "/artifacts",
   "/artifacts/$artifactId",
+  "/skills",
+  "/skills/new",
+  "/skills/$skillOwner/$skillName",
   "/resume/$executionId",
   "/plugins/$pluginId/$",
 ] as const;
@@ -91,6 +94,14 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],
     ["/artifacts", route("/artifacts", file("artifacts.tsx"))],
     ["/artifacts/$artifactId", route("/artifacts/$artifactId", file("artifacts.$artifactId.tsx"))],
+    // A skill is addressed by `(owner, name)`, so both segments are in the URL:
+    // a personal and a workspace skill can share a name and stay distinct.
+    ["/skills", route("/skills", file("skills.tsx"))],
+    ["/skills/new", route("/skills/new", file("skills.new.tsx"))],
+    [
+      "/skills/$skillOwner/$skillName",
+      route("/skills/$skillOwner/$skillName", file("skills.$skillOwner.$skillName.tsx")),
+    ],
     ["/resume/$executionId", route("/resume/$executionId", file("resume.$executionId.tsx"))],
     ["/plugins/$pluginId/$", route("/plugins/$pluginId/$", file("plugins.$pluginId.$.tsx"))],
   ];

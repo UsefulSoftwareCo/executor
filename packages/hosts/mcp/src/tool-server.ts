@@ -69,6 +69,16 @@ import {
 import { TOOL_CALL_CONTRACT_MESSAGE } from "./tool-call-code";
 import { resolveArtifactAction } from "./artifact-action";
 import {
+  MCP_SKILLS_EXTENSION_ID,
+  registerWorkspaceSkills,
+  renderSkillsToolDescription,
+  renderWorkspaceSkill,
+  renderWorkspaceSkillsIndex,
+  resolveWorkspaceSkill,
+  type McpSkillsPort,
+} from "./workspace-skills";
+import type { Skill as WorkspaceSkill, SkillSummary } from "@executor-js/sdk";
+import {
   extractArtifactRoles,
   resolveArtifactBindings,
   type BindableConnection,
@@ -206,6 +216,14 @@ type SharedMcpServerConfig = {
    * whole `Executor` across this boundary.
    */
   readonly artifacts?: McpArtifactsPort;
+  /**
+   * The Agent Skills saved in the caller's workspace (personal + org-shared).
+   * Structurally satisfied by `executor.skills`. Present, the `skills` tool
+   * serves them next to Executor's own docs and the server declares the MCP
+   * Skills Extension; absent (stdio-only hosts, tests), the surface is exactly
+   * the docs-only one it always was.
+   */
+  readonly skills?: McpSkillsPort;
   /**
    * The caller's saved connections, for binding an artifact's integration roles
    * at create time. Structurally satisfied by `executor.connections`; hosts pass
@@ -841,6 +859,76 @@ const skillsResult = (
   return { content: [{ type: "text", text }] };
 };
 
+const textResult = (text: string, isError = false): McpToolResult => ({
+  content: [{ type: "text", text }],
+  ...(isError ? { isError: true } : {}),
+});
+
+// The `skills` tool when the host serves workspace skills too. Built-in docs
+// keep their exact behavior and win on a name clash (their names are reserved at
+// save time, so the clash cannot happen for a skill saved through Executor).
+// The index lists both sections; a miss lists both too, so the model retries
+// with a name that exists rather than the same miss.
+//
+// `file` reads one bundled file of a workspace skill — the third tier of
+// progressive disclosure. It is meaningless for a built-in doc, which has no
+// files, and says so instead of silently returning the body.
+const workspaceSkillsResult = (
+  input: { readonly name: string | undefined; readonly file: string | undefined },
+  executeInventory: string,
+  catalog: readonly Skill[],
+  port: McpSkillsPort,
+): Effect.Effect<McpToolResult> =>
+  Effect.gen(function* () {
+    const skills: readonly SkillSummary[] = yield* port
+      .list()
+      .pipe(Effect.catchCause(() => Effect.succeed<readonly SkillSummary[]>([])));
+    const index = () => `${renderSkillsIndex(catalog)}\n\n${renderWorkspaceSkillsIndex(skills)}`;
+    const name = input.name?.trim();
+    const file = input.file?.trim();
+    if (!name) return textResult(index());
+
+    const builtIn = findSkill(name, catalog);
+    if (builtIn) {
+      if (file) {
+        return textResult(
+          `\`${name}\` is one of Executor's own docs and has no bundled files. Call \`skills({ name: "${name}" })\` without \`file\`.`,
+          true,
+        );
+      }
+      return skillsResult(name, executeInventory, catalog);
+    }
+
+    const summary = resolveWorkspaceSkill(name, skills);
+    if (!summary) {
+      return textResult(
+        `No skill named "${name}". The skills this server can serve are listed below — a skill on your own disk or in your harness is not reachable from here.\n\n${index()}`,
+        true,
+      );
+    }
+    const skill: WorkspaceSkill | null = yield* port
+      .get({ owner: summary.owner, name: summary.name })
+      .pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (!skill) {
+      return textResult(
+        `Skill "${name}" could not be loaded right now. Retry, or call with no name to list what is available.`,
+        true,
+      );
+    }
+    if (file) {
+      const found = skill.files.find((entry) => entry.path === file);
+      if (!found) {
+        const paths = skill.files.map((entry) => `- \`${entry.path}\``).join("\n");
+        return textResult(
+          `Skill "${skill.name}" has no file "${file}". Its files are:\n${paths}`,
+          true,
+        );
+      }
+      return textResult(found.content);
+    }
+    return textResult(renderWorkspaceSkill(skill));
+  });
+
 /** Pull the live integration inventory block out of the built execute
  *  description (it runs from its header to the end), so the `skills` tool can
  *  re-use it without rebuilding the inventory from the executor. */
@@ -1225,7 +1313,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             // `ui://executor/shell.html`; it stays advertised even when no
             // shell loader is configured so the capability set doesn't vary
             // per host.
-            capabilities: { resources: {}, tools: {} },
+            capabilities: {
+              resources: {},
+              tools: {},
+              // The MCP Skills Extension (SEP-2640) rides on resources, so it
+              // is declared only when a skills source is wired in.
+              ...(config.skills ? { extensions: { [MCP_SKILLS_EXTENSION_ID]: {} } } : {}),
+            },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
           },
         ),
@@ -1562,33 +1656,87 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       }),
     );
 
+    // The catalog in the description is read once per session: it is what the
+    // model sees before it asks, and a description that changed under a
+    // client's cached tool list would be worse than one that is a few minutes
+    // stale. Every CALL reads live.
+    const workspaceSkills = config.skills;
+    const skillsCatalogAtBuild: readonly SkillSummary[] = workspaceSkills
+      ? yield* workspaceSkills.list().pipe(
+          Effect.catchCause(() => Effect.succeed<readonly SkillSummary[]>([])),
+          Effect.withSpan("mcp.host.list_workspace_skills"),
+        )
+      : [];
+
     yield* Effect.sync(() =>
-      server.registerTool(
-        "skills",
-        {
-          description: [
-            "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
-            "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
-            'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
-            "Call with no name to list the few docs available.",
-          ].join("\n"),
-          inputSchema: {
-            name: z
-              .string()
-              .optional()
-              .describe(
-                'A doc from this server\'s own catalog, e.g. "execute" — not a path or an outside skill name. Omit to list the catalog.',
+      workspaceSkills
+        ? server.registerTool(
+            "skills",
+            {
+              description: renderSkillsToolDescription(skillsCatalogAtBuild),
+              inputSchema: {
+                name: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'A skill from the catalog, by `name` or `owner/name`, or one of Executor\'s own docs such as "execute". Omit to list everything.',
+                  ),
+                file: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'A bundled file of the named workspace skill to read, as the relative path the skill lists (e.g. "references/guide.md").',
+                  ),
+              },
+            },
+            ({ name, file }, extra) =>
+              runToolEffect(
+                workspaceSkillsResult(
+                  { name, file },
+                  executeInventory,
+                  skillCatalog,
+                  workspaceSkills,
+                ),
+                extra,
               ),
-          },
-        },
-        ({ name }, extra) =>
-          runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog)), extra),
-      ),
+          )
+        : server.registerTool(
+            "skills",
+            {
+              description: [
+                "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
+                "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
+                'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
+                "Call with no name to list the few docs available.",
+              ].join("\n"),
+              inputSchema: {
+                name: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'A doc from this server\'s own catalog, e.g. "execute" — not a path or an outside skill name. Omit to list the catalog.',
+                  ),
+              },
+            },
+            ({ name }, extra) =>
+              runToolEffect(
+                Effect.succeed(skillsResult(name, executeInventory, skillCatalog)),
+                extra,
+              ),
+          ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
         attributes: { "mcp.tool.name": "skills" },
       }),
     );
+
+    if (workspaceSkills) {
+      yield* Effect.sync(() =>
+        registerWorkspaceSkills(server, workspaceSkills, (effect) =>
+          Effect.runPromiseWith(context)(anchor(effect)),
+        ),
+      ).pipe(Effect.withSpan("mcp.host.register_workspace_skills"));
+    }
 
     yield* Effect.sync(() => {
       if (elicitationMode.mode === "native") {

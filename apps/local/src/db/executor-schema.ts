@@ -188,6 +188,23 @@ export const tool_policy = sqliteTable(
   ],
 );
 
+export const skill = sqliteTable(
+  "skill",
+  {
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    frontmatter: text("frontmatter").notNull(),
+    files: text("files").notNull(),
+    created_at: integer("created_at").notNull(),
+    updated_at: integer("updated_at").notNull(),
+    row_id: text("row_id").primaryKey().notNull(),
+    tenant: text("tenant").notNull(),
+    owner: text("owner").notNull(),
+    subject: text("subject").notNull(),
+  },
+  (table) => [uniqueIndex("skill_uidx").on(table.tenant, table.owner, table.subject, table.name)],
+);
+
 export const plugin_storage = sqliteTable(
   "plugin_storage",
   {

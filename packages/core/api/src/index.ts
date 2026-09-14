@@ -38,6 +38,7 @@ export {
 } from "./oauth-popup";
 export { PoliciesApi } from "./policies/api";
 export { ArtifactsApi } from "./artifacts/api";
+export { SkillsApi } from "./skills/api";
 export {
   AccountApi,
   AccountHttpApi,

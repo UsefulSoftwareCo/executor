@@ -50,6 +50,13 @@
       "when": 1788255902609,
       "tag": "0006_bored_landau",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1789348020175,
+      "tag": "0007_same_vengeance",
+      "breakpoints": true
     }
   ]
 }

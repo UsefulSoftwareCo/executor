@@ -1,0 +1,28 @@
+$ bun run dev:proxy && bun run dev:vite
+$ portless proxy start --multiplex --port 1355 || true
+Proxy is already running on port 1355.
+To restart: portless proxy stop -p 1355 && portless proxy start -p 1355
+$ EXECUTOR_DATA_DIR=${EXECUTOR_DATA_DIR:-.executor-dev} portless --name "executor-local-$(basename "$(cd ../.. && pwd)")" bunx --bun vite dev
+
+portless
+
+-- Proxy is running
+-- executor-local-agent-skills.localhost (auto-resolves to 127.0.0.1)
+-- Using port 4877
+
+  -> https://executor-local-agent-skills.localhost:1355
+
+Running: PORT=4877 HOST=127.0.0.1 PORTLESS_URL=https://executor-local-agent-skills.localhost:1355 bunx --bun vite dev --port 4877 --strictPort --host 127.0.0.1
+
+
+  Open with auth:  http://127.0.0.1:4877/?_token=Jh2Z1knuzRaiXPgZsB2Isb8K2PirdRhqu141j1uyPr4
+
+
+  VITE v8.0.8  ready in 731 ms
+
+  ➜  Local:   http://127.0.0.1:4877/
+[23:00:44.885] INFO (#35) http.span.1=1242ms: Sent HTTP response {
+  "http.method": "POST",
+  "http.url": "/skills/import",
+  "http.status": 200,
+}

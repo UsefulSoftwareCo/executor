@@ -416,6 +416,29 @@ export const coreTables = defineTables({
     ["tenant", "owner", "subject", "id"],
   ),
 
+  // An Agent Skill (https://agentskills.io) saved to the workspace: a SKILL.md
+  // plus any bundled files, served to every connected agent through the MCP
+  // `skills` tool and the MCP Skills Extension. Owner-scoped like a connection:
+  // `org` rows are shared with the whole workspace, `user` rows are personal.
+  skill: ownedExecutorTable(
+    "skill",
+    {
+      // The frontmatter `name`; also the identity within the owner partition.
+      name: keyColumn("name"),
+      // The frontmatter `description`, denormalized so lists never parse files.
+      description: textColumn("description"),
+      // The SKILL.md frontmatter, verbatim, as a JSON object. The MCP Skills
+      // Extension serves it field-for-field, unknown keys included.
+      frontmatter: jsonColumn("frontmatter"),
+      // Every file of the skill, SKILL.md included:
+      // `[{ path, content, size, digest }]`. Text only in v1.
+      files: jsonColumn("files"),
+      created_at: dateColumn("created_at"),
+      updated_at: dateColumn("updated_at"),
+    },
+    ["tenant", "owner", "subject", "name"],
+  ),
+
   // Host-owned plugin storage (shared `plugin_storage` table, owner-scoped).
   plugin_storage: ownedExecutorTable(
     "plugin_storage",
@@ -492,6 +515,17 @@ export const ARTIFACT_SUMMARY_COLUMNS = [
 ] as const satisfies readonly (keyof ArtifactRow)[];
 /** The artifact-row projection {@link ARTIFACT_SUMMARY_COLUMNS} selects. */
 export type ArtifactSummaryRow = Pick<ArtifactRow, (typeof ARTIFACT_SUMMARY_COLUMNS)[number]>;
+export type SkillRow = FumaRow<CoreSchema["skill"]>;
+/** The skill-row projection lists select: everything but the file contents. */
+export const SKILL_SUMMARY_COLUMNS = [
+  "owner",
+  "name",
+  "description",
+  "frontmatter",
+  "files",
+  "created_at",
+  "updated_at",
+] as const satisfies readonly (keyof SkillRow)[];
 export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
 export type BlobRow = FumaRow<CoreSchema["blob"]>;
 

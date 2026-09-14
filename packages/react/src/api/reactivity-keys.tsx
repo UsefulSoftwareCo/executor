@@ -28,6 +28,8 @@ export const ReactivityKey = {
   policies: "policies",
   /** Saved generative-UI artifacts. */
   artifacts: "artifacts",
+  /** Agent Skills (SKILL.md directories) saved to the workspace. */
+  skills: "skills",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
   /** An integration's declared health check (the operation/identity-field spec). */
@@ -79,6 +81,11 @@ export const policyWriteKeys = [ReactivityKey.policies, ReactivityKey.tools] as 
 /** Mutations that rename or delete a saved artifact. Artifacts are a leaf
  *  resource — nothing else reads them — so they invalidate only themselves. */
 export const artifactWriteKeys = [ReactivityKey.artifacts] as const;
+
+/** Mutations that save or delete a skill. Nothing else in the console reads
+ *  skills (the MCP host serves them straight from storage), so they invalidate
+ *  only themselves. */
+export const skillWriteKeys = [ReactivityKey.skills] as const;
 
 /** Cloud-only: org membership mutations. */
 export const orgMemberWriteKeys = [ReactivityKey.orgMembers] as const;
