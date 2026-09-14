@@ -217,13 +217,9 @@ export const makeSelfHostTestApp = async (
   const sessionStore = makeSelfHostMcpSessionStore(dbHandle);
   const pluginsProvider = options.pluginDeps
     ? Layer.succeed(PluginsProvider)({
-        plugins: (context) =>
+        plugins: () =>
           executorConfig.plugins({
             ...options.pluginDeps,
-            activeToolkitSlug:
-              context?.mcpResource?.kind === "toolkit"
-                ? context.mcpResource.slug
-                : options.pluginDeps?.activeToolkitSlug,
             allowLocalNetwork:
               options.pluginDeps?.allowLocalNetwork ??
               process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",

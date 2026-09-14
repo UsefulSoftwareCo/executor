@@ -43,6 +43,7 @@ import {
   type ExecutorConfig,
   type FirstPartyOAuthClientConfig,
   type StorageFailure,
+  type ToolProjection,
 } from "@executor-js/sdk";
 import {
   makeHostedFetch,
@@ -206,22 +207,42 @@ export const buildOAuthRedirectUri = (input: {
 // ---------------------------------------------------------------------------
 // PluginsProvider seam — the per-host (and possibly per-request) plugin array.
 //
-// Returns an Effect so a host that needs request-scoped credentials (cloud reads
-// WorkOS creds from the Worker env) can build fresh plugin instances each call,
-// while a host with static plugins (self-host) just returns a constant array.
+// A host that needs request-scoped credentials (cloud reads WorkOS creds from
+// the Worker env) builds fresh plugin instances each call, while a host with
+// static plugins (self-host) just returns a constant array. The plugin set is
+// the SAME for every MCP resource: a scoped endpoint is a projection over one
+// executor (see `projectionForMcpResource`), not a different plugin set.
 // ---------------------------------------------------------------------------
 
-export interface PluginsProviderContext {
-  readonly mcpResource?: McpResource;
-}
-
 export interface PluginsProviderShape {
-  readonly plugins: (context?: PluginsProviderContext) => readonly AnyPlugin[];
+  readonly plugins: () => readonly AnyPlugin[];
 }
 
 export class PluginsProvider extends Context.Service<PluginsProvider, PluginsProviderShape>()(
   "@executor-js/sdk/PluginsProvider",
 ) {}
+
+// ---------------------------------------------------------------------------
+// MCP resource -> projection. ONE place turns "which endpoint was dialed" into
+// "which slice of the catalog this executor serves":
+//   default            -> no projection (the whole catalog, workspace policy)
+//   toolkit <slug>     -> the named projection the toolkits plugin resolves
+//   integrations <a,b> -> every tool of those integrations, no overlay
+//   tool <id>          -> that one tool id, no overlay
+// The default endpoint is `undefined`, not the full projection, so the
+// unprojected executor is byte-identical to what it was before projections.
+// ---------------------------------------------------------------------------
+
+export const projectionForMcpResource = (
+  resource: McpResource | undefined,
+): string | ToolProjection | undefined => {
+  if (resource === undefined || resource.kind === "default") return undefined;
+  if (resource.kind === "toolkit") return resource.slug;
+  if (resource.kind === "integrations") {
+    return { visible: resource.slugs.map((slug) => `${slug}.*`), rules: [] };
+  }
+  return { visible: [resource.toolId], rules: [] };
+};
 
 // ---------------------------------------------------------------------------
 // makeScopedExecutor — the shared per-(user, org) executor body.
@@ -254,7 +275,9 @@ export const makeScopedExecutor = <
   // v2 executor binding, which is `{ tenant, subject }` only.
   _organizationName: string,
   options?: {
-    readonly plugins?: PluginsProviderContext;
+    /** The MCP resource this executor serves; resolved to a projection via
+     *  `projectionForMcpResource`. Absent on the HTTP plane. */
+    readonly mcpResource?: McpResource;
     /** Workspace-settings permission for this binding (see
      *  `ExecutorConfig.orgWrites`). Hosts derive it from the acting member's
      *  role; omitted -> allowed (hosts with no role model). */
@@ -300,7 +323,8 @@ export const makeScopedExecutor = <
       oauthCallbackPath: config.oauthCallbackPath,
     });
 
-    const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins));
+    const plugins = yield* Effect.sync(() => pluginsFactory());
+    const projection = projectionForMcpResource(options?.mcpResource);
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
     };
@@ -332,6 +356,7 @@ export const makeScopedExecutor = <
         orgSlug,
         includeProviders: config.exposeCredentialProviders ?? true,
       },
+      ...(projection === undefined ? {} : { projection }),
     });
     // Record the sighting. THIS is the seam every HTTP request and MCP session
     // on every host passes through, so it is where the `subject` table gets

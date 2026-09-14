@@ -1,3 +1,5 @@
+import { mcpResourceFromPathname } from "@executor-js/host-mcp";
+
 import { makeCloudflareApp } from "./app";
 import {
   cloudflareAccessConfigErrorMessage,
@@ -11,9 +13,9 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
-// handler. `/mcp` stays at this edge boundary because `McpAgent.serve()` needs
-// the Cloudflare `ExecutionContext` to pass authenticated session props into the
-// hibernatable Durable Object bridge.
+// handler. `/mcp` and its scoped sub-resources stay at this edge boundary
+// because `McpAgent.serve()` needs the Cloudflare `ExecutionContext` to pass
+// authenticated session props into the hibernatable Durable Object bridge.
 // ---------------------------------------------------------------------------
 
 let handlerPromise: Promise<{
@@ -48,7 +50,7 @@ export default {
     }
 
     const serve = await resolveHandler(env);
-    if (new URL(request.url).pathname === "/mcp") {
+    if (mcpResourceFromPathname(new URL(request.url).pathname) !== null) {
       return serve.mcp(request, env, ctx);
     }
     return serve.app(request);

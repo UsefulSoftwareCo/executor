@@ -129,7 +129,7 @@ export const makeExecutionStack = <
       organizationId,
       organizationName,
       {
-        plugins: { mcpResource: options?.mcpResource },
+        mcpResource: options?.mcpResource,
         ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
       },
     ).pipe(Effect.withSpan("executor.stack.scoped_executor"));

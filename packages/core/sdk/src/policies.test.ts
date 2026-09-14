@@ -618,7 +618,7 @@ describe("blocked tools", () => {
   );
 });
 
-describe("active tool-policy provider", () => {
+describe("tool projections", () => {
   const staticPlugin = definePlugin(() => ({
     id: "toolkit-fixture" as const,
     storage: () => ({}),
@@ -649,27 +649,35 @@ describe("active tool-policy provider", () => {
     ],
   }))();
 
-  const policyProviderPlugin = definePlugin(() => ({
-    id: "toolkit-policy-provider" as const,
+  const projectionSourcePlugin = definePlugin(() => ({
+    id: "toolkit-projection-source" as const,
     storage: () => ({}),
-    toolPolicyProvider: () => ({
-      list: () =>
-        Effect.succeed([
-          {
-            id: "allow-static",
-            pattern: "toolkit-fixture.ctl.allowed",
-            action: "approve" as const,
-            position: "a0",
-          },
-        ]),
+    toolProjections: () => ({
+      resolve: (name: string) =>
+        Effect.succeed(
+          name === "allowed-only"
+            ? {
+                visible: ["toolkit-fixture.ctl.allowed"],
+                rules: [
+                  {
+                    id: "allow-static",
+                    pattern: "toolkit-fixture.ctl.allowed",
+                    action: "approve" as const,
+                    position: "a0",
+                  },
+                ],
+              }
+            : null,
+        ),
     }),
   }))();
 
-  it.effect("uses provider rules as an allowlist for list, schema, and execute", () =>
+  it.effect("a projected view is an allowlist for list, schema, and execute", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor({
-        plugins: [staticPlugin, policyProviderPlugin] as const,
+      const parent = yield* makeTestExecutor({
+        plugins: [staticPlugin, projectionSourcePlugin] as const,
       });
+      const executor = yield* parent.project("allowed-only");
 
       const tools = yield* executor.tools.list();
       expect(tools.map((t) => String(t.address)).sort()).toEqual(["toolkit-fixture.ctl.allowed"]);
@@ -693,6 +701,97 @@ describe("active tool-policy provider", () => {
       expect(Result.isFailure(blocked)).toBe(true);
       if (!Result.isFailure(blocked)) return;
       expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
+
+      // The parent view is untouched.
+      const parentTools = yield* parent.tools.list();
+      expect(parentTools.map((t) => String(t.address)).sort()).toEqual([
+        "toolkit-fixture.ctl.allowed",
+        "toolkit-fixture.ctl.hidden",
+      ]);
+    }),
+  );
+
+  it.effect("an unknown projection name exposes nothing", () =>
+    Effect.gen(function* () {
+      const parent = yield* makeTestExecutor({
+        plugins: [staticPlugin, projectionSourcePlugin] as const,
+      });
+      const executor = yield* parent.project("no-such-toolkit");
+      expect(yield* executor.tools.list()).toEqual([]);
+      const blocked = yield* Effect.result(
+        executor.execute(ToolAddress.make("toolkit-fixture.ctl.allowed"), {}),
+      );
+      expect(Result.isFailure(blocked)).toBe(true);
+    }),
+  );
+
+  it.effect("a projection cannot loosen a workspace policy", () =>
+    Effect.gen(function* () {
+      const parent = yield* makeTestExecutor({
+        plugins: [staticPlugin, projectionSourcePlugin] as const,
+      });
+      // The workspace blocks the tool the projection would approve.
+      yield* parent.policies.create({
+        owner: "org",
+        pattern: "toolkit-fixture.ctl.allowed",
+        action: "block",
+      });
+      const executor = yield* parent.project("allowed-only");
+      expect(yield* executor.tools.list()).toEqual([]);
+      const blocked = yield* Effect.result(
+        executor.execute(ToolAddress.make("toolkit-fixture.ctl.allowed"), {}),
+      );
+      expect(Result.isFailure(blocked)).toBe(true);
+      if (!Result.isFailure(blocked)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
+    }),
+  );
+
+  it.effect("a workspace require_approval still gates a projection-approved tool", () =>
+    Effect.gen(function* () {
+      const parent = yield* makeTestExecutor({
+        plugins: [staticPlugin, projectionSourcePlugin] as const,
+      });
+      yield* parent.policies.create({
+        owner: "org",
+        pattern: "toolkit-fixture.ctl.allowed",
+        action: "require_approval",
+      });
+      const executor = yield* parent.project("allowed-only");
+      const resolved = yield* executor.policies.resolve(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+      );
+      expect(resolved.action).toBe("require_approval");
+      const calls = { count: 0 };
+      yield* executor.execute(
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+        {},
+        { onElicitation: recordingHandler(calls) },
+      );
+      expect(calls.count).toBe(1);
+    }),
+  );
+
+  it.effect("an inline projection narrows to one integration or one tool", () =>
+    Effect.gen(function* () {
+      const parent = yield* makeTestExecutor({
+        plugins: [staticPlugin] as const,
+      });
+      const byIntegration = yield* parent.project({
+        visible: ["toolkit-fixture.ctl.*"],
+        rules: [],
+      });
+      expect((yield* byIntegration.tools.list()).map((t) => String(t.address)).sort()).toEqual([
+        "toolkit-fixture.ctl.allowed",
+        "toolkit-fixture.ctl.hidden",
+      ]);
+      const single = yield* parent.project({
+        visible: ["toolkit-fixture.ctl.hidden"],
+        rules: [],
+      });
+      expect((yield* single.tools.list()).map((t) => String(t.address))).toEqual([
+        "toolkit-fixture.ctl.hidden",
+      ]);
     }),
   );
 });

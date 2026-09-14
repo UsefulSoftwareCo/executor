@@ -7,6 +7,8 @@ import {
   McpAuthProvider,
   McpErrorReporter,
   McpSessionStore,
+  mcpResourceFromPathname,
+  scopedMcpRoutePaths,
   type AuthOutcome,
   type McpDispatchResult,
   type McpResource,
@@ -18,7 +20,12 @@ import {
 // Routes:
 //   GET <provider-declared discovery paths>  -> McpAuthProvider metadata
 //   *   /mcp                                  -> authenticate -> dispatch(default)
-//   *   /mcp/toolkits/:toolkitSlug            -> authenticate -> dispatch(toolkit)
+//   *   /mcp/toolkits/:slug                   -> authenticate -> dispatch(toolkit)
+//   *   /mcp/integrations/:slugs              -> authenticate -> dispatch(integrations)
+//   *   /mcp/tools/:toolId                    -> authenticate -> dispatch(tool)
+//
+// The sub-resource grammar is owned by `mcpResourceFromPathname` in ./seams;
+// the envelope registers the routes and parses the matched path with it.
 //
 // The provider DECLARES the discovery paths it owns (at least the protected-
 // resource metadata document) via `McpAuthProvider.discoveryRoutes`; the
@@ -42,7 +49,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const MCP_PATH = "/mcp";
-const TOOLKIT_MCP_PATH = "/mcp/toolkits/:toolkitSlug";
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
@@ -413,10 +419,18 @@ const mcpRoute = (resource: McpResource) =>
     ),
   );
 
-const toolkitMcpRoute = Effect.gen(function* () {
-  const params = yield* HttpRouter.params;
-  const slug = params.toolkitSlug;
-  return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource);
+// A scoped route re-parses the matched pathname through the shared grammar
+// rather than reading route params, so the envelope and every host agree on
+// exactly one definition of what `/mcp/<kind>/<value>` means.
+const scopedMcpRoute = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  // `request.url` is path-only under some adapters and absolute under others;
+  // the base makes both parse and is otherwise discarded.
+  const resource = mcpResourceFromPathname(new URL(request.url, "http://localhost").pathname);
+  if (resource === null) {
+    return fromWebResponse(jsonRpcResponse(404, -32001, "MCP resource not found"));
+  }
+  return yield* mcpRoute(resource);
 });
 
 /**
@@ -441,7 +455,9 @@ export const McpServingRoutes = HttpRouter.use((router) =>
       );
     }
     yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
-    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute);
+    for (const path of scopedMcpRoutePaths(MCP_PATH)) {
+      yield* router.add("*", path, scopedMcpRoute);
+    }
   }),
 );
 

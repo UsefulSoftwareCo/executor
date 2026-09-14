@@ -82,6 +82,7 @@ export {
   makePlatformExecutor,
   HostConfig,
   PluginsProvider,
+  projectionForMcpResource,
   RequestWebOrigin,
   RequestOrgSlug,
   type HostConfigShape,

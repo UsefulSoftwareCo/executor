@@ -47,11 +47,10 @@ interface CloudPluginDeps {
    *  bypass the real WorkOS API. Production leaves this undefined and
    *  falls back to the credential-driven default. */
   readonly workosVaultClient?: WorkOSVaultClient;
-  readonly activeToolkitSlug?: string;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ workosCredentials, workosVaultClient, activeToolkitSlug }: CloudPluginDeps = {}) =>
+  plugins: ({ workosCredentials, workosVaultClient }: CloudPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -61,7 +60,7 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: false,
       }),
       graphqlHttpPlugin(),
-      toolkitsPlugin({ activeToolkitSlug }),
+      toolkitsPlugin(),
       workosVaultPlugin({
         credentials: workosCredentials ?? { apiKey: "", clientId: "" },
         ...(workosVaultClient ? { client: workosVaultClient } : {}),

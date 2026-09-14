@@ -43,12 +43,8 @@ export const makeCloudflarePluginsProvider = (
   config: CloudflareConfig,
 ): Layer.Layer<PluginsProvider> =>
   Layer.succeed(PluginsProvider)({
-    plugins: (context) =>
-      makeCloudflarePlugins(config.secretKey, {
-        activeToolkitSlug:
-          context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
-        allowLocalNetwork: config.allowLocalNetwork,
-      }),
+    plugins: () =>
+      makeCloudflarePlugins(config.secretKey, { allowLocalNetwork: config.allowLocalNetwork }),
   });
 
 export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<HostConfig> =>

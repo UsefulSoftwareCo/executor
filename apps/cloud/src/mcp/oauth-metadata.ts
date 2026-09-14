@@ -5,6 +5,8 @@
 
 import { Effect } from "effect";
 
+import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
+
 import { AUTHKIT_DOMAIN, resourceUrlFor } from "./auth";
 import { CORS_ALLOW_ORIGIN } from "./responses";
 
@@ -19,10 +21,10 @@ const jsonWebResponse = (body: unknown, status = 200): Response =>
 // matching org-scoped resource id; the bare path yields the bare resource.
 export const protectedResourceMetadataResponse = (
   organizationId: string | null = null,
-  toolkitSlug: string | null = null,
+  resource: McpResource = defaultMcpResource,
 ): Response =>
   jsonWebResponse({
-    resource: resourceUrlFor(organizationId, toolkitSlug),
+    resource: resourceUrlFor(organizationId, resource),
     authorization_servers: [AUTHKIT_DOMAIN],
     bearer_methods_supported: ["header"],
     // Spec-faithful clients (OpenCode, mcporter) request exactly what is

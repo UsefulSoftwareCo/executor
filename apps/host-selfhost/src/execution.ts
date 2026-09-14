@@ -40,13 +40,7 @@ import { loadConfig } from "./config";
 export { makeExecutionStack } from "@executor-js/api/server";
 
 export const SelfHostPluginsProvider: Layer.Layer<PluginsProvider> = Layer.succeed(PluginsProvider)(
-  {
-    plugins: (context) =>
-      executorConfig.plugins({
-        activeToolkitSlug:
-          context?.mcpResource?.kind === "toolkit" ? context.mcpResource.slug : undefined,
-      }),
-  },
+  { plugins: () => executorConfig.plugins() },
 );
 
 export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, () => {

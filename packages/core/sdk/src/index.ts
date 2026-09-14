@@ -203,6 +203,13 @@ export {
   type PolicySource,
 } from "./policies";
 
+// Tool projections — a narrowed view over the catalog, layered on policies.
+export {
+  resolveProjectedPolicy,
+  type ToolProjection,
+  type ToolProjectionRule,
+} from "./tool-projection";
+
 // Artifacts — saved generative-UI components.
 export {
   rowToArtifact,
@@ -385,8 +392,7 @@ export {
   type AnyPlugin,
   type StorageDeps,
   type OwnerBinding,
-  type ToolPolicyProvider,
-  type ToolPolicyProviderRule,
+  type ToolProjectionSource,
   type IntegrationRecord,
   type StaticIntegrationDecl,
   type StaticToolDecl,

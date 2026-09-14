@@ -55,25 +55,20 @@ const resolvePluginConfigPath = (scopeDir: string): string => join(scopeDir, "ex
 type LocalPlugins = readonly AnyPlugin[];
 
 export interface LocalExecutorOptions {
-  readonly activeToolkitSlug?: string;
   /**
    * Reuse an already-open owned database instead of opening (and locking) the
-   * data dir again. A toolkit-scoped MCP session differs from the default one
-   * only in its plugin set, so it must ride the running server's DB handle:
-   * `openOwnedLocalDatabase` takes an EXCLUSIVE lock, and a second open from
-   * inside the same process contends with the lock this process already holds.
-   * The borrowed handle is NOT closed when the derived executor disposes —
-   * whoever opened it still owns its lifetime.
+   * data dir again. `openOwnedLocalDatabase` takes an EXCLUSIVE lock, so a
+   * second open from inside the same process contends with the lock this
+   * process already holds. The borrowed handle is NOT closed when the derived
+   * executor disposes — whoever opened it still owns its lifetime.
    */
   readonly borrowedDb?: OwnedLocalDatabase;
 }
 
-const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
+const loadLocalPlugins = () =>
   Effect.gen(function* () {
     const cwd = process.env.EXECUTOR_SCOPE_DIR || process.cwd();
-    const staticPlugins = executorConfig.plugins({
-      activeToolkitSlug: options.activeToolkitSlug,
-    });
+    const staticPlugins = executorConfig.plugins();
     const dynamicPlugins =
       (yield* Effect.promise(() => loadPluginsFromJsonc({ path: resolvePluginConfigPath(cwd) }))) ??
       [];
@@ -102,9 +97,9 @@ const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
   readonly plugins: LocalPlugins;
-  /** The owned DB this bundle opened (or borrowed). Surfaced so a
-   *  toolkit-scoped executor can ride the SAME handle instead of contending
-   *  with this process's own exclusive data-dir lock. */
+  /** The owned DB this bundle opened (or borrowed). Surfaced so a derived
+   *  executor can ride the SAME handle instead of contending with this
+   *  process's own exclusive data-dir lock. */
   readonly db: OwnedLocalDatabase;
   /** Where this daemon's web UI is reachable, resolved once at boot. Surfaced
    *  so callers building user-facing links (MCP artifact deep links) use the
@@ -161,7 +156,7 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
 
   return Layer.effect(LocalExecutorTag)(
     Effect.gen(function* () {
-      const { cwd, plugins } = yield* loadLocalPlugins(options);
+      const { cwd, plugins } = yield* loadLocalPlugins();
       const tenantId = makeTenantId(cwd);
       const tables = collectTables();
 
