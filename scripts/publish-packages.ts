@@ -41,6 +41,7 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/plugins/mcp",
   "packages/plugins/onepassword",
   "packages/plugins/openapi",
+  "packages/hosts/pi",
 ] as const;
 
 const parseArgs = (argv: ReadonlyArray<string>): { dryRun: boolean; prepareOnly: boolean } => {

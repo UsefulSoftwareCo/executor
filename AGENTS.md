@@ -51,6 +51,8 @@ executor.
   React, API, and testing helpers.
 - `packages/react`: shared React UI and client/atom integration.
 - `packages/hosts/mcp`: MCP host surface.
+- `packages/hosts/pi`: the Pi extension (`@executor-js/pi`). Pi ships no MCP
+  client, so this bridges Executor's core tools into it.
 - `packages/kernel/*`: execution runtimes and code-execution substrate.
 - `apps/{local,cloud,cli,desktop}`: product composition roots.
 

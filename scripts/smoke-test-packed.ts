@@ -47,6 +47,7 @@ const PUBLIC_PACKAGE_DIRS = [
   "packages/plugins/mcp",
   "packages/plugins/onepassword",
   "packages/plugins/openapi",
+  "packages/hosts/pi",
 ] as const;
 
 type PackageJson = {
