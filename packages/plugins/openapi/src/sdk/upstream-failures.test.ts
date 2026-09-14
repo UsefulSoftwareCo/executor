@@ -518,7 +518,9 @@ describe("OpenAPI upstream failure modes", () => {
 
   // Port 1 refuses immediately. The same path used to throw `Internal tool
   // error [hex]` because the raw HttpClientError carries the request URL.
-  it.effect("connection refused returns upstream_unreachable without leaking the path", () =>
+  // Executor makes the request, so the message names the integration and
+  // origin the user can fix instead of blaming their own network.
+  it.effect("connection refused names the integration and origin without the path", () =>
     Effect.gen(function* () {
       const { executor, address } = yield* buildExecutor("http://127.0.0.1:1");
 
@@ -526,13 +528,19 @@ describe("OpenAPI upstream failure modes", () => {
 
       expect(result).toMatchObject({
         ok: false,
-        error: { code: "upstream_unreachable" },
+        error: {
+          code: "upstream_unreachable",
+          message: expect.stringContaining(
+            'Could not reach the upstream server for "f" at 127.0.0.1:1.',
+          ),
+        },
       });
       const failure = result as {
         readonly ok: false;
         readonly error: { readonly message: string };
       };
-      expect(failure.error.message).toContain("Could not reach");
+      expect(failure.error.message).toContain("base URL");
+      expect(failure.error.message).not.toContain("your network");
       expect(failure.error.message).not.toContain("Internal tool error");
       expect(failure.error.message).not.toContain("/things");
     }),

@@ -44,6 +44,10 @@ export class OpenApiInvocationError extends Data.TaggedError("OpenApiInvocationE
     | "response_body_timeout"
     | "unknown_arguments"
     | "transport_error";
+  // `host[:port]` of a request that failed at the transport layer. It is the
+  // integration's configured origin, so it is safe to show; the path, query,
+  // and headers stay on `cause`.
+  readonly upstreamHost?: string | undefined;
   readonly cause?: unknown;
 }> {}
 

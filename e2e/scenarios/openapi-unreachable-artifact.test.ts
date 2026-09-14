@@ -191,7 +191,7 @@ scenario(
                 const message = await state.innerText();
 
                 expect(message, "the user gets actionable network guidance").toContain(
-                  "Could not reach the upstream server",
+                  `Could not reach the upstream server for "${slug}"`,
                 );
                 expect(message, "the opaque defect mask never reaches the artifact").not.toContain(
                   "Internal tool error",

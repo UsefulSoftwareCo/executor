@@ -1,5 +1,10 @@
 import { Effect, Exit, Fiber, Layer, Option, Predicate, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import {
+  HttpClient,
+  type HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
@@ -1149,6 +1154,24 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
 });
 
 // ---------------------------------------------------------------------------
+// Transport failure classification
+// ---------------------------------------------------------------------------
+
+const urlHost = Option.liftThrowable((url: string) => new URL(url).host);
+
+// A transport failure produced no response: DNS, connection refused, TLS, or a
+// socket dropped before headers. The TransportError carries the whole request
+// (URL, headers, credentials), so only the origin is lifted onto the
+// invocation error for user-facing copy.
+const transportFailureFields = (reason: HttpClientError.HttpClientError["reason"]) =>
+  Predicate.isTagged(reason, "TransportError")
+    ? {
+        reason: "transport_error" as const,
+        upstreamHost: Option.getOrUndefined(urlHost(reason.request.url)),
+      }
+    : {};
+
+// ---------------------------------------------------------------------------
 // Public API — invoke a single operation
 // ---------------------------------------------------------------------------
 
@@ -1183,9 +1206,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         (err) =>
           new OpenApiInvocationError({
             message: "HTTP request failed",
-            ...(Predicate.isTagged(err.reason, "TransportError")
-              ? { reason: "transport_error" as const }
-              : {}),
+            ...transportFailureFields(err.reason),
             statusCode: Option.none(),
             cause: err,
           }),

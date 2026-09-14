@@ -732,8 +732,10 @@ export const invokeOpenApiBackedTool = (input: {
                   ok: false as const,
                   failure: ToolResult.fail({
                     code: "upstream_unreachable",
-                    message:
-                      "Could not reach the upstream server. Check your network and try again.",
+                    // Executor sends the request, not the user's browser, so
+                    // point at what the user can act on: the configured
+                    // origin and the service behind it.
+                    message: `Could not reach the upstream server for "${integration}"${error.upstreamHost ? ` at ${error.upstreamHost}` : ""}. Verify the integration's base URL and that the service is online, then try again.`,
                   }),
                 })
               : Effect.fail(error),
