@@ -280,6 +280,8 @@ const GOOGLE_TOOL_PREFIX_TO_PRESET_ID: ReadonlyMap<string, string> = new Map([
   ["youtube", "google-youtube-data"],
   ["searchconsole", "google-search-console"],
   ["webmasters", "google-search-console"],
+  ["analyticsdata", "google-analytics-data"],
+  ["analyticsadmin", "google-analytics-admin"],
   ["classroom", "google-classroom"],
   ["directory", "google-admin-directory"],
   ["reports", "google-admin-reports"],

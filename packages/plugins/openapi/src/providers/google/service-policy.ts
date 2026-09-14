@@ -66,6 +66,8 @@ export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]
   "google-keep": [auth("keep")],
   "google-youtube-data": [auth("youtube.force-ssl"), auth("youtube.channel-memberships.creator")],
   "google-search-console": [auth("webmasters")],
+  "google-analytics-data": [auth("analytics.readonly")],
+  "google-analytics-admin": [auth("analytics.readonly")],
   "google-classroom": [
     auth("classroom.announcements"),
     auth("classroom.courses"),
@@ -223,6 +225,8 @@ const GOOGLE_DISCOVERY_POLICIES: Readonly<Record<string, GoogleDiscoveryServiceP
     ]),
   }),
   "searchconsole/v1": policy("google-search-console"),
+  "analyticsdata/v1beta": policy("google-analytics-data"),
+  "analyticsadmin/v1beta": policy("google-analytics-admin"),
   "classroom/v1": policy("google-classroom", {
     blockedMethodIds: new Set(["classroom.courses.teachers.create"]),
     blockedMethodPrefixes: ["classroom.courses.studentGroups.", "classroom.courses.posts."],
