@@ -21,7 +21,7 @@ import {
   type InvokeOptions as EffectInvokeOptions,
   type OnElicitation,
 } from "./executor";
-import type { ElicitationContext, ElicitationResponse } from "./elicitation";
+import type { ElicitationContext, ElicitationResponse, InvocationProgress } from "./elicitation";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 import { Subject, Tenant } from "./ids";
 import type { AnyPlugin } from "./plugin";
@@ -63,6 +63,20 @@ export type PromiseOnElicitation =
 
 export interface PromiseInvokeOptions {
   readonly onElicitation?: PromiseOnElicitation;
+  /** Per-request timeout in milliseconds for transports that support it
+   *  (MCP). Omit to keep the transport default — the MCP SDK's is 60s. */
+  readonly timeoutMs?: number;
+  /** Hard cap in milliseconds on the whole request, including progress-
+   *  extended time. Bounds `resetTimeoutOnProgress` so a chatty server
+   *  cannot keep a call alive forever. MCP only. */
+  readonly maxTotalTimeoutMs?: number;
+  /** Reset the request timeout each time a progress notification arrives —
+   *  keeps long-running tools alive as long as they keep reporting.
+   *  Pair with `maxTotalTimeoutMs` for an absolute ceiling. MCP only. */
+  readonly resetTimeoutOnProgress?: boolean;
+  /** Called for each progress notification the server sends during the
+   *  call. Supplying it also requests progress from the server. MCP only. */
+  readonly onProgress?: (progress: InvocationProgress) => void;
 }
 
 type PromisifiedArg<T> = T extends EffectInvokeOptions | undefined

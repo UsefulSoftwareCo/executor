@@ -34,6 +34,26 @@ const rejectingConnector = (cause: unknown): McpConnector =>
     close: () => Promise.resolve(),
   });
 
+// Resolves like a real callTool, recording the params and request options it
+// was invoked with so tests can assert the InvokeOptions → RequestOptions
+// mapping without standing up a server.
+const recordingConnector = () => {
+  const calls: { params: unknown; options: unknown }[] = [];
+  const connector: McpConnector = Effect.succeed({
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only the methods invokeMcpTool calls
+    client: {
+      setRequestHandler: () => undefined,
+      setNotificationHandler: () => undefined,
+      callTool: (params: unknown, options: unknown) => {
+        calls.push({ params, options });
+        return Promise.resolve({ content: [], isError: false });
+      },
+    } as unknown as McpConnection["client"],
+    close: () => Promise.resolve(),
+  });
+  return { calls, connector };
+};
+
 const reauthorizationProvider: OAuthClientProvider = {
   get redirectUrl() {
     return "http://localhost/oauth/callback";
@@ -191,6 +211,72 @@ describe("invokeMcpTool", () => {
       expect(Predicate.isTagged(error, "McpOAuthReauthorizationRequired")).toBe(true);
       expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
       expect("cause" in error).toBe(false);
+    }),
+  );
+
+  it.effect("maps InvokeOptions onto callTool RequestOptions", () =>
+    Effect.gen(function* () {
+      const { calls, connector } = recordingConnector();
+      yield* invokeMcpTool({
+        toolId: "slow",
+        toolName: "slow",
+        args: {},
+        transport: "streamable-http",
+        connector,
+        elicit: acceptAll,
+        invokeOptions: {
+          timeoutMs: 300_000,
+          maxTotalTimeoutMs: 900_000,
+          resetTimeoutOnProgress: true,
+        },
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.options).toEqual({
+        timeout: 300_000,
+        maxTotalTimeout: 900_000,
+        resetTimeoutOnProgress: true,
+      });
+    }),
+  );
+
+  it.effect("routes server progress notifications to InvokeOptions.onProgress", () =>
+    Effect.gen(function* () {
+      const { calls, connector } = recordingConnector();
+      const seen: { progress: number; total?: number; message?: string }[] = [];
+      yield* invokeMcpTool({
+        toolId: "slow",
+        toolName: "slow",
+        args: {},
+        transport: "streamable-http",
+        connector,
+        elicit: acceptAll,
+        invokeOptions: { onProgress: (p) => void seen.push(p) },
+      });
+
+      const options = calls[0]!.options as {
+        onprogress: (p: { progress: number; total?: number; message?: string }) => void;
+      };
+      expect(typeof options.onprogress).toBe("function");
+      options.onprogress({ progress: 3, total: 10, message: "working" });
+      options.onprogress({ progress: 4 });
+      expect(seen).toEqual([{ progress: 3, total: 10, message: "working" }, { progress: 4 }]);
+    }),
+  );
+
+  it.effect("passes no RequestOptions when invokeOptions is omitted", () =>
+    Effect.gen(function* () {
+      const { calls, connector } = recordingConnector();
+      yield* invokeMcpTool({
+        toolId: "fast",
+        toolName: "fast",
+        args: {},
+        transport: "streamable-http",
+        connector,
+        elicit: acceptAll,
+      });
+
+      expect(calls[0]!.options).toBeUndefined();
     }),
   );
 

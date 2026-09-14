@@ -16,7 +16,7 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import type { ProtocolError } from "@modelcontextprotocol/client";
+import type { ProtocolError, RequestOptions } from "@modelcontextprotocol/client";
 
 // SDK error classes come through the lazy loader; by the time a tool call can
 // fail, the connect path has always loaded the module (see client-module.ts).
@@ -28,6 +28,7 @@ import {
   UrlElicitation,
   type Elicit,
   type ElicitationRequest,
+  type InvokeOptions,
 } from "@executor-js/sdk/core";
 
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
@@ -210,18 +211,52 @@ const installToolListChangedHandler = (
 // Single tool call — install handlers, callTool, return raw result
 // ---------------------------------------------------------------------------
 
+// Map caller InvokeOptions onto the MCP SDK's per-request RequestOptions.
+// `signal` is deliberately not exposed: Effect interruption already abandons
+// the fiber, and a caller-held AbortSignal would have to outlive the pooled
+// connection lease. `undefined` stays `undefined` so the SDK's own defaults
+// (60s request timeout, no progress reset) apply untouched.
+const requestOptions = (options: InvokeOptions | undefined): RequestOptions | undefined => {
+  if (options === undefined) return undefined;
+  const requestOptions: RequestOptions = {
+    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+    ...(options.maxTotalTimeoutMs === undefined
+      ? {}
+      : { maxTotalTimeout: options.maxTotalTimeoutMs }),
+    ...(options.resetTimeoutOnProgress === undefined
+      ? {}
+      : { resetTimeoutOnProgress: options.resetTimeoutOnProgress }),
+    ...(options.onProgress === undefined
+      ? {}
+      : {
+          onprogress: (progress) =>
+            options.onProgress?.({
+              progress: progress.progress,
+              ...(progress.total === undefined ? {} : { total: progress.total }),
+              ...(progress.message === undefined ? {} : { message: progress.message }),
+            }),
+        }),
+  };
+  return Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
+};
+
 const useConnection = (
   connection: McpConnection,
   toolName: string,
   args: Record<string, unknown>,
   elicit: Elicit,
   onToolListChanged: (() => void) | undefined,
+  invokeOptions: InvokeOptions | undefined,
 ): Effect.Effect<unknown, McpInvocationError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
     installElicitationHandler(connection.client, elicit);
     installToolListChangedHandler(connection.client, onToolListChanged);
     return yield* Effect.tryPromise({
-      try: () => connection.client.callTool({ name: toolName, arguments: args }),
+      try: () =>
+        connection.client.callTool(
+          { name: toolName, arguments: args },
+          requestOptions(invokeOptions),
+        ),
       catch: (cause) => {
         if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
           return new McpOAuthReauthorizationRequired({
@@ -277,6 +312,10 @@ export interface InvokeMcpToolInput {
   readonly connectionPool?: McpConnectionPool;
   readonly connectionPoolKey?: string;
   readonly elicit: Elicit;
+  /** Caller-supplied per-call options. `timeoutMs` / `maxTotalTimeoutMs` /
+   *  `resetTimeoutOnProgress` / `onProgress` map onto the MCP SDK's
+   *  RequestOptions; omit to keep the SDK defaults (60s timeout). */
+  readonly invokeOptions?: InvokeOptions;
   /** Fired when the server sends `notifications/tools/list_changed` during
    *  the call window. Synchronous and non-throwing by contract; the caller
    *  uses it to mark the persisted catalog stale. */
@@ -292,7 +331,14 @@ export const invokeMcpTool = (
   Effect.gen(function* () {
     const args = argsRecord(input.args);
     const use = (connection: McpConnection) =>
-      useConnection(connection, input.toolName, args, input.elicit, input.onToolListChanged);
+      useConnection(
+        connection,
+        input.toolName,
+        args,
+        input.elicit,
+        input.onToolListChanged,
+        input.invokeOptions,
+      );
 
     if (input.connectionPool && input.connectionPoolKey) {
       return yield* input.connectionPool.withConnection(

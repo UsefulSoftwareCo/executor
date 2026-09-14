@@ -62,10 +62,35 @@ export type ElicitationHandler = (ctx: ElicitationContext) => Effect.Effect<Elic
  *  auto-accept every request (tests / non-interactive hosts). */
 export type OnElicitation = ElicitationHandler | "accept-all";
 
+/** A `notifications/progress` update from a long-running tool call, carried
+ *  up to the caller that opted in via `InvokeOptions.onProgress`. */
+export interface InvocationProgress {
+  /** Progress so far, in units defined by the server. */
+  readonly progress: number;
+  /** Expected total when the server declares one. */
+  readonly total?: number;
+  /** Optional human-readable status message. */
+  readonly message?: string;
+}
+
 /** Per-call options for `execute`. */
 export interface InvokeOptions {
   /** Override the executor-level handler for this single call. */
   readonly onElicitation?: OnElicitation;
+  /** Per-request timeout in milliseconds for transports that support it
+   *  (MCP). Omit to keep the transport default — the MCP SDK's is 60s. */
+  readonly timeoutMs?: number;
+  /** Hard cap in milliseconds on the whole request, including progress-
+   *  extended time. Bounds `resetTimeoutOnProgress` so a chatty server
+   *  cannot keep a call alive forever. MCP only. */
+  readonly maxTotalTimeoutMs?: number;
+  /** Reset the request timeout each time a progress notification arrives —
+   *  keeps long-running tools alive as long as they keep reporting.
+   *  Pair with `maxTotalTimeoutMs` for an absolute ceiling. MCP only. */
+  readonly resetTimeoutOnProgress?: boolean;
+  /** Called for each progress notification the server sends during the
+   *  call. Supplying it also requests progress from the server. MCP only. */
+  readonly onProgress?: (progress: InvocationProgress) => void;
 }
 
 /** A tool was declined or cancelled during elicitation. */
