@@ -4,6 +4,10 @@
 // CTA, and a numbered mono index. A full-height hairline closes the right edge.
 import "../../styles/variants/rail.css";
 import ycBackedBy from "../../assets/yc-backed-by.svg?url";
+import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+
+const X_URL = "https://x.com/RhysSullivan";
+const EMAIL = "rhys@executor.sh";
 
 interface Props {
   stars: string | null;
@@ -87,6 +91,29 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
       }
     </nav>
 
+    <div class="rail__contact">
+      <div class="rail__contact-head">
+        <img src={rhysAvatar.src} alt="" width="28" height="28" />
+        <div>
+          <span class="rail__contact-title">Questions? Get in touch.</span>
+          <span class="rail__contact-sub">Rhys, founder</span>
+        </div>
+      </div>
+      <ul class="rail__contact-list">
+        <li>
+          <a href={`mailto:${EMAIL}?subject=Executor`}>Email</a>
+          <span>{EMAIL}</span>
+        </li>
+        <li>
+          <a href={`mailto:${EMAIL}?subject=Shared%20Slack%20channel&body=Hi%20Rhys%2C%20we%27d%20like%20a%20shared%20Slack%20channel%20for%20Executor.%20Our%20workspace%20is%3A%20`}>Shared Slack</a>
+          <span>ask and we set up a Connect channel</span>
+        </li>
+        <li>
+          <a href={X_URL} target="_blank" rel="me noopener">X</a>
+          <span>@RhysSullivan</span>
+        </li>
+      </ul>
+    </div>
   </div>
 </aside>
 

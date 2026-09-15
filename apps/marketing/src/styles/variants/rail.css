@@ -210,6 +210,68 @@
   color: var(--color-ink);
 }
 
+/* Contact block, pinned to the bottom of the rail. */
+.rail--b .rail__contact {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid var(--color-rule);
+  display: grid;
+  gap: 12px;
+}
+.rail--b .rail__contact-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rail--b .rail__contact-head img {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+  flex-shrink: 0;
+}
+.rail--b .rail__contact-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rail--b .rail__contact-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+.rail--b .rail__contact-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+}
+.rail--b .rail__contact-list {
+  display: grid;
+  gap: 8px;
+}
+.rail--b .rail__contact-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.rail--b .rail__contact-list a {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.rail--b .rail__contact-list a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.rail--b .rail__contact-list span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+  overflow-wrap: anywhere;
+}
+
 /* ═══ Mobile: every rail collapses to one horizontal top bar ═══ */
 @media (max-width: 1023.98px) {
   .rail {
@@ -226,6 +288,7 @@
   .rail .rail__toc-label,
   .rail .rail__divider,
   .rail .rail__foot,
+  .rail .rail__contact,
   .rail .rail__secondary {
     display: none;
   }
