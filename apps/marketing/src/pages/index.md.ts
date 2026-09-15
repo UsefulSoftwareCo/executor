@@ -100,7 +100,7 @@ minutes. Free tier to start: https://executor.sh/cloud
 
 ### Desktop
 
-A native app for Mac, Windows, and Linux that runs entirely on your machine.
+A desktop app for Mac, Windows, and Linux that runs entirely on your machine.
 Your integrations, credentials, and sessions never leave the device. MIT
 licensed.
 

@@ -21,7 +21,7 @@ Executor is an open source integration layer for AI agents: one place to configu
 Start by helping me pick the right form to run it in. Chat with me about it rather than jumping straight to a yes/no question, and recommend one. If I just want the fastest path, suggest Executor Cloud (free tier, nothing to install). All forms expose the same functionality, just packaged differently:
 
 Local (everything stays on my machine):
-- Desktop app: a native app for Mac, Windows, and Linux. Best for a regular desktop environment.
+- Desktop app: a desktop app for Mac, Windows, and Linux. Best for a regular desktop environment.
 - CLI (\`executor\`): best for a headless or server environment.
 Both run a local HTTP server as a background service that any MCP client can connect to.
 
