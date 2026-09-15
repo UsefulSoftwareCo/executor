@@ -1,0 +1,337 @@
+/* ═══════════════════════════════════════════════════════════════
+   Sidebar rail variants
+   The page shell owns the column (sticky, 100dvh, its own width).
+   Everything here is internal to the rail.
+     A "Paper rail"    280px  full nav + ticked "On this page"
+     B "Gridline rail" 240px  compact, numbered mono toc, right rule
+     C "Minimal rail"  220px  five section links, no toc label
+   ═══════════════════════════════════════════════════════════════ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-surface);
+  font-family: var(--font-sans);
+}
+
+/* Everything below the wordmark. On desktop it is the vertical body of the
+   rail; on mobile it becomes the right-hand cluster of the top bar. */
+.rail__stack {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* ── Wordmark ── */
+.rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rail__brand-mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.rail__brand-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+/* ── Primary / secondary link lists ── */
+.rail__nav {
+  display: flex;
+  flex-direction: column;
+}
+.rail__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-2);
+  transition: color 0.15s ease;
+}
+.rail__link:hover {
+  color: var(--color-ink);
+}
+.rail__link[aria-current="page"] {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.rail__ext {
+  font-size: 0.85em;
+  color: var(--color-ink-3);
+}
+
+/* ── Shared toc scaffolding ── */
+.rail__toc {
+  display: flex;
+  flex-direction: column;
+}
+.rail__toc-item {
+  display: block;
+}
+.rail__toc a {
+  display: flex;
+  align-items: center;
+  color: var(--color-ink-2);
+  transition: color 0.15s ease;
+}
+.rail__toc a:hover {
+  color: var(--color-ink);
+}
+
+/* ── Foot ── */
+.rail__foot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  transition: color 0.15s ease;
+}
+.rail__foot:hover {
+  color: var(--color-ink-2);
+}
+
+/* ═══ B: Gridline rail ════════════════════════════════════════ */
+.rail--b,
+.rail--b .rail__stack {
+  gap: 28px;
+}
+.rail--b {
+  padding: 32px 24px;
+  border-right: 1px solid var(--color-rule);
+}
+.rail--b .rail__brand-mark {
+  width: 18px;
+  height: 18px;
+}
+.rail--b .rail__nav {
+  gap: 4px;
+}
+.rail--b .rail__link {
+  font-size: 14px;
+  padding-left: 12px;
+}
+.rail--b .rail__link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: var(--color-ink);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.rail--b .rail__link[aria-current="page"]::before {
+  opacity: 1;
+}
+.rail--b .rail__cta {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  --rail-box-h: 36px;
+}
+/* One stack: every item the same width and height, one border language. */
+.rail--b .rail__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: var(--rail-box-h);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-ink);
+  overflow: hidden;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.rail--b .rail__box--primary {
+  border-color: var(--color-ink);
+  font-weight: 500;
+}
+.rail--b .rail__box--primary:hover {
+  background: var(--color-ink);
+  color: var(--color-surface);
+}
+.rail--b .rail__box.gh-star {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-2);
+}
+.rail--b .rail__box.gh-star:hover {
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+}
+/* The YC badge is a rounded cream card at 350x125; letting it fill the box
+   edge to edge keeps the badge's own corners hidden behind ours. */
+.rail--b .rail__box--yc {
+  padding: 0;
+  background: #f6f6ef;
+}
+.rail--b .rail__box--yc img {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+.rail--b .rail__box--yc:hover {
+  border-color: var(--color-rule-strong);
+}
+.rail--b .rail__toc {
+  gap: 8px;
+}
+.rail--b .rail__toc a {
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-3);
+}
+.rail--b .rail__num {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-3);
+  transition: color 0.15s ease;
+}
+.rail--b .rail__toc a[aria-current="true"],
+.rail--b .rail__toc a[aria-current="true"] .rail__num {
+  color: var(--color-ink);
+}
+
+/* Contact block, pinned to the bottom of the rail. */
+.rail--b .rail__contact {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid var(--color-rule);
+  display: grid;
+  gap: 12px;
+}
+.rail--b .rail__contact-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rail--b .rail__contact-head img {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+  flex-shrink: 0;
+}
+.rail--b .rail__contact-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.rail--b .rail__contact-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+.rail--b .rail__contact-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+}
+.rail--b .rail__contact-list {
+  display: grid;
+  gap: 8px;
+}
+.rail--b .rail__contact-list a {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  transition: background 0.15s ease;
+}
+.rail--b .rail__contact-list a:hover {
+  background: var(--color-surface-2);
+}
+.rail--b .rail__contact-k {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.rail--b .rail__contact-v {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+  overflow-wrap: anywhere;
+}
+.rail--b .rail__contact-list a:hover .rail__contact-v {
+  color: var(--color-ink-2);
+}
+
+/* ═══ Mobile: every rail collapses to one horizontal top bar ═══ */
+@media (max-width: 1023.98px) {
+  .rail {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    height: 56px;
+    padding: 0 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .rail .rail__toc,
+  .rail .rail__toc-label,
+  .rail .rail__divider,
+  .rail .rail__foot,
+  .rail .rail__contact,
+  .rail .rail__secondary {
+    display: none;
+  }
+  .rail .rail__nav {
+    flex-direction: row;
+    align-items: center;
+    gap: 20px;
+  }
+  .rail .rail__cta {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    margin-top: 0;
+  }
+  .rail .rail__stack {
+    flex: 0 1 auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 20px;
+  }
+  .rail .rail__link {
+    padding: 0 0 0 0;
+    font-size: 14px;
+  }
+  .rail .rail__link::before {
+    display: none;
+  }
+  /* The star pill and the mono count are the first things to go when the bar
+     gets tight; the links themselves survive longest. */
+  .rail .gh-star {
+    display: none;
+  }
+}
+
+@media (max-width: 719.98px) {
+  .rail .rail__nav .rail__link:not(.rail__link--keep) {
+    display: none;
+  }
+}

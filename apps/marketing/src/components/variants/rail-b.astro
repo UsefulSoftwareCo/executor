@@ -1,0 +1,129 @@
+---
+// Rail, variant B: "Gridline rail".
+// Compact and technical: mark-only wordmark, a tight link stack, an outlined
+// CTA, and a numbered mono index. A full-height hairline closes the right edge.
+import "../../styles/variants/rail.css";
+import ycBackedBy from "../../assets/yc-backed-by.svg?url";
+import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+
+const X_URL = "https://x.com/RhysSullivan";
+const EMAIL = "rhys@executor.sh";
+
+interface Props {
+  stars: string | null;
+}
+const { stars } = Astro.props;
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const SIGN_IN = "/api/auth/login";
+
+const sections = [
+  { id: "mission", label: "What we think" },
+  { id: "context", label: "Context" },
+  { id: "safety", label: "Safety" },
+  { id: "install", label: "Run it" },
+  { id: "pricing", label: "Pricing" },
+  { id: "writing", label: "Writing" },
+  { id: "about", label: "About" },
+];
+const pad = (index: number) => String(index + 1).padStart(2, "0");
+---
+
+<aside class="rail rail--b">
+  <a href="/" class="rail__brand" aria-label="Executor home">
+    <img src="/favicon-192.png" alt="" class="rail__brand-mark" />
+  </a>
+
+  <div class="rail__stack">
+    <nav class="rail__nav" aria-label="Main">
+      <a href="/" class="rail__link rail__link--keep" aria-current="page">Home</a>
+      <a href="https://executor.sh/docs" class="rail__link rail__link--keep">Docs</a>
+      <a href="/blog" class="rail__link">Blog</a>
+      <a href="/pricing" class="rail__link">Pricing</a>
+      <a href={SIGN_IN} class="rail__link rail__link--keep">Sign in</a>
+    </nav>
+
+    <div class="rail__cta">
+      <a href="#install" class="rail__box rail__box--primary">Get started</a>
+      <a
+        href={GH}
+        target="_blank"
+        rel="noopener"
+        class="rail__box gh-star"
+        aria-label="Star Executor on GitHub"
+      >
+        <svg
+          class="gh-star__ico"
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          aria-hidden="true"
+        >
+          <path
+            fill="#e3b341"
+            d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"
+          ></path>
+        </svg>
+        <span>star on github</span>
+        {stars != null && <span class="gh-star__n">{stars}</span>}
+      </a>
+      <a
+        href="https://www.ycombinator.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="rail__box rail__box--yc"
+        aria-label="Backed by Y Combinator"
+      >
+        <img src={ycBackedBy} alt="Backed by Y Combinator" width="350" height="125" />
+      </a>
+    </div>
+
+    <nav class="rail__toc" aria-label="On this page">
+      {
+        sections.map((section, index) => (
+          <span class="rail__toc-item">
+            <a href={`#${section.id}`}>
+              <span class="rail__num">{pad(index)}</span>
+              <span>{section.label}</span>
+            </a>
+          </span>
+        ))
+      }
+    </nav>
+
+    <div class="rail__contact">
+      <div class="rail__contact-head">
+        <img src={rhysAvatar.src} alt="" width="28" height="28" />
+        <div>
+          <span class="rail__contact-title">Questions? Get in touch.</span>
+          <span class="rail__contact-sub">Rhys, founder</span>
+        </div>
+      </div>
+      <ul class="rail__contact-list">
+        <li>
+          <a href={`mailto:${EMAIL}?subject=Executor`}>
+            <span class="rail__contact-k">Email</span>
+            <span class="rail__contact-v">{EMAIL}</span>
+          </a>
+        </li>
+        <li>
+          <a href={`mailto:${EMAIL}?subject=slack%20connect%20invite%20for%20Executor`}>
+            <span class="rail__contact-k">Shared Slack</span>
+            <span class="rail__contact-v">send a slack connect invite to {EMAIL}</span>
+          </a>
+        </li>
+        <li>
+          <a href={X_URL} target="_blank" rel="me noopener">
+            <span class="rail__contact-k">X</span>
+            <span class="rail__contact-v">@RhysSullivan</span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</aside>
+
+<script>
+  import { initRailSpy } from "./rail-spy";
+  document.querySelectorAll<HTMLElement>(".rail").forEach(initRailSpy);
+</script>
