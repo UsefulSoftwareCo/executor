@@ -127,7 +127,7 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
   deleteMembership: () => Effect.die("revoke does not write the membership mirror"),
   deleteUser: () => Effect.die("revoke does not write the membership mirror"),
   getCursor: () => Effect.die("revoke does not read the events cursor"),
-  setCursor: () => Effect.die("revoke does not move the events cursor"),
+  applyPage: () => Effect.die("revoke does not move the events cursor"),
   backfillCompletedAt: () => Effect.die("revoke does not report seats"),
   markBackfillComplete: () => Effect.die("revoke does not run the backfill"),
 });

@@ -111,6 +111,14 @@ declare global {
 
       /** Optional WorkOS base-URL override (WorkOS emulator in tests/dev). */
       WORKOS_API_URL?: string;
+      /**
+       * Signing secret of the WorkOS webhook endpoint that pokes the
+       * membership-mirror reconciler (`/api/webhooks/workos`). Set with
+       * `wrangler secret put WORKOS_WEBHOOK_SECRET`; while unset the route
+       * refuses every delivery (503) and the every-minute cron alone keeps
+       * the mirror current.
+       */
+      WORKOS_WEBHOOK_SECRET?: string;
 
       // MCP
       EXECUTOR_MCP_DEBUG?: string;

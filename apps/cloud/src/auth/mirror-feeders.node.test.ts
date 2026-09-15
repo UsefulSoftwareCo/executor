@@ -575,7 +575,7 @@ describe("seat reporter", () => {
       deleteMembership: () => Effect.die("the seat reporter does not write"),
       deleteUser: () => Effect.die("the seat reporter does not write"),
       getCursor: () => Effect.die("the seat reporter does not read the cursor"),
-      setCursor: () => Effect.die("the seat reporter does not move the cursor"),
+      applyPage: () => Effect.die("the seat reporter does not move the cursor"),
       backfillCompletedAt: () => Effect.succeed(backfilledAt),
       markBackfillComplete: () => Effect.die("the seat reporter does not run the backfill"),
     } satisfies WorkOsMirrorShape);

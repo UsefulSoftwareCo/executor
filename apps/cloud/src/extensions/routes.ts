@@ -9,6 +9,8 @@
 //   - Swagger UI + the OpenAPI JSON for the full cloud spec.
 //   - the Autumn billing proxy (`/api/billing/*`) — billing-as-extension (the
 //     `extensions.routes` SEAM, but served under `/api` like everything else).
+//   - the WorkOS webhook (`/api/webhooks/workos`) — signature-verified poke of
+//     the membership-mirror reconciler.
 //   - the global request-failure logging middleware.
 //
 // They all serve UNDER the `/api` prefix (the same namespace the protected +
@@ -19,6 +21,7 @@
 // so the postgres.js socket lives in the request fiber's scope).
 // ---------------------------------------------------------------------------
 
+import { env, waitUntil } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -36,6 +39,8 @@ import {
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
 import { SessionAuthLive } from "../auth/middleware-live";
+import { runWorkOsEventsSync } from "../auth/workos-events-runner";
+import { makeWorkOsWebhookRoute } from "../auth/workos-webhook";
 import { makeCloudAdminUsersRoutes } from "../admin/admin-users-api";
 import { OrgApi, OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
@@ -113,12 +118,23 @@ export const makeCloudExtensionRoutes = (
   // org key (or an admin session) and builds a subject-less platform view.
   const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, { router: apiPrefixedRouter });
 
+  // The WorkOS webhook needs no per-request DB layer: it verifies the
+  // signature with the boot `WorkOSClient` and detaches a reconciler pass
+  // that builds its own fresh services (the route's request scope is gone by
+  // the time the pass runs). `waitUntil` binds to the in-flight invocation.
+  const WebhookRoutes = makeWorkOsWebhookRoute({
+    secret: env.WORKOS_WEBHOOK_SECRET,
+    detach: waitUntil,
+    sync: runWorkOsEventsSync,
+  });
+
   return [
     SessionRoutes,
     OrgRoutes,
     AdminUsersRoutes,
     DocsRoutes,
     BillingRoutes,
+    WebhookRoutes,
     ApiErrorLoggingLive,
   ] as const;
 };
