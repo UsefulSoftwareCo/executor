@@ -201,6 +201,7 @@ const NOT_ORG_OWNED: Record<string, string> = {
   organizations: "the identity row itself, deleted directly",
   memberships: "cascades from the organizations FK",
   accounts: "shared across orgs — deliberately survives",
+  workos_sync: "the WorkOS Events API cursor, instance-wide and not org-scoped",
 };
 
 const countTenantRows = async (db: DrizzleDb, tenant: string): Promise<number> => {

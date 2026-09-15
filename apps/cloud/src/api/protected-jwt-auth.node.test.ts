@@ -9,6 +9,19 @@ import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { resolveProtectedPrincipal } from "./protected";
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
+
+// The mirror's account row as `ensureAccount` mints it: id only, profile
+// columns unfilled until a WorkOS user payload arrives.
+const bareAccount = (id: string) => ({
+  id,
+  email: null,
+  firstName: null,
+  lastName: null,
+  avatarUrl: null,
+  workosUpdatedAt: null,
+  lastSignInAt: null,
+  createdAt,
+});
 const issuer = "https://test-authkit.example.com";
 const audience = "client_test_audience";
 
@@ -67,8 +80,8 @@ const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
     Effect.promise(() =>
       fn({
-        ensureAccount: async (id: string) => ({ id, createdAt }),
-        getAccount: async (id: string) => ({ id, createdAt }),
+        ensureAccount: async (id: string) => bareAccount(id),
+        getAccount: async (id: string) => bareAccount(id),
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: `org-slug-${org.id}`,
