@@ -1697,7 +1697,7 @@ body {
 /* ── Sidebar ("rail") layout. Active when a rail option is visible. ──
    One centred frame (rail + content) of fixed max width, like a document
    with a margin column. Content never exceeds its column. */
-.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) {
+.page:has(> .page__rail) {
   --rail-w: 280px;
   --frame-w: 1240px;
 }
@@ -1708,7 +1708,7 @@ body {
   --rail-w: 220px;
 }
 @media (min-width: 1024px) {
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) {
+  .page:has(> .page__rail) {
     display: grid;
     grid-template-columns: var(--rail-w) minmax(0, 1fr);
     align-items: start;
@@ -1722,25 +1722,25 @@ body {
     overflow: hidden auto;
     border-right: 1px solid var(--color-rule);
   }
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body {
+  .page:has(> .page__rail) .page__body {
     min-width: 0;
     padding-inline: clamp(32px, 4vw, 64px);
   }
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner,
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .text-center {
+  .page:has(> .page__rail) .page__body .hero-inner,
+  .page:has(> .page__rail) .page__body .text-center {
     text-align: left;
   }
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body [class*="max-w-"].mx-auto,
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .mx-auto,
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .text-center .mx-auto {
+  .page:has(> .page__rail) .page__body [class*="max-w-"].mx-auto,
+  .page:has(> .page__rail) .page__body .hero-inner .mx-auto,
+  .page:has(> .page__rail) .page__body .text-center .mx-auto {
     margin-left: 0;
   }
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .hero-cta,
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .audience-pane {
+  .page:has(> .page__rail) .page__body .hero-inner .hero-cta,
+  .page:has(> .page__rail) .page__body .hero-inner .audience-pane {
     justify-content: flex-start;
     align-items: flex-start;
   }
-  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner h1 {
+  .page:has(> .page__rail) .page__body .hero-inner h1 {
     font-size: clamp(2.6rem, 5vw, 4.4rem);
   }
   /* The rail column has no page gutter of its own inside the frame; keep the
@@ -1750,7 +1750,7 @@ body {
 /* The hero graph-paper texture is a landing-page device. In rail mode the
    page reads as a document, so it goes: the texture would sit behind the
    sidebar and the hairline frame and fight both. */
-main:has(.page > [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) > .pattern-bg,
-main:has(.page > [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) > .pattern-bg + div {
+main:has(.page > .page__rail) > .pattern-bg,
+main:has(.page > .page__rail) > .pattern-bg + div {
   display: none;
 }
