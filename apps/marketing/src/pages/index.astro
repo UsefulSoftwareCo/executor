@@ -43,7 +43,7 @@ const stars = await getStars();
 
     <div class="relative z-10 page">
       <div data-uidotsh-pick="Layout" class="contents">
-        <div data-uidotsh-option="Top nav (current)" class="contents">
+        <div data-uidotsh-option="Top nav (current)" class="contents" hidden>
       {/* ─── NAV ─── */}
       <nav class="border-b border-rule bg-surface">
         <div
@@ -107,7 +107,7 @@ const stars = await getStars();
         </div>
       </nav>
         </div>
-        <div data-uidotsh-option="A: Paper rail" class="contents" hidden>
+        <div data-uidotsh-option="A: Paper rail" class="contents">
           <div class="page__rail page__rail--a"><RailA stars={stars != null ? formatStars(stars) : null} /></div>
         </div>
         <div data-uidotsh-option="B: Gridline rail" class="contents" hidden>
@@ -885,6 +885,35 @@ const stars = await getStars();
       </div>
     </div>
     <script is:inline src="https://ui.sh/ui-picker.js"></script>
+    <script is:inline>
+      // Fallback variant switcher for when the ui.sh picker is blocked
+      // (ad blockers). Same data attributes, plain <select>s, no network.
+      setTimeout(() => {
+        if (document.querySelector("uidotsh-picker")) return;
+        const box = document.createElement("div");
+        box.style.cssText =
+          "position:fixed;right:16px;bottom:16px;z-index:99999;background:#111;color:#fff;padding:10px 12px;border-radius:10px;font:12px/1.4 ui-monospace,Menlo,monospace;display:grid;gap:6px;box-shadow:0 8px 24px rgba(0,0,0,.25)";
+        for (const pick of document.querySelectorAll("[data-uidotsh-pick]")) {
+          const opts = [...pick.querySelectorAll(":scope > [data-uidotsh-option]")];
+          const row = document.createElement("label");
+          row.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
+          const name = document.createElement("span");
+          name.textContent = pick.dataset.uidotshPick;
+          const sel = document.createElement("select");
+          sel.style.cssText = "font:inherit;background:#222;color:#fff;border:1px solid #444;border-radius:6px;padding:2px 6px";
+          for (const o of opts) {
+            const op = document.createElement("option");
+            op.value = op.textContent = o.dataset.uidotshOption;
+            op.selected = !o.hidden;
+            sel.append(op);
+          }
+          sel.onchange = () => { for (const o of opts) o.hidden = o.dataset.uidotshOption !== sel.value; };
+          row.append(name, sel);
+          box.append(row);
+        }
+        document.body.append(box);
+      }, 1500);
+    </script>
   </main>
 </Layout>
 
