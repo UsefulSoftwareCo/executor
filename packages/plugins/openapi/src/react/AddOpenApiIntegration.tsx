@@ -18,7 +18,11 @@ import {
   useIntegrationIdentity,
 } from "@executor-js/react/plugins/integration-identity";
 import { Button } from "@executor-js/react/components/button";
-import { HealthCheckConfigFields } from "@executor-js/react/components/health-check-editor";
+import {
+  HealthCheckConfigFields,
+  isUnsupportedHealthCheck,
+  parseHealthCheckArgs,
+} from "@executor-js/react/components/health-check-editor";
 import {
   AuthMethodListEditor,
   useAuthMethodList,
@@ -374,6 +378,7 @@ export default function AddOpenApiIntegration(props: {
   const hcMissingRequired = hcRequiredParams.some(
     (p) => (hcArgs[p.name] ?? "").trim().length === 0,
   );
+  const hcParsedArgs = parseHealthCheckArgs(hcArgs);
 
   const onHcOperationChange = (next: string) => {
     setHcOperation(next);
@@ -398,7 +403,10 @@ export default function AddOpenApiIntegration(props: {
     parsedSpecOverrides.ok &&
     !slugAlreadyExists &&
     (!previewHasNoServers || resolvedBaseUrl.length > 0) &&
-    !(hcOperation.length > 0 && hcMissingRequired);
+    !(
+      hcOperation.length > 0 &&
+      (hcMissingRequired || !hcParsedArgs.ok || isUnsupportedHealthCheck(hcSelected))
+    );
 
   // ---- Handlers ----
 
@@ -499,14 +507,11 @@ export default function AddOpenApiIntegration(props: {
     // the user (re-submitting the form hits the slug-already-exists guard). The
     // check stays editable from the integration's detail page, so on failure we
     // proceed to onComplete regardless and let the user fix it there.
-    if (hcOperation.length > 0) {
+    if (hcOperation.length > 0 && hcParsedArgs.ok) {
       const identity = hcIdentityField.trim();
-      const argEntries = Object.entries(hcArgs)
-        .map(([key, value]) => [key, value.trim()] as const)
-        .filter(([, value]) => value.length > 0);
       const spec: HealthCheckSpec = {
         operation: hcOperation,
-        ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+        ...(Object.keys(hcParsedArgs.args).length > 0 ? { args: hcParsedArgs.args } : {}),
         ...(identity.length > 0 ? { identityField: identity } : {}),
       };
       // Best-effort: the exit is intentionally ignored so a save failure cannot

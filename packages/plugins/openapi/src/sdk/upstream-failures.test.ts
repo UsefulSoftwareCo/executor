@@ -11,8 +11,14 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
-import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Cause, Data, Effect, Exit, Layer, Logger, References, Schema } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
 import {
   HttpApi,
   HttpApiBuilder,
@@ -43,8 +49,10 @@ import {
 
 import { openApiPlugin } from "./plugin";
 
-const testPlugins = () =>
-  [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
+class AdapterDefect extends Data.TaggedError("AdapterDefect") {}
+
+const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
+  [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
 
 // `/things` GET op `listThings` under group "things" → tool path
 // `things.listThings`, used verbatim (dots and all) as the address tool segment.
@@ -102,6 +110,30 @@ const startDroppingServer = () =>
     (s) => Effect.sync(() => s.close()),
   );
 
+// Bind an ephemeral port, then release it so nothing listens there and the
+// kernel refuses the connection (`ECONNREFUSED`). Port 1 is not equivalent:
+// `fetch` rejects it as a bad port before dialing, with no errno.
+const refusedBaseUrl = () =>
+  Effect.callback<string>((resume) => {
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      server.close(() => resume(Effect.succeed(`http://127.0.0.1:${port}`)));
+    });
+  });
+
+type CapturedLog = { readonly message: string; readonly annotations: Record<string, unknown> };
+
+const capturingLogger = (sink: Array<CapturedLog>) =>
+  Logger.layer([
+    Logger.make<unknown, void>((options) => {
+      sink.push({
+        message: String(options.message),
+        annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+      });
+    }),
+  ]);
+
 const ThingsGroup = HttpApiGroup.make("things").add(
   HttpApiEndpoint.get("listThings", "/things", {
     success: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
@@ -114,9 +146,11 @@ const FailureApi = HttpApi.make("failuresTest")
 
 // Build an executor + connection from the FailureApi HttpApi against an
 // arbitrary baseUrl (used for the Node-transport socket-drop / slow cases).
-const buildExecutor = (baseUrl: string) =>
+const buildExecutor = (baseUrl: string, httpClientLayer = FetchHttpClient.layer) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ plugins: testPlugins(httpClientLayer) }),
+    );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(FailureApi, { slug: "f", baseUrl }),
     );
@@ -394,9 +428,12 @@ describe("OpenAPI upstream failure modes", () => {
       const { baseUrl } = yield* startDroppingServer();
       const { executor, address } = yield* buildExecutor(baseUrl);
 
-      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      const result = yield* executor.execute(address, {});
 
-      expect(Exit.isFailure(exit)).toBe(true);
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_unreachable", details: { code: expect.any(String) } },
+      });
     }),
   );
 
@@ -444,6 +481,128 @@ describe("OpenAPI upstream failure modes", () => {
 
       const result = unwrapInvocation(yield* executor.execute(address, {}));
       expect(result.data).toEqual([]);
+    }),
+  );
+
+  it.effect("request encoding failures remain invocation failures", () =>
+    Effect.gen(function* () {
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.EncodeError({ request, cause: new AdapterDefect() }),
+            }),
+          ),
+        ),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+    }),
+  );
+
+  it.effect("transport defects remain defects", () =>
+    Effect.gen(function* () {
+      const defect = new AdapterDefect();
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die(defect)),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.match(exit, { onFailure: Cause.hasDies, onSuccess: () => false })).toBe(true);
+    }),
+  );
+
+  it.effect("interrupted transport remains interrupted", () =>
+    Effect.gen(function* () {
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.interrupt),
+      );
+      const { executor, address } = yield* buildExecutor(
+        "https://upstream.example",
+        httpClientLayer,
+      );
+      const exit = yield* executor.execute(address, {}).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.match(exit, { onFailure: Cause.hasInterrupts, onSuccess: () => false })).toBe(
+        true,
+      );
+    }),
+  );
+
+  // Port 1 refuses immediately. The same path used to throw `Internal tool
+  // error [hex]` because the raw HttpClientError carries the request URL.
+  // Executor makes the request, so the message names the integration and
+  // origin the user can fix instead of blaming their own network.
+  it.effect("connection refused names the integration and origin without the path", () =>
+    Effect.gen(function* () {
+      const { executor, address } = yield* buildExecutor("http://127.0.0.1:1");
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_unreachable",
+          message: expect.stringContaining(
+            'Could not reach the upstream server for "f" at 127.0.0.1:1.',
+          ),
+        },
+      });
+      const failure = result as {
+        readonly ok: false;
+        readonly error: { readonly message: string; readonly details?: unknown };
+      };
+      // No errno here (`fetch` rejects port 1 before dialing). The result
+      // crosses a JSON boundary, so the missing code must be absent rather
+      // than an `undefined` property.
+      expect(failure.error.details).toStrictEqual({ host: "127.0.0.1:1" });
+      expect(failure.error.message).toContain("base URL");
+      expect(failure.error.message).not.toContain("your network");
+      expect(failure.error.message).not.toContain("Internal tool error");
+      expect(failure.error.message).not.toContain("/things");
+    }),
+  );
+
+  // Classifying the failure took it off the hosts' correlation-id defect log,
+  // so the sanitized cause must reach both the caller (details) and operators
+  // (log) — and never the request, which carries the resolved auth header.
+  it.effect("connection refused reports the errno code to the caller and the log", () =>
+    Effect.gen(function* () {
+      const baseUrl = yield* refusedBaseUrl();
+      const { executor, address } = yield* buildExecutor(baseUrl);
+      const logged: Array<CapturedLog> = [];
+
+      const result = yield* executor
+        .execute(address, {})
+        .pipe(Effect.provide(capturingLogger(logged)));
+
+      const host = new URL(baseUrl).host;
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_unreachable", details: { host, code: "ECONNREFUSED" } },
+      });
+      const rendered = JSON.stringify(result);
+      expect(rendered).not.toContain("/things");
+      // The apiKey value `buildExecutor` puts on the connection.
+      expect(rendered).not.toContain("token");
+
+      const warning = logged.find((entry) => entry.message.includes("upstream unreachable"));
+      expect(warning?.annotations).toMatchObject({
+        "plugin.openapi.integration": "f",
+        "plugin.openapi.upstream.host": host,
+        "plugin.openapi.upstream.transport_code": "ECONNREFUSED",
+      });
     }),
   );
 });

@@ -609,7 +609,9 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       };
     }>(resume);
     expect(resumed.result?.structuredContent?.status).not.toBe("execution_not_found");
-    expect(resumed.result?.structuredContent?.recovery).not.toBe("re_execute");
+    expect(resumed.result?.structuredContent?.recovery, JSON.stringify(resumed.result)).not.toBe(
+      "re_execute",
+    );
     expect(resumed.result?.isError).toBeFalsy();
     expect(resumed.result?.structuredContent?.status).toBe("completed");
   }, 60_000);

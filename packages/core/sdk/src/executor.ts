@@ -199,7 +199,7 @@ import {
   ORG_SUBJECT,
   type ExecutorOwnerPolicyContext,
 } from "./owner-policy";
-import { ToolSchemaView, type IntegrationDetectionResult } from "./types";
+import { ToolAnnotationsView, ToolSchemaView, type IntegrationDetectionResult } from "./types";
 import { type Tool, type ToolAnnotations, type ToolDef, type ToolListFilter } from "./tool";
 import { buildToolTypeScriptPreview } from "./schema-types";
 import { collectReferencedDefinitions } from "./schema-refs";
@@ -208,6 +208,7 @@ import {
   exchangeClientCredentials,
   isPermanentTokenRejection,
   isUnusableSuccessTokenResponse,
+  optionalScopesFromAuthorizationUrl,
   shouldRefreshToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -1219,6 +1220,30 @@ const rowToTool = (
   };
 };
 
+// Projects a tool's annotations onto the schema view. Plugins persist extra
+// keys alongside the declared contract (the mcp plugin stores its upstream tool
+// name and `_meta` there so they survive to invokeTool), so the three declared
+// fields are picked explicitly rather than spread: a caller reading the view
+// gets the contract in `tool.ts` and nothing a plugin keeps for itself.
+const toolAnnotationsView = (
+  annotations: ToolAnnotations | undefined,
+): ToolAnnotationsView | undefined => {
+  if (!annotations) return undefined;
+  const view: {
+    requiresApproval?: boolean;
+    approvalDescription?: string;
+    mayElicit?: boolean;
+  } = {};
+  if (typeof annotations.requiresApproval === "boolean") {
+    view.requiresApproval = annotations.requiresApproval;
+  }
+  if (typeof annotations.approvalDescription === "string") {
+    view.approvalDescription = annotations.approvalDescription;
+  }
+  if (typeof annotations.mayElicit === "boolean") view.mayElicit = annotations.mayElicit;
+  return Object.keys(view).length > 0 ? ToolAnnotationsView.make(view) : undefined;
+};
+
 // ---------------------------------------------------------------------------
 // Condition builders
 // ---------------------------------------------------------------------------
@@ -1986,6 +2011,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const healthProbeInFlight = healthProbeGateFor(rootDbUntyped);
     const fuma = makeFumaClient(rootDb);
     const core = makeCoreDb(fuma);
+    // The ONE tenant-wide mutating handle: delete-only, tenant reach. Used
+    // solely by the integration-removal cascade, which must drop EVERY
+    // member's connections and tools under the removed slug — a bound admin
+    // can only reach its own rows, and the rest would survive as orphans that
+    // still list and invoke. The context rebinds inside the removal
+    // transaction, so the cascade commits or rolls back with the catalog row.
+    // Never exposed to plugins or request surfaces.
+    const cascadeCore = makeCoreDb(
+      makeFumaClient(rootDb, {
+        context: {
+          ...ownerContext,
+          reach: "tenant",
+          writes: "delete-only",
+        } satisfies ExecutorOwnerPolicyContext,
+      }),
+    );
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
@@ -3071,6 +3112,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         where: (b: AnyCb) => b("slug", "=", String(slug)),
       });
 
+    /** Every slug in the tenant's catalog — the set an owned row's
+     *  `integration` must belong to for the row to be servable. */
+    const listCatalogSlugs = (): Effect.Effect<ReadonlySet<string>, StorageFailure> =>
+      core
+        .findMany("integration", { select: ["slug"] })
+        .pipe(Effect.map((rows) => new Set(rows.map((row) => String(row.slug)))));
+
     // Project a row's stored config into declared auth methods via the owning
     // plugin's `describeAuthMethods` hook. The hook is plugin-authored, so a
     // throw (malformed config it didn't guard) degrades to `[]` rather than
@@ -3337,14 +3385,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 ),
               );
           }
-          // Drop owned connections / tools / definitions for this integration.
-          const where = (b: AnyCb) => b("integration", "=", String(slug));
-          yield* core.deleteMany("tool", { where });
-          yield* core.deleteMany("definition", { where });
-          yield* core.deleteMany("connection", { where });
+          // The catalog row goes first through the bound handle: a read-only
+          // (platform-view) context is refused here, before the widened
+          // cascade below could touch anything.
           yield* core.deleteMany("integration", {
             where: (b: AnyCb) => b("slug", "=", String(slug)),
           });
+          // Drop connections / tools / definitions for this integration across
+          // EVERY subject in the tenant, not just the remover's own rows. A
+          // removed integration has no reason to keep anyone's rows, and rows
+          // left behind become orphans: invisible in the catalog, yet still
+          // listed to agents and still targetable by reconnect.
+          const where = (b: AnyCb) => b("integration", "=", String(slug));
+          yield* cascadeCore.deleteMany("tool", { where });
+          yield* cascadeCore.deleteMany("definition", { where });
+          yield* cascadeCore.deleteMany("connection", { where });
           return existing.plugin_id;
         }),
       ).pipe(
@@ -4453,6 +4508,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               // pre-reconnect "expired" outlive the reconnect; the next health
               // check writes the verdict for the new grant.
               last_health: null,
+              // A fresh grant invalidates the catalog's freshness even when
+              // its remote rebuild runs after the OAuth callback responds.
+              // If that background task is interrupted, the next tools read
+              // sees this marker and converges it through the normal stale
+              // catalog path.
+              tools_synced_at: null,
               updated_at: now,
             };
             if (existing) {
@@ -4599,13 +4660,44 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               );
             }
 
-            // Produce + persist tools for the minted connection (same path
-            // connections.create uses).
-            yield* produceConnectionTools(integrationRow, ref).pipe(
+            // The connection row and credential are already durable. Interactive
+            // OAuth callbacks return at this boundary and let remote discovery run
+            // under the host's keep-alive; otherwise a slow MCP listTools call can
+            // keep the popup open until the Worker request is cancelled. Explicit
+            // mints (for example client_credentials) retain the original contract.
+            const syncTools = produceConnectionTools(
+              integrationRow,
+              ref,
+              input.toolSync ?? "explicit",
+            ).pipe(
               Effect.catchTag("IntegrationNotFoundError", () =>
                 Effect.succeed([] as readonly Tool[]),
               ),
             );
+            if (input.toolSync === "background") {
+              const fiber = yield* Effect.forkDetach(
+                syncTools.pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("executor OAuth tool sync failed", {
+                      integration: String(ref.integration),
+                      connection: String(ref.name),
+                      error: describeSyncFailure(error),
+                    }),
+                  ),
+                  Effect.withSpan("executor.oauth.tools.sync", {
+                    attributes: {
+                      "executor.integration": String(ref.integration),
+                      "executor.connection": String(ref.name),
+                    },
+                  }),
+                ),
+              );
+              config.waitUntil?.(
+                new Promise<void>((resolve) => fiber.addObserver(() => resolve(undefined))),
+              );
+            } else {
+              yield* syncTools;
+            }
           }),
         );
 
@@ -4650,7 +4742,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               filter?.owner === undefined ? true : b("owner", "=", filter.owner),
             ),
         });
-        const connections = rows.map(rowToConnection);
+        // Same catalog gate as `toolsList`: a connection whose integration was
+        // removed is an orphan, and offering it (in the accounts list, or to
+        // an agent as a reconnect target) leads into flows that cannot mint.
+        const catalogSlugs = yield* listCatalogSlugs();
+        const connections = rows
+          .filter((row) => catalogSlugs.has(String(row.integration)))
+          .map(rowToConnection);
         if (!activeToolPolicyProvider) return connections;
 
         const visibleTools = yield* toolsList({ includeAnnotations: false });
@@ -5587,8 +5685,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
         const includeBlocked = filter?.includeBlocked ?? false;
         const policyRules = yield* listActivePolicyRuleSet();
+        // Only tools whose integration is still in the catalog. A tool row
+        // whose integration was removed is an orphan (a removal that could
+        // not reach this subject's rows): listing it invites an invoke that
+        // cannot resolve its config and a reconnect that cannot mint.
+        const catalogSlugs = yield* listCatalogSlugs();
         const tools: Tool[] = [];
         for (const row of rows) {
+          if (!catalogSlugs.has(String(row.integration))) continue;
           const tool = rowToTool(row);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
@@ -5650,6 +5754,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
             outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
             typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
+            annotations: toolAnnotationsView(tool.annotations),
           });
         }
 
@@ -5760,6 +5865,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           inputTypeScript: Option.getOrUndefined(view)?.inputTypeScript,
           outputTypeScript: Option.getOrUndefined(view)?.outputTypeScript,
           typeScriptDefinitions: Option.getOrUndefined(view)?.typeScriptDefinitions,
+          annotations: toolAnnotationsView(tool.annotations),
         });
       });
 
@@ -6489,6 +6595,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             Effect.onError(() => Fiber.interrupt(integrationRowFiber)),
           );
           const integrationRow = yield* Fiber.join(integrationRowFiber);
+          // A tool row that outlived its integration (an orphan the catalog no
+          // longer lists) is not invokable: its plugin config is gone, and
+          // the auth-recovery hints would steer the caller into an OAuth
+          // flow that cannot mint. Report it as the missing integration it is.
+          if (!integrationRow) {
+            return yield* new IntegrationNotFoundError({ slug: parsed.integration });
+          }
           const grantedScopes = grantedScopesFromRow(connectionRow);
           const invokeTool = runtime.plugin.invokeTool;
           const invokeWith = (
@@ -6501,7 +6614,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               template: AuthTemplateSlug.make(connectionRow.template),
               value: resolved[PRIMARY_INPUT_VARIABLE] ?? null,
               values: resolved,
-              config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
+              config: decodeJsonColumn(integrationRow.config),
               ...(grantedScopes ? { grantedScopes } : {}),
             };
             return wrapInvocationError(
@@ -6609,6 +6722,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       guardOrgWrite: (owner: Owner) => guardOrgWrite(owner),
       defaultWritableProvider,
       mintOAuthConnection: (input: MintOAuthConnectionInput) => mintOAuthConnection(input),
+      integrationExists: (slug) => findIntegrationRow(slug).pipe(Effect.map((row) => row !== null)),
       connectionNameTaken: (ref) => findConnectionRow(ref).pipe(Effect.map((row) => row !== null)),
       // One integration-row read + one projector run. Resolve the method this
       // template selects exactly as the runtime's `selectAuthMethod` does —
@@ -6635,7 +6749,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               discoveryUrl: oauth.discoveryUrl,
             } satisfies OAuthScopePolicy;
           }
-          return { kind: "scopes", scopes: oauth?.scopes ?? [] } satisfies OAuthScopePolicy;
+          return {
+            kind: "scopes",
+            scopes: oauth?.scopes ?? [],
+            optionalScopes:
+              oauth?.authorizationUrl === undefined
+                ? []
+                : optionalScopesFromAuthorizationUrl(oauth.authorizationUrl),
+          } satisfies OAuthScopePolicy;
         }),
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,

@@ -125,6 +125,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         connections: executor.connections,
         ...appsConfig,
       },
+      webBaseUrl: process.env.EXECUTOR_WEB_BASE_URL || undefined,
       createConfigForResource: async (resource) => {
         if (resource.kind === "default") {
           return {

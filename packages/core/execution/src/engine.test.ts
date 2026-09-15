@@ -337,6 +337,35 @@ describe("formatExecuteResult output identity", () => {
     expect(formatted.isError).toBe(false);
   });
 
+  it("returns the sole distinct connected tool name without exposing the call trace", () => {
+    const result = {
+      result: { issues: [] },
+      logs: [],
+      toolPaths: ["linear.org.work.issues.list", "linear.org.work.issues.list"],
+    } as ExecuteResult & { readonly toolPaths: readonly string[] };
+
+    const formatted = formatExecuteResult(result);
+
+    expect(formatted.structured).toEqual({
+      status: "completed",
+      result: { issues: [] },
+      toolName: "linear.org.work.issues.list",
+      logs: [],
+    });
+  });
+
+  it("omits a tool name when distinct connected tools were used", () => {
+    const result = {
+      result: { issues: [], projects: [] },
+      logs: [],
+      toolPaths: ["linear.org.work.issues.list", "linear.org.work.projects.list"],
+    } as ExecuteResult & { readonly toolPaths: readonly string[] };
+
+    const formatted = formatExecuteResult(result);
+
+    expect(formatted.structured).not.toHaveProperty("toolName");
+  });
+
   it("truncates a long preview with the exact suffix and untouched structured value", () => {
     const value = { data: "é🎉".repeat(12_000) };
     const pretty = JSON.stringify(value, null, 2);

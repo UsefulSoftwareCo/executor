@@ -39,7 +39,19 @@ export class OpenApiSpecOverrideError extends Schema.TaggedErrorClass<OpenApiSpe
 export class OpenApiInvocationError extends Data.TaggedError("OpenApiInvocationError")<{
   readonly message: string;
   readonly statusCode: Option.Option<number>;
-  readonly reason?: "response_headers_timeout" | "response_body_timeout" | "unknown_arguments";
+  readonly reason?:
+    | "response_headers_timeout"
+    | "response_body_timeout"
+    | "unknown_arguments"
+    | "transport_error";
+  // `host[:port]` of a request that failed at the transport layer. It is the
+  // integration's configured origin, so it is safe to show; the path, query,
+  // and headers stay on `cause`.
+  readonly upstreamHost?: string | undefined;
+  // Errno-style code behind a transport failure (`ECONNREFUSED`, `ENOTFOUND`,
+  // `UND_ERR_SOCKET`, …) when the runtime exposes one. Tells DNS from refused
+  // from TLS without exposing the request.
+  readonly transportCode?: string | undefined;
   readonly cause?: unknown;
 }> {}
 

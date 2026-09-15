@@ -20,7 +20,7 @@ import { visit } from "../src/surfaces/browser";
 const api = composePluginApi([mcpHttpPlugin()] as const);
 
 scenario(
-  "MCP OAuth · advertised CIMD starts authorization without dynamic registration",
+  "MCP OAuth · CIMD advertises refresh support and completes connection without dynamic registration",
   { timeout: 180_000 },
   Effect.scoped(
     Effect.gen(function* () {
@@ -30,7 +30,7 @@ scenario(
       const oauth = yield* OAuthTestServer;
       const server = yield* serveMcpServerWithOAuth(
         () => makeGreetingMcpServer({ name: "cimd-connect-mcp" }),
-        { path: "/mcp" },
+        { path: "/mcp", scopes: ["read", "offline_access"] },
       );
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
@@ -69,17 +69,68 @@ scenario(
               authorize,
               "the popup reached the discovered authorization endpoint",
             ).toBeDefined();
-            const clientId = authorize?.query["client_id"];
-            createdClientId = clientId;
+            expect(
+              (authorize?.query["scope"] ?? "").split(" "),
+              "authorization requests the resource's offline access scope",
+            ).toContain("offline_access");
+            const clientId = authorize?.query["client_id"] ?? "";
+            createdClientId = clientId || undefined;
             expect(
               clientId,
               "authorization uses Executor's metadata document as client_id",
             ).toMatch(/^https?:\/\/[^/]+\/api\/oauth\/client-id-metadata\/.+\.json$/);
-            await popup.close();
+            const metadataResponse = await page.request.get(clientId);
+            expect(metadataResponse.status(), "the client metadata document is reachable").toBe(
+              200,
+            );
+            expect(
+              await metadataResponse.json(),
+              "the client declares the grant required by offline_access",
+            ).toMatchObject({
+              grant_types: ["authorization_code", "refresh_token"],
+            });
+            expect(authorize).toBeDefined();
+            // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test boundary: authorization must exist before completing the flow
+            if (authorize === undefined) throw new Error("Missing authorization request");
+            const completed = await Effect.runPromise(
+              oauth.completeAuthorizationCodeFlow({ authorizationUrl: authorize.url }),
+            );
+            await popup.goto(completed.callbackUrl);
+            await page
+              .getByRole("heading", { name: /Add connection/ })
+              .waitFor({ state: "hidden" });
+            await popup.close().catch(() => undefined);
           });
         });
 
+        const connections = yield* client.connections.list({ query: { integration: slug } });
+        expect(connections, "the OAuth callback saved the connection").toHaveLength(1);
+        const tools = yield* client.tools.list({ query: { integration: slug } });
+        expect(
+          tools.some((tool) => tool.name === "simple_echo"),
+          "authenticated discovery finds the upstream tool",
+        ).toBe(true);
+
+        const invoked = yield* client.executions.execute({
+          payload: {
+            code: `return await ${tools[0]?.address}({});`,
+            autoApprove: true,
+          },
+        });
+        expect(invoked.status).toBe("completed");
+        expect(invoked.text, "the connected tool runs through authenticated MCP").toContain(
+          "mcp-ok",
+        );
+
         const requests = yield* oauth.requests;
+        expect(
+          requests.some(
+            (request) =>
+              request.path === "/token" &&
+              new URLSearchParams(request.body).get("grant_type") === "authorization_code",
+          ),
+          "the callback exchanged the code using the advertised client",
+        ).toBe(true);
         expect(
           requests.filter((request) => request.method === "POST" && request.path === "/register"),
           "CIMD wins when the server also advertises DCR",
@@ -105,5 +156,12 @@ scenario(
         ),
       );
     }),
-  ).pipe(Effect.provide(OAuthTestServer.layer({ clientIdMetadataDocumentSupported: true }))),
+  ).pipe(
+    Effect.provide(
+      OAuthTestServer.layer({
+        clientIdMetadataDocumentSupported: true,
+        scopes: ["read", "offline_access"],
+      }),
+    ),
+  ),
 );

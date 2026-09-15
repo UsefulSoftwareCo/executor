@@ -376,6 +376,13 @@ export interface OAuthCompleteInput {
   readonly callbackDomain?: string | null;
 }
 
+/** Host-lifecycle behavior for OAuth completion. The HTTP popup uses
+ *  background tool synchronization so it can close after the durable grant;
+ *  programmatic callers keep the default explicit catalog guarantee. */
+export interface OAuthCompleteOptions {
+  readonly toolSync?: "explicit" | "background";
+}
+
 /** Probe a base/issuer URL for OAuth 2.1 authorization-server metadata so the
  *  onboarding UI can pre-fill a client's endpoints. */
 export interface OAuthProbeInput {
@@ -535,6 +542,7 @@ export interface OAuthService {
   ) => Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure>;
   readonly complete: (
     input: OAuthCompleteInput,
+    options?: OAuthCompleteOptions,
   ) => Effect.Effect<
     Connection,
     OAuthCompleteError | OAuthSessionNotFoundError | OrgWriteDeniedError | StorageFailure

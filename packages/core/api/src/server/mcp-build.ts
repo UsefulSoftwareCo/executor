@@ -88,7 +88,7 @@ export const makeMcpBuildServer =
           ...(options ?? {}),
         }).pipe(
           Effect.withSpan("mcp.server.create"),
-          Effect.map((mcpServer) => ({ mcpServer, engine })),
+          Effect.map((mcpServer) => ({ mcpServer, engine, executor })),
         ),
       ),
     );

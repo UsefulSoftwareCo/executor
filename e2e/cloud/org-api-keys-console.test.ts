@@ -110,7 +110,9 @@ scenario(
           .getByRole("heading", { name: "Revoke organization key" })
           .waitFor({ state: "hidden", timeout: 30_000 });
 
-        // The revoked value no longer authenticates.
+        // The dialog closes when revocation starts. Wait for the confirmed
+        // provider mutation before asserting the key no longer authenticates.
+        await page.getByText("Revoked e2e backend reader", { exact: true }).waitFor();
         const after = await fetch(new URL("/api/admin/users", target.baseUrl), {
           headers: { authorization: `Bearer ${mintedValue}` },
         });

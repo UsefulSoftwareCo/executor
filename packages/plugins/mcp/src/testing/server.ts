@@ -36,6 +36,9 @@ export type McpTestRequest = {
 
 export type McpTestServerOptions = {
   readonly path?: string;
+  /** Hold authenticated requests at the transport boundary until the test
+   * releases them, so callback ordering does not depend on elapsed time. */
+  readonly beforeAuthenticatedRequest?: () => Promise<void>;
   readonly auth?: {
     readonly validateAuthorization: (authorization: string | undefined) => Effect.Effect<boolean>;
     readonly authorizationServerUrls?: readonly string[];
@@ -172,6 +175,9 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
             if (!accepted) {
               writeUnauthorized(response, origin);
               return;
+            }
+            if (options.beforeAuthenticatedRequest !== undefined) {
+              yield* Effect.promise(options.beforeAuthenticatedRequest);
             }
           }
 
@@ -344,6 +350,7 @@ export const serveMcpServerWithOAuth = (
     const oauth = yield* OAuthTestServer;
     return yield* serveMcpServer(factory, {
       path: options.path,
+      beforeAuthenticatedRequest: options.beforeAuthenticatedRequest,
       auth: {
         validateAuthorization: oauth.acceptsAuthorizationHeader,
         authorizationServerUrls: [oauth.issuerUrl],

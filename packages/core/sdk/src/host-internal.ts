@@ -37,7 +37,11 @@ export {
   type HostedHttpClientOptions,
 } from "./hosted-http-client";
 
-export { OAUTH2_DEFAULT_TIMEOUT_MS, assertSupportedOAuthEndpointUrl } from "./oauth-helpers";
+export {
+  HUBSPOT_OPTIONAL_SCOPES,
+  OAUTH2_DEFAULT_TIMEOUT_MS,
+  assertSupportedOAuthEndpointUrl,
+} from "./oauth-helpers";
 
 export {
   DEFAULT_SUBJECT_LAST_SEEN_THROTTLE_MS,

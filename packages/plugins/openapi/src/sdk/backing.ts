@@ -53,6 +53,7 @@ import { parse, type ParsedDocument } from "./parse";
 import { parseEntry, structuralSplit, type KeepPathItem, type SpecStructure } from "./split";
 import { type OpenapiStore, type StoredOperation } from "./store";
 import { OperationBinding } from "./types";
+import { getHealthCheckParameters } from "./health-check-operation";
 
 const STRINGIFIED_BODY_CAP = 1024;
 const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
@@ -629,6 +630,22 @@ export const resolveOpenApiBackedTools = ({
     };
   });
 
+// Transport failures used to escape as defects, which the hosts log with a
+// correlation id. As a typed tool failure nothing else records them, so log
+// and annotate the span with the sanitized classification operators need to
+// tell DNS from refused from TLS.
+const recordUpstreamUnreachable = (integration: string, error: OpenApiInvocationError) => {
+  const annotations = {
+    "plugin.openapi.integration": integration,
+    "plugin.openapi.upstream.host": error.upstreamHost ?? "unknown",
+    "plugin.openapi.upstream.transport_code": error.transportCode ?? "unknown",
+  };
+  return Effect.logWarning("OpenAPI upstream unreachable").pipe(
+    Effect.annotateLogs(annotations),
+    Effect.andThen(Effect.annotateCurrentSpan(annotations)),
+  );
+};
+
 export const invokeOpenApiBackedTool = (input: {
   readonly ctx: PluginCtx<OpenapiStore>;
   readonly toolRow: { readonly integration: string; readonly name: string };
@@ -727,7 +744,28 @@ export const invokeOpenApiBackedTool = (input: {
                   details: error.cause ?? error,
                 }),
               })
-            : Effect.fail(error),
+            : error.reason === "transport_error"
+              ? recordUpstreamUnreachable(integration, error).pipe(
+                  Effect.as({
+                    ok: false as const,
+                    failure: ToolResult.fail({
+                      code: "upstream_unreachable",
+                      // Executor sends the request, not the user's browser, so
+                      // point at what the user can act on: the configured
+                      // origin and the service behind it.
+                      message: `Could not reach the upstream server for "${integration}"${error.upstreamHost ? ` at ${error.upstreamHost}` : ""}. Verify the integration's base URL and that the service is online, then try again.`,
+                      // Unlike the timeout branches, `error.cause` is withheld:
+                      // the TransportError carries the whole request, including
+                      // resolved auth headers. Absent fields are dropped, not
+                      // `undefined`: the result must stay a JSON value.
+                      details: {
+                        ...(error.upstreamHost !== undefined ? { host: error.upstreamHost } : {}),
+                        ...(error.transportCode !== undefined ? { code: error.transportCode } : {}),
+                      },
+                    }),
+                  }),
+                )
+              : Effect.fail(error),
       ),
     );
 
@@ -905,16 +943,15 @@ export const checkHealthOpenApi = (input: {
       } satisfies HealthCheckResult;
     }
 
-    // HARD block, not just a ranking hint: a health check runs unattended and
-    // repeatedly, so a mutating operation must never execute through it. The
-    // normal tool path gates these behind approval, and this path has no
-    // approval step. The candidate list labels these "(writes)"; refusing here
-    // is the enforcement.
-    if (REQUIRE_APPROVAL.has(binding.method.toLowerCase())) {
+    // HTTP RPC reads can use POST; the editor warns users before enabling them.
+    if (
+      REQUIRE_APPROVAL.has(binding.method.toLowerCase()) &&
+      binding.method.toLowerCase() !== "post"
+    ) {
       return {
         status: "unknown",
         checkedAt,
-        detail: `Health check operation "${spec.operation}" is a ${binding.method.toUpperCase()} (mutating): pick a read-only operation.`,
+        detail: `Health check operation "${spec.operation}" uses ${binding.method.toUpperCase()} and is not supported for health checks. Pick a read-only operation.`,
       } satisfies HealthCheckResult;
     }
 
@@ -1068,19 +1105,12 @@ export const listHealthCheckCandidatesOpenApi = (input: {
 
     const candidates = operations.map((op): HealthCheckCandidate => {
       const method = op.binding.method.toLowerCase();
-      const parameters = op.binding.parameters.map((parameter) => ({
-        name: parameter.name,
-        location: parameter.location,
-        required: parameter.required,
-        ...(Option.isSome(parameter.description)
-          ? { description: parameter.description.value }
-          : {}),
-      }));
+      const parameters = getHealthCheckParameters(op.binding);
       const responseFields = responseFieldsByTool.get(op.toolName);
       return {
         operation: op.toolName,
         method,
-        requiredArgCount: op.binding.parameters.filter((parameter) => parameter.required).length,
+        requiredArgCount: parameters.filter((parameter) => parameter.required).length,
         destructive: REQUIRE_APPROVAL.has(method),
         summary: summaries.get(op.toolName) ?? `${method.toUpperCase()} ${op.binding.pathTemplate}`,
         ...(parameters.length > 0 ? { parameters } : {}),

@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
-import type { OrgWriteAccess } from "@executor-js/sdk";
+import type { Executor, OrgWriteAccess } from "@executor-js/sdk";
 
 import {
   buildResumeApprovalUrl,
@@ -98,6 +98,8 @@ export class McpEngineBuildError extends Data.TaggedError("McpEngineBuildError")
 export interface BuiltMcpServer {
   readonly mcpServer: McpServer;
   readonly engine: ExecutionEngine<Cause.YieldableError>;
+  readonly executor?: Executor;
+  readonly close?: () => Promise<void>;
 }
 
 /** The browser-mode wiring the store hands a build call when a session opts in. */
@@ -243,6 +245,8 @@ export const makeInMemoryMcpSessionStore = (
   const servers = new Map<string, McpServer>();
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
+  const executors = new Map<string, Executor>();
+  const closers = new Map<string, () => Promise<void>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
   // Monotonic-ish last-touch stamp per live session, the first input the idle
   // sweep reads. Written on create and on every forwarded request.
@@ -294,20 +298,33 @@ export const makeInMemoryMcpSessionStore = (
   ): Promise<void> =>
     ignoreClose(id, "engine", engine ? () => Effect.runPromise(engine.shutdown) : undefined);
 
+  /**
+   * Shut down a session's scoped executor and its plugin resources (such as
+   * tool subprocesses and connection pools). Every disposal path goes through here.
+   */
+  const shutdownExecutor = (id: string | null, executor: Executor | undefined): Promise<void> =>
+    ignoreClose(id, "executor", executor ? () => Effect.runPromise(executor.close()) : undefined);
+
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
     const server = servers.get(id);
     const engine = engines.get(id);
+    const executor = executors.get(id);
+    const closer = closers.get(id);
     transports.delete(id);
     servers.delete(id);
     owners.delete(id);
     engines.delete(id);
+    executors.delete(id);
+    closers.delete(id);
     lastSeen.delete(id);
     activeRequests.delete(id);
     if (opts.transport)
       await ignoreClose(id, "transport", transport ? () => transport.close() : undefined);
     if (opts.server) await ignoreClose(id, "server", server ? () => server.close() : undefined);
     await shutdownEngine(id, engine);
+    await shutdownExecutor(id, executor);
+    await ignoreClose(id, "session", closer);
   };
 
   /**
@@ -430,7 +447,7 @@ export const makeInMemoryMcpSessionStore = (
       ...buildOptionsFor(request, () => createdSessionId),
       resource,
     }).pipe(
-      Effect.flatMap(({ mcpServer, engine }) =>
+      Effect.flatMap(({ mcpServer, engine, executor, close }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
@@ -441,6 +458,8 @@ export const makeInMemoryMcpSessionStore = (
               servers.set(sid, mcpServer);
               owners.set(sid, { principal, resource });
               engines.set(sid, engine);
+              if (executor) executors.set(sid, executor);
+              if (close) closers.set(sid, close);
               lastSeen.set(sid, Date.now());
             },
             onsessionclosed: (sid) => void dispose(sid, { server: true }),
@@ -458,11 +477,13 @@ export const makeInMemoryMcpSessionStore = (
             orgWriteAccessForPrincipal(principal),
             () => {
               // Nothing was ever registered under a session id, so `dispose` has
-              // no entry to work from — release the three handles by hand, engine
-              // included.
+              // no entry to work from — release the handles by hand, engine
+              // and executor included.
               void ignoreClose(null, "transport", () => transport.close());
               void ignoreClose(null, "server", () => mcpServer.close());
               void shutdownEngine(null, engine);
+              void shutdownExecutor(null, executor);
+              if (close) void ignoreClose(null, "session", close);
             },
           );
         }),
@@ -623,7 +644,13 @@ export const makeInMemoryMcpSessionStore = (
     sweepIdleSessions,
     close: async () => {
       if (sweepTimer !== undefined) clearInterval(sweepTimer);
-      const ids = new Set([...transports.keys(), ...servers.keys(), ...engines.keys()]);
+      const ids = new Set([
+        ...transports.keys(),
+        ...servers.keys(),
+        ...engines.keys(),
+        ...executors.keys(),
+        ...closers.keys(),
+      ]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };
