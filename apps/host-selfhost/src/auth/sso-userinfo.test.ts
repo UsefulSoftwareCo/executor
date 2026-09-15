@@ -80,8 +80,20 @@ test("does not admit an unverified UserInfo email", async () => {
   );
 });
 
-test("does not let a UserInfo camel-case claim override email_verified", async () => {
+test("does not let camel-case claims override email_verified", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  await expect(
+    getUserInfo({
+      idToken: jwt({
+        sub: "alice",
+        email: "alice@example.com",
+        email_verified: false,
+        emailVerified: true,
+      }),
+      accessToken: "access-token",
+    }),
+  ).resolves.toMatchObject({ emailVerified: false });
+
   await withFetch(
     [
       { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } },
