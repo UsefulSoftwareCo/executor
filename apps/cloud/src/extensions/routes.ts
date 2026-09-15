@@ -28,6 +28,7 @@ import { AccountApi, AdminUsersApi } from "@executor-js/api";
 import { requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
   CloudSessionAuthHandlers,
@@ -72,7 +73,9 @@ const spec = OpenApi.fromApi(CloudOpenApi);
  * read it — the few app-only billing touchpoints. It is NOT on the neutral boot
  * core.
  */
-export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserStoreService>) => {
+export const makeCloudExtensionRoutes = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+) => {
   // Session routes (login / callback / me / switch-org / …). Handlers yield
   // `UserStoreService` directly; the per-request DB combine keeps the postgres
   // socket request-scoped.

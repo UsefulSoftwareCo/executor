@@ -9,6 +9,7 @@ import {
 
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { sessionFromSealed, type Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
@@ -95,10 +96,13 @@ const AccountProviderMiddleware = HttpRouter.middleware<{ provides: AccountProvi
  * account service closes over the per-request postgres socket). `AutumnService`
  * (the seat-gate) stays a residual requirement, satisfied by the app `boot`.
  */
-export const workosAccountMiddleware = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
-  AccountProviderMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
+export const workosAccountMiddleware = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+) => AccountProviderMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
 
-export const makeAccountApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) => {
+export const makeAccountApiLive = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+) => {
   // Cloud builds the WorkOS `AccountProvider` INSIDE the request body (so it
   // closes over the per-request postgres socket), so it can't be a self-
   // contained `Layer<AccountProvider>` — it combines its own middleware with

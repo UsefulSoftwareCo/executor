@@ -12,6 +12,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
+import { WorkOsMirror, mirrorMembershipFromWorkOs } from "../auth/workos-mirror";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
 import { forkReportMemberSeats } from "../extensions/billing/member-seats";
@@ -50,7 +51,7 @@ export class AccountCaller extends Context.Service<
 // (me / API keys) and `org/handlers.ts` (members / roles / invite / role /
 // name). Native WorkOS / store failures are mapped at this boundary onto the
 // neutral account errors so the shared UI sees one shape:
-//   WorkOSError | UserStoreError | ApiKeyManagementError → AccountError
+//   WorkOSError | UserStoreError | ApiKeyManagementError | WorkOsMirrorError → AccountError
 //   no organization in session                           → AccountNoOrganization
 //   not-an-admin / over-seat-limit / not-allowed         → AccountForbidden
 // ---------------------------------------------------------------------------
@@ -65,13 +66,17 @@ const toAccountError = () => Effect.fail(new AccountError({ message: "Account re
 export const workosAccountProvider: Layer.Layer<
   AccountProvider,
   never,
-  WorkOSClient | UserStoreService | ApiKeyService | AutumnService | AccountCaller
+  WorkOSClient | UserStoreService | WorkOsMirror | ApiKeyService | AutumnService | AccountCaller
 > = Layer.effect(AccountProvider)(
   Effect.gen(function* () {
     const workos = yield* WorkOSClient;
     const apiKeys = yield* ApiKeyService;
     const autumn = yield* AutumnService;
     const users = yield* UserStoreService;
+    // Membership writes below go to WorkOS FIRST (the authority), then are
+    // written through to the local mirror so the member list and the seat
+    // count read the change without waiting for the Events reconciler.
+    const mirror = yield* WorkOsMirror;
 
     // The caller, resolved once per request by the cookie-only session
     // middleware (account-api.ts) — the same credential `SessionAuthLive`
@@ -365,6 +370,9 @@ export const workosAccountProvider: Layer.Layer<
           yield* workos
             .deleteOrgMembership(membershipId)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          yield* mirror
+            .deleteMembership(membershipId)
+            .pipe(Effect.catchTag("WorkOsMirrorError", toAccountError));
           yield* forkReportMemberSeats(org.id).pipe(Effect.provideContext(ctx));
           return { success: true };
         }),
@@ -374,9 +382,12 @@ export const workosAccountProvider: Layer.Layer<
           const { session, org } = yield* requireOrganization(headers);
           yield* requireAdmin(session.accountId, org.id);
           yield* assertMembershipInOrg(org.id, membershipId);
-          yield* workos
+          const updated = yield* workos
             .updateOrgMembershipRole(membershipId, roleSlug)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          yield* mirror
+            .upsertMembership(mirrorMembershipFromWorkOs(updated))
+            .pipe(Effect.catchTag("WorkOsMirrorError", toAccountError));
           return { success: true };
         }),
 
