@@ -153,6 +153,164 @@ const { gh } = Astro.props;
       <p class="doc__works"><span>Works with</span> Claude Code, Cursor, Codex, ChatGPT, and any MCP client.</p>
     </header>
     </div>
+    <div data-uidotsh-option="D: In the sentence" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <p class="doc__lede doc__lede--runs">
+        Run it <a href="/cloud">hosted on Cloud</a>, on your machine as a
+        <a href={`${gh}/releases/latest`}>desktop app</a> or <a href="https://executor.sh/docs">CLI</a>,
+        or <a href="https://executor.sh/docs/hosted/docker">self-hosted</a> on Docker or Cloudflare. Same tools, same policies, MIT licensed.
+      </p>
+      <div class="doc__actions">
+        <a href="/cloud" class="btn-primary">Start on Cloud</a>
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+      </div>
+    </header>
+    </div>
+    <div data-uidotsh-option="E: Terminal block" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <div class="doc__term" role="group" aria-label="Ways to run Executor">
+        <div class="doc__term-row"><span class="doc__term-k">cloud</span><a class="doc__term-v" href="/cloud">open executor.sh/cloud</a><span class="doc__term-n">hosted, free to start</span></div>
+        <div class="doc__term-row"><span class="doc__term-k">desktop</span><a class="doc__term-v" href={`${gh}/releases/latest`}>download for mac, windows, linux</a><span class="doc__term-n">stays on your machine</span></div>
+        <div class="doc__term-row"><span class="doc__term-k">cli</span><span class="doc__term-v">npm i -g executor</span><span class="doc__term-n">headless and servers</span></div>
+        <div class="doc__term-row"><span class="doc__term-k">self-host</span><a class="doc__term-v" href="https://executor.sh/docs/hosted/docker">docker run ghcr.io/usefulsoftwareco/executor</a><span class="doc__term-n">or a cloudflare worker</span></div>
+      </div>
+      <div class="doc__actions">
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+        <span class="doc__quiet">Paste it into your agent and it picks the right one with you.</span>
+      </div>
+    </header>
+    </div>
+    <div data-uidotsh-option="F: Numbered rows" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <ol class="doc__rows">
+        <li>
+          <span class="doc__num">01</span>
+          <div class="doc__rows-b"><strong>Cloud</strong><span>Hosted, free to start, nothing to install.</span></div>
+          <a href="/cloud" class="btn-primary doc__rows-a">Start →</a>
+        </li>
+        <li>
+          <span class="doc__num">02</span>
+          <div class="doc__rows-b"><strong>Desktop or CLI</strong><span>Everything stays on your machine.</span></div>
+          <a href={`${gh}/releases/latest`} class="btn-secondary doc__rows-a">Download</a>
+        </li>
+        <li>
+          <span class="doc__num">03</span>
+          <div class="doc__rows-b"><strong>Self-hosted</strong><span>Docker or a Cloudflare Worker. MIT.</span></div>
+          <a href="https://executor.sh/docs/hosted/docker" class="btn-secondary doc__rows-a">Docs</a>
+        </li>
+      </ol>
+      <div class="doc__actions doc__actions--quiet">
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+        <span class="doc__quiet">Or paste this into your agent and let it set things up.</span>
+      </div>
+    </header>
+    </div>
+    <div data-uidotsh-option="G: In the headline" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Hosted, on your machine, or on your own infrastructure.
+      </h1>
+      <p class="doc__lede">
+        Your agent points at one endpoint and reaches every tool you connect. Claude Code,
+        Cursor, Codex, or anything else that speaks MCP. Any tool from any protocol, with
+        one place to add it, authenticate it, and decide what it may do.
+      </p>
+      <div class="doc__actions">
+        <a href="/cloud" class="btn-primary">Start on Cloud</a>
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+      </div>
+      <p class="doc__mono-links">
+        <a href={`${gh}/releases/latest`}>desktop ↗</a>
+        <a href="https://executor.sh/docs">cli ↗</a>
+        <a href="https://executor.sh/docs/hosted/docker">self-host ↗</a>
+        <a href={gh}>source ↗</a>
+      </p>
+    </header>
+    </div>
+    <div data-uidotsh-option="H: Icon row" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <div class="doc__actions">
+        <a href="/cloud" class="btn-primary">Start on Cloud</a>
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+      </div>
+      <div class="doc__icons">
+        <a href="/cloud" class="doc__icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 0 0 .4-9A7 7 0 0 0 4.3 12.5 3.5 3.5 0 0 0 5.5 19z"/></svg>
+          <span>Cloud</span><small>hosted</small>
+        </a>
+        <a href={`${gh}/releases/latest`} class="doc__icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>
+          <span>Desktop</span><small>mac · win · linux</small>
+        </a>
+        <a href="https://executor.sh/docs" class="doc__icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>
+          <span>CLI</span><small>npm i -g executor</small>
+        </a>
+        <a href="https://executor.sh/docs/hosted/docker" class="doc__icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>
+          <span>Self-hosted</span><small>docker · cloudflare</small>
+        </a>
+      </div>
+    </header>
+    </div>
   </div>
 
     <figure class="doc__fig doc__fig--hero">

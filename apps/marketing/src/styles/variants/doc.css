@@ -344,3 +344,144 @@
   margin-top: 2rem;
   max-width: 720px;
 }
+
+/* ── More hero variants ── */
+.doc__lede--runs a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__lede--runs a:hover {
+  text-decoration-color: var(--color-ink);
+}
+
+.doc__term {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  padding: 0.5rem 0;
+  margin-bottom: 1.1rem;
+}
+.doc__term-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr auto;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.45rem 1rem;
+}
+.doc__term-k {
+  color: var(--color-ink-3);
+}
+.doc__term-k::before {
+  content: "$ ";
+  color: var(--color-rule-strong);
+}
+.doc__term-v {
+  color: var(--color-ink);
+}
+a.doc__term-v {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+a.doc__term-v:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__term-n {
+  color: var(--color-ink-3);
+  font-size: 11.5px;
+}
+@media (max-width: 719.98px) {
+  .doc__term-n {
+    display: none;
+  }
+}
+
+.doc__rows {
+  display: grid;
+  margin-bottom: 1.1rem;
+}
+.doc__rows li {
+  display: grid;
+  grid-template-columns: 2.25rem 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--color-rule);
+}
+.doc__rows li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__rows-b {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 14.5px;
+  color: var(--color-ink-2);
+}
+.doc__rows-b strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__rows-a {
+  padding: 0.5rem 0.9rem;
+  font-size: 13.5px;
+}
+
+.doc__mono-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.doc__mono-links a {
+  color: var(--color-ink-3);
+}
+.doc__mono-links a:hover {
+  color: var(--color-ink);
+}
+
+.doc__icons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+@media (min-width: 720px) {
+  .doc__icons {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.doc__icon {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  transition: background 0.15s ease;
+}
+.doc__icon:hover {
+  background: var(--color-surface-2);
+}
+.doc__icon svg {
+  margin-bottom: 0.35rem;
+}
+.doc__icon span {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.doc__icon small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+}
