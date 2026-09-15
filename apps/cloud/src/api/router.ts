@@ -8,6 +8,7 @@ import {
 } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
+import { MirrorReadiness } from "../auth/mirror-readiness";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import { DbService } from "../db/db";
 import { makeAccountApiLive } from "../account/account-api";
@@ -35,7 +36,9 @@ import { makeProtectedApiLive } from "./protected";
 // assert per-request semantics — see
 // `apps/cloud/src/api.request-scope.node.test.ts`.
 export const makeApiLive = (
-  requestScopedLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+  requestScopedLive: Layer.Layer<
+    DbService | UserStoreService | WorkOsMirror | MemberDirectory | MirrorReadiness
+  >,
 ) => {
   const BillingRoutesLive = AutumnRoutesLive.pipe(
     Layer.provide(requestScopedMiddleware(requestScopedLive).layer),

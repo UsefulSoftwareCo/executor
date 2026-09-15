@@ -1,8 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { UserStoreService } from "../../auth/context";
+import { MirrorReadiness, MirrorReadinessState } from "../../auth/mirror-readiness";
 import { WorkOSClient, type WorkOSClientService } from "../../auth/workos";
+import { WorkOsMirror, type WorkOsMirrorShape } from "../../auth/workos-mirror";
 import { resolveBillingOrganization } from "./route";
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
@@ -29,22 +33,42 @@ const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data:
-              userId === MEMBER
-                ? [
-                    { userId, organizationId: SESSION_ORG, status: "active" },
-                    { userId, organizationId: URL_ORG, status: "active" },
-                  ]
-                : [],
-          });
-      }
+      // Membership is read from the mirror, never from WorkOS.
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
+
+// MEMBER is active in both orgs, as the mirror reports it.
+// The mirror is READY in these tests (backfill complete, reconciler caught
+// up), so membership is read from the stubbed directory, never from WorkOS.
+const stubReadiness = Layer.succeed(MirrorReadiness)({
+  state: () => Effect.succeed(MirrorReadinessState.Ready()),
+});
+
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      accountId === MEMBER && (organizationId === SESSION_ORG || organizationId === URL_ORG)
+        ? {
+            accountId,
+            membershipId: `om_${accountId}_${organizationId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("billing auth does not look up by membership id"),
+  membershipsOf: () => Effect.die("billing auth reads one membership, not the list"),
+  members: () => Effect.die("billing auth does not list members"),
+  membersById: () => Effect.die("billing auth does not batch members"),
+  findByEmail: () => Effect.die("billing auth does not resolve emails"),
+});
 
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
@@ -55,7 +79,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
@@ -64,7 +88,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id,
           name: `Org ${id}`,
           slug: id,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
@@ -73,21 +97,34 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id: slug === URL_SLUG ? URL_ORG : "org_outsider",
           name: `Org ${slug}`,
           slug,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
         }),
+        markOrganizationDeleted: async () => null,
         deleteOrganizationCascade: async () => {},
       }),
     ),
 });
 
+// Authorization scans an organization the backfill never covered before it
+// reads the mirror (`auth/organization.ts`); every org row above is marked
+// backfilled, so the scan is never reached and the mirror is never written.
+const stubMirror = Layer.succeed(
+  WorkOsMirror,
+  new Proxy({} as WorkOsMirrorShape, {
+    get: (_target, prop) => () => Effect.die(`unexpected WorkOsMirror.${String(prop)} call`),
+  }),
+);
+
 const run = (headers: Record<string, string>) =>
   resolveBillingOrganization(
     new Request("https://executor.test/api/billing/customer", { headers }),
     { userId: MEMBER },
-  ).pipe(Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers)));
+  ).pipe(
+    Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers, stubDirectory, stubMirror, stubReadiness)),
+  );
 
 describe("billing route org selector", () => {
   it.effect("fails closed when no selector header is sent", () =>

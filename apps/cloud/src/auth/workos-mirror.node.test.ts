@@ -40,12 +40,13 @@
 //   - the events replay boundary is recorded once and never advanced
 //   - `members` searches email AND name case-insensitively, pages stably
 //   - `findByEmail` ignores the casing WorkOS stored
+//   - `membershipById` is org-scoped: another org's id resolves to null
 //   - a membership arriving before its user still holds (FK via ensureAccount)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
-import { Context, Deferred, Effect, Fiber, Layer, Option } from "effect";
+import { Context, Deferred, Duration, Effect, Fiber, Layer, Option } from "effect";
 
 import { MemberDirectory } from "@executor-js/api/server";
 
@@ -60,6 +61,13 @@ import {
   type WorkOsMirrorUser,
 } from "./workos-mirror";
 import { makeWorkOsMirrorStore } from "./workos-mirror-store";
+import {
+  MIRROR_RECONCILER_LAG_BUDGET,
+  MirrorReadiness,
+  MirrorReadinessState,
+  makeMirrorReadinessLayer,
+  mirrorReadinessFrom,
+} from "./mirror-readiness";
 
 const DbLive = DbService.Live;
 const Services = Layer.mergeAll(
@@ -841,6 +849,62 @@ describe("WorkOsMirror cursor", () => {
   });
 });
 
+describe("mirror readiness", () => {
+  const now = T4;
+  const budget = Duration.toMillis(MIRROR_RECONCILER_LAG_BUDGET);
+  const within = new Date(now.getTime() - budget);
+  const tooOld = new Date(now.getTime() - budget - 1);
+
+  it("is ready only when the backfill has completed AND the reconciler drained within the budget", () => {
+    expect(mirrorReadinessFrom(null, now), "no events row: never backfilled").toEqual(
+      MirrorReadinessState.BackfillPending(),
+    );
+    expect(mirrorReadinessFrom({ backfillCompletedAt: null, drainedAt: within }, now)).toEqual(
+      MirrorReadinessState.BackfillPending(),
+    );
+    expect(
+      mirrorReadinessFrom({ backfillCompletedAt: T1, drainedAt: null }, now),
+      "backfilled but the reconciler has never drained",
+    ).toEqual(MirrorReadinessState.ReconcilerStale({ drainedAt: null }));
+    expect(
+      mirrorReadinessFrom({ backfillCompletedAt: T1, drainedAt: tooOld }, now),
+      "a drain older than the budget is stale",
+    ).toEqual(MirrorReadinessState.ReconcilerStale({ drainedAt: tooOld }));
+    expect(
+      mirrorReadinessFrom({ backfillCompletedAt: T1, drainedAt: within }, now),
+      "a drain exactly at the budget is still ready",
+    ).toEqual(MirrorReadinessState.Ready());
+    expect(mirrorReadinessFrom({ backfillCompletedAt: T1, drainedAt: now }, now)).toEqual(
+      MirrorReadinessState.Ready(),
+    );
+  });
+
+  it("reads the live row the backfill and the reconciler write", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        const readiness = yield* MirrorReadiness;
+        yield* clearEventsRow;
+        const noRow = yield* readiness.state();
+        yield* mirror.setReplayBoundary(T1);
+        yield* mirror.markBackfillCompleted(T1);
+        const backfilledOnly = yield* readiness.state();
+        // A drain as of now: what a reconciler run that just read the stream
+        // to its end records.
+        const drainedAt = new Date();
+        yield* mirror.markDrained(drainedAt);
+        const ready = yield* readiness.state();
+        return { noRow, backfilledOnly, ready };
+      }).pipe(Effect.provide(makeMirrorReadinessLayer().pipe(Layer.provide(DbLive)))),
+    );
+    expect(result.noRow).toEqual(MirrorReadinessState.BackfillPending());
+    expect(result.backfilledOnly).toEqual(
+      MirrorReadinessState.ReconcilerStale({ drainedAt: null }),
+    );
+    expect(result.ready).toEqual(MirrorReadinessState.Ready());
+  });
+});
+
 describe("WorkOsMirror backfill sync state", () => {
   it("records the replay boundary and the backfill completion once each, and the drained mark forward only, without touching the cursor", async () => {
     const result = await run(
@@ -1244,6 +1308,33 @@ describe("cloud MemberDirectory", () => {
     expect(result.wildcard, "a literal % matches nothing rather than everything").toEqual([]);
   });
 
+  it("lists one account's memberships across orgs, active + pending by default", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const directory = yield* MemberDirectory;
+        const mirror = yield* WorkOsMirror;
+        const active = yield* freshOrg();
+        const pending = yield* freshOrg();
+        const inactive = yield* freshOrg();
+        const id = `user_${crypto.randomUUID()}`;
+        yield* mirror.upsertUser(user(id));
+        yield* mirror.upsertMembership(membership(active, id, { role: "admin" }));
+        yield* mirror.upsertMembership(membership(pending, id, { status: "pending" }));
+        yield* mirror.upsertMembership(membership(inactive, id, { status: "inactive" }));
+        const defaults = yield* directory.membershipsOf(id);
+        const activeOnly = yield* directory.membershipsOf(id, ["active"]);
+        const nobody = yield* directory.membershipsOf(`user_${crypto.randomUUID()}`);
+        return { active, pending, inactive, defaults, activeOnly, nobody };
+      }),
+    );
+    expect(result.defaults.map((m) => m.organizationId)).toEqual(
+      [result.active, result.pending].sort(),
+    );
+    expect(result.defaults.find((m) => m.organizationId === result.active)?.role).toBe("admin");
+    expect(result.activeOnly.map((m) => m.organizationId)).toEqual([result.active]);
+    expect(result.nobody).toEqual([]);
+  });
+
   it("resolves a normalized email regardless of stored casing, and batches by id", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -1264,6 +1355,9 @@ describe("cloud MemberDirectory", () => {
           ["active", "pending", "inactive"],
         );
         const empty = yield* directory.membersById(org, []);
+        const byId = yield* directory.membershipById(org, `om_${ids.gone}_${org}`);
+        const byIdForeign = yield* directory.membershipById(other, `om_${ids.gone}_${org}`);
+        const byIdUnknown = yield* directory.membershipById(org, "om_unknown");
         return {
           ids,
           found,
@@ -1273,6 +1367,9 @@ describe("cloud MemberDirectory", () => {
           batch,
           batchAll,
           empty,
+          byId,
+          byIdForeign,
+          byIdUnknown,
         };
       }),
     );
@@ -1285,5 +1382,11 @@ describe("cloud MemberDirectory", () => {
     ]);
     expect([...result.batchAll.keys()].sort()).toEqual([result.ids.ada, result.ids.gone].sort());
     expect(result.empty.size).toBe(0);
+    expect(result.byId, "membershipById reports any status").toMatchObject({
+      accountId: result.ids.gone,
+      status: "inactive",
+    });
+    expect(result.byIdForeign, "an id from another org is not this org's").toBeNull();
+    expect(result.byIdUnknown).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import {
 
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
+import { MirrorReadiness } from "../auth/mirror-readiness";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import { sessionFromSealed, type Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
@@ -99,11 +100,15 @@ const AccountProviderMiddleware = HttpRouter.middleware<{ provides: AccountProvi
  * (the seat-gate) stays a residual requirement, satisfied by the app `boot`.
  */
 export const workosAccountMiddleware = (
-  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+  rsLive: Layer.Layer<
+    DbService | UserStoreService | WorkOsMirror | MemberDirectory | MirrorReadiness
+  >,
 ) => AccountProviderMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
 
 export const makeAccountApiLive = (
-  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+  rsLive: Layer.Layer<
+    DbService | UserStoreService | WorkOsMirror | MemberDirectory | MirrorReadiness
+  >,
 ) => {
   // Cloud builds the WorkOS `AccountProvider` INSIDE the request body (so it
   // closes over the per-request postgres socket), so it can't be a self-

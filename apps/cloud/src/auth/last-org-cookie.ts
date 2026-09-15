@@ -12,7 +12,7 @@
 //   - the login callback prefers it when picking the org for a fresh session
 //     with a bare returnTo (handlers.ts)
 //
-// It is a PREFERENCE, never an authority: both readers re-check live membership
+// It is a PREFERENCE, never an authority: both readers re-check membership
 // through the same authorize path as any org selector, so a stale or forged
 // value at worst falls back to today's behavior. Not HttpOnly — the client is
 // the writer. Deliberately NOT cleared on logout: surviving the session is what

@@ -80,6 +80,26 @@ export interface MemberDirectoryShape {
     organizationId: string,
     statuses?: readonly MemberStatus[],
   ) => Effect.Effect<DirectoryMember | null, MemberDirectoryError>;
+  /**
+   * One membership by its host membership ROW id, any status; `null` when
+   * THIS org holds no such row. The ownership gate for host-specific writes
+   * (remove, change role): an id leaked from another org resolves to `null`
+   * here, so a point read answers "is this ours" without listing the org.
+   */
+  readonly membershipById: (
+    organizationId: string,
+    membershipId: string,
+  ) => Effect.Effect<DirectoryMember | null, MemberDirectoryError>;
+  /**
+   * Every organization membership one account holds, across organizations —
+   * the org switcher's list and the per-user organization limit. `statuses`
+   * defaults to active + pending; ordered by `organizationId` so the answer
+   * is stable. One read for the whole set, never a lookup per org.
+   */
+  readonly membershipsOf: (
+    accountId: string,
+    statuses?: readonly MemberStatus[],
+  ) => Effect.Effect<readonly DirectoryMember[], MemberDirectoryError>;
   /** The org's members matching `query` (see {@link MemberQuery} for defaults). */
   readonly members: (
     organizationId: string,

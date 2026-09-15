@@ -31,6 +31,7 @@ import { AccountApi, AdminUsersApi } from "@executor-js/api";
 import { requestScopedMiddleware, type MemberDirectory } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
+import { MirrorReadiness } from "../auth/mirror-readiness";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
@@ -79,7 +80,9 @@ const spec = OpenApi.fromApi(CloudOpenApi);
  * core.
  */
 export const makeCloudExtensionRoutes = (
-  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+  rsLive: Layer.Layer<
+    DbService | UserStoreService | WorkOsMirror | MemberDirectory | MirrorReadiness
+  >,
 ) => {
   // Session routes (login / callback / me / switch-org / …). Handlers yield
   // `UserStoreService` directly; the per-request DB combine keeps the postgres

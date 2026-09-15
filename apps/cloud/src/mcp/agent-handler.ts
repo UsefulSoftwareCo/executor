@@ -178,7 +178,7 @@ const propsForPrincipal = (
     return {
       session: {
         organizationId: principal.organizationId,
-        // The org record the live membership check resolved microseconds ago,
+        // The org record the membership check resolved microseconds ago,
         // handed to the session DO so it never opens a connection of its own to
         // re-read it. An unnamed org (no auth plane could resolve one) is
         // omitted rather than sent empty, so the DO can tell "not carried" from

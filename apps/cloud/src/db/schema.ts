@@ -82,15 +82,20 @@ export const organizations = pgTable(
      */
     backfilledAt: timestamp("backfilled_at", { withTimezone: true }),
     /**
-     * When this organization was deleted, or null while it is live. Set by
-     * cloud's own deletion flow and by the `organization.deleted` event —
-     * which MINTS the row as a tombstone when the mirror has never seen the
-     * organization — and KEPT by the local purge (`db/org-deletion.ts`),
-     * which removes the organization's memberships and tenant data but
-     * leaves this row as a tombstone: a feeder that fetched a membership
-     * before the deletion and writes it after (a login that stalled across
-     * the deletion) finds the tombstone and does not mint the organization
-     * live. A marked organization is never renamed and authorizes nobody.
+     * When this organization was deleted, or null while it is live. Set FIRST
+     * by cloud's own deletion flow (`auth/handlers.ts` deleteOrganization),
+     * before the WorkOS delete and the local purge, and by the
+     * `organization.deleted` event for an org deleted in the WorkOS dashboard
+     * — which MINTS the row as a tombstone when the mirror has never seen the
+     * organization: membership is authorized from the local mirror, so a
+     * marked organization refuses every session at once, whether or not the
+     * later steps land. Membership rows are left as they are until the purge
+     * (so the admin who started the deletion can retry it after a step
+     * failed), and the purge (`db/org-deletion.ts`) removes them but KEEPS
+     * this row as a tombstone: a feeder that fetched a membership before the
+     * deletion and writes it after (a login that stalled across the deletion)
+     * finds the tombstone and does not mint the organization live. A marked
+     * organization is never renamed.
      */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     /**

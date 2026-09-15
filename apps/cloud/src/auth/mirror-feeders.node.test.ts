@@ -20,6 +20,19 @@
 //     so a replay of the membership as it was before the delete cannot
 //     restore it while a replacement WorkOS created meanwhile is accepted
 //   - `updateMemberRole` writes the role WorkOS returned
+//   - deleting an org marks it deleted locally FIRST, so every member's
+//     session is refused at once even when the billing cancel, the WorkOS
+//     delete, or the local purge fails afterwards; billing is cancelled
+//     BEFORE the WorkOS delete, so a failed cancel leaves the WorkOS org
+//     intact and the retry finishes the deletion; a retry after WorkOS
+//     already deleted the org still runs the purge — even while the mirror
+//     is not ready, when WorkOS can no longer vouch for the admin; a marked
+//     org leaves the switcher
+//   - authorization scans an organization the backfill never covered (its
+//     `backfilled_at` is missing) from WorkOS before reading its mirror,
+//     once, so a member the mirror never recorded is admitted; an
+//     organization the mirror does not hold at all is resolved from WorkOS
+//     for a caller WorkOS confirms as its member, and minted for nobody else
 //   - the seat gate trusts the mirror's count only for an organization whose
 //     membership list was scanned from WorkOS in full: an unmarked one is
 //     scanned first (once), so a partial mirror never admits an invite past
@@ -64,17 +77,27 @@ import { AccountCaller, workosAccountProvider } from "../account/workos-account-
 import { RequestScopedServicesLive } from "../api/layers";
 import { DbService } from "../db/db";
 import { forkReportMemberSeats } from "../extensions/billing/member-seats";
-import { AutumnService } from "../extensions/billing/service";
+import {
+  AutumnCustomerNotFoundError,
+  AutumnError,
+  AutumnService,
+  type AutumnFailure,
+} from "../extensions/billing/service";
 import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
-import { WorkOSError } from "./errors";
+import { UserStoreError, WorkOSError } from "./errors";
 import { CloudAuthPublicHandlers, CloudSessionAuthHandlers, NonProtectedApi } from "./handlers";
 import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import { encodeLoginState } from "./login-state";
 import { cloudMemberDirectoryLayer } from "./member-directory";
 import { SessionAuthLive } from "./middleware-live";
 import { mirrorSignIn } from "./mirror-feeders";
-import { ORG_SELECTOR_HEADER } from "./organization";
+import { MirrorReadiness, MirrorReadinessState } from "./mirror-readiness";
+import {
+  ORG_SELECTOR_HEADER,
+  authorizeOrganization,
+  markOrganizationDeleted,
+} from "./organization";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
 import { WorkOsMirror, type WorkOsMirrorShape } from "./workos-mirror";
 import { backfillOrganization, backfillWorkOsMirror } from "./workos-mirror-backfill";
@@ -153,6 +176,14 @@ const seedOrganization = (id: string) =>
       Effect.scoped,
     ),
   );
+
+// The mirror is READY throughout (backfill complete, reconciler caught up):
+// every membership read below is against the mirror, never WorkOS. The
+// readiness rule itself is pinned in workos-mirror.node.test.ts and the
+// fallback in org-selector-auth.node.test.ts.
+const readyMirror = Layer.succeed(MirrorReadiness)({
+  state: () => Effect.succeed(MirrorReadinessState.Ready()),
+});
 
 const stubAutumn = Layer.succeed(AutumnService)({
   use: () => Effect.die("feeders do not read billing"),
@@ -540,6 +571,530 @@ describe("a delayed sign-in feeder", () => {
   });
 });
 
+describe("session handlers read membership from the mirror", () => {
+  /**
+   * The session routes over the live request-scoped services. `workos` adds
+   * to the fake WorkOS (only session authentication by default: every
+   * membership read against WorkOS dies); `services` replaces the per-request
+   * layer, so a test can fail one store call on purpose.
+   */
+  const sessionHandler = (
+    userId: string,
+    options: {
+      readonly workos?: Partial<WorkOSClientService>;
+      readonly services?: Layer.Layer<
+        DbService | UserStoreService | WorkOsMirror | MemberDirectory
+      >;
+      readonly autumn?: Layer.Layer<AutumnService>;
+      /** The mirror's readiness for this request; ready unless a test says otherwise. */
+      readonly readiness?: Layer.Layer<MirrorReadiness>;
+    } = {},
+  ) =>
+    HttpRouter.toWebHandler(
+      HttpApiBuilder.layer(NonProtectedApi).pipe(
+        Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
+        Layer.provide(
+          requestScopedMiddleware(
+            Layer.mergeAll(
+              options.services ?? RequestScopedServicesLive,
+              options.readiness ?? readyMirror,
+            ),
+          ).layer,
+        ),
+        Layer.provideMerge(SessionAuthLive),
+        Layer.provideMerge(options.autumn ?? stubAutumn),
+        Layer.provideMerge(
+          stubWorkOS({
+            ...options.workos,
+            authenticateSealedSession: () =>
+              Effect.succeed({
+                userId,
+                email: `${userId}@placeholder.test`,
+                organizationId: null,
+              } as never),
+          }),
+        ),
+        Layer.provideMerge(HttpServer.layerServices),
+        Layer.provideMerge(RouterConfigLive),
+      ),
+      { disableLogger: true },
+    ).handler;
+
+  /** The org row as the mirror holds it, or null once purged. */
+  const readOrganization = (org: string) =>
+    Effect.runPromise(
+      Effect.flatMap(UserStoreService.asEffect(), (users) =>
+        users.use("getOrganization", (s) => s.getOrganization(org)),
+      ).pipe(
+        Effect.provide(UserStoreService.Live.pipe(Layer.provide(DbService.Live))),
+        Effect.scoped,
+      ),
+    );
+
+  /**
+   * `authorizeOrganization` over the live stores and a READY mirror, as every
+   * protected request runs it; `workos` serves whatever the check may read
+   * from WorkOS (nothing, by default: any read dies).
+   */
+  const authorize = (
+    userId: string,
+    org: string,
+    workos: Layer.Layer<WorkOSClient> = stubWorkOS({}),
+  ) =>
+    Effect.runPromise(
+      authorizeOrganization(userId, org).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            UserStoreService.Live,
+            WorkOsMirror.Live,
+            cloudMemberDirectoryLayer,
+            readyMirror,
+          ).pipe(Layer.provideMerge(DbService.Live)),
+        ),
+        Effect.provide(workos),
+        Effect.scoped,
+      ),
+    );
+
+  /** Whether `userId` is authorized for `org` right now. */
+  const authorized = async (userId: string, org: string) => (await authorize(userId, org)) !== null;
+
+  /** A request-scoped layer whose `deleteOrganizationCascade` fails, everything else live. */
+  const servicesWithFailingPurge = (purges: string[]) =>
+    Layer.mergeAll(
+      Layer.effect(UserStoreService)(
+        Effect.map(UserStoreService.asEffect(), (live): UserStoreService["Service"] => ({
+          use: (op, fn) =>
+            op === "deleteOrganizationCascade"
+              ? Effect.sync(() => {
+                  purges.push(op);
+                }).pipe(
+                  Effect.flatMap(() =>
+                    Effect.fail(new UserStoreError({ operation: op, reason: "connection_closed" })),
+                  ),
+                )
+              : live.use(op, fn),
+        })),
+      ).pipe(Layer.provide(UserStoreService.Live)),
+      WorkOsMirror.Live,
+      cloudMemberDirectoryLayer,
+    ).pipe(Layer.provideMerge(DbService.Live));
+
+  const deletingAutumn = Layer.succeed(AutumnService)({
+    use: () => Effect.succeed({} as never),
+    ensureCustomer: () => Effect.void,
+    checkExecutionBalance: () => Effect.die("deletion does not check balances"),
+    trackExecution: () => Effect.void,
+    setMemberSeats: () => Effect.void,
+  });
+
+  /**
+   * Mirror `org` — marked as scanned (an empty listing at T1), as the one-off
+   * backfill leaves every org, so authorization reads its mirror without a
+   * WorkOS scan — and `userId`'s membership in it; returns the org's slug.
+   */
+  const seedMembership = async (
+    userId: string,
+    org: string,
+    status: "active" | "pending",
+    role: "admin" | "member" = "member",
+  ) => {
+    const slug = await seedOrganization(org);
+    await Effect.runPromise(
+      Effect.flatMap(WorkOsMirror.asEffect(), (mirror) =>
+        Effect.andThen(
+          mirror.applyOrganizationScan({
+            organizationId: org,
+            listedAt: new Date(T1),
+            members: [],
+          }),
+          mirror.upsertMembership({
+            id: `om_${userId}_${org}`,
+            accountId: userId,
+            organizationId: org,
+            role,
+            status,
+            updatedAt: new Date(T1),
+          }),
+        ),
+      ).pipe(Effect.provide(WorkOsMirror.Live.pipe(Layer.provide(DbService.Live))), Effect.scoped),
+    );
+    return slug;
+  };
+
+  const deleteOrganizationRequest = (org: string) =>
+    new Request("http://test.local/auth/delete-organization", {
+      method: "POST",
+      headers: {
+        cookie: "wos-session=sealed",
+        "content-type": "application/json",
+        [ORG_SELECTOR_HEADER]: org,
+      },
+      body: JSON.stringify({ confirmName: `Org ${org}` }),
+    });
+
+  it("lists the caller's organizations from the mirror, with their slugs", async () => {
+    const userId = freshId("user");
+    const activeOrg = freshId("org");
+    const pendingOrg = freshId("org");
+    const otherUser = freshId("user");
+    const foreignOrg = freshId("org");
+    const activeSlug = await seedMembership(userId, activeOrg, "active");
+    const pendingSlug = await seedMembership(userId, pendingOrg, "pending");
+    await seedMembership(otherUser, foreignOrg, "active");
+
+    const response = await sessionHandler(userId)(
+      new Request("http://test.local/auth/organizations", {
+        headers: { cookie: "wos-session=sealed" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      organizations: { id: string; slug: string }[];
+      activeOrganizationId: string | null;
+    };
+    expect(
+      body.organizations.map((o) => [o.id, o.slug]).sort(),
+      "active and pending memberships, each with the mirror's slug; nobody else's",
+    ).toEqual(
+      [
+        [activeOrg, activeSlug],
+        [pendingOrg, pendingSlug],
+      ].sort(),
+    );
+    expect(body.activeOrganizationId).toBeNull();
+  });
+
+  it("refuses to delete an org for a pending admin, before WorkOS is asked", async () => {
+    const userId = freshId("user");
+    const org = freshId("org");
+    // An admin role that is still pending: the org gate reads the mirror and
+    // requires an ACTIVE membership, so the invite grants no deletion right.
+    await seedMembership(userId, org, "pending", "admin");
+
+    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+
+    // The selector resolves no active membership, so the request fails at the
+    // org check (NoOrganization) — the handler never reaches the WorkOS
+    // delete, which the stub would die on.
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ _tag: "NoOrganization" });
+  });
+
+  it("refuses to delete an org for an active plain member, before WorkOS is asked", async () => {
+    const userId = freshId("user");
+    const org = freshId("org");
+    await seedMembership(userId, org, "active", "member");
+
+    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+
+    expect(response.status).toBe(403);
+    expect(
+      await response.json(),
+      "an active member who is not an admin may not delete the org",
+    ).toMatchObject({ _tag: "OrganizationDeletionForbidden" });
+  });
+
+  it("revokes every member's access the moment deletion starts, even when the local purge fails, and finishes on a retry after WorkOS already deleted the org", async () => {
+    const admin = freshId("user");
+    const member = freshId("user");
+    const org = freshId("org");
+    await seedMembership(admin, org, "active", "admin");
+    await seedMembership(member, org, "active", "member");
+    expect(await authorized(member, org), "live before the deletion").toBe(true);
+
+    // First attempt: WorkOS deletes the org, then the local purge fails.
+    const workosDeletes: string[] = [];
+    const purges: string[] = [];
+    const failing = sessionHandler(admin, {
+      services: servicesWithFailingPurge(purges),
+      autumn: deletingAutumn,
+      workos: {
+        deleteOrganization: (organizationId) =>
+          Effect.sync(() => {
+            workosDeletes.push(organizationId);
+          }),
+      },
+    });
+    const first = await failing(deleteOrganizationRequest(org));
+    expect(first.status, "the failed purge is surfaced, not hidden").toBe(500);
+    expect(workosDeletes).toEqual([org]);
+    expect(purges).toEqual(["deleteOrganizationCascade"]);
+    expect(
+      (await readOrganization(org))?.deletedAt,
+      "the org was marked deleted BEFORE WorkOS was asked",
+    ).not.toBeNull();
+    // Membership rows are still there (the purge did not run), yet nobody
+    // is authorized: the mark, not the WorkOS delete, revokes access.
+    expect(await authorized(member, org)).toBe(false);
+    expect(await authorized(admin, org)).toBe(false);
+
+    // Retry: WorkOS now answers "already deleted"; the local purge completes.
+    const retry = sessionHandler(admin, {
+      autumn: deletingAutumn,
+      workos: {
+        deleteOrganization: () => Effect.fail(new WorkOSError({ status: 404 })),
+      },
+    });
+    const second = await retry(deleteOrganizationRequest(org));
+    expect(second.status, "the admin's own membership still admits the retry").toBe(200);
+    expect(await second.json()).toEqual({ success: true });
+    expect(
+      (await readOrganization(org))?.deletedAt,
+      "the org row stays as a tombstone, marked deleted",
+    ).not.toBeNull();
+    expect(await readMembers(org), "its memberships are purged").toEqual([]);
+    expect(await authorized(admin, org)).toBe(false);
+  });
+
+  it("finishes on a retry after the billing cancel failed, and only purges once billing is cancelled", async () => {
+    const admin = freshId("user");
+    const member = freshId("user");
+    const org = freshId("org");
+    await seedMembership(admin, org, "active", "admin");
+    await seedMembership(member, org, "active", "member");
+
+    // Autumn is down for the first attempt; on the retry it answers "no such
+    // customer" — the first attempt's cancel may have landed after all, or
+    // the org was never provisioned — which is nothing to cancel.
+    let billingCalls = 0;
+    const flakyAutumn = Layer.succeed(AutumnService)({
+      use: () =>
+        Effect.suspend(() => {
+          billingCalls += 1;
+          const failure: AutumnFailure =
+            billingCalls === 1
+              ? new AutumnError({ message: "Autumn SDK request failed" })
+              : new AutumnCustomerNotFoundError({
+                  message: "Autumn has no customer for this organization",
+                });
+          return Effect.fail(failure);
+        }),
+      ensureCustomer: () => Effect.void,
+      checkExecutionBalance: () => Effect.die("deletion does not check balances"),
+      trackExecution: () => Effect.void,
+      setMemberSeats: () => Effect.void,
+    });
+    const workosDeletes: string[] = [];
+    const handler = sessionHandler(admin, {
+      autumn: flakyAutumn,
+      workos: {
+        deleteOrganization: (organizationId) =>
+          Effect.sync(() => {
+            workosDeletes.push(organizationId);
+          }),
+      },
+    });
+
+    const first = await handler(deleteOrganizationRequest(org));
+    expect(first.status, "the failed billing cancel is surfaced, not hidden").toBe(500);
+    expect(await first.json()).toMatchObject({
+      _tag: "OrganizationDeletionIncomplete",
+      step: "billing",
+    });
+    expect(workosDeletes, "the WorkOS org is NOT deleted before billing is cancelled").toEqual([]);
+    expect(billingCalls).toBe(1);
+    expect((await readOrganization(org))?.deletedAt, "the org is marked deleted").not.toBeNull();
+    expect(
+      (await readMembers(org)).map((m) => m.accountId).sort(),
+      "the purge did NOT run: the membership rows are still there",
+    ).toEqual([admin, member].sort());
+    expect(await authorized(member, org), "yet nobody is authorized: the mark stands").toBe(false);
+
+    const second = await handler(deleteOrganizationRequest(org));
+    expect(second.status, "the admin's own membership row still admits the retry").toBe(200);
+    expect(await second.json()).toEqual({ success: true });
+    expect(workosDeletes, "WorkOS is asked once billing is cancelled").toEqual([org]);
+    expect(billingCalls, "billing is asked again and tolerates the gone customer").toBe(2);
+    expect(await readMembers(org), "and the purge ran: its memberships are gone").toEqual([]);
+    expect(
+      (await readOrganization(org))?.deletedAt,
+      "the org row stays as a tombstone",
+    ).not.toBeNull();
+    expect(await authorized(admin, org)).toBe(false);
+  });
+
+  it("finishes on a retry while the mirror is not ready, after WorkOS already deleted the org", async () => {
+    const admin = freshId("user");
+    const member = freshId("user");
+    const org = freshId("org");
+    await seedMembership(admin, org, "active", "admin");
+    await seedMembership(member, org, "active", "member");
+
+    // First attempt: billing cancelled, WorkOS org deleted, local purge fails.
+    const purges: string[] = [];
+    const first = await sessionHandler(admin, {
+      services: servicesWithFailingPurge(purges),
+      autumn: deletingAutumn,
+      workos: { deleteOrganization: () => Effect.void },
+    })(deleteOrganizationRequest(org));
+    expect(first.status).toBe(500);
+    expect(purges).toEqual(["deleteOrganizationCascade"]);
+
+    // The reconciler stalls before the retry. WorkOS no longer lists the org
+    // or the admin's membership in it — and the fallback must not ask it:
+    // the stub dies on `listUserMemberships`. The admin's own mirror row,
+    // which the failed purge left behind, is what admits the retry.
+    const retry = sessionHandler(admin, {
+      autumn: deletingAutumn,
+      readiness: Layer.succeed(MirrorReadiness)({
+        state: () => Effect.succeed(MirrorReadinessState.ReconcilerStale({ drainedAt: null })),
+      }),
+      workos: { deleteOrganization: () => Effect.fail(new WorkOSError({ status: 404 })) },
+    });
+    const second = await retry(deleteOrganizationRequest(org));
+    expect(second.status, "the retry is admitted from the mirror, not WorkOS").toBe(200);
+    expect(await second.json()).toEqual({ success: true });
+    expect(await readMembers(org), "and the purge ran").toEqual([]);
+    expect((await readOrganization(org))?.deletedAt).not.toBeNull();
+  });
+
+  it("resolves an organization the mirror does not hold from WorkOS for its member, and mints it for nobody else", async () => {
+    const memberId = freshId("user");
+    const outsider = freshId("user");
+    const org = freshId("org");
+    // Never seeded: the org predates the mirror and nobody has signed in to
+    // it since — a CLI token names it, and the JWT path has no login feeder.
+    const calls: string[] = [];
+    const workos = stubWorkOS({
+      getUserOrgMembership: (organizationId, userId) => {
+        calls.push(`getUserOrgMembership:${userId}`);
+        return Effect.succeed(
+          userId === memberId
+            ? (workosMembership(userId, organizationId, { role: { slug: "admin" } }) as never)
+            : null,
+        );
+      },
+      getOrganization: (id) => {
+        calls.push(`getOrganization:${id}`);
+        return Effect.succeed({
+          object: "organization",
+          id,
+          name: "Pre-mirror Org",
+          allowProfilesOutsideOrganization: false,
+          domains: [],
+          createdAt: T1,
+          updatedAt: T1,
+          externalId: null,
+          metadata: {},
+        } as never);
+      },
+      listOrgMembers: (organizationId) => {
+        calls.push(`listOrgMembers:${organizationId}`);
+        return Effect.succeed({
+          object: "list" as const,
+          data: [workosMembership(memberId, org, { role: { slug: "admin" } })] as never[],
+          listMetadata: { before: null, after: null },
+        });
+      },
+      getUser: (id) => {
+        calls.push(`getUser:${id}`);
+        return Effect.succeed(workosUser(id) as never);
+      },
+    });
+
+    // A non-member first: WorkOS is asked for THEIR membership only, and
+    // nothing is minted.
+    expect(await authorize(outsider, org, workos)).toBeNull();
+    expect(calls).toEqual([`getUserOrgMembership:${outsider}`]);
+    expect(await readOrganization(org), "no row for an org the caller is not in").toBeNull();
+
+    // The member: WorkOS confirms the membership, the org is minted and
+    // scanned once, and the caller is authorized from the scan's result.
+    const first = await authorize(memberId, org, workos);
+    expect(first?.memberRole).toBe("admin");
+    expect(first?.name).toBe("Pre-mirror Org");
+    expect(calls.slice(1)).toEqual([
+      `getUserOrgMembership:${memberId}`,
+      `getOrganization:${org}`,
+      `listOrgMembers:${org}`,
+      `getUser:${memberId}`,
+    ]);
+    expect((await readMembers(org)).map((m) => m.accountId)).toEqual([memberId]);
+
+    // Now held and marked: the next check reads the mirror alone.
+    const second = await authorize(memberId, org, workos);
+    expect(second?.id).toBe(org);
+    expect(calls, "no further WorkOS read").toHaveLength(5);
+  });
+
+  it("scans an organization the backfill never covered before authorizing from its mirror, once", async () => {
+    const userId = freshId("user");
+    const outsider = freshId("user");
+    const org = freshId("org");
+    // The org row exists (mirrored lazily, or by another member's login) but
+    // was never scanned, and holds no membership rows at all: the caller is
+    // a WorkOS member the mirror has never recorded.
+    await seedOrganization(org);
+    const calls: string[] = [];
+    const workos = stubWorkOS({
+      listOrgMembers: (organizationId, statuses) => {
+        calls.push(`listOrgMembers:${organizationId}`);
+        expect(statuses, "the scan lists every status").toEqual(["active", "pending", "inactive"]);
+        return Effect.succeed({
+          object: "list" as const,
+          data: [workosMembership(userId, org, { role: { slug: "admin" } })] as never[],
+          listMetadata: { before: null, after: null },
+        });
+      },
+      getUser: (id) => {
+        calls.push(`getUser:${id}`);
+        return Effect.succeed(workosUser(id) as never);
+      },
+    });
+
+    const first = await authorize(userId, org, workos);
+    expect(first?.memberRole, "authorized from the scan's result, with the scanned role").toBe(
+      "admin",
+    );
+    expect(calls, "one scan: the listing and one getUser per member").toEqual([
+      `listOrgMembers:${org}`,
+      `getUser:${userId}`,
+    ]);
+    expect(
+      (await readMembers(org)).map((m) => m.accountId),
+      "the scan filled the mirror",
+    ).toEqual([userId]);
+
+    const second = await authorize(userId, org, workos);
+    expect(second?.id).toBe(org);
+    expect(calls, "the org is now marked: the second check reads the mirror alone").toEqual([
+      `listOrgMembers:${org}`,
+      `getUser:${userId}`,
+    ]);
+    expect(
+      await authorize(outsider, org, workos),
+      "a non-member is refused from the mirror",
+    ).toBeNull();
+    expect(calls, "without a scan").toHaveLength(2);
+  });
+
+  it("keeps a marked org out of the organization switcher", async () => {
+    const userId = freshId("user");
+    const live = freshId("org");
+    const marked = freshId("org");
+    const liveSlug = await seedMembership(userId, live, "active");
+    await seedMembership(userId, marked, "active");
+    await Effect.runPromise(
+      markOrganizationDeleted(marked).pipe(
+        Effect.provide(UserStoreService.Live.pipe(Layer.provide(DbService.Live))),
+        Effect.scoped,
+      ),
+    );
+
+    const response = await sessionHandler(userId)(
+      new Request("http://test.local/auth/organizations", {
+        headers: { cookie: "wos-session=sealed" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { organizations: { id: string; slug: string }[] };
+    expect(body.organizations.map((o) => [o.id, o.slug])).toEqual([[live, liveSlug]]);
+  });
+});
+
 describe("account service writes through to the mirror", () => {
   const ADMIN = freshId("user");
   const TARGET = freshId("user");
@@ -565,11 +1120,13 @@ describe("account service writes through to the mirror", () => {
   });
 
   /**
-   * The provider layer over the LIVE mirror + user store (test db) and a fake
-   * WorkOS in which ADMIN administers `org` and TARGET is a plain member.
-   * `deleted` records the WorkOS-side deletes so "WorkOS first" is assertable.
-   * Provided around the WHOLE test body so the postgres socket outlives the
-   * provider call under test.
+   * The provider layer over the LIVE mirror + user store + directory (test db)
+   * and a fake WorkOS that only serves the WRITES. Membership reads — the org
+   * check, the admin gate, the ownership check on the target — come from the
+   * mirror, so `seedTarget` mirrors ADMIN as the org's admin alongside TARGET;
+   * any membership READ against WorkOS dies. `deleted` records the WorkOS-side
+   * deletes so "WorkOS first" is assertable. Provided around the WHOLE test
+   * body so the postgres socket outlives the provider call under test.
    */
   const providerLayer = (
     org: string,
@@ -579,23 +1136,8 @@ describe("account service writes through to the mirror", () => {
       readonly autumn?: Layer.Layer<AutumnService>;
     } = {},
   ) => {
-    const list = (data: readonly unknown[]) =>
-      Effect.succeed({
-        object: "list" as const,
-        data: data as never[],
-        listMetadata: { before: null, after: null },
-      });
     const workos = stubWorkOS({
       ...options.workos,
-      listUserMemberships: (userId) => list([workosMembership(userId, org)]),
-      getUserOrgMembership: (organizationId, userId) =>
-        Effect.succeed(
-          workosMembership(userId, organizationId, {
-            role: { slug: userId === ADMIN ? "admin" : "member" },
-          }) as never,
-        ),
-      getOrgMembership: (membershipId) =>
-        Effect.succeed(workosMembership(TARGET, org, { id: membershipId }) as never),
       deleteOrgMembership: (membershipId) =>
         Effect.sync(() => {
           deleted.push(membershipId);
@@ -615,6 +1157,7 @@ describe("account service writes through to the mirror", () => {
       UserStoreService.Live,
       WorkOsMirror.Live,
       cloudMemberDirectoryLayer,
+      readyMirror,
     );
     return workosAccountProvider.pipe(
       Layer.provide(
@@ -630,10 +1173,11 @@ describe("account service writes through to the mirror", () => {
     );
   };
 
-  // TARGET as an existing member of `org`, seeded through the live mirror.
-  // The org is marked backfilled (as the one-off backfill leaves every org)
-  // unless a test wants the unscanned state, so a seat count reads the mirror
-  // rather than scanning WorkOS.
+  // ADMIN as the org's admin and TARGET as an existing member of `org`,
+  // seeded through the live mirror — the rows the provider's membership reads
+  // resolve against. The org is marked backfilled (as the one-off backfill
+  // leaves every org) unless a test wants the unscanned state, so a seat
+  // count reads the mirror rather than scanning WorkOS.
   const seedTarget = (
     org: string,
     options: { readonly backfilled: boolean } = { backfilled: true },
@@ -648,6 +1192,14 @@ describe("account service writes through to the mirror", () => {
           updatedAt: new Date(T1),
         }),
       );
+      yield* mirror.upsertMembership({
+        id: `om_${ADMIN}_${org}`,
+        accountId: ADMIN,
+        organizationId: org,
+        role: "admin",
+        status: "active",
+        updatedAt: new Date(T1),
+      });
       yield* mirror.upsertMembership({
         id: `om_${TARGET}_${org}`,
         accountId: TARGET,
@@ -761,9 +1313,9 @@ describe("account service writes through to the mirror", () => {
     () => {
       const org = freshId("org");
       const listed: string[] = [];
-      // A free plan (limit 3). The mirror holds ONE member of the org (TARGET)
-      // and the org is unmarked; WorkOS lists three. Only a count taken after
-      // the scan refuses the invite.
+      // A free plan (limit 3). The mirror holds TWO members of the org (ADMIN,
+      // TARGET) and the org is unmarked; WorkOS lists four. Only a count
+      // taken after the scan refuses the invite.
       const freeAutumn = Layer.succeed(AutumnService)({
         use: () => Effect.succeed({ subscriptions: [] } as never),
         ensureCustomer: () => Effect.void,
@@ -790,7 +1342,11 @@ describe("account service writes through to the mirror", () => {
             ]);
             return Effect.succeed({
               object: "list" as const,
-              data: [TARGET, ...others].map((userId) => workosMembership(userId, org)) as never[],
+              data: [ADMIN, TARGET, ...others].map((userId) =>
+                workosMembership(userId, org, {
+                  role: { slug: userId === ADMIN ? "admin" : "member" },
+                }),
+              ) as never[],
               listMetadata: { before: null, after: null },
             });
           },
@@ -816,7 +1372,7 @@ describe("account service writes through to the mirror", () => {
         expect(
           (yield* membersOf(org)).map((m) => m.accountId).sort(),
           "and the scan filled the mirror",
-        ).toEqual([TARGET, ...others].sort());
+        ).toEqual([ADMIN, TARGET, ...others].sort());
 
         const again = yield* invite();
         expect(again).toBeInstanceOf(AccountForbidden);
@@ -892,6 +1448,28 @@ describe("account service writes through to the mirror", () => {
       expect(members.find((m) => m.accountId === TARGET)?.role).toBe("admin");
     }).pipe(Effect.provide(providerLayer(org, [])));
   });
+
+  it.effect("removeMember refuses a membership id the org does not hold, before WorkOS", () => {
+    const org = freshId("org");
+    const other = freshId("org");
+    const deleted: string[] = [];
+    return Effect.gen(function* () {
+      yield* seedTarget(org);
+      const account = yield* AccountProvider;
+
+      // A membership id from ANOTHER org (leaked, guessed) is not in this
+      // org's mirror, so the ownership check refuses it and nothing is
+      // deleted anywhere.
+      const error = yield* Effect.flip(
+        account.removeMember({ [ORG_SELECTOR_HEADER]: org }, `om_${TARGET}_${other}`),
+      );
+
+      expect(error).toBeInstanceOf(AccountForbidden);
+      expect(deleted, "the gate runs BEFORE the WorkOS delete").toEqual([]);
+      const members = yield* membersOf(org);
+      expect(members.map((m) => m.accountId).sort()).toEqual([ADMIN, TARGET].sort());
+    }).pipe(Effect.provide(providerLayer(org, deleted)));
+  });
 });
 
 describe("seat reporter", () => {
@@ -933,6 +1511,8 @@ describe("seat reporter", () => {
   const directoryWith = (org: string, active: number) =>
     Layer.succeed(MemberDirectory)({
       membership: () => Effect.die("the seat reporter lists, it does not look up"),
+      membershipById: () => Effect.die("the seat reporter lists, it does not look up"),
+      membershipsOf: () => Effect.die("the seat reporter lists, it does not look up"),
       membersById: () => Effect.die("the seat reporter lists, it does not look up"),
       findByEmail: () => Effect.die("the seat reporter lists, it does not look up"),
       members: (organizationId, query) => {

@@ -12,7 +12,8 @@
 //     deleted, membership created/updated/deleted, organization renamed
 //   - an older event never regresses a newer row (`stale`) — an older
 //     organization rename included — a replayed delete is `absent`, and
-//     `organization.deleted` MARKS the org deleted without purging anything;
+//     `organization.deleted` MARKS the org deleted (refusing every membership
+//     authorization) without purging anything;
 //     replayed, or after cloud's own flow marked it first, it is `absent`
 //   - `organization.deleted` for an org the mirror has never seen MINTS a
 //     tombstone row, so a login that fetched a membership of it before the
@@ -61,6 +62,8 @@ import { UserStoreService } from "./context";
 import { WorkOSError } from "./errors";
 import { cloudMemberDirectoryLayer } from "./member-directory";
 import { mirrorSignIn } from "./mirror-feeders";
+import { MirrorReadiness, MirrorReadinessState } from "./mirror-readiness";
+import { authorizeOrganization } from "./organization";
 import { WorkOSClient, type WorkOSClientService, type WorkOSListEventsOptions } from "./workos";
 import {
   planEvent,
@@ -199,13 +202,26 @@ const profiles = (reads: string[] = []): Partial<WorkOSClientService> => ({
 });
 
 const DbLive = DbService.Live;
+// The mirror is READY here (the authorization checks below read the mirror,
+// not WorkOS); the readiness rule is pinned in workos-mirror.node.test.ts.
+const readyMirror = Layer.succeed(MirrorReadiness)({
+  state: () => Effect.succeed(MirrorReadinessState.Ready()),
+});
+
 const MirrorServices = Layer.mergeAll(
   WorkOsMirror.Live,
   UserStoreService.Live,
   cloudMemberDirectoryLayer,
+  readyMirror,
 ).pipe(Layer.provideMerge(DbLive));
 
-type Services = WorkOsMirror | UserStoreService | MemberDirectory | DbService | WorkOSClient;
+type Services =
+  | WorkOsMirror
+  | UserStoreService
+  | MemberDirectory
+  | MirrorReadiness
+  | DbService
+  | WorkOSClient;
 
 const run = <A, E>(
   body: Effect.Effect<A, E, Services>,
@@ -754,6 +770,15 @@ describe("applyEvent", () => {
     const result = await run(
       Effect.gen(function* () {
         const seeded = yield* seedOrganization(org);
+        // Marked as scanned (an empty listing at T1), as the one-off backfill
+        // leaves every org: authorization scans an unmarked org from WorkOS
+        // first, and no WorkOS read is served here.
+        const mirror = yield* WorkOsMirror;
+        yield* mirror.applyOrganizationScan({
+          organizationId: org,
+          listedAt: new Date(T1),
+          members: [],
+        });
         yield* applyEvent(
           membershipEvent("organization_membership.created", workosMembership(userId, org)),
         );
@@ -767,6 +792,7 @@ describe("applyEvent", () => {
           organizationEvent("organization.updated", workosOrganization(org, "Older Name", T1)),
         );
         const afterOlderRename = yield* readOrganization(org);
+        const authorizedBefore = yield* authorizeOrganization(userId, org);
         const deleted = yield* applyEvent(
           organizationEvent(
             "organization.deleted",
@@ -777,6 +803,7 @@ describe("applyEvent", () => {
         );
         const orgAfterDelete = yield* readOrganization(org);
         const membershipAfterDelete = yield* readMembership(userId, org);
+        const authorizedAfter = yield* authorizeOrganization(userId, org);
         const deletedAgain = yield* applyEvent(
           organizationEvent(
             "organization.deleted",
@@ -795,9 +822,11 @@ describe("applyEvent", () => {
           afterRename,
           olderRename,
           afterOlderRename,
+          authorizedBefore,
           deleted,
           orgAfterDelete,
           membershipAfterDelete,
+          authorizedAfter,
           deletedAgain,
           renamedAfterDelete,
           orgAfterReplay,
@@ -810,10 +839,12 @@ describe("applyEvent", () => {
     expect(result.afterRename?.slug, "the slug is stable across renames").toBe(result.seeded.slug);
     expect(result.olderRename, "an older rename is refused").toBe("stale");
     expect(result.afterOlderRename?.name).toBe("Renamed Org");
+    expect(result.authorizedBefore).not.toBeNull();
     expect(result.deleted, "organization.deleted marks the org").toBe("applied");
     expect(result.orgAfterDelete?.deletedAt, "as of the event").toEqual(new Date(T2));
     expect(result.orgAfterDelete?.name, "the row is kept, not purged").toBe("Renamed Org");
     expect(result.membershipAfterDelete, "and so is the membership row").not.toBeNull();
+    expect(result.authorizedAfter, "but it authorizes nobody any more").toBeNull();
     expect(result.deletedAgain, "a replayed deletion changes nothing").toBe("absent");
     expect(result.renamedAfterDelete, "a deleted org is never renamed").toBe("absent");
     expect(result.orgAfterReplay?.deletedAt, "the first mark stands").toEqual(new Date(T2));

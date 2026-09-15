@@ -1,9 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
+
+import { MemberDirectory, NoOrganization } from "@executor-js/api/server";
 
 import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
+import { MirrorReadiness, MirrorReadinessState } from "./mirror-readiness";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
+import { WorkOsMirror, type WorkOsMirrorShape } from "./workos-mirror";
 import { isPlatformAuth, resolveApiKeyPrincipal, resolveBearerAuth } from "./workos-auth-provider";
 
 // Groundwork for the PRIVILEGED, org-level API key: it resolves to the platform
@@ -58,21 +62,44 @@ const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data:
-              userId === "user_123"
-                ? [{ userId, organizationId: "org_123", status: "active" }]
-                : [],
-          });
-      }
-      // An org key must NOT trigger a membership check — there is no user to
-      // check. Any such call dies here, which is the assertion.
+      // Membership is read from the mirror, never from WorkOS; any WorkOS call
+      // dies here.
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
+
+// The mirror as the directory reads it: user_123 holds an active membership in
+// org_123 and nothing else. Membership is never read from WorkOS.
+// The mirror is READY in these tests (backfill complete, reconciler caught
+// up), so membership is read from the stubbed directory, never from WorkOS.
+const stubReadiness = Layer.succeed(MirrorReadiness)({
+  state: () => Effect.succeed(MirrorReadinessState.Ready()),
+});
+
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      accountId === "user_123" && organizationId === "org_123"
+        ? {
+            accountId,
+            membershipId: `om_${accountId}_${organizationId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("bearer resolution does not look up by membership id"),
+  membershipsOf: () => Effect.die("bearer resolution reads one membership, not the list"),
+  members: () => Effect.die("bearer resolution does not list members"),
+  membersById: () => Effect.die("bearer resolution does not batch members"),
+  findByEmail: () => Effect.die("bearer resolution does not resolve emails"),
+});
 
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
@@ -83,7 +110,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: `org-slug-${org.id}`,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
@@ -92,7 +119,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id,
           name: `Org ${id}`,
           slug: `org-slug-${id}`,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
@@ -101,17 +128,35 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id: "org_by_slug",
           name: `Org ${slug}`,
           slug,
-          backfilledAt: null,
+          backfilledAt: createdAt,
           deletedAt: null,
           workosUpdatedAt: null,
           createdAt,
         }),
+        markOrganizationDeleted: async () => null,
         deleteOrganizationCascade: async () => {},
       }),
     ),
 });
 
-const layers = Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers);
+// Authorization scans an organization the backfill never covered before it
+// reads the mirror (`auth/organization.ts`); every org row above is marked
+// backfilled, so the scan is never reached and the mirror is never written.
+const stubMirror = Layer.succeed(
+  WorkOsMirror,
+  new Proxy({} as WorkOsMirrorShape, {
+    get: (_target, prop) => () => Effect.die(`unexpected WorkOsMirror.${String(prop)} call`),
+  }),
+);
+
+const layers = Layer.mergeAll(
+  stubApiKeys,
+  stubWorkOS,
+  stubUsers,
+  stubDirectory,
+  stubMirror,
+  stubReadiness,
+);
 
 const bearer = (token: string) =>
   new Request("https://executor.test/api/tools", {
@@ -134,6 +179,67 @@ describe("org-level API keys", () => {
       // No `accountId` anywhere in the shape: nothing downstream can bind a
       // subject from it by accident.
       expect(auth).not.toHaveProperty("accountId");
+    }),
+  );
+
+  it.effect("are refused once the org is marked deleted", () =>
+    Effect.gen(function* () {
+      const deletedOrgUsers = Layer.succeed(UserStoreService)({
+        use: (_op, fn) =>
+          Effect.promise(() =>
+            fn({
+              ensureAccount: async (id: string) => bareAccount(id),
+              getAccount: async (id: string) => bareAccount(id),
+              upsertOrganization: async (org: { id: string; name: string }) => ({
+                ...org,
+                slug: `org-slug-${org.id}`,
+                backfilledAt: createdAt,
+                deletedAt: createdAt,
+                workosUpdatedAt: null,
+                createdAt,
+              }),
+              getOrganization: async (id: string) => ({
+                id,
+                name: `Org ${id}`,
+                slug: `org-slug-${id}`,
+                backfilledAt: createdAt,
+                deletedAt: createdAt,
+                workosUpdatedAt: null,
+                createdAt,
+              }),
+              getOrganizationBySlug: async (slug: string) => ({
+                id: "org_by_slug",
+                name: `Org ${slug}`,
+                slug,
+                backfilledAt: createdAt,
+                deletedAt: createdAt,
+                workosUpdatedAt: null,
+                createdAt,
+              }),
+              markOrganizationDeleted: async () => null,
+              deleteOrganizationCascade: async () => {},
+            }),
+          ),
+      });
+      const exit = yield* Effect.exit(
+        resolveBearerAuth(bearer("valid_org_key")).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              stubApiKeys,
+              stubWorkOS,
+              deletedOrgUsers,
+              stubDirectory,
+              stubMirror,
+              stubReadiness,
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(
+        Exit.isFailure(exit) ? Cause.squash(exit.cause) : null,
+        "the key outlives the org until the purge; a marked org refuses it",
+      ).toBeInstanceOf(NoOrganization);
     }),
   );
 
@@ -173,10 +279,29 @@ describe("org-level API keys", () => {
 
   it.effect("do not trigger a user membership check", () =>
     Effect.gen(function* () {
-      // `authorizeOrganization` checks a USER's live membership; there is no
-      // user here. The WorkOS stub dies on any call other than the user path,
-      // so a clean resolution proves the org branch never took it.
-      const auth = yield* resolveBearerAuth(bearer("valid_org_key")).pipe(Effect.provide(layers));
+      // `authorizeOrganization` checks a USER's membership; there is no user
+      // here. A directory whose `membership` dies proves the org branch never
+      // asked.
+      const noMembershipReads = Layer.succeed(MemberDirectory)({
+        membership: () => Effect.die("an org key must not trigger a membership check"),
+        membershipById: () => Effect.die("an org key must not trigger a membership check"),
+        membershipsOf: () => Effect.die("an org key must not trigger a membership check"),
+        members: () => Effect.die("an org key must not trigger a membership check"),
+        membersById: () => Effect.die("an org key must not trigger a membership check"),
+        findByEmail: () => Effect.die("an org key must not trigger a membership check"),
+      });
+      const auth = yield* resolveBearerAuth(bearer("valid_org_key")).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            stubApiKeys,
+            stubWorkOS,
+            stubUsers,
+            noMembershipReads,
+            stubMirror,
+            stubReadiness,
+          ),
+        ),
+      );
 
       expect(isPlatformAuth(auth)).toBe(true);
     }),

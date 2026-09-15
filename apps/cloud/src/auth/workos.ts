@@ -685,7 +685,11 @@ const make = Effect.gen(function* () {
         ),
       ),
 
-    /** Get a user's membership in an organization. */
+    /**
+     * A user's membership in an organization (active or pending), or `null`
+     * when WorkOS lists none: the user is not a member, or the organization
+     * is gone.
+     */
     getUserOrgMembership: (organizationId: string, userId: string) =>
       use("userManagement.listOrganizationMemberships", async (wos) => {
         const response = await wos.userManagement.listOrganizationMemberships({
@@ -693,7 +697,8 @@ const make = Effect.gen(function* () {
           userId,
           statuses: ["active", "pending"],
         });
-        return response.data[0] ?? null;
+        const [membership] = response.data;
+        return membership === undefined ? null : membership;
       }),
 
     /** Get a user by ID. */
@@ -749,12 +754,6 @@ const make = Effect.gen(function* () {
     deleteOrgMembership: (membershipId: string) =>
       use("userManagement.deleteOrganizationMembership", (wos) =>
         wos.userManagement.deleteOrganizationMembership(membershipId),
-      ),
-
-    /** Get the role for a membership. */
-    getOrgMembership: (membershipId: string) =>
-      use("userManagement.getOrganizationMembership", (wos) =>
-        wos.userManagement.getOrganizationMembership(membershipId),
       ),
 
     /** Update a membership's role. */

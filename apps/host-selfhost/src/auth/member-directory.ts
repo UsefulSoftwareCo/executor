@@ -170,6 +170,29 @@ const makeService = (adapter: BetterAuthAdapter): MemberDirectoryShape => {
             { field: "organizationId", value: organizationId },
           ]).pipe(Effect.map((members) => members[0] ?? null)),
 
+    membershipById: (organizationId, membershipId) =>
+      load("membershipById", [
+        { field: "id", value: membershipId },
+        { field: "organizationId", value: organizationId },
+      ]).pipe(Effect.map((members) => members[0] ?? null)),
+
+    membershipsOf: (accountId, statuses = DEFAULT_MEMBER_STATUSES) =>
+      // Every Better Auth member is active; a query for other statuses only
+      // has nothing to report.
+      !statuses.includes("active")
+        ? Effect.succeed([])
+        : load("membershipsOf", [{ field: "userId", value: accountId }]).pipe(
+            Effect.map((members) =>
+              [...members].sort((a, b) =>
+                a.organizationId < b.organizationId
+                  ? -1
+                  : a.organizationId > b.organizationId
+                    ? 1
+                    : 0,
+              ),
+            ),
+          ),
+
     members: (organizationId, query: MemberQuery = {}) =>
       Effect.gen(function* () {
         if (!reportsActive(query.statuses ?? DEFAULT_MEMBER_STATUSES)) return [];

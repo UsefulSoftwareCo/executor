@@ -36,6 +36,7 @@
     "db:backfill-workos-mirror:dev": "op run --env-file=.env.op -- bun run scripts/backfill-workos-mirror.ts",
     "db:drain-workos-events:prod": "op run --env-file=.env.production -- bun run scripts/drain-workos-events.ts",
     "db:drain-workos-events:dev": "op run --env-file=.env.op -- bun run scripts/drain-workos-events.ts",
+    "db:ensure-workos-mirror-ready:prod": "op run --env-file=.env.production -- bun run scripts/ensure-workos-mirror-ready.ts",
     "routes:gen": "bun scripts/gen-routes.ts",
     "vendor-wasm": "bun run scripts/vendor-quickjs-wasm.ts"
   },

@@ -102,6 +102,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
           workosUpdatedAt: null,
           createdAt: new Date(),
         }),
+        markOrganizationDeleted: async () => null,
         deleteOrganizationCascade: async () => {},
       }),
     ),
@@ -130,6 +131,8 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
 
 const stubDirectory = Layer.succeed(MemberDirectory)({
   membership: () => Effect.die("the callback does not look up one membership"),
+  membershipById: () => Effect.die("the callback does not look up by membership id"),
+  membershipsOf: () => Effect.die("the callback reads the WorkOS list, not the mirror's"),
   membersById: () => Effect.die("the callback does not batch members"),
   findByEmail: () => Effect.die("the callback does not resolve emails"),
   members: (organizationId) =>

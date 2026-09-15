@@ -7,7 +7,7 @@
 // so domain tables can foreign-key against them and so we can resolve org
 // metadata without an API call on every request.
 
-import { and, eq, isNull, lte, or } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 
 import { generateOrgSlug } from "@executor-js/api";
 
@@ -146,6 +146,24 @@ export const makeUserStore = (db: DrizzleDb) => {
     getOrganizationBySlug: async (slug: string) => {
       const rows = await db.select().from(organizations).where(eq(organizations.slug, slug));
       return rows[0] ?? null;
+    },
+
+    // Mark an org deleted, refusing every membership authorization against
+    // it from this moment. The FIRST step of cloud's deletion flow, taken
+    // before the WorkOS delete and the local purge, so a failure in either
+    // later step leaves the org unreachable rather than still authorizing
+    // sessions from its live membership rows. Idempotent: a retry after the
+    // WorkOS org is already gone keeps the original mark. `null` when the
+    // org is not mirrored.
+    markOrganizationDeleted: async (id: string, at: Date): Promise<Organization | null> => {
+      const [marked] = await db
+        .update(organizations)
+        .set({
+          deletedAt: sql`coalesce(${organizations.deletedAt}, ${at.toISOString()}::timestamptz)`,
+        })
+        .where(eq(organizations.id, id))
+        .returning();
+      return marked ?? null;
     },
 
     // Permanently delete everything an org owns (tenant data, secrets, its
