@@ -46,6 +46,15 @@ export function initRailSpy(root: HTMLElement): void {
       const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
       row.style.display = shown ? "" : "none";
     }
+    // Keep any mono index contiguous over the rows that remain.
+    let n = 0;
+    for (const { link } of pairs) {
+      const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
+      if (row.style.display === "none") continue;
+      n += 1;
+      const num = row.querySelector<HTMLElement>(".rail__num");
+      if (num) num.textContent = String(n).padStart(2, "0");
+    }
   };
   refreshRows();
   new MutationObserver(refreshRows).observe(document.body, {

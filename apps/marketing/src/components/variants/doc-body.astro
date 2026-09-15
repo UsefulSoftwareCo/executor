@@ -17,6 +17,8 @@ const { gh } = Astro.props;
 
 <article class="doc">
   {/* ── Intro ── */}
+  <div data-uidotsh-pick="Hero" class="contents">
+    <div data-uidotsh-option="Two buttons (current)" class="contents" hidden>
   <header class="doc__intro">
     <h1 class="doc__title">
       Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
@@ -40,6 +42,118 @@ const { gh } = Astro.props;
       <span>Works with</span> Claude Code, Cursor, Codex, ChatGPT, and any MCP client.
     </p>
   </header>
+    </div>
+    <div data-uidotsh-option="A: Three paths" class="contents">
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <p class="doc__runs">Run it hosted, on your machine, or on your own infrastructure. Same tools, same policies.</p>
+      <div class="doc__paths">
+        <a href="/cloud" class="doc__path doc__path--primary">
+          <span class="doc__path-k">Cloud</span>
+          <span class="doc__path-d">Hosted, free to start, nothing to install.</span>
+          <span class="doc__path-a">Start on Cloud →</span>
+        </a>
+        <a href={`${gh}/releases/latest`} class="doc__path">
+          <span class="doc__path-k">Desktop or CLI</span>
+          <span class="doc__path-d">Everything stays on your machine. <code>npm i -g executor</code></span>
+          <span class="doc__path-a">Download →</span>
+        </a>
+        <a href="https://executor.sh/docs/hosted/docker" class="doc__path">
+          <span class="doc__path-k">Self-hosted</span>
+          <span class="doc__path-d">A Docker image or a Cloudflare Worker. MIT licensed.</span>
+          <span class="doc__path-a">Read the docs →</span>
+        </a>
+      </div>
+      <div class="doc__actions doc__actions--quiet">
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+        <span class="doc__quiet">Paste it into your agent and it walks you through setup.</span>
+      </div>
+    </header>
+    </div>
+    <div data-uidotsh-option="B: Spec sheet" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <div class="doc__actions">
+        <a href="/cloud" class="btn-primary">Start on Cloud</a>
+        <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button>
+        <a href={gh} class="doc__quiet">Source on GitHub ↗</a>
+      </div>
+      <dl class="doc__specs">
+        <div><dt>Runs</dt><dd>Executor Cloud · Desktop app for Mac, Windows, Linux · CLI · Self-hosted Docker or Cloudflare Worker</dd></div>
+        <div><dt>Works with</dt><dd>Claude Code, Cursor, Codex, ChatGPT, and any MCP client</dd></div>
+        <div><dt>Imports</dt><dd>MCP servers, OpenAPI specs, GraphQL APIs, Google Discovery</dd></div>
+        <div><dt>License</dt><dd>MIT. <a href={gh}>Source ↗</a></dd></div>
+      </dl>
+    </header>
+    </div>
+    <div data-uidotsh-option="C: Tabs" class="contents" hidden>
+    <header class="doc__intro">
+      <h1 class="doc__title">
+        Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+      </h1>
+      <p class="doc__lede">
+        Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+        protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+      </p>
+      <div class="doc__tabs" role="tablist" aria-label="How to run Executor">
+        <button type="button" role="tab" aria-selected="true" data-doc-tab="cloud">Cloud</button>
+        <button type="button" role="tab" aria-selected="false" data-doc-tab="local">Desktop / CLI</button>
+        <button type="button" role="tab" aria-selected="false" data-doc-tab="self">Self-hosted</button>
+      </div>
+      <div class="doc__tabpanes">
+        <div role="tabpanel" data-doc-pane="cloud">
+          <p>Hosted Executor. Sign in and point your agent at one URL. Free for up to three members and 100,000 executions a month.</p>
+          <div class="doc__actions"><a href="/cloud" class="btn-primary">Start on Cloud</a><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button></div>
+        </div>
+        <div role="tabpanel" data-doc-pane="local" hidden>
+          <p>Everything stays on your machine. A native app for Mac, Windows, and Linux, or a CLI that runs as a background service. Both expose the same local MCP endpoint.</p>
+          <div class="doc__actions"><a href={`${gh}/releases/latest`} class="btn-primary">Download desktop</a><code class="doc__cmd">npm i -g executor</code><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <span>Copy setup prompt</span>
+          <span class="copy-icons" aria-hidden="true">
+            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+          </span>
+        </button></div>
+        </div>
+        <div role="tabpanel" data-doc-pane="self" hidden>
+          <p>Run it on your own infrastructure as a Docker image or a Cloudflare Worker. MIT licensed, same code paths as Cloud.</p>
+          <div class="doc__actions"><a href="https://executor.sh/docs/hosted/docker" class="btn-primary">Self-hosting docs</a><a href={gh} class="btn-secondary">Source on GitHub</a></div>
+        </div>
+      </div>
+      <p class="doc__works"><span>Works with</span> Claude Code, Cursor, Codex, ChatGPT, and any MCP client.</p>
+    </header>
+    </div>
+  </div>
 
   {/* ── 01 Mission ── */}
   <section id="mission" class="doc__section">
@@ -186,3 +300,20 @@ const { gh } = Astro.props;
     </p>
   </section>
 </article>
+
+<script>
+  for (const list of document.querySelectorAll<HTMLElement>(".doc__tabs")) {
+    const root = list.parentElement!;
+    list.addEventListener("click", (e) => {
+      const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-doc-tab]");
+      if (!tab) return;
+      const key = tab.dataset.docTab;
+      for (const t of list.querySelectorAll<HTMLElement>("[data-doc-tab]")) {
+        t.setAttribute("aria-selected", String(t === tab));
+      }
+      for (const p of root.querySelectorAll<HTMLElement>("[data-doc-pane]")) {
+        p.hidden = p.dataset.docPane !== key;
+      }
+    });
+  }
+</script>

@@ -108,10 +108,10 @@ const stars = await getStars();
         </div>
       </nav>
         </div>
-        <div data-uidotsh-option="A: Paper rail" class="contents">
+        <div data-uidotsh-option="A: Paper rail" class="contents" hidden>
           <div class="page__rail page__rail--a"><RailA stars={stars != null ? formatStars(stars) : null} /></div>
         </div>
-        <div data-uidotsh-option="B: Gridline rail" class="contents" hidden>
+        <div data-uidotsh-option="B: Gridline rail" class="contents">
           <div class="page__rail page__rail--b"><RailB stars={stars != null ? formatStars(stars) : null} /></div>
         </div>
         <div data-uidotsh-option="C: Minimal rail" class="contents" hidden>
