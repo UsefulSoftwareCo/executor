@@ -8,6 +8,7 @@ import { ApiKeyService, OrgApiKeyNotFound } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import { ORG_SELECTOR_HEADER } from "../auth/organization";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { AutumnService } from "../extensions/billing/service";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
 
@@ -119,6 +120,16 @@ const stubUsers = Layer.succeed(UserStoreService)({
     ),
 });
 
+// Revoke changes no membership, so the mirror is never written.
+const stubMirror = Layer.succeed(WorkOsMirror)({
+  upsertUser: () => Effect.die("revoke does not write the membership mirror"),
+  upsertMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteUser: () => Effect.die("revoke does not write the membership mirror"),
+  getCursor: () => Effect.die("revoke does not read the events cursor"),
+  setCursor: () => Effect.die("revoke does not move the events cursor"),
+});
+
 const stubAutumn = Layer.succeed(AutumnService)({
   use: () => Effect.die("revoke does not touch billing"),
   ensureCustomer: () => Effect.die("revoke does not touch billing"),
@@ -156,6 +167,7 @@ const providerWith = (accountId: string) => {
           Layer.mergeAll(
             stubWorkOS,
             stubUsers,
+            stubMirror,
             stubApiKeys,
             stubAutumn,
             Layer.succeed(AccountCaller)({ session: session(accountId) }),

@@ -4,6 +4,7 @@ import { HttpRouter } from "effect/unstable/http";
 import { RouterConfigLive, requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { DbService } from "../db/db";
 import { makeAccountApiLive } from "../account/account-api";
 
@@ -29,7 +30,9 @@ import { makeProtectedApiLive } from "./protected";
 // so tests can substitute a counting fake for `DbService.Live` and
 // assert per-request semantics — see
 // `apps/cloud/src/api.request-scope.node.test.ts`.
-export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStoreService>) => {
+export const makeApiLive = (
+  requestScopedLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+) => {
   const BillingRoutesLive = AutumnRoutesLive.pipe(
     Layer.provide(requestScopedMiddleware(requestScopedLive).layer),
   );
