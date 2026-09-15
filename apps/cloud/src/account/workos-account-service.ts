@@ -85,8 +85,8 @@ export const workosAccountProvider: Layer.Layer<
     // count read the change without waiting for the Events reconciler.
     const mirror = yield* WorkOsMirror;
     // Membership READS come from the mirror through the shared directory: the
-    // member list and the seat count are one local query each, never a
-    // WorkOS read per member.
+    // admin gate, the member list and the seat count are one local query
+    // each, never a WorkOS read.
     const directory = yield* MemberDirectory;
 
     // The caller, resolved once per request by the cookie-only session
@@ -96,9 +96,10 @@ export const workosAccountProvider: Layer.Layer<
     const caller = yield* AccountCaller;
 
     // Capture the resolved service context once so the method bodies — which
-    // call `authorizeOrganization` (yields `WorkOSClient` + `UserStoreService`),
-    // the mirror feeders, and the seat reporter — can be erased to `R = never`,
-    // as the neutral AccountProvider shape requires. Provided per method below.
+    // call `authorizeOrganization` (yields `MemberDirectory` + `UserStoreService`
+    // + `WorkOSClient`), the mirror feeders, and the seat reporter — can be
+    // erased to `R = never`, as the neutral AccountProvider shape requires.
+    // Provided per method below.
     const ctx = yield* Effect.context<
       WorkOSClient | UserStoreService | AutumnService | MemberDirectory | WorkOsMirror
     >();
@@ -115,10 +116,11 @@ export const workosAccountProvider: Layer.Layer<
     // org is a browser-global pinned to whichever org WorkOS last touched, so
     // falling back to it scopes a multi-org user's request to the WRONG org
     // (see workos-auth-provider.resolveSessionPrincipal). Membership is
-    // re-checked live, so the header is a selector, not a trust boundary —
-    // and two browser tabs on different orgs each send their own header, so
+    // re-checked against the mirror, so the header is a selector, not a trust
+    // boundary — and two browser tabs on different orgs each send their own header, so
     // they stay independent (see organization.ts). Yields the session +
-    // resolved org, or AccountNoOrganization.
+    // resolved org (carrying the caller's `memberRole` from that same
+    // membership read), or AccountNoOrganization.
     const requireOrganization = (headers: AccountHeaders) =>
       Effect.gen(function* () {
         const session = yield* requireSession();
@@ -135,24 +137,28 @@ export const workosAccountProvider: Layer.Layer<
       });
 
     // Mirror of org/handlers `requireAdmin`, but scoped to the resolved org.
-    const requireAdmin = (accountId: string, organizationId: string) =>
-      Effect.gen(function* () {
-        const membership = yield* workos
-          .getUserOrgMembership(organizationId, accountId)
-          .pipe(Effect.catchTag("WorkOSError", toAccountError));
-        if (!membership || membership.role?.slug !== "admin") {
-          return yield* new AccountForbidden();
-        }
-      });
+    // `authorizeOrganization` already read the caller's mirrored membership,
+    // required it to be ACTIVE, and normalized its role into `memberRole` —
+    // so the gate is that one value, not a second read of the same row. A
+    // pending admin invite is not an admin, and a member removed or demoted
+    // moments ago is denied as soon as the write-through or the Events
+    // reconciler has landed the change.
+    const requireAdmin = (org: { readonly memberRole: "admin" | "member" }) =>
+      org.memberRole === "admin" ? Effect.void : Effect.fail(new AccountForbidden());
 
-    // Mirror of org/handlers `assertMembershipInSessionOrg` — ownership check so
-    // an admin can't mutate a membership id from another org.
+    // Ownership check so an admin can't mutate a membership id from another
+    // org: the id must name a row the mirror holds for THIS org (any status —
+    // revoking a pending invite is a delete too). One point read on the
+    // membership id, scoped to the org: the member list the admin acted from
+    // is read from the same mirror, so every id it shows resolves here; a
+    // foreign or unknown id does not. A read failure is the same 500 as the
+    // admin gate's, never a refusal dressed up as "not yours".
     const assertMembershipInOrg = (organizationId: string, membershipId: string) =>
       Effect.gen(function* () {
-        const membership = yield* workos
-          .getOrgMembership(membershipId)
-          .pipe(Effect.catchCause(() => Effect.succeed(null)));
-        if (!membership || membership.organizationId !== organizationId) {
+        const membership = yield* directory
+          .membershipById(organizationId, membershipId)
+          .pipe(Effect.catchTag("MemberDirectoryError", toAccountError));
+        if (!membership) {
           return yield* new AccountForbidden();
         }
       });
@@ -235,7 +241,10 @@ export const workosAccountProvider: Layer.Layer<
         Effect.gen(function* () {
           const { session, org } = yield* requireOrganization(headers);
           const keys = yield* apiKeys
-            .listUserKeys({ accountId: session.accountId, organizationId: org.id })
+            .listUserKeys({
+              accountId: session.accountId,
+              organizationId: org.id,
+            })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
           return { apiKeys: keys };
         }),
@@ -245,7 +254,9 @@ export const workosAccountProvider: Layer.Layer<
           const { session, org } = yield* requireOrganization(headers);
           const trimmed = name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
           if (!trimmed) {
-            return yield* new AccountError({ message: "API key name is required" });
+            return yield* new AccountError({
+              message: "API key name is required",
+            });
           }
           return yield* apiKeys
             .createUserKey({ accountId: session.accountId, organizationId: org.id, name: trimmed })
@@ -256,7 +267,10 @@ export const workosAccountProvider: Layer.Layer<
         Effect.gen(function* () {
           const { session, org } = yield* requireOrganization(headers);
           const ownedKeys = yield* apiKeys
-            .listUserKeys({ accountId: session.accountId, organizationId: org.id })
+            .listUserKeys({
+              accountId: session.accountId,
+              organizationId: org.id,
+            })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
           if (!ownedKeys.some((key) => key.id === apiKeyId)) {
             return yield* new AccountError({ message: "API key not found" });
@@ -272,8 +286,8 @@ export const workosAccountProvider: Layer.Layer<
       // mint for themselves.
       listOrgApiKeys: (headers) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           const keys = yield* apiKeys
             .listOrgKeys({ organizationId: org.id })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
@@ -282,11 +296,13 @@ export const workosAccountProvider: Layer.Layer<
 
       createOrgApiKey: (headers, name) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           const trimmed = name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
           if (!trimmed) {
-            return yield* new AccountError({ message: "API key name is required" });
+            return yield* new AccountError({
+              message: "API key name is required",
+            });
           }
           return yield* apiKeys
             .createOrgKey({ organizationId: org.id, name: trimmed })
@@ -302,8 +318,8 @@ export const workosAccountProvider: Layer.Layer<
       // silent success and not a 500.
       revokeOrgApiKey: (headers, apiKeyId) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           yield* apiKeys.revokeOrgKey({ organizationId: org.id, keyId: apiKeyId }).pipe(
             Effect.catchTag("ApiKeyManagementError", toAccountError),
             Effect.catchTag("OrgApiKeyNotFound", () =>
@@ -358,8 +374,8 @@ export const workosAccountProvider: Layer.Layer<
 
       inviteMember: (headers, body) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           yield* reserveMemberSlot(org.id);
           const invitation = yield* workos
             .sendInvitation({
@@ -387,8 +403,8 @@ export const workosAccountProvider: Layer.Layer<
 
       removeMember: (headers, membershipId) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           yield* assertMembershipInOrg(org.id, membershipId);
           yield* workos
             .deleteOrgMembership(membershipId)
@@ -402,8 +418,8 @@ export const workosAccountProvider: Layer.Layer<
 
       updateMemberRole: (headers, membershipId, roleSlug) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           yield* assertMembershipInOrg(org.id, membershipId);
           const updated = yield* workos
             .updateOrgMembershipRole(membershipId, roleSlug)
@@ -416,8 +432,8 @@ export const workosAccountProvider: Layer.Layer<
 
       updateOrgName: (headers, name) =>
         Effect.gen(function* () {
-          const { session, org } = yield* requireOrganization(headers);
-          yield* requireAdmin(session.accountId, org.id);
+          const { org } = yield* requireOrganization(headers);
+          yield* requireAdmin(org);
           const updated = yield* workos
             .updateOrganization(org.id, name)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));

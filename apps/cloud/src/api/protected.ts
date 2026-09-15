@@ -10,6 +10,7 @@ import {
   requestScopedMiddleware,
   RouterConfigLive,
   type IdentityFailure,
+  type MemberDirectory,
 } from "@executor-js/api/server";
 
 import { cloudPlugins, type CloudPlugins } from "../plugins";
@@ -32,8 +33,8 @@ export {
 
 // One `HttpRouter` middleware that:
 //   1. resolves identity via the NEUTRAL `IdentityProvider` (api-key BEATS sealed
-//      session, decided INSIDE cloud's `workosIdentityLayer`), verifying live org
-//      membership,
+//      session, decided INSIDE cloud's `workosIdentityLayer`), verifying org
+//      membership against the local mirror,
 //   2. builds the per-request executor + engine,
 //   3. provides `AuthContext` + the execution-stack services to the handler.
 //
@@ -93,9 +94,11 @@ const ExecutionStackMiddleware = makeExecutionStackMiddleware<
 // executor plane that meters, not to the neutral boot core. (`/autumn`, the
 // account seat-gate, and the createOrganization free-limit gate each provide it
 // where they run.)
-export const makeProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) => {
+export const makeProtectedApiLive = (
+  rsLive: Layer.Layer<DbService | UserStoreService | MemberDirectory>,
+) => {
   // The neutral `IdentityProvider`, built per request: it reads `UserStoreService`
-  // from `rsLive` and the WorkOS control plane (`WorkOSClient` + `ApiKeyService`,
+  // + `MemberDirectory` from `rsLive` and the WorkOS control plane (`WorkOSClient` + `ApiKeyService`,
   // stateless config — no per-request I/O socket) for the org-resolution path.
   // `orDie` because a WorkOS config error is unrecoverable.
   const identityLive = workosIdentityLayer.pipe(

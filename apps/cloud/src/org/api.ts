@@ -1,5 +1,6 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
+import { MemberDirectoryError } from "@executor-js/api/server";
 import { WorkOSError } from "../auth/errors";
 
 // ---------------------------------------------------------------------------
@@ -47,14 +48,16 @@ export class OrgApi extends HttpApiGroup.make("org")
   .add(
     HttpApiEndpoint.post("getDomainVerificationLink", "/org/domains/verify-link", {
       success: DomainVerificationLinkResponse,
-      error: [WorkOSError, Forbidden],
+      // The admin gate reads the membership mirror; its read failure is the
+      // same 500 the session handlers report, never a 403.
+      error: [WorkOSError, Forbidden, MemberDirectoryError],
     }),
   )
   .add(
     HttpApiEndpoint.delete("deleteDomain", "/org/domains/:domainId", {
       params: DomainParams,
       success: RemoveResponse,
-      error: [WorkOSError, Forbidden],
+      error: [WorkOSError, Forbidden, MemberDirectoryError],
     }),
   ) {}
 

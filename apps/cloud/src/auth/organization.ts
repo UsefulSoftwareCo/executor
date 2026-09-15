@@ -3,7 +3,8 @@
 //
 // One module for the cloud org auth-resolution path:
 //   - `resolveOrganization`  — local mirror with lazy WorkOS fallback.
-//   - `authorizeOrganization` — live membership check, returns the resolved org.
+//   - `authorizeOrganization` — membership check against the local membership
+//     mirror, returns the resolved org.
 //
 // Deliberately billing-FREE: this module is reached by the MCP session DO bundle
 // (via `mcp/auth.ts`), which must not transitively import any billing config
@@ -12,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
+import { MemberDirectory } from "@executor-js/api/server";
 import { EXECUTOR_ORG_SELECTOR_HEADER } from "@executor-js/sdk/shared";
 
 import { UserStoreService } from "./context";
@@ -49,29 +51,33 @@ export const resolveOrganization = (organizationId: string) =>
   });
 
 // ---------------------------------------------------------------------------
-// Authorization — live membership check against WorkOS.
+// Authorization — membership check against the local membership mirror.
 // ---------------------------------------------------------------------------
 //
 // The sealed session cookie carries an organizationId that WorkOS signed at
 // login / refresh time. WorkOS does NOT invalidate existing sessions when a
 // membership is revoked, and `session.authenticate()` validates the JWT
-// locally without hitting the API — so a removed user keeps full access
-// until their access token naturally expires (~10 min).
+// locally without hitting the API — so a removed user would keep full access
+// until their access token naturally expired (~10 min) if the session were
+// trusted on its own.
 //
-// To close that gap we verify membership live on every protected request.
-// `listUserMemberships` is one WorkOS call per request.
-//
-// Caching decision (2026-07): we deliberately do NOT add a positive TTL cache
-// here. A positive cache is exactly what would re-open the revocation gap this
-// live check exists to close — a revoked member would keep access for the cache
-// TTL. Negative caching is worse still (a transient WorkOS blip would get
-// pinned as "no access"), so it is out too. The rate-limit amplification a
-// shared-API-key org can cause under a WorkOS slowdown is mitigated instead by
-// the classification fix at the MCP call site (a blip now yields a retryable
-// 503, so it no longer condemns sessions or triggers reconnect storms). If per-
-// request WorkOS load later proves to be the bottleneck, the right structural
-// fix is a local memberships table fed by the WorkOS Events API (authoritative,
-// no staleness window), not a TTL cache over this call — tracked as follow-up.
+// To close that gap, membership is verified on every protected request — but
+// against the LOCAL mirror of WorkOS memberships (`memberships` join
+// `accounts`, read through the shared `MemberDirectory`), never against WorkOS
+// itself. This used to be one `listUserMemberships` call per request (2026-07:
+// deliberately NOT cached, because a positive TTL cache is exactly what would
+// re-open the revocation gap). The mirror is not a cache with a TTL; it is a
+// replica whose freshness is defined by its feeders:
+//   - login (`auth/handlers.ts` callback): the user and every membership WorkOS
+//     lists for them, from the list the callback already fetches;
+//   - write-through: every membership change Executor makes (create org,
+//     invite, accept, remove, change role) lands in the mirror in the same
+//     request, so a revocation through Executor is denied on the NEXT request;
+//   - the WorkOS Events API reconciler (`workos-events-sync.ts`, every minute
+//     by cron plus a signed webhook poke): changes made in the WorkOS
+//     dashboard land within seconds.
+// The membership row must be `active`: a pending invitee is not a member, and a
+// deactivated member keeps their row but not their access.
 //
 // Returns the resolved organization (via resolveOrganization) if the user
 // currently holds an *active* membership in it, otherwise null. Callers
@@ -80,21 +86,16 @@ export const resolveOrganization = (organizationId: string) =>
 
 export const authorizeOrganization = (userId: string, organizationId: string) =>
   Effect.gen(function* () {
-    const workos = yield* WorkOSClient;
-    const memberships = yield* workos.listUserMemberships(userId);
-    const active = memberships.data.find(
-      (m: { readonly organizationId: string; readonly status: string }) =>
-        m.organizationId === organizationId && m.status === "active",
-    );
-    if (!active) return null;
+    const directory = yield* MemberDirectory;
+    const membership = yield* directory.membership(userId, organizationId);
+    if (!membership || membership.status !== "active") return null;
 
     const org = yield* resolveOrganization(organizationId);
     // The membership row already names the caller's role — surface it
     // normalized so identity resolution can bind the executor's workspace
-    // write permission without a second WorkOS call. WorkOS issues
-    // `admin` / `member`; anything unrecognized stays a plain member.
-    const roleSlug = (active as { readonly role?: { readonly slug?: string } }).role?.slug;
-    const memberRole: "admin" | "member" = roleSlug === "admin" ? "admin" : "member";
+    // write permission without a second read. WorkOS issues `admin` /
+    // `member`; anything unrecognized stays a plain member.
+    const memberRole: "admin" | "member" = membership.role === "admin" ? "admin" : "member";
     return { ...org, memberRole };
   });
 
@@ -107,8 +108,8 @@ export const authorizeOrganization = (userId: string, organizationId: string) =>
 // its own `x-executor-mcp-organization`). The selector is a slug (`acme`, the
 // readable URL form) or a WorkOS id (`org_…`, the legacy/token form). It is a
 // SELECTOR, not a trust boundary: `authorizeOrganizationSelector` re-checks
-// live membership, so the worst a forged header does is name an org the caller
-// already belongs to.
+// membership against the mirror, so the worst a forged header does is name an
+// org the caller already belongs to.
 //
 // Why a header and not the session's `org_id`: a browser shares ONE cookie jar
 // across tabs, so a single session-pinned org makes "active org" a
@@ -126,7 +127,7 @@ export const orgSelectorFromRequest = (request: Request): string | null =>
  * Resolve an org SELECTOR (URL slug or `org_…` id) to the organization the
  * caller actively belongs to, or `null`. A slug resolves through the local
  * mirror to its id first; ids pass straight through. Either way membership is
- * verified live via {@link authorizeOrganization}.
+ * verified against the mirror via {@link authorizeOrganization}.
  */
 export const authorizeOrganizationSelector = (userId: string, selector: string) =>
   Effect.gen(function* () {

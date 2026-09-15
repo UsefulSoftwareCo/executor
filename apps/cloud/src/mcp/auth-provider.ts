@@ -91,7 +91,7 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
  * organizationId) into the full {@link Principal} the seam validates.
  *
- * The org name and slug come from the record the live membership check just
+ * The org name and slug come from the record the membership check just
  * resolved — this is the whole point of `authorize` returning the record rather
  * than an id. They used to be dropped here (`organizationName: ""`), which left
  * the session Durable Object to re-read the same row over a fresh database
@@ -182,8 +182,9 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // slug (`/acme/mcp`, what the install card prints) or a legacy org id
         // (`/org_xxx/mcp`), carried in the header by `prepareMcpOrgScope`; the
         // bare `/mcp` falls back to the token's `org_id`. Either way
-        // `orgAuth.authorize` resolves the selector and re-checks live WorkOS
-        // membership below, so the URL is a selector, not a trust boundary.
+        // `orgAuth.authorize` resolves the selector and re-checks membership
+        // against the local mirror below, so the URL is a selector, not a
+        // trust boundary.
         const organizationSelector = mcpOrganizationFromRequest(request) ?? token.organizationId;
         if (!organizationSelector) {
           yield* annotateMcpRequest(request, { token, parseBody });

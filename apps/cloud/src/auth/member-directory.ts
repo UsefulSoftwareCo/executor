@@ -133,6 +133,32 @@ const makeService = (db: DrizzleDb): MemberDirectoryShape => {
         return row === undefined ? null : toMember(row);
       }),
 
+    // The unique index on `membership_id` makes this a point read; the org
+    // predicate is what refuses an id that belongs to another org.
+    membershipById: (organizationId, membershipId) =>
+      read("membershipById", async () => {
+        const rows = await select()
+          .where(
+            and(
+              eq(memberships.organizationId, organizationId),
+              eq(memberships.membershipId, membershipId),
+            ),
+          )
+          .limit(1);
+        const row = rows[0];
+        return row === undefined ? null : toMember(row);
+      }),
+
+    membershipsOf: (accountId, statuses = DEFAULT_MEMBER_STATUSES) =>
+      read("membershipsOf", async () => {
+        const rows = await select()
+          .where(
+            and(eq(memberships.accountId, accountId), inArray(memberships.status, statuses), known),
+          )
+          .orderBy(asc(memberships.organizationId));
+        return toMembers(rows);
+      }),
+
     members,
 
     membersById: (organizationId, accountIds) =>
@@ -168,4 +194,14 @@ const makeService = (db: DrizzleDb): MemberDirectoryShape => {
 
 /** The cloud `MemberDirectory` over the per-request `DbService`. */
 export const cloudMemberDirectoryLayer: Layer.Layer<MemberDirectory, never, DbService> =
+  Layer.effect(MemberDirectory)(Effect.map(DbService.asEffect(), ({ db }) => makeService(db)));
+
+/**
+ * A FRESH `MemberDirectory` layer (new layer value per call), for a service
+ * built once but invoked across many Workers requests — the MCP
+ * org-authorization seam and the document gate — for the same reason
+ * `makeUserStoreLayer` exists: a memoized const layer would pin the first
+ * request's postgres socket. See [[makeDbLayer]].
+ */
+export const makeMemberDirectoryLayer = (): Layer.Layer<MemberDirectory, never, DbService> =>
   Layer.effect(MemberDirectory)(Effect.map(DbService.asEffect(), ({ db }) => makeService(db)));

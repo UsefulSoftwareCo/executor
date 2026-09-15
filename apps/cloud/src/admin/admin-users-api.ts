@@ -8,8 +8,9 @@
 //      validated it and reported which org owns it, and there is no member
 //      behind it to check membership for. This is the machine credential
 //      (a customer's backend calling us).
-//   2. an admin SESSION member -> the console. Requires a live `getUserOrgMembership`
-//      whose role slug is `admin` AND whose status is `active`, matching the
+//   2. an admin SESSION member -> the console. Requires the caller's mirrored
+//      membership (the shared `MemberDirectory` over the local membership
+//      mirror) to carry the `admin` role AND `active` status, matching the
 //      strictest existing cloud guard (`auth/handlers.ts`'s org-delete check) —
 //      a pending admin invite is not an admin.
 // A plain member session, or a USER-scoped api key, is refused: both name one
@@ -67,13 +68,14 @@ import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
  * Returns only the organization id: nothing downstream needs to know WHICH of
  * the two credentials got the caller here, and keeping the acting member out of
  * the return value means no admin read can accidentally become subject-scoped.
+ * Exported for its test only.
  */
-const authorizeTenant = (
+export const authorizeTenant = (
   request: Request,
 ): Effect.Effect<
   string,
   AdminUsersUnauthorized | AdminUsersForbidden,
-  WorkOSClient | ApiKeyService | UserStoreService
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory
 > =>
   Effect.gen(function* () {
     // (1) The bearer path. `resolveBearerAuth` (not `resolveApiKeyPrincipal`,
@@ -92,7 +94,8 @@ const authorizeTenant = (
       return yield* new AdminUsersForbidden();
     }
 
-    // (2) The session path: a live admin membership in the selected org.
+    // (2) The session path: an active admin membership in the selected org,
+    // read from the mirror.
     const workos = yield* WorkOSClient;
     const session = yield* workos
       .authenticateRequest(request)
@@ -101,20 +104,16 @@ const authorizeTenant = (
 
     const selector = orgSelectorFromRequest(request) ?? session.organizationId;
     if (!selector) return yield* new AdminUsersForbidden();
-    // Re-checks live membership, so the org selector header can only ever name
-    // an org the caller already belongs to.
+    // Re-checks membership against the mirror, so the org selector header can
+    // only ever name an org the caller already belongs to. That read requires
+    // an ACTIVE membership and reports its role as `memberRole`, so a pending
+    // admin invite never resolves and the admin gate is that one value — not
+    // a second read of the same row.
     const org = yield* authorizeOrganizationSelector(session.userId, selector).pipe(
       Effect.catchCause(() => Effect.succeed(null)),
     );
     if (!org) return yield* new AdminUsersForbidden();
-
-    const membership = yield* workos
-      .getUserOrgMembership(org.id, session.userId)
-      .pipe(Effect.catchCause(() => Effect.succeed(null)));
-    // A pending admin invite is not an active admin — require both.
-    if (!membership || membership.status !== "active" || membership.role?.slug !== "admin") {
-      return yield* new AdminUsersForbidden();
-    }
+    if (org.memberRole !== "admin") return yield* new AdminUsersForbidden();
     return org.id;
   });
 
@@ -133,7 +132,13 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
   // `AdminUsersError` unconditionally: opening the platform view can fail that
   // way regardless of what `body` itself raises.
   E | AdminUsersError | AdminUsersUnauthorized | AdminUsersForbidden,
-  WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
+  | WorkOSClient
+  | ApiKeyService
+  | UserStoreService
+  | MemberDirectory
+  | DbProvider
+  | PluginsProvider
+  | HostConfig
 > =>
   Effect.gen(function* () {
     const organizationId = yield* authorizeTenant(
@@ -175,7 +180,13 @@ export const workosAdminUsersProvider: Layer.Layer<
 > = Layer.effect(AdminUsersProvider)(
   Effect.gen(function* () {
     const context = yield* Effect.context<
-      WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
+      | WorkOSClient
+      | ApiKeyService
+      | UserStoreService
+      | MemberDirectory
+      | DbProvider
+      | PluginsProvider
+      | HostConfig
     >();
     const directory = yield* MemberDirectory;
     // The authorized tenant is what scopes the directory, so every read below

@@ -1,7 +1,7 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
 
-import { AuthContext } from "@executor-js/api/server";
+import { AuthContext, MemberDirectory } from "@executor-js/api/server";
 import { env } from "cloudflare:workers";
 import { WorkOSClient } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
@@ -15,16 +15,29 @@ import { Forbidden, OrgHttpApi } from "./api";
 // `OrgAuth` (org-scoped cookie session).
 // ---------------------------------------------------------------------------
 
-const requireAdmin = Effect.gen(function* () {
+/**
+ * The admin gate for the domain endpoints: the caller's mirrored membership in
+ * the session org must be an ACTIVE `admin` row. Fails with `Forbidden` for a
+ * non-admin, a pending admin invite, or no membership; a directory read
+ * failure stays a `MemberDirectoryError` (500), as on the sibling gates — a
+ * storage fault reveals nothing about membership, so it is not dressed up as
+ * a refusal. Exported for its test only.
+ */
+export const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
   // This plane is mounted behind the session-only `orgAuthMiddleware`, so the
   // caller is always a member — but `AuthContext.accountId` is nullable for the
   // platform credential, and membership of "no member" is not a question worth
-  // asking WorkOS. Refuse rather than assert.
+  // asking. Refuse rather than assert.
   if (auth.accountId === null) return yield* new Forbidden();
-  const workos = yield* WorkOSClient;
-  const currentMembership = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
-  if (!currentMembership || currentMembership.role?.slug !== "admin") {
+  // `AuthContext` carries no role, so this gate has to read the row itself.
+  const directory = yield* MemberDirectory;
+  const currentMembership = yield* directory.membership(auth.accountId, auth.organizationId);
+  if (
+    !currentMembership ||
+    currentMembership.status !== "active" ||
+    currentMembership.role !== "admin"
+  ) {
     return yield* new Forbidden();
   }
 });
@@ -37,7 +50,8 @@ const requireAdmin = Effect.gen(function* () {
 // workspace API key is workspace-wide and WorkOS does not enforce per-org
 // ownership on delete by id. Failures (not found OR org mismatch) both surface
 // as Forbidden so we don't leak existence of ids outside the caller's org.
-const assertDomainInSessionOrg = (domainId: string) =>
+// Exported for its test only.
+export const assertDomainInSessionOrg = (domainId: string) =>
   Effect.gen(function* () {
     const auth = yield* AuthContext;
     const workos = yield* WorkOSClient;

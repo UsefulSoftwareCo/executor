@@ -104,9 +104,17 @@ describe("self-host MemberDirectory", () => {
     const result = await run(
       Effect.gen(function* () {
         const d = yield* MemberDirectory;
+        const one = yield* d.membership(grace, organizationId);
+        const graceRow = one?.membershipId ?? "member_missing";
         return {
-          one: yield* d.membership(grace, organizationId),
+          one,
           none: yield* d.membership(outsider.user.id, organizationId),
+          byId: yield* d.membershipById(organizationId, graceRow),
+          byIdForeign: yield* d.membershipById("org_other", graceRow),
+          byIdUnknown: yield* d.membershipById(organizationId, "member_unknown"),
+          ofGrace: yield* d.membershipsOf(grace),
+          ofOutsider: yield* d.membershipsOf(outsider.user.id),
+          ofGraceInactive: yield* d.membershipsOf(grace, ["inactive"]),
           batch: yield* d.membersById(organizationId, [ada, linus, outsider.user.id, "nobody"]),
           byEmail: yield* d.findByEmail(organizationId, "ada.lovelace@placeholder.test"),
           unknown: yield* d.findByEmail(organizationId, "outsider@placeholder.test"),
@@ -115,6 +123,15 @@ describe("self-host MemberDirectory", () => {
     );
     expect(result.one?.role).toBe("member");
     expect(result.none).toBeNull();
+    expect(result.byId?.accountId).toBe(grace);
+    expect(result.byIdForeign, "the member row id is scoped to its org").toBeNull();
+    expect(result.byIdUnknown).toBeNull();
+    expect(
+      result.ofGrace.map((m) => m.organizationId),
+      "the single org",
+    ).toEqual([organizationId]);
+    expect(result.ofOutsider).toEqual([]);
+    expect(result.ofGraceInactive, "Better Auth members are always active").toEqual([]);
     expect([...result.batch.keys()].sort()).toEqual([ada, linus].sort());
     expect(result.byEmail?.accountId).toBe(ada);
     expect(result.unknown, "a user with no membership is not a member").toBeNull();

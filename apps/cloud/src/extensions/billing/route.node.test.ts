@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { UserStoreService } from "../../auth/context";
 import { WorkOSClient, type WorkOSClientService } from "../../auth/workos";
 import { resolveBillingOrganization } from "./route";
@@ -29,22 +31,36 @@ const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data:
-              userId === MEMBER
-                ? [
-                    { userId, organizationId: SESSION_ORG, status: "active" },
-                    { userId, organizationId: URL_ORG, status: "active" },
-                  ]
-                : [],
-          });
-      }
+      // Membership is read from the mirror, never from WorkOS.
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
+
+// MEMBER is active in both orgs, as the mirror reports it.
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      accountId === MEMBER && (organizationId === SESSION_ORG || organizationId === URL_ORG)
+        ? {
+            accountId,
+            membershipId: `om_${accountId}_${organizationId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("billing auth does not look up by membership id"),
+  membershipsOf: () => Effect.die("billing auth reads one membership, not the list"),
+  members: () => Effect.die("billing auth does not list members"),
+  membersById: () => Effect.die("billing auth does not batch members"),
+  findByEmail: () => Effect.die("billing auth does not resolve emails"),
+});
 
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
@@ -78,7 +94,7 @@ const run = (headers: Record<string, string>) =>
   resolveBillingOrganization(
     new Request("https://executor.test/api/billing/customer", { headers }),
     { userId: MEMBER },
-  ).pipe(Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers)));
+  ).pipe(Effect.provide(Layer.mergeAll(stubWorkOS, stubUsers, stubDirectory)));
 
 describe("billing route org selector", () => {
   it.effect("fails closed when no selector header is sent", () =>

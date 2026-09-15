@@ -750,12 +750,6 @@ const make = Effect.gen(function* () {
         wos.userManagement.deleteOrganizationMembership(membershipId),
       ),
 
-    /** Get the role for a membership. */
-    getOrgMembership: (membershipId: string) =>
-      use("userManagement.getOrganizationMembership", (wos) =>
-        wos.userManagement.getOrganizationMembership(membershipId),
-      ),
-
     /** Update a membership's role. */
     updateOrgMembershipRole: (membershipId: string, roleSlug: string) =>
       use("userManagement.updateOrganizationMembership", (wos) =>

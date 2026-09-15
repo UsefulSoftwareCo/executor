@@ -11,7 +11,7 @@ import {
   McpSessionForbiddenError,
   OrganizationDeletionForbidden,
 } from "./api";
-import { NoOrganization } from "@executor-js/api/server";
+import { MemberDirectory, NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
 import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
 import { SessionContext, SessionCookies } from "./middleware";
@@ -387,14 +387,16 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       )
       .handle("organizations", () =>
         Effect.gen(function* () {
-          const workos = yield* WorkOSClient;
+          const directory = yield* MemberDirectory;
           const session = yield* SessionContext;
 
-          const memberships = yield* workos.listUserMemberships(session.accountId);
+          // The caller's memberships (active + pending, as WorkOS listed them
+          // before) from the local mirror — one indexed read, no WorkOS call.
+          const memberships = yield* directory.membershipsOf(session.accountId);
           // Resolve through the mirror (not WorkOS directly) so each org's
           // URL slug is minted/read — the switcher navigates to `/<slug>`.
           const organizations = yield* Effect.all(
-            memberships.data.map((m) =>
+            memberships.map((m) =>
               resolveOrganization(m.organizationId).pipe(
                 Effect.map((org) => ({
                   id: org.id,
@@ -421,10 +423,10 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const autumn = yield* AutumnService;
 
           const name = payload.name.trim();
-          const memberships = yield* workos.listUserMemberships(session.accountId);
-          const activeMemberships = memberships.data.filter(
-            (membership) => membership.status === "active",
-          );
+          // The free-organizations-per-user limit counts the caller's ACTIVE
+          // memberships, read from the local mirror.
+          const directory = yield* MemberDirectory;
+          const activeMemberships = yield* directory.membershipsOf(session.accountId, ["active"]);
 
           if (isOverFreeOrganizationLimit(activeMemberships)) {
             const paidOrganizationIds = yield* Effect.all(
@@ -526,11 +528,12 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const session = yield* requireSelectedOrganization;
           const organizationId = session.organizationId;
 
-          // Admin-only. Live WorkOS check so a member removed/demoted moments
-          // ago can't delete the workspace. A pending admin invite is not an
-          // active admin, so require active status too.
-          const membership = yield* workos.getUserOrgMembership(organizationId, session.accountId);
-          if (!membership || membership.status !== "active" || membership.role?.slug !== "admin") {
+          // Admin-only. `requireSelectedOrganization` already read the caller's
+          // mirrored membership, required it ACTIVE (a pending admin invite is
+          // not an admin) and reported its role, so the gate is that one
+          // value: a member removed or demoted moments ago is denied once the
+          // write-through or the Events reconciler has landed the change.
+          if (session.memberRole !== "admin") {
             return yield* new OrganizationDeletionForbidden();
           }
 

@@ -1,24 +1,29 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Data, Effect, Layer } from "effect";
 
-import { AuthContext } from "@executor-js/api/server";
+import {
+  AuthContext,
+  MemberDirectory,
+  MemberDirectoryError,
+  type DirectoryMember,
+} from "@executor-js/api/server";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { Forbidden } from "./api";
+import { assertDomainInSessionOrg, requireAdmin } from "./handlers";
 
 // ---------------------------------------------------------------------------
 // Domain-handler guards. The member / role / invite / org-name endpoints moved
 // to the shared WorkOS `AccountProvider` (covered by
 // `workos-account-service.test.ts`); this group now serves only the WorkOS
 // domain-verification endpoints. These tests pin the two guards those handlers
-// share — `requireAdmin` and `assertDomainInSessionOrg` — which mirror
-// `org/handlers.ts`.
+// share — the REAL `requireAdmin` and `assertDomainInSessionOrg` exported from
+// `org/handlers.ts`, so a change to the gate cannot pass on a stale copy.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test stub needs wide function types
 type StubFn = (...args: never[]) => Effect.Effect<any, any>;
 
 type StubOverrides = {
-  getUserOrgMembership?: StubFn;
   getOrganizationDomain?: StubFn;
   getOrganization?: StubFn;
   deleteOrganizationDomain?: StubFn;
@@ -64,53 +69,105 @@ const memberAuth = {
   roles: [],
 };
 
-const provide = (auth: typeof adminAuth, workosOverrides: StubOverrides = {}) =>
-  Layer.mergeAll(Layer.succeed(AuthContext)(auth), stubWorkOS(workosOverrides));
-
-// Mirrors `org/handlers.ts` `requireAdmin`.
-const requireAdmin = Effect.gen(function* () {
-  const auth = yield* AuthContext;
-  if (auth.accountId === null) return yield* new Forbidden();
-  const workos = yield* WorkOSClient;
-  const current = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
-  if (!current || current.role?.slug !== "admin") {
-    return yield* new Forbidden();
-  }
+// The mirror as the directory reads it for org_1: user_admin is an active
+// admin, user_member an active member, and user_invited_admin holds an admin
+// role that is still pending.
+const mirroredMembership = (
+  accountId: string,
+  overrides: Partial<DirectoryMember> = {},
+): DirectoryMember => ({
+  accountId,
+  membershipId: `mem_${accountId}`,
+  organizationId: "org_1",
+  email: null,
+  name: null,
+  avatarUrl: null,
+  role: "member",
+  status: "active",
+  lastActiveAt: null,
+  ...overrides,
 });
-
-const withCurrentMembership: StubOverrides = {
-  getUserOrgMembership: (_organizationId: string, userId: string) =>
-    Effect.succeed(
-      userId === "user_admin"
-        ? { id: "mem_admin", userId, status: "active", role: { slug: "admin" } }
-        : { id: "mem_member", userId, status: "active", role: { slug: "member" } },
-    ),
-};
-
-// Mirrors `org/handlers.ts` `assertDomainInSessionOrg`.
-const assertDomainInSessionOrg = (domainId: string) =>
-  Effect.gen(function* () {
-    const auth = yield* AuthContext;
-    const workos = yield* WorkOSClient;
-    const domain = yield* workos
-      .getOrganizationDomain(domainId)
-      .pipe(Effect.catchCause(() => Effect.succeed(null)));
-    if (!domain || domain.organizationId !== auth.organizationId) {
-      return yield* new Forbidden();
-    }
+const memberships = new Map<string, DirectoryMember>([
+  ["user_admin", mirroredMembership("user_admin", { role: "admin" })],
+  ["user_member", mirroredMembership("user_member")],
+  [
+    "user_invited_admin",
+    mirroredMembership("user_invited_admin", {
+      role: "admin",
+      status: "pending",
+    }),
+  ],
+]);
+const unreadDirectory = (why: string) => () => Effect.die(why);
+const stubDirectory = (
+  membership: (
+    accountId: string,
+    organizationId: string,
+  ) => Effect.Effect<DirectoryMember | null, MemberDirectoryError> = (accountId, organizationId) =>
+    Effect.succeed(organizationId === "org_1" ? (memberships.get(accountId) ?? null) : null),
+) =>
+  Layer.succeed(MemberDirectory)({
+    membership,
+    membershipById: unreadDirectory("the domain handlers do not look up by membership id"),
+    membershipsOf: unreadDirectory("the domain handlers read one membership, not the list"),
+    members: unreadDirectory("the domain handlers do not list members"),
+    membersById: unreadDirectory("the domain handlers do not batch members"),
+    findByEmail: unreadDirectory("the domain handlers do not resolve emails"),
   });
+
+const provide = (
+  auth: typeof adminAuth,
+  workosOverrides: StubOverrides = {},
+  directory: Layer.Layer<MemberDirectory> = stubDirectory(),
+) => Layer.mergeAll(Layer.succeed(AuthContext)(auth), stubWorkOS(workosOverrides), directory);
+
+const invitedAdminAuth = {
+  ...memberAuth,
+  accountId: "user_invited_admin",
+  email: "invited@test.com",
+  name: "Invited",
+};
 
 describe("Org domain handlers", () => {
   describe("requireAdmin", () => {
     it.effect("passes for an admin caller", () =>
-      requireAdmin.pipe(Effect.provide(provide(adminAuth, withCurrentMembership))),
+      requireAdmin.pipe(Effect.provide(provide(adminAuth))),
     );
 
     it.effect("rejects a non-admin caller with Forbidden", () =>
       Effect.gen(function* () {
         const error = yield* Effect.flip(requireAdmin);
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
+      }).pipe(Effect.provide(provide(memberAuth))),
+    );
+
+    it.effect("rejects a pending admin invite with Forbidden", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(requireAdmin);
+        expect(error, "an admin role that is still pending is not an admin").toBeInstanceOf(
+          Forbidden,
+        );
+      }).pipe(Effect.provide(provide(invitedAdminAuth))),
+    );
+
+    it.effect("surfaces a directory read failure as MemberDirectoryError, not Forbidden", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(requireAdmin);
+        expect(
+          error,
+          "a storage fault is a 500 for an actual admin, never a refusal",
+        ).toBeInstanceOf(MemberDirectoryError);
+      }).pipe(
+        Effect.provide(
+          provide(
+            adminAuth,
+            {},
+            stubDirectory(() =>
+              Effect.fail(new MemberDirectoryError({ message: "directory unavailable" })),
+            ),
+          ),
+        ),
+      ),
     );
   });
 

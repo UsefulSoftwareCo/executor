@@ -1,7 +1,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import { UserStoreError, WorkOSError, WorkOsMirrorError } from "./errors";
-import { NoOrganization } from "@executor-js/api/server";
+import { MemberDirectoryError, NoOrganization } from "@executor-js/api/server";
 import { SessionAuth } from "./middleware";
 
 const AuthUser = Schema.Struct({
@@ -172,8 +172,10 @@ export const AUTH_PATHS = {
 } as const;
 
 // The login callback and the org handlers feed the membership mirror, so a
-// mirror write failure is one of their wire errors (same 500 as a store failure).
-const AuthErrors = [UserStoreError, WorkOSError, WorkOsMirrorError] as const;
+// mirror write failure is one of their wire errors (same 500 as a store
+// failure); the session handlers READ it (membership, the org list, the admin
+// gate), so a directory read failure is one too.
+const AuthErrors = [UserStoreError, WorkOSError, WorkOsMirrorError, MemberDirectoryError] as const;
 const McpApprovalErrors = [
   NoOrganization,
   McpExecutionNotFoundError,
@@ -215,7 +217,7 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
   .add(
     HttpApiEndpoint.get("organizations", "/auth/organizations", {
       success: AuthOrganizationsResponse,
-      error: WorkOSError,
+      error: [WorkOSError, UserStoreError, MemberDirectoryError],
     }),
   )
   .add(

@@ -82,7 +82,9 @@ export const makeNonProtectedApiLive = (
 // the account and protected APIs. The `getDomainVerificationLink` handler also
 // gates on billing, so `AutumnService.Default` is provided here, not on the
 // neutral boot core.
-export const makeOrgApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
+export const makeOrgApiLive = (
+  rsLive: Layer.Layer<DbService | UserStoreService | MemberDirectory>,
+) =>
   HttpApiBuilder.layer(OrgHttpApi).pipe(
     Layer.provide(OrgHandlers),
     Layer.provide(orgAuthMiddleware(rsLive)),

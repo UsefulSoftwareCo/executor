@@ -10,6 +10,7 @@
 //     and a page that loses the CAS writes nothing
 //   - `members` searches email AND name case-insensitively, pages stably
 //   - `findByEmail` ignores the casing WorkOS stored
+//   - `membershipById` is org-scoped: another org's id resolves to null
 //   - a membership arriving before its user still holds (FK via ensureAccount)
 // ---------------------------------------------------------------------------
 
@@ -197,13 +198,17 @@ describe("WorkOsMirror cursor", () => {
         const first = yield* mirror.applyPage(before, "event_1", []);
         const wrongPrev = yield* mirror.applyPage(before === null ? "event_0" : null, "event_x", [
           WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
-          WorkOsMirrorWrite.UpsertMembership({ membership: membership(org, id) }),
+          WorkOsMirrorWrite.UpsertMembership({
+            membership: membership(org, id),
+          }),
         ]);
         const afterWrong = yield* mirror.getCursor();
         const notWritten = yield* directory.membership(id, org);
         const right = yield* mirror.applyPage("event_1", "event_2", [
           WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
-          WorkOsMirrorWrite.UpsertMembership({ membership: membership(org, id) }),
+          WorkOsMirrorWrite.UpsertMembership({
+            membership: membership(org, id),
+          }),
           WorkOsMirrorWrite.DeleteMembership({ membershipId: "om_nobody" }),
         ]);
         const after = yield* mirror.getCursor();
@@ -337,6 +342,33 @@ describe("cloud MemberDirectory", () => {
     expect(result.wildcard, "a literal % matches nothing rather than everything").toEqual([]);
   });
 
+  it("lists one account's memberships across orgs, active + pending by default", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const directory = yield* MemberDirectory;
+        const mirror = yield* WorkOsMirror;
+        const active = yield* freshOrg();
+        const pending = yield* freshOrg();
+        const inactive = yield* freshOrg();
+        const id = `user_${crypto.randomUUID()}`;
+        yield* mirror.upsertUser(user(id));
+        yield* mirror.upsertMembership(membership(active, id, { role: "admin" }));
+        yield* mirror.upsertMembership(membership(pending, id, { status: "pending" }));
+        yield* mirror.upsertMembership(membership(inactive, id, { status: "inactive" }));
+        const defaults = yield* directory.membershipsOf(id);
+        const activeOnly = yield* directory.membershipsOf(id, ["active"]);
+        const nobody = yield* directory.membershipsOf(`user_${crypto.randomUUID()}`);
+        return { active, pending, inactive, defaults, activeOnly, nobody };
+      }),
+    );
+    expect(result.defaults.map((m) => m.organizationId)).toEqual(
+      [result.active, result.pending].sort(),
+    );
+    expect(result.defaults.find((m) => m.organizationId === result.active)?.role).toBe("admin");
+    expect(result.activeOnly.map((m) => m.organizationId)).toEqual([result.active]);
+    expect(result.nobody).toEqual([]);
+  });
+
   it("resolves a normalized email regardless of stored casing, and batches by id", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -349,7 +381,10 @@ describe("cloud MemberDirectory", () => {
         const wrongOrg = yield* directory.findByEmail(other, "ada.lovelace@placeholder.test");
         const batch = yield* directory.membersById(org, [ids.ada, ids.gone, "user_unknown"]);
         const empty = yield* directory.membersById(org, []);
-        return { ids, found, inactive, wrongOrg, batch, empty };
+        const byId = yield* directory.membershipById(org, `om_${ids.gone}_${org}`);
+        const byIdForeign = yield* directory.membershipById(other, `om_${ids.gone}_${org}`);
+        const byIdUnknown = yield* directory.membershipById(org, "om_unknown");
+        return { ids, found, inactive, wrongOrg, batch, empty, byId, byIdForeign, byIdUnknown };
       }),
     );
     expect(result.found?.accountId).toBe(result.ids.ada);
@@ -357,5 +392,11 @@ describe("cloud MemberDirectory", () => {
     expect(result.wrongOrg).toBeNull();
     expect([...result.batch.keys()].sort()).toEqual([result.ids.ada, result.ids.gone].sort());
     expect(result.empty.size).toBe(0);
+    expect(result.byId, "membershipById reports any status").toMatchObject({
+      accountId: result.ids.gone,
+      status: "inactive",
+    });
+    expect(result.byIdForeign, "an id from another org is not this org's").toBeNull();
+    expect(result.byIdUnknown).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { AccountForbidden } from "@executor-js/api";
 import {
   AccountProvider,
   MemberDirectory,
@@ -338,6 +339,130 @@ describe("login callback", () => {
   });
 });
 
+describe("session handlers read membership from the mirror", () => {
+  const sessionHandler = (userId: string) =>
+    HttpRouter.toWebHandler(
+      HttpApiBuilder.layer(NonProtectedApi).pipe(
+        Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
+        Layer.provide(requestScopedMiddleware(RequestScopedServicesLive).layer),
+        Layer.provideMerge(SessionAuthLive),
+        Layer.provideMerge(stubAutumn),
+        // Only session authentication is served; every membership read against
+        // WorkOS (`listUserMemberships`, `getUserOrgMembership`) dies.
+        Layer.provideMerge(
+          stubWorkOS({
+            authenticateSealedSession: () =>
+              Effect.succeed({
+                userId,
+                email: `${userId}@placeholder.test`,
+                organizationId: null,
+              } as never),
+          }),
+        ),
+        Layer.provideMerge(HttpServer.layerServices),
+        Layer.provideMerge(RouterConfigLive),
+      ),
+      { disableLogger: true },
+    ).handler;
+
+  /** Mirror `org` and `userId`'s membership in it; returns the org's slug. */
+  const seedMembership = async (
+    userId: string,
+    org: string,
+    status: "active" | "pending",
+    role: "admin" | "member" = "member",
+  ) => {
+    const slug = await seedOrganization(org);
+    await Effect.runPromise(
+      Effect.flatMap(WorkOsMirror.asEffect(), (mirror) =>
+        mirror.upsertMembership({
+          id: `om_${userId}_${org}`,
+          accountId: userId,
+          organizationId: org,
+          role,
+          status,
+          updatedAt: new Date(T1),
+        }),
+      ).pipe(Effect.provide(WorkOsMirror.Live.pipe(Layer.provide(DbService.Live))), Effect.scoped),
+    );
+    return slug;
+  };
+
+  const deleteOrganizationRequest = (org: string) =>
+    new Request("http://test.local/auth/delete-organization", {
+      method: "POST",
+      headers: {
+        cookie: "wos-session=sealed",
+        "content-type": "application/json",
+        [ORG_SELECTOR_HEADER]: org,
+      },
+      body: JSON.stringify({ confirmName: `Org ${org}` }),
+    });
+
+  it("lists the caller's organizations from the mirror, with their slugs", async () => {
+    const userId = freshId("user");
+    const activeOrg = freshId("org");
+    const pendingOrg = freshId("org");
+    const otherUser = freshId("user");
+    const foreignOrg = freshId("org");
+    const activeSlug = await seedMembership(userId, activeOrg, "active");
+    const pendingSlug = await seedMembership(userId, pendingOrg, "pending");
+    await seedMembership(otherUser, foreignOrg, "active");
+
+    const response = await sessionHandler(userId)(
+      new Request("http://test.local/auth/organizations", {
+        headers: { cookie: "wos-session=sealed" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      organizations: { id: string; slug: string }[];
+      activeOrganizationId: string | null;
+    };
+    expect(
+      body.organizations.map((o) => [o.id, o.slug]).sort(),
+      "active and pending memberships, each with the mirror's slug; nobody else's",
+    ).toEqual(
+      [
+        [activeOrg, activeSlug],
+        [pendingOrg, pendingSlug],
+      ].sort(),
+    );
+    expect(body.activeOrganizationId).toBeNull();
+  });
+
+  it("refuses to delete an org for a pending admin, before WorkOS is asked", async () => {
+    const userId = freshId("user");
+    const org = freshId("org");
+    // An admin role that is still pending: the org gate reads the mirror and
+    // requires an ACTIVE membership, so the invite grants no deletion right.
+    await seedMembership(userId, org, "pending", "admin");
+
+    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+
+    // The selector resolves no active membership, so the request fails at the
+    // org check (NoOrganization) — the handler never reaches the WorkOS
+    // delete, which the stub would die on.
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ _tag: "NoOrganization" });
+  });
+
+  it("refuses to delete an org for an active plain member, before WorkOS is asked", async () => {
+    const userId = freshId("user");
+    const org = freshId("org");
+    await seedMembership(userId, org, "active", "member");
+
+    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+
+    expect(response.status).toBe(403);
+    expect(
+      await response.json(),
+      "an active member who is not an admin may not delete the org",
+    ).toMatchObject({ _tag: "OrganizationDeletionForbidden" });
+  });
+});
+
 describe("account service writes through to the mirror", () => {
   const ADMIN = freshId("user");
   const TARGET = freshId("user");
@@ -363,11 +488,13 @@ describe("account service writes through to the mirror", () => {
   });
 
   /**
-   * The provider layer over the LIVE mirror + user store (test db) and a fake
-   * WorkOS in which ADMIN administers `org` and TARGET is a plain member.
-   * `deleted` records the WorkOS-side deletes so "WorkOS first" is assertable.
-   * Provided around the WHOLE test body so the postgres socket outlives the
-   * provider call under test.
+   * The provider layer over the LIVE mirror + user store + directory (test db)
+   * and a fake WorkOS that only serves the WRITES. Membership reads — the org
+   * check, the admin gate, the ownership check on the target — come from the
+   * mirror, so `seedTarget` mirrors ADMIN as the org's admin alongside TARGET;
+   * any membership READ against WorkOS dies. `deleted` records the WorkOS-side
+   * deletes so "WorkOS first" is assertable. Provided around the WHOLE test
+   * body so the postgres socket outlives the provider call under test.
    */
   const providerLayer = (
     org: string,
@@ -377,23 +504,8 @@ describe("account service writes through to the mirror", () => {
       readonly autumn?: Layer.Layer<AutumnService>;
     } = {},
   ) => {
-    const list = (data: readonly unknown[]) =>
-      Effect.succeed({
-        object: "list" as const,
-        data: data as never[],
-        listMetadata: { before: null, after: null },
-      });
     const workos = stubWorkOS({
       ...options.workos,
-      listUserMemberships: (userId) => list([workosMembership(userId, org)]),
-      getUserOrgMembership: (organizationId, userId) =>
-        Effect.succeed(
-          workosMembership(userId, organizationId, {
-            role: { slug: userId === ADMIN ? "admin" : "member" },
-          }) as never,
-        ),
-      getOrgMembership: (membershipId) =>
-        Effect.succeed(workosMembership(TARGET, org, { id: membershipId }) as never),
       deleteOrgMembership: (membershipId) =>
         Effect.sync(() => {
           deleted.push(membershipId);
@@ -428,7 +540,9 @@ describe("account service writes through to the mirror", () => {
     );
   };
 
-  // TARGET as an existing member of `org`, seeded through the live mirror.
+  // ADMIN as the org's admin and TARGET as an existing member of `org`,
+  // seeded through the live mirror — the rows the provider's membership reads
+  // resolve against.
   const seedTarget = (org: string) =>
     Effect.gen(function* () {
       const users = yield* UserStoreService;
@@ -436,6 +550,14 @@ describe("account service writes through to the mirror", () => {
       yield* users.use("upsertOrganization", (s) =>
         s.upsertOrganization({ id: org, name: `Org ${org}` }),
       );
+      yield* mirror.upsertMembership({
+        id: `om_${ADMIN}_${org}`,
+        accountId: ADMIN,
+        organizationId: org,
+        role: "admin",
+        status: "active",
+        updatedAt: new Date(T1),
+      });
       yield* mirror.upsertMembership({
         id: `om_${TARGET}_${org}`,
         accountId: TARGET,
@@ -564,6 +686,28 @@ describe("account service writes through to the mirror", () => {
       expect(members.find((m) => m.accountId === TARGET)?.role).toBe("admin");
     }).pipe(Effect.provide(providerLayer(org, [])));
   });
+
+  it.effect("removeMember refuses a membership id the org does not hold, before WorkOS", () => {
+    const org = freshId("org");
+    const other = freshId("org");
+    const deleted: string[] = [];
+    return Effect.gen(function* () {
+      yield* seedTarget(org);
+      const account = yield* AccountProvider;
+
+      // A membership id from ANOTHER org (leaked, guessed) is not in this
+      // org's mirror, so the ownership check refuses it and nothing is
+      // deleted anywhere.
+      const error = yield* Effect.flip(
+        account.removeMember({ [ORG_SELECTOR_HEADER]: org }, `om_${TARGET}_${other}`),
+      );
+
+      expect(error).toBeInstanceOf(AccountForbidden);
+      expect(deleted, "the gate runs BEFORE the WorkOS delete").toEqual([]);
+      const members = yield* membersOf(org);
+      expect(members.map((m) => m.accountId).sort()).toEqual([ADMIN, TARGET].sort());
+    }).pipe(Effect.provide(providerLayer(org, deleted)));
+  });
 });
 
 describe("seat reporter", () => {
@@ -584,6 +728,8 @@ describe("seat reporter", () => {
   const directoryWith = (org: string, active: number) =>
     Layer.succeed(MemberDirectory)({
       membership: () => Effect.die("the seat reporter lists, it does not look up"),
+      membershipById: () => Effect.die("the seat reporter lists, it does not look up"),
+      membershipsOf: () => Effect.die("the seat reporter lists, it does not look up"),
       membersById: () => Effect.die("the seat reporter lists, it does not look up"),
       findByEmail: () => Effect.die("the seat reporter lists, it does not look up"),
       members: (organizationId, query) => {

@@ -63,32 +63,12 @@ const session = (accountId: string) => ({
   refreshedSession: null,
 });
 
-/** Membership roles: only ADMIN carries the `admin` role slug. */
+// Membership is read from the mirror, never from WorkOS: revoke makes no
+// WorkOS call at all.
 const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
-    get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data: [{ userId, organizationId: ORG, status: "active" }],
-          });
-      }
-      if (prop === "getUserOrgMembership") {
-        return (organizationId: string, userId: string) =>
-          Effect.succeed(
-            organizationId === ORG
-              ? {
-                  id: `om_${userId}`,
-                  userId,
-                  organizationId,
-                  role: { slug: userId === ADMIN ? "admin" : "member" },
-                }
-              : null,
-          );
-      }
-      return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
-    },
+    get: (_target, prop) => () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`),
   }),
 );
 
@@ -132,12 +112,31 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
   markBackfillComplete: () => Effect.die("revoke does not run the backfill"),
 });
 
-// Revoke lists no members either.
+// The mirror as the directory reads it: both are active members of ORG, and
+// only ADMIN carries the `admin` role. Revoke reads the caller's membership
+// (the org check and the admin gate) and nothing else.
 const stubDirectory = Layer.succeed(MemberDirectory)({
-  membership: () => Effect.die("revoke does not read the member directory"),
-  members: () => Effect.die("revoke does not read the member directory"),
-  membersById: () => Effect.die("revoke does not read the member directory"),
-  findByEmail: () => Effect.die("revoke does not read the member directory"),
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      organizationId === ORG
+        ? {
+            accountId,
+            membershipId: `om_${accountId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: accountId === ADMIN ? "admin" : "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("revoke does not look up by membership id"),
+  membershipsOf: () => Effect.die("revoke does not list the caller's memberships"),
+  members: () => Effect.die("revoke does not list members"),
+  membersById: () => Effect.die("revoke does not batch members"),
+  findByEmail: () => Effect.die("revoke does not resolve emails"),
 });
 
 const stubAutumn = Layer.succeed(AutumnService)({

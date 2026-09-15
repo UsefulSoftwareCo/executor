@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import type { JwtBearerConfig } from "../auth/workos-auth-provider";
@@ -62,19 +64,36 @@ const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data:
-              userId === "user_123"
-                ? [{ userId, organizationId: "org_123", status: "active" }]
-                : [],
-          });
-      }
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
+
+// The mirror as the directory reads it: user_123 holds an active membership in
+// org_123 and nothing else. Membership is never read from WorkOS.
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      accountId === "user_123" && organizationId === "org_123"
+        ? {
+            accountId,
+            membershipId: `om_${accountId}_${organizationId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("bearer resolution does not look up by membership id"),
+  membershipsOf: () => Effect.die("bearer resolution reads one membership, not the list"),
+  members: () => Effect.die("bearer resolution does not list members"),
+  membersById: () => Effect.die("bearer resolution does not batch members"),
+  findByEmail: () => Effect.die("bearer resolution does not resolve emails"),
+});
 
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
@@ -106,7 +125,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
 
 const run = (request: Request, jwt: JwtBearerConfig) =>
   resolveProtectedPrincipal(request, jwt).pipe(
-    Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers)),
+    Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers, stubDirectory)),
   );
 
 const request = (token: string) =>

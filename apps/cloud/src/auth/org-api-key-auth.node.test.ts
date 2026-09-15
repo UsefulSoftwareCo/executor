@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
@@ -58,21 +60,38 @@ const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
     get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data:
-              userId === "user_123"
-                ? [{ userId, organizationId: "org_123", status: "active" }]
-                : [],
-          });
-      }
-      // An org key must NOT trigger a membership check — there is no user to
-      // check. Any such call dies here, which is the assertion.
+      // Membership is read from the mirror, never from WorkOS; any WorkOS call
+      // dies here.
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
+
+// The mirror as the directory reads it: user_123 holds an active membership in
+// org_123 and nothing else. Membership is never read from WorkOS.
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      accountId === "user_123" && organizationId === "org_123"
+        ? {
+            accountId,
+            membershipId: `om_${accountId}_${organizationId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("bearer resolution does not look up by membership id"),
+  membershipsOf: () => Effect.die("bearer resolution reads one membership, not the list"),
+  members: () => Effect.die("bearer resolution does not list members"),
+  membersById: () => Effect.die("bearer resolution does not batch members"),
+  findByEmail: () => Effect.die("bearer resolution does not resolve emails"),
+});
 
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
@@ -102,7 +121,7 @@ const stubUsers = Layer.succeed(UserStoreService)({
     ),
 });
 
-const layers = Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers);
+const layers = Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers, stubDirectory);
 
 const bearer = (token: string) =>
   new Request("https://executor.test/api/tools", {
@@ -161,10 +180,20 @@ describe("org-level API keys", () => {
 
   it.effect("do not trigger a user membership check", () =>
     Effect.gen(function* () {
-      // `authorizeOrganization` checks a USER's live membership; there is no
-      // user here. The WorkOS stub dies on any call other than the user path,
-      // so a clean resolution proves the org branch never took it.
-      const auth = yield* resolveBearerAuth(bearer("valid_org_key")).pipe(Effect.provide(layers));
+      // `authorizeOrganization` checks a USER's membership; there is no user
+      // here. A directory whose `membership` dies proves the org branch never
+      // asked.
+      const noMembershipReads = Layer.succeed(MemberDirectory)({
+        membership: () => Effect.die("an org key must not trigger a membership check"),
+        membershipById: () => Effect.die("an org key must not trigger a membership check"),
+        membershipsOf: () => Effect.die("an org key must not trigger a membership check"),
+        members: () => Effect.die("an org key must not trigger a membership check"),
+        membersById: () => Effect.die("an org key must not trigger a membership check"),
+        findByEmail: () => Effect.die("an org key must not trigger a membership check"),
+      });
+      const auth = yield* resolveBearerAuth(bearer("valid_org_key")).pipe(
+        Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers, noMembershipReads)),
+      );
 
       expect(isPlatformAuth(auth)).toBe(true);
     }),

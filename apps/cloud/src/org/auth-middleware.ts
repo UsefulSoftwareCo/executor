@@ -1,7 +1,11 @@
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
-import { AuthContext, requestScopedMiddleware } from "@executor-js/api/server";
+import {
+  AuthContext,
+  requestScopedMiddleware,
+  type MemberDirectory,
+} from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import { sessionFromSealed } from "../auth/middleware";
@@ -67,5 +71,6 @@ const OrgAuthMiddleware = HttpRouter.middleware<{ provides: AuthContext }>()(
   }),
 );
 
-export const orgAuthMiddleware = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
-  OrgAuthMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
+export const orgAuthMiddleware = (
+  rsLive: Layer.Layer<DbService | UserStoreService | MemberDirectory>,
+) => OrgAuthMiddleware.combine(requestScopedMiddleware(rsLive)).layer;

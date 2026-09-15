@@ -41,6 +41,7 @@ import { makeDbLayer } from "../db/db";
 import { makeUserStoreLayer, UserStoreService } from "./context";
 import { parseCookie } from "./cookies";
 import { LAST_ORG_COOKIE } from "./last-org-cookie";
+import { makeMemberDirectoryLayer } from "./member-directory";
 import { sealedSessionDisplayName } from "./middleware";
 import { authorizeOrganizationSelector } from "./organization";
 import { loginPath, safeReturnTo } from "./return-to";
@@ -164,18 +165,24 @@ const organizationDisplay = async (
     : { name: "", slug: "" };
 };
 
-// Live membership check for the last-org cookie's slug. Same authorize path
-// as any org selector — the cookie is a preference, so a slug the user can't
-// access (stale after removal/deletion, or forged) resolves to null and the
-// bare path falls through to today's canonicalize-onto-session-org behavior.
-// Per-request store layers for the same reason as organizationDisplay.
+// Membership check (against the local mirror) for the last-org cookie's slug.
+// Same authorize path as any org selector — the cookie is a preference, so a
+// slug the user can't access (stale after removal/deletion, or forged) resolves
+// to null and the bare path falls through to today's
+// canonicalize-onto-session-org behavior. Per-request store layers for the
+// same reason as organizationDisplay; both stores share the one socket.
 const authorizeLastOrgSlug = async (
   userId: string,
   slug: string,
 ): Promise<{ readonly id: string } | null> => {
+  const dbLive = makeDbLayer();
   const exit = await getRuntime().runPromiseExit(
     authorizeOrganizationSelector(userId, slug).pipe(
-      Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer())),
+      Effect.provide(
+        Layer.mergeAll(makeUserStoreLayer(), makeMemberDirectoryLayer()).pipe(
+          Layer.provide(dbLive),
+        ),
+      ),
     ),
   );
   return Exit.isSuccess(exit) ? exit.value : null;
@@ -257,7 +264,7 @@ export const authGateMiddleware = createMiddleware({ type: "request" }).server(
     // contract is untouched because an unknown-but-valid slug in the URL reads
     // as slugged, not bare. When the cookie matches the session's own org (the
     // overwhelmingly common single-org case) the client-side OrgSlugGate
-    // already canonicalizes onto it, so skip the live membership check and the
+    // already canonicalizes onto it, so skip the membership check and the
     // redirect entirely.
     const lastOrgSlug = parseCookie(cookieHeader, LAST_ORG_COOKIE);
     const firstSegment = pathname.split("/")[1] ?? "";
