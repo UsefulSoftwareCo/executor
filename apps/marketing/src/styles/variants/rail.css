@@ -250,26 +250,32 @@
   display: grid;
   gap: 8px;
 }
-.rail--b .rail__contact-list li {
+.rail--b .rail__contact-list a {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border-radius: 5px;
   font-size: 12.5px;
   line-height: 1.35;
+  transition: background 0.15s ease;
 }
-.rail--b .rail__contact-list a {
+.rail--b .rail__contact-list a:hover {
+  background: var(--color-surface-2);
+}
+.rail--b .rail__contact-k {
   color: var(--color-ink);
   font-weight: 500;
 }
-.rail--b .rail__contact-list a:hover {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.rail--b .rail__contact-list span {
+.rail--b .rail__contact-v {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-ink-3);
   overflow-wrap: anywhere;
+}
+.rail--b .rail__contact-list a:hover .rail__contact-v {
+  color: var(--color-ink-2);
 }
 
 /* ═══ Mobile: every rail collapses to one horizontal top bar ═══ */

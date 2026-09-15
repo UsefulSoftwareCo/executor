@@ -101,16 +101,22 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
       </div>
       <ul class="rail__contact-list">
         <li>
-          <a href={`mailto:${EMAIL}?subject=Executor`}>Email</a>
-          <span>{EMAIL}</span>
+          <a href={`mailto:${EMAIL}?subject=Executor`}>
+            <span class="rail__contact-k">Email</span>
+            <span class="rail__contact-v">{EMAIL}</span>
+          </a>
         </li>
         <li>
-          <a href={`mailto:${EMAIL}?subject=Shared%20Slack%20channel&body=Hi%20Rhys%2C%20we%27d%20like%20a%20shared%20Slack%20channel%20for%20Executor.%20Our%20workspace%20is%3A%20`}>Shared Slack</a>
-          <span>ask and we set up a Connect channel</span>
+          <a href={`mailto:${EMAIL}?subject=Slack%20Connect%20invite%20for%20Executor`}>
+            <span class="rail__contact-k">Shared Slack</span>
+            <span class="rail__contact-v">send a Slack Connect invite to {EMAIL}</span>
+          </a>
         </li>
         <li>
-          <a href={X_URL} target="_blank" rel="me noopener">X</a>
-          <span>@RhysSullivan</span>
+          <a href={X_URL} target="_blank" rel="me noopener">
+            <span class="rail__contact-k">X</span>
+            <span class="rail__contact-v">@RhysSullivan</span>
+          </a>
         </li>
       </ul>
     </div>

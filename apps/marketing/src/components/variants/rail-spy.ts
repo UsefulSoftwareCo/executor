@@ -36,11 +36,35 @@ export function initRailSpy(root: HTMLElement): void {
   const order = pairs.map((p) => p.id);
   const visible = new Set<string>();
 
+  // After a click, hold the clicked section active until the scroll settles.
+  // Short sections near the end of the page never fill the reading band, so
+  // without this the observer would hand the highlight to the next section.
+  let pinned: string | null = null;
+  let pinTimer: number | undefined;
+  for (const { id, link } of pairs) {
+    link.addEventListener("click", () => {
+      pinned = id;
+      window.clearTimeout(pinTimer);
+      apply();
+      const release = () => {
+        window.clearTimeout(pinTimer);
+        pinTimer = window.setTimeout(() => {
+          pinned = null;
+          window.removeEventListener("scroll", release);
+          apply();
+        }, 150);
+      };
+      window.addEventListener("scroll", release, { passive: true });
+      release();
+    });
+  }
+
   const apply = (): void => {
     // Topmost visible section wins, so the rail never flickers between two
     // sections that overlap the reading band.
-    let activeId: string | null = null;
+    let activeId: string | null = pinned;
     for (const id of order) {
+      if (activeId != null) break;
       if (visible.has(id)) {
         activeId = id;
         break;
