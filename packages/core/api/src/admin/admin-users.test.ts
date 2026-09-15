@@ -395,6 +395,7 @@ const A1_EMAIL = "a1@users.test";
 const stubUserDirectory = (options: {
   readonly seen?: string[][];
   readonly resolved?: string[];
+  readonly searched?: string[];
 }): AdminUserDirectory => ({
   identities: (externalIds) => {
     options.seen?.push([...externalIds]);
@@ -404,6 +405,13 @@ const stubUserDirectory = (options: {
     options.resolved?.push(email);
     // Compares a NORMALIZED stored value, the rule both real hosts follow.
     return Effect.succeed(A1_EMAIL_STORED.toLowerCase() === email ? USER_A1 : null);
+  },
+  search: (term) => {
+    options.searched?.push(term);
+    // The one member the directory knows, matched on the normalized email or
+    // the display name — the substring rule both real hosts apply.
+    const haystack = [A1_EMAIL_STORED.toLowerCase(), "user a1"];
+    return Effect.succeed(haystack.some((value) => value.includes(term)) ? [USER_A1] : []);
   },
 });
 
@@ -1022,6 +1030,102 @@ describe("admin users API", () => {
     ),
   );
 
+  // ── ?search= ──────────────────────────────────────────────────────────────
+
+  it.effect("filters the bulk lists by a name or email substring, case-insensitively", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const searched: string[] = [];
+        const web = yield* webHandlerFor(
+          stubProvider((tenant) => platformExecutorFor(db, tenant), headerAuthorize, {
+            ...stubUserDirectory({ searched }),
+          }),
+        );
+
+        // Part of the address, typed in the wrong case and with stray spaces:
+        // the handler normalizes it before the directory sees it.
+        const byEmail = yield* jsonOf<UsersBody>(
+          yield* get(web, `/admin/users?search=${encodeURIComponent("  A1@USERS ")}`, ORG_A),
+        );
+        expect(byEmail.users.map((user) => user.externalId)).toEqual([USER_A1]);
+        expect(byEmail.users[0]?.email, "the page still carries identity").toBe(A1_EMAIL_STORED);
+
+        // Part of the name, on the joined view.
+        const byName = yield* jsonOf<UsersWithConnectionsBody>(
+          yield* get(web, "/admin/users/with-connections?search=User%20a1", ORG_A),
+        );
+        expect(byName.users.map((user) => user.externalId)).toEqual([USER_A1]);
+        expect(byName.users[0]?.connections.map((c) => c.integration)).toEqual(["github"]);
+
+        // No match is an empty page, never the unfiltered tenant.
+        const nobody = yield* jsonOf<UsersBody>(
+          yield* get(web, "/admin/users?search=nobody", ORG_A),
+        );
+        expect(nobody.users).toEqual([]);
+
+        expect(searched, "one directory search per request, normalized").toEqual([
+          "a1@users",
+          "user a1",
+          "nobody",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("a blank search is no filter at all", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const searched: string[] = [];
+        const web = yield* webHandlerFor(
+          stubProvider(
+            (tenant) => platformExecutorFor(db, tenant),
+            headerAuthorize,
+            stubUserDirectory({ searched }),
+          ),
+        );
+
+        const body = yield* jsonOf<UsersBody>(yield* get(web, "/admin/users?search=%20%20", ORG_A));
+        expect(body.users.map((user) => user.externalId)).toEqual([USER_A1, USER_A2]);
+        expect(searched, "the directory is never asked to match whitespace").toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("returns an empty page for a search no host directory can answer", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        // A directory with identities only: it cannot search, so a search
+        // filter must select nothing rather than hand back the whole tenant.
+        const web = yield* webHandlerFor(
+          stubProvider((tenant) => platformExecutorFor(db, tenant), headerAuthorize, {
+            identities: stubDirectory([]),
+          }),
+        );
+
+        const body = yield* jsonOf<UsersBody>(yield* get(web, "/admin/users?search=a1", ORG_A));
+        expect(body.users).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("500s when the directory search fails, rather than reporting no match", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const web = yield* webHandlerFor(
+          stubProvider((tenant) => platformExecutorFor(db, tenant), headerAuthorize, {
+            search: () => Effect.fail(new DirectoryUnavailable({ message: "down" })),
+          }),
+        );
+
+        expect((yield* get(web, "/admin/users?search=a1", ORG_A)).status).toBe(500);
+      }),
+    ),
+  );
+
   // A resolver OUTAGE must not read as "no such user": that is a wrong answer an
   // operator would act on. Contrast with the identity join, which degrades to
   // unnamed rows precisely because it is decoration.
@@ -1096,8 +1200,8 @@ const A_SUBJECT: AdminSubject = {
 /** An `ExecutorAdmin` that answers everything and records the reads it was
  *  asked for, so a test can assert the call the filter chose. */
 const recordingAdmin = (calls: string[]): ExecutorAdmin => ({
-  listSubjects: () => {
-    calls.push("listSubjects");
+  listSubjects: (options) => {
+    calls.push(`listSubjects:${options?.externalIds?.join(",") ?? "*"}`);
     return Effect.succeed([A_SUBJECT]);
   },
   getSubject: () => {
@@ -1108,8 +1212,8 @@ const recordingAdmin = (calls: string[]): ExecutorAdmin => ({
     calls.push("listSubjectConnections");
     return Effect.succeed([]);
   },
-  listSubjectsWithConnections: () => {
-    calls.push("listSubjectsWithConnections");
+  listSubjectsWithConnections: (options) => {
+    calls.push(`listSubjectsWithConnections:${options?.externalIds?.join(",") ?? "*"}`);
     return Effect.succeed([{ ...A_SUBJECT, connections: [] }]);
   },
   getSubjectWithConnections: () => {
@@ -1187,7 +1291,56 @@ describe("admin users reads — the ?email= filter is applied before the read", 
       const calls: string[] = [];
       yield* listUsersWithConnections(recordingAdmin(calls), { limit: 50 }, stubUserDirectory({}));
 
-      expect(calls).toEqual(["listSubjectsWithConnections"]);
+      expect(calls).toEqual(["listSubjectsWithConnections:*"]);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// `?search=` is FILTER-THEN-PAGE through storage: the directory names the
+// matching principals, and the paged read carries exactly that set as its
+// `externalIds` filter — never a page scan that is filtered afterwards.
+// ---------------------------------------------------------------------------
+
+describe("admin users reads — the ?search= filter pages the directory's matches", () => {
+  it.effect("hands the matched ids to the paged read, on both views", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const admin = recordingAdmin(calls);
+
+      yield* listUsers(admin, { search: "a1" }, stubUserDirectory({}));
+      yield* listUsersWithConnections(admin, { search: "user", limit: 10 }, stubUserDirectory({}));
+
+      expect(calls).toEqual([`listSubjects:${USER_A1}`, `listSubjectsWithConnections:${USER_A1}`]);
+    }),
+  );
+
+  it.effect("issues NO storage read when the directory matches nobody", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const body = yield* listUsersWithConnections(
+        recordingAdmin(calls),
+        { search: "nobody" },
+        stubUserDirectory({}),
+      );
+
+      expect(calls).toEqual([]);
+      expect(body.users).toEqual([]);
+    }),
+  );
+
+  it.effect("lets an exact email win over a search term", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const searched: string[] = [];
+      yield* listUsers(
+        recordingAdmin(calls),
+        { email: A1_EMAIL, search: "anything" },
+        stubUserDirectory({ searched }),
+      );
+
+      expect(calls, "the keyed read, not a search").toEqual(["getSubject"]);
+      expect(searched).toEqual([]);
     }),
   );
 });

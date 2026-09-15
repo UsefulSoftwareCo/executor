@@ -16,6 +16,7 @@ import { Effect } from "effect";
 
 import type {
   AdminConnection,
+  AdminListSubjectsOptions,
   AdminSubject,
   AdminSubjectWithConnections,
   Executor,
@@ -114,12 +115,27 @@ export type AdminIdentityDirectory = (
  */
 export type AdminEmailResolver = (email: string) => Effect.Effect<string | null, unknown>;
 
-/** Both directions of a host's member directory. Optional as a whole (a host
- *  with no directory reports unnamed rows and cannot resolve emails), and
- *  optional per direction. */
+/**
+ * The directory's SEARCH: a normalized term (trimmed + lower-cased, the same
+ * rule `normalizeEmail` applies) → the host-auth principal ids of every member
+ * whose email or name contains it, in the directory's own order.
+ *
+ * Unlike `resolveEmail` this names a SET, and the reads page that set through
+ * storage rather than in memory: the ids go into the SDK's `externalIds`
+ * filter and the caller's `limit`/`offset` apply there. An empty result means
+ * no member matches, and costs no storage read. Failures are the caller's to
+ * interpret on the same terms as `resolveEmail` — a search that cannot run
+ * must not quietly become "nobody matches".
+ */
+export type AdminMemberSearch = (term: string) => Effect.Effect<readonly string[], unknown>;
+
+/** Every direction of a host's member directory. Optional as a whole (a host
+ *  with no directory reports unnamed rows and cannot resolve emails or search),
+ *  and optional per direction. */
 export interface AdminUserDirectory {
   readonly identities?: AdminIdentityDirectory;
   readonly resolveEmail?: AdminEmailResolver;
+  readonly search?: AdminMemberSearch;
 }
 
 /** Identity is decoration on an operator view, not part of the answer: a
@@ -292,6 +308,72 @@ const selectByEmail = <T>(
     return row === null ? [] : pageOf([row], options);
   });
 
+/**
+ * The `?search=` read: FILTER by the directory, then PAGE through storage.
+ *
+ * The term names a SET of principals rather than one, so unlike `?email=` it
+ * cannot become a keyed read — but it still must not become a page-then-filter
+ * scan, which on a large tenant would page past every unmatched subject before
+ * finding the first match. So the directory answers with the matching ids and
+ * storage pages exactly that set (`externalIds` + the caller's window), which
+ * keeps "filter, then page" as the one paging rule every filtered list here
+ * follows.
+ *
+ * A host with no search direction answers nothing, for the same reason an
+ * unanswerable `?email=` does: a filter no host can apply must return an empty
+ * page, never an unfiltered one. A search FAILURE is a 500 on the same terms as
+ * a resolver failure.
+ */
+const selectBySearch = <T>(
+  directory: AdminUserDirectory,
+  term: string,
+  read: (externalIds: readonly string[]) => Effect.Effect<readonly T[], AdminUsersError>,
+): Effect.Effect<readonly T[], AdminUsersError> =>
+  Effect.gen(function* () {
+    const search = directory.search;
+    if (!search) return [];
+    const wanted = yield* search(term).pipe(
+      Effect.mapError(() => new AdminUsersError({ message: "Failed to search the directory" })),
+    );
+    // Nobody matches: an empty page, and no storage read for an `in ()` that
+    // could not match anyway.
+    if (wanted.length === 0) return [];
+    return yield* read(wanted);
+  });
+
+/**
+ * Which filtered read a list request takes. `email` names ONE principal and
+ * wins when both are present: a keyed read is the more specific answer, and
+ * a search term beside an exact address has nothing left to narrow.
+ */
+const selectSubjects = <T>(
+  directory: AdminUserDirectory,
+  options: AdminUsersListOptions,
+  reads: {
+    readonly page: (
+      paging: AdminListSubjectsOptions,
+    ) => Effect.Effect<readonly T[], AdminUsersError>;
+    readonly one: (externalId: string) => Effect.Effect<T | null, AdminUsersError>;
+  },
+): Effect.Effect<readonly T[], AdminUsersError> => {
+  if (options.email !== undefined) {
+    return selectByEmail(directory, options.email, options, reads.one);
+  }
+  if (options.search !== undefined) {
+    return selectBySearch(directory, options.search, (externalIds) =>
+      reads.page({ ...pagingOf(options), externalIds }),
+    );
+  }
+  return reads.page(pagingOf(options));
+};
+
+/** Only the paging window — never the filters — reaches the SDK: the filters
+ *  are resolved here, and the SDK's own `externalIds` is set by this file. */
+const pagingOf = (options: AdminUsersListOptions): AdminListSubjectsOptions => ({
+  ...(options.limit === undefined ? {} : { limit: options.limit }),
+  ...(options.offset === undefined ? {} : { offset: options.offset }),
+});
+
 export const listUsers = (
   admin: ExecutorAdmin,
   options: AdminUsersListOptions,
@@ -299,12 +381,10 @@ export const listUsers = (
 ): Effect.Effect<typeof AdminUsersResponse.Type, AdminUsersError> =>
   Effect.gen(function* () {
     const dir = asDirectory(directory);
-    const subjects =
-      options.email === undefined
-        ? yield* admin.listSubjects(options).pipe(Effect.mapError(readFailed("users")))
-        : yield* selectByEmail(dir, options.email, options, (externalId) =>
-            admin.getSubject(externalId).pipe(Effect.mapError(readFailed("users"))),
-          );
+    const subjects = yield* selectSubjects(dir, options, {
+      page: (paging) => admin.listSubjects(paging).pipe(Effect.mapError(readFailed("users"))),
+      one: (externalId) => admin.getSubject(externalId).pipe(Effect.mapError(readFailed("users"))),
+    });
     // One directory read for the page that was actually returned, joined in
     // memory — never a lookup per user.
     const identities = yield* resolveIdentities(
@@ -321,14 +401,12 @@ export const listUsersWithConnections = (
 ): Effect.Effect<typeof AdminUsersWithConnectionsResponse.Type, AdminUsersError> =>
   Effect.gen(function* () {
     const dir = asDirectory(directory);
-    const subjects =
-      options.email === undefined
-        ? yield* admin
-            .listSubjectsWithConnections(options)
-            .pipe(Effect.mapError(readFailed("users")))
-        : yield* selectByEmail(dir, options.email, options, (externalId) =>
-            admin.getSubjectWithConnections(externalId).pipe(Effect.mapError(readFailed("users"))),
-          );
+    const subjects = yield* selectSubjects(dir, options, {
+      page: (paging) =>
+        admin.listSubjectsWithConnections(paging).pipe(Effect.mapError(readFailed("users"))),
+      one: (externalId) =>
+        admin.getSubjectWithConnections(externalId).pipe(Effect.mapError(readFailed("users"))),
+    });
     const identities = yield* resolveIdentities(
       dir.identities,
       subjects.map((subject) => subject.externalId),

@@ -1,10 +1,13 @@
 // ---------------------------------------------------------------------------
-// Seat-count reporting — the WorkOS → Autumn reconciliation for seat billing
+// Seat-count reporting — the membership mirror → Autumn reconciliation for
+// seat billing
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
 
-import { WorkOSClient } from "../../auth/workos";
+import { MemberDirectory } from "@executor-js/api/server";
+
+import { WorkOsMirror } from "../../auth/workos-mirror";
 import { AutumnService } from "./service";
 
 /**
@@ -15,39 +18,56 @@ import { AutumnService } from "./service";
  * Seats change through paths the app never sees a mutation for (invitation
  * acceptance in AuthKit, SSO JIT provisioning, join by domain, WorkOS
  * dashboard edits), so this reconciles from a full recount rather than
- * tracking deltas. It runs after in-app membership mutations AND on every
- * login callback, so drift from out-of-band changes heals on the next
- * sign-in. Fire-and-forget-safe: errors are logged, never surfaced.
+ * tracking deltas. The count comes from the local membership mirror through
+ * the shared `MemberDirectory`: every in-app membership mutation writes
+ * through to the mirror BEFORE calling this, and out-of-band changes land via
+ * login and the Events reconciler, so the recount reads the change on the
+ * next sign-in exactly as it did against WorkOS — without a WorkOS read.
+ *
+ * The Autumn call runs off the calling request's critical path, mirroring
+ * how execution tracking is forked: billing must never stall or fail a
+ * user-facing request. Errors are logged, never surfaced.
+ *
+ * The count is a PARTIAL one until the mirror has been backfilled from WorkOS
+ * (`scripts/backfill-workos-mirror.ts`): before that, the mirror holds only
+ * the members who signed in or were changed since the mirror shipped. Because
+ * the Autumn write is an authoritative SET, pushing a partial count would
+ * under-bill every organization until the backfill ran, so the recount is
+ * skipped — with a warning — while the mirror's backfill marker is absent.
+ * The gate (`reserveMemberSlot`) keeps working from the same mirror; it only
+ * ever under-counts in that window and heals with the backfill.
+ *
+ * The COUNT is read inline, not in the fork: `MemberDirectory` is per-request
+ * (it holds the request's postgres socket, which Cloudflare Workers' I/O
+ * isolation ties to the request), so a forked fiber reading it could outlive
+ * the socket. One indexed local query is cheap enough to pay inline; only the
+ * Autumn call — over the boot-scoped `AutumnService` — is forked, so the
+ * forked fiber captures nothing request-scoped.
  */
-export const reportMemberSeats = (
+export const forkReportMemberSeats = (
   organizationId: string,
-): Effect.Effect<void, never, WorkOSClient | AutumnService> =>
+): Effect.Effect<void, never, MemberDirectory | WorkOsMirror | AutumnService> =>
   Effect.gen(function* () {
-    const workos = yield* WorkOSClient;
+    const directory = yield* MemberDirectory;
+    const mirror = yield* WorkOsMirror;
     const autumn = yield* AutumnService;
-    const memberships = yield* workos.listOrgMembers(organizationId);
-    const seats = memberships.data.filter((m) => m.status === "active").length;
-    yield* autumn.setMemberSeats(organizationId, seats);
+    const backfilledAt = yield* mirror.backfillCompletedAt();
+    if (backfilledAt === null) {
+      yield* Effect.logWarning(
+        "reportMemberSeats: skipped — the membership mirror has not been backfilled from WorkOS (run db:backfill-workos-mirror:prod)",
+        { organizationId },
+      );
+      return;
+    }
+    const seats = yield* directory
+      .members(organizationId, { statuses: ["active"] })
+      .pipe(Effect.map((members) => members.length));
+    yield* Effect.sync(() => {
+      Effect.runFork(autumn.setMemberSeats(organizationId, seats));
+    });
   }).pipe(
     Effect.catch((error) =>
       Effect.logWarning("reportMemberSeats: seat recount failed", { organizationId, error }),
     ),
     Effect.withSpan("billing.reportMemberSeats"),
   );
-
-/**
- * Fork `reportMemberSeats` off the calling request, mirroring how execution
- * tracking is forked: billing must never stall or fail a user-facing
- * request. Only boot-scoped services are captured (WorkOS + Autumn — no
- * request-scoped resources), so the forked fiber cannot outlive anything it
- * depends on.
- */
-export const forkReportMemberSeats = (
-  organizationId: string,
-): Effect.Effect<void, never, WorkOSClient | AutumnService> =>
-  Effect.gen(function* () {
-    const ctx = yield* Effect.context<WorkOSClient | AutumnService>();
-    yield* Effect.sync(() => {
-      Effect.runForkWith(ctx)(reportMemberSeats(organizationId));
-    });
-  });

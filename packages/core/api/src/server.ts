@@ -40,6 +40,7 @@ export {
   normalizeEmail as normalizeAdminUserEmail,
   type AdminEmailResolver,
   type AdminIdentityDirectory,
+  type AdminMemberSearch,
   type AdminUserDirectory,
   type AdminUserIdentity,
 } from "./admin/reads";

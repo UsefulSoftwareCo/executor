@@ -83,6 +83,18 @@ export interface WorkOsMirrorShape {
     prev: string | null,
     next: string,
   ) => Effect.Effect<boolean, WorkOsMirrorError>;
+  /**
+   * When the one-off backfill (`scripts/backfill-workos-mirror.ts`) last
+   * completed, or `null` if it never has. Until it has, the mirror holds only
+   * what login and write-through have recorded since the mirror shipped, so
+   * a count read from it is PARTIAL — the seat reporter refuses to push one
+   * to billing. Migration 0019 seeds the marker on a database with no
+   * organizations (nothing to backfill), so fresh dev/test databases report
+   * from the start.
+   */
+  readonly backfillCompletedAt: () => Effect.Effect<Date | null, WorkOsMirrorError>;
+  /** Record that the backfill completed now (idempotent). */
+  readonly markBackfillComplete: () => Effect.Effect<void, WorkOsMirrorError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +156,9 @@ export const mirrorMembershipFromWorkOs = (
 // singleton table so a second stream (another WorkOS environment, a replay)
 // can be added without a schema change.
 const EVENTS_CURSOR_ID = "events";
+// The backfill-complete marker shares the table: `updated_at` is the
+// completion time, `cursor` stays null. See `backfillCompletedAt`.
+const BACKFILL_MARKER_ID = "backfill";
 
 /**
  * The mirror's write operations over `db`. Failures are `WorkOsMirrorError`
@@ -282,6 +297,24 @@ export const makeWorkOsMirrorStore = (db: DrizzleDb): WorkOsMirrorShape => {
           .where(and(eq(workosSync.id, EVENTS_CURSOR_ID), eq(workosSync.cursor, prev)))
           .returning({ id: workosSync.id });
         return written.length > 0;
+      }),
+
+    backfillCompletedAt: () =>
+      run("backfillCompletedAt", async () => {
+        const rows = await db
+          .select({ updatedAt: workosSync.updatedAt })
+          .from(workosSync)
+          .where(eq(workosSync.id, BACKFILL_MARKER_ID));
+        return rows[0]?.updatedAt ?? null;
+      }),
+
+    markBackfillComplete: () =>
+      run("markBackfillComplete", async () => {
+        const now = new Date();
+        await db
+          .insert(workosSync)
+          .values({ id: BACKFILL_MARKER_ID, cursor: null, updatedAt: now })
+          .onConflictDoUpdate({ target: workosSync.id, set: { updatedAt: now } });
       }),
   };
 };

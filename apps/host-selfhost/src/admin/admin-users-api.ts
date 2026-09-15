@@ -16,7 +16,11 @@
 //
 // The READ half is identical to cloud's: a subject-less, tenant-reach executor
 // from `makePlatformExecutor`, projected by the shared `admin/reads`. Self-host
-// is single-tenant, so the tenant is always the boot-seeded org.
+// is single-tenant, so the tenant is always the boot-seeded org. Identity
+// (email/name per row), the `?email=` resolver and the `?search=` match all
+// come from the shared `MemberDirectory` — here Better Auth's `member` + `user`
+// tables through its own adapter (`auth/member-directory.ts`), the SAME read
+// the MCP plane makes, so no plane keeps its own join.
 // ---------------------------------------------------------------------------
 
 import { HttpRouter } from "effect/unstable/http";
@@ -26,18 +30,17 @@ import {
   AdminUsersProvider,
   DbProvider,
   HostConfig,
+  MemberDirectory,
   PluginsProvider,
+  adminUserDirectoryFromMembers,
   getAdminUser,
   listAdminUserConnections,
   listAdminUsers,
   listAdminUsersWithConnections,
   makeAdminUsersApiLayer,
   makePlatformExecutor,
-  normalizeAdminUserEmail,
   platformViewOf,
   requestScopedMiddleware,
-  type AdminUserDirectory,
-  type AdminUserIdentity,
   type AdminUsersHeaders,
 } from "@executor-js/api/server";
 import {
@@ -67,70 +70,6 @@ const requireAdmin = (headers: AdminUsersHeaders) =>
     ),
   );
 
-/**
- * Self-host's member directory: `externalId` → email/name.
- *
- * THE JOIN KEY is `member.userId`, the Better Auth `user.id` — precisely what
- * `auth/identity.ts` binds as `accountId` and therefore what the subject table
- * records in `external_id`. `member.id` is the organization `member` ROW id and
- * joins to nothing; the two look alike, so the choice is pinned here and in the
- * node test rather than left to a reader.
- *
- * One `listMembers` call per request: Better Auth's organization plugin already
- * attaches the `user` row to each member, so email and name arrive with the
- * membership and no per-user lookup is needed. The requested ids are not passed
- * to the call — the plugin offers no id filter, and a single-instance member
- * list is small — but the caller only reads the ids it asked for.
- *
- * Runs as the CALLER, using their own admin headers, so this reads exactly the
- * directory that session is already entitled to on `/account/members`.
- */
-const listMembers = (auth: BetterAuthHandle["auth"], headers: AdminUsersHeaders) =>
-  Effect.tryPromise(() => auth.api.listMembers({ headers: new Headers(headers) }));
-
-/**
- * Both directions of self-host's directory, over the SAME single `listMembers`
- * read.
- *
- * The reverse (email → `user.id`) needs no extra call and no new permission:
- * the organization plugin already attaches the `user` row to each member, so
- * the email is sitting beside the id the forward join uses. Better Auth
- * lower-cases every email it writes, but the directory value is normalized
- * anyway so this host cannot answer differently from cloud if that ever
- * changes.
- *
- * A member with no `user.email` cannot match — `null` is not an address, and
- * coercing it to "" would let an empty `?email=` select an arbitrary row.
- */
-const userDirectory = (
-  auth: BetterAuthHandle["auth"],
-  headers: AdminUsersHeaders,
-): AdminUserDirectory => ({
-  identities: () =>
-    listMembers(auth, headers).pipe(
-      Effect.map((result) => {
-        const identities = new Map<string, AdminUserIdentity>();
-        for (const member of result.members) {
-          identities.set(member.userId, {
-            email: member.user?.email ?? null,
-            displayName: member.user?.name ?? null,
-          });
-        }
-        return identities;
-      }),
-    ),
-  resolveEmail: (email) =>
-    listMembers(auth, headers).pipe(
-      Effect.map(
-        (result) =>
-          result.members.find((member) => {
-            const stored = member.user?.email;
-            return stored != null && normalizeAdminUserEmail(stored) === email;
-          })?.userId ?? null,
-      ),
-    ),
-});
-
 const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = AdminUsersError>(
   headers: AdminUsersHeaders,
   organizationId: string,
@@ -153,24 +92,25 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
 export const betterAuthAdminUsersProvider: Layer.Layer<
   AdminUsersProvider,
   never,
-  BetterAuth | DbProvider | PluginsProvider | HostConfig
+  BetterAuth | MemberDirectory | DbProvider | PluginsProvider | HostConfig
 > = Layer.effect(AdminUsersProvider)(
   Effect.gen(function* () {
     const context = yield* Effect.context<BetterAuth | DbProvider | PluginsProvider | HostConfig>();
-    const { auth, organizationId } = yield* BetterAuth;
+    const { organizationId } = yield* BetterAuth;
+    // Scoped to the INSTANCE's org — the same one the platform view is opened
+    // for, never the caller's `activeOrganizationId` (see require-admin.ts).
+    const directory = adminUserDirectoryFromMembers(yield* MemberDirectory, organizationId);
     return AdminUsersProvider.of({
       listUsers: (headers, options) =>
         withPlatformView(headers, organizationId, (executor) =>
           platformViewOf(executor).pipe(
-            Effect.flatMap((admin) => listAdminUsers(admin, options, userDirectory(auth, headers))),
+            Effect.flatMap((admin) => listAdminUsers(admin, options, directory)),
           ),
         ).pipe(Effect.provideContext(context)),
       listUsersWithConnections: (headers, options) =>
         withPlatformView(headers, organizationId, (executor) =>
           platformViewOf(executor).pipe(
-            Effect.flatMap((admin) =>
-              listAdminUsersWithConnections(admin, options, userDirectory(auth, headers)),
-            ),
+            Effect.flatMap((admin) => listAdminUsersWithConnections(admin, options, directory)),
           ),
         ).pipe(Effect.provideContext(context)),
       listUserConnections: (headers, externalId) =>
@@ -182,9 +122,7 @@ export const betterAuthAdminUsersProvider: Layer.Layer<
       getUser: (headers, identifier) =>
         withPlatformView(headers, organizationId, (executor) =>
           platformViewOf(executor).pipe(
-            Effect.flatMap((admin) =>
-              getAdminUser(admin, identifier, userDirectory(auth, headers)),
-            ),
+            Effect.flatMap((admin) => getAdminUser(admin, identifier, directory)),
           ),
         ).pipe(Effect.provideContext(context)),
     });
@@ -193,6 +131,9 @@ export const betterAuthAdminUsersProvider: Layer.Layer<
 
 export interface SelfHostAdminUsersApiDeps {
   readonly betterAuth: BetterAuthHandle;
+  /** The boot-built `MemberDirectory` (see `resolveAuthProviders`), so this
+   *  plane reads the same directory instance every other plane does. */
+  readonly memberDirectory: Layer.Layer<MemberDirectory>;
   readonly db: SelfHostDbHandle;
   readonly mountPrefix: `/${string}`;
 }
@@ -206,6 +147,7 @@ export interface SelfHostAdminUsersApiDeps {
  */
 export const makeSelfHostAdminUsersApiLayer = ({
   betterAuth,
+  memberDirectory,
   db,
   mountPrefix,
 }: SelfHostAdminUsersApiDeps) => {
@@ -214,6 +156,7 @@ export const makeSelfHostAdminUsersApiLayer = ({
   );
   const provider = betterAuthAdminUsersProvider.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
+    Layer.provide(memberDirectory),
     Layer.provide(SelfHostDbProvider),
     Layer.provide(SelfHostPluginsProvider),
     Layer.provide(SelfHostHostConfig),

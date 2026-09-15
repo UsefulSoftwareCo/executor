@@ -10,10 +10,11 @@ import { ReactivityKey } from "./reactivity-keys";
 // rejects writes at tenant reach), so there are no mutations here and every
 // atom carries the same reactivity key.
 //
-// Paging is part of the atom identity, so each page is its own cache entry and
-// stepping back to a visited page is instant. `Atom.family` (not a bare arrow)
-// because the page component re-derives the key object on every render — a
-// fresh atom per render would refetch in a loop.
+// Paging and the search term are part of the atom identity, so each page of
+// each search is its own cache entry and stepping back to a visited page is
+// instant. `Atom.family` (not a bare arrow) because the page component
+// re-derives the key object on every render — a fresh atom per render would
+// refetch in a loop.
 // ---------------------------------------------------------------------------
 
 /** How many users one page of the list shows. Well inside the contract's
@@ -24,6 +25,10 @@ export const ADMIN_USERS_PAGE_SIZE = 25;
 export interface AdminUsersPage {
   readonly limit: number;
   readonly offset: number;
+  /** The `?search=` term (name or email substring), already debounced by the
+   *  page. `""` is no filter and is sent as no param at all, so the unfiltered
+   *  list keeps one cache identity regardless of how the term was cleared. */
+  readonly search: string;
 }
 
 /**
@@ -35,7 +40,11 @@ export interface AdminUsersPage {
  */
 export const adminUsersWithConnectionsAtom = Atom.family((page: AdminUsersPage) =>
   AdminApiClient.query("adminUsers", "listUsersWithConnections", {
-    query: { limit: page.limit + 1, offset: page.offset },
+    query: {
+      limit: page.limit + 1,
+      offset: page.offset,
+      ...(page.search === "" ? {} : { search: page.search }),
+    },
     timeToLive: "30 seconds",
     reactivityKeys: [ReactivityKey.adminUsers],
   }),

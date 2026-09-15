@@ -2,6 +2,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest } from "effect/unstable/http";
 import { Effect } from "effect";
 
+import { normalizeMemberSearch } from "../server/member-directory";
 import { AdminUsersHttpApi } from "./api";
 import { normalizeEmail } from "./reads";
 import { AdminUsersProvider, type AdminUsersHeaders, type AdminUsersListOptions } from "./service";
@@ -24,15 +25,23 @@ const requestHeaders = Effect.map(
 // than an explicit `undefined` overriding them.
 // `email` is normalized here rather than in the contract schema, so the filter
 // and the single-user path parameter share ONE rule (`normalizeEmail`).
+// `search` gets the directory's own rule (`normalizeMemberSearch`: the same
+// trim + lower-case, and a blank term is no filter at all — dropped here so a
+// provider never sees `search: ""`).
 const listOptions = (query: {
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
   readonly email?: string | undefined;
-}): AdminUsersListOptions => ({
-  ...(query.limit === undefined ? {} : { limit: query.limit }),
-  ...(query.offset === undefined ? {} : { offset: query.offset }),
-  ...(query.email === undefined ? {} : { email: normalizeEmail(query.email) }),
-});
+  readonly search?: string | undefined;
+}): AdminUsersListOptions => {
+  const search = normalizeMemberSearch(query.search);
+  return {
+    ...(query.limit === undefined ? {} : { limit: query.limit }),
+    ...(query.offset === undefined ? {} : { offset: query.offset }),
+    ...(query.email === undefined ? {} : { email: normalizeEmail(query.email) }),
+    ...(search === undefined ? {} : { search }),
+  };
+};
 
 export const AdminUsersHandlers = HttpApiBuilder.group(
   AdminUsersHttpApi,

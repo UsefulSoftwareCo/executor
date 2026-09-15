@@ -2,10 +2,15 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServer } from "effect/unstable/http";
 import { Layer } from "effect";
 
-import { makeProtectedApiLayer, requestScopedMiddleware } from "@executor-js/api/server";
+import {
+  makeProtectedApiLayer,
+  requestScopedMiddleware,
+  type MemberDirectory,
+} from "@executor-js/api/server";
 
 import { SessionAuthLive } from "../auth/middleware-live";
 import { UserStoreService } from "../auth/context";
+import { cloudMemberDirectoryLayer } from "../auth/member-directory";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
@@ -27,12 +32,17 @@ import { CoreSharedServices } from "../auth/workos";
 const DbLive = DbService.Live;
 const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
 const WorkOsMirrorLive = WorkOsMirror.Live.pipe(Layer.provide(DbLive));
+// The shared `MemberDirectory` read seam over the membership mirror — the
+// same per-request socket the mirror writes through.
+const MemberDirectoryLive = cloudMemberDirectoryLayer.pipe(Layer.provide(DbLive));
 
 // Per-request layer. Anything that opens an I/O object (postgres.js socket,
 // fetch stream readers, anything backed by a `Writable`) MUST live here —
 // `provideRequestScoped` rebuilds it per request so Cloudflare Workers'
 // I/O isolation is satisfied. See `api.request-scope.test.ts`.
-export const RequestScopedServicesLive = Layer.mergeAll(DbLive, UserStoreLive, WorkOsMirrorLive);
+export const RequestScopedServicesLive: Layer.Layer<
+  DbService | UserStoreService | WorkOsMirror | MemberDirectory
+> = Layer.mergeAll(DbLive, UserStoreLive, WorkOsMirrorLive, MemberDirectoryLive);
 
 // Boot-scoped layer. Built once at worker boot, reused across requests.
 // Safe for config, in-memory caches, the global tracer provider, and
@@ -57,7 +67,7 @@ export const BootSharedServices = Layer.mergeAll(
 // handler reads it for the free-organizations-per-user limit gate — one of the
 // few app-only billing touchpoints. (It is NOT on the neutral boot core.)
 export const makeNonProtectedApiLive = (
-  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
 ) =>
   HttpApiBuilder.layer(NonProtectedApi).pipe(
     Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
