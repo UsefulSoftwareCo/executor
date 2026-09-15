@@ -134,7 +134,7 @@ ${pricingLines.join("\n\n")}
 
 ## What people say
 
-Public posts about Executor on X. Each line links to the original.
+Mostly that they stopped copying API keys into five different agents.
 
 ${testimonials.map((t) => `- ${t.name} (@${t.handle}): "${t.text}" https://x.com/${t.handle}/status/${t.id}`).join("\n")}
 
