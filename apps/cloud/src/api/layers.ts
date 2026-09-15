@@ -6,6 +6,7 @@ import { makeProtectedApiLayer, requestScopedMiddleware } from "@executor-js/api
 
 import { SessionAuthLive } from "../auth/middleware-live";
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
   CloudSessionAuthHandlers,
@@ -25,12 +26,13 @@ import { CoreSharedServices } from "../auth/workos";
 
 const DbLive = DbService.Live;
 const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
+const WorkOsMirrorLive = WorkOsMirror.Live.pipe(Layer.provide(DbLive));
 
 // Per-request layer. Anything that opens an I/O object (postgres.js socket,
 // fetch stream readers, anything backed by a `Writable`) MUST live here —
 // `provideRequestScoped` rebuilds it per request so Cloudflare Workers'
 // I/O isolation is satisfied. See `api.request-scope.test.ts`.
-export const RequestScopedServicesLive = Layer.mergeAll(DbLive, UserStoreLive);
+export const RequestScopedServicesLive = Layer.mergeAll(DbLive, UserStoreLive, WorkOsMirrorLive);
 
 // Boot-scoped layer. Built once at worker boot, reused across requests.
 // Safe for config, in-memory caches, the global tracer provider, and

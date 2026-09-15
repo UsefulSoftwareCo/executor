@@ -127,6 +127,13 @@
       "when": 1788287088210,
       "tag": "0017_lush_thunderbolts",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789436177557,
+      "tag": "0018_member_directory_mirror",
+      "breakpoints": true
     }
   ]
 }
