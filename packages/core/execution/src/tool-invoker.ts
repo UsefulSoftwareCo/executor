@@ -672,7 +672,7 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
 
 /** What `tools.search()` calls inside the sandbox. */
 export const searchTools = Effect.fn("executor.tools.search")(function* (
-  executor: Executor,
+  executor: { readonly tools: Pick<Executor["tools"], "list"> },
   query: string,
   limit = 12,
   options?: { readonly namespace?: string; readonly offset?: number },

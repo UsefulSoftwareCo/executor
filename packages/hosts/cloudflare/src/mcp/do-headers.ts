@@ -133,5 +133,7 @@ export {
   readArtifactsEnabled,
   readElicitationMode,
   readSearchToolsEnabled,
+  readToolMode,
   type McpElicitationMode,
+  type McpToolMode,
 } from "@executor-js/host-mcp/browser-approval";

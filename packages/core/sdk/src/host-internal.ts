@@ -58,3 +58,6 @@ export {
   type ExecutorFumaDb,
   type ExecutorFumaSchema,
 } from "./executor-fuma-db";
+
+// Reuse the SDK schema serializer at MCP boundaries.
+export { reattachDefs } from "./schema-refs";

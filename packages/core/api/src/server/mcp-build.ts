@@ -71,6 +71,7 @@ export const makeMcpBuildServer =
           engine,
           artifacts: executor.artifacts,
           connections: executor.connections,
+          tools: executor.tools,
           ...(hostOptions?.loadAppShellHtml
             ? { loadAppShellHtml: hostOptions.loadAppShellHtml }
             : {}),
@@ -88,6 +89,8 @@ export const makeMcpBuildServer =
           ...(options ?? {}),
         }).pipe(
           Effect.withSpan("mcp.server.create"),
+          // Catalog failures use the same retryable build envelope.
+          Effect.mapError((cause) => new McpEngineBuildError({ cause })),
           Effect.map((mcpServer) => ({ mcpServer, engine, executor })),
         ),
       ),

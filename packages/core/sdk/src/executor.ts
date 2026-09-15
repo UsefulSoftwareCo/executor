@@ -6246,6 +6246,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             address,
             args,
             request,
+            source: "tool",
           });
           if (response.action !== "accept") {
             return yield* new ElicitationDeclinedError({
@@ -6287,7 +6288,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           message: `${message}\n\nArguments:\n${approvalArgumentPreview(args)}`,
           requestedSchema: { type: "object", properties: {} },
         });
-        const response = yield* handler({ address, args, request });
+        const response = yield* handler({ address, args, request, source: "policy" });
         if (response.action !== "accept") {
           return yield* new ElicitationDeclinedError({
             address,

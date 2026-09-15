@@ -21,6 +21,7 @@ import {
   readArtifactsEnabled,
   readElicitationMode,
   readSearchToolsEnabled,
+  readToolMode,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -246,6 +247,7 @@ export const createMcpRequestHandler = (
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
             searchToolsEnabled: readSearchToolsEnabled(request),
+            mode: readToolMode(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {
