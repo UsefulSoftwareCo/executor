@@ -149,14 +149,14 @@ const recordHandshakeOrdering = async (page: Page): Promise<void> => {
 const readHandshakeOrdering = (page: Page): Promise<ReadonlyArray<string>> =>
   page.evaluate(() => globalThis.__handshakeOrder ?? []);
 
-const readConsoleStyle = (page: Page): Promise<{ primary: string; buttonBg: string }> =>
-  page.evaluate(() => {
-    const button = document.querySelector("button");
-    return {
-      primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
-      buttonBg: button ? getComputedStyle(button).backgroundColor : "",
-    };
-  });
+const readConsoleStyle = async (page: Page): Promise<{ primary: string; buttonBg: string }> => {
+  const button = page.getByRole("button", { name: "Rename", exact: true });
+  await button.waitFor();
+  return button.evaluate((element) => ({
+    primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
+    buttonBg: getComputedStyle(element).backgroundColor,
+  }));
+};
 
 // The shell's compiled stylesheet declares `--mcp-apps-shell-stylesheet: 1`
 // on `:root` as a provenance marker (see the shell's globals.css): the shell's
@@ -193,6 +193,7 @@ scenario(
     const title = `Release Readiness ${suffix}`;
     const marker = `artifact-ok-${suffix}`;
     const pullRequestUrl = new URL("/policies?from=artifact-link", target.baseUrl).toString();
+    const source = artifactSource(marker, pullRequestUrl).trim();
 
     // Tracked so cleanup runs even when an assertion below fails.
     let artifactId: ArtifactId | undefined;
@@ -221,7 +222,7 @@ scenario(
       );
 
       const rendered = yield* session.call("create-artifact", {
-        code: artifactSource(marker, pullRequestUrl),
+        code: source,
         title,
         description: "Whether the current release is ready to ship",
       });
@@ -571,6 +572,10 @@ scenario(
         String(structuredOf(shown).url ?? shown.text),
         "show-artifact delivers the same deep link for a non-Apps client",
       ).toContain(String(artifactId));
+      expect(
+        shown.text,
+        "show-artifact includes the current source in its text result for a non-Apps client",
+      ).toContain(`Source:\n\`\`\`tsx\n${source}\n\`\`\``);
     }).pipe(
       Effect.ensuring(
         Effect.suspend(() =>
