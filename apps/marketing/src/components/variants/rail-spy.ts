@@ -37,6 +37,23 @@ export function initRailSpy(root: HTMLElement): void {
   }
   if (pairs.length === 0) return;
 
+  // A target that only exists inside a hidden picker wrapper is not on the
+  // page the reader sees; hide its row, and re-check when wrappers toggle.
+  const refreshRows = (): void => {
+    for (const { id, link } of pairs) {
+      const targets = document.querySelectorAll<HTMLElement>(`[id="${CSS.escape(id)}"]`);
+      const shown = Array.from(targets).some((t) => t.closest("[hidden]") == null);
+      const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
+      row.style.display = shown ? "" : "none";
+    }
+  };
+  refreshRows();
+  new MutationObserver(refreshRows).observe(document.body, {
+    attributes: true,
+    attributeFilter: ["hidden"],
+    subtree: true,
+  });
+
   const order = pairs.map((p) => p.id);
   const visible = new Set<string>();
 

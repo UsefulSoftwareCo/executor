@@ -17,6 +17,7 @@ import AgentsFooter from "../components/variants/agents-footer.astro";
 import RailA from "../components/variants/rail-a.astro";
 import RailB from "../components/variants/rail-b.astro";
 import RailC from "../components/variants/rail-c.astro";
+import DocBody from "../components/variants/doc-body.astro";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 // Cloud sign-in. Same origin in prod: the cloud Worker owns executor.sh and
@@ -119,6 +120,8 @@ const stars = await getStars();
       </div>
       <div class="page__body">
 
+      <div data-uidotsh-pick="Content" class="contents">
+        <div data-uidotsh-option="Landing page (current)" class="contents" hidden>
       {/* ─── HERO ─── */}
       <section class="relative">
         <div class="hero-glow" aria-hidden="true"></div>
@@ -850,6 +853,12 @@ const stars = await getStars();
           </p>
         </div>
       </section>
+
+        </div>
+        <div data-uidotsh-option="Document" class="contents">
+          <DocBody gh={GH} />
+        </div>
+      </div>
 
       {/* ─── FOOTER ─── */}
       <footer class="border-t border-rule py-10">

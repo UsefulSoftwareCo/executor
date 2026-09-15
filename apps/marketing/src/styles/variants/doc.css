@@ -1,0 +1,188 @@
+/* Document-style homepage body. Measured prose, hairline sections. */
+.doc {
+  max-width: 720px;
+  padding: 4rem 1.5rem 6rem;
+}
+@media (min-width: 640px) {
+  .doc {
+    padding: 4.5rem 2.5rem 7rem;
+  }
+}
+@media (min-width: 1024px) {
+  .doc {
+    padding-left: 0;
+  }
+}
+
+.doc__title {
+  font-size: clamp(1.6rem, 2.6vw, 2.1rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.22;
+  color: var(--color-ink);
+  text-wrap: pretty;
+  margin-bottom: 1rem;
+}
+.doc__lede {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+  margin-bottom: 1.6rem;
+}
+.doc__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  margin-bottom: 1.1rem;
+}
+.doc__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.doc__quiet {
+  font-size: 13.5px;
+  color: var(--color-ink-3);
+}
+.doc__quiet:hover {
+  color: var(--color-ink);
+}
+.doc__works {
+  font-size: 13px;
+  color: var(--color-ink-2);
+}
+.doc__works span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-3);
+  margin-right: 0.5rem;
+}
+
+.doc__section {
+  border-top: 1px solid var(--color-rule);
+  margin-top: 3.25rem;
+  padding-top: 2.25rem;
+}
+.doc__h {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--color-ink);
+  margin-bottom: 1rem;
+}
+.doc__section > p {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+}
+.doc__section > p + p {
+  margin-top: 1rem;
+}
+.doc__section a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__section a:hover {
+  text-decoration-color: var(--color-ink);
+}
+
+.doc__fig {
+  margin-top: 1.75rem;
+}
+.doc__fig .figcap {
+  margin-top: 0.85rem;
+}
+.doc__fig--wide {
+  margin-top: 1.5rem;
+}
+/* The context demo is designed for a wide canvas; let it break out of the
+   prose measure on large screens. */
+@media (min-width: 1200px) {
+  .doc__fig--wide {
+    width: min(1040px, calc(100vw - var(--rail-w, 0px) - 6rem));
+  }
+}
+
+.doc__beats {
+  display: grid;
+  gap: 1.25rem;
+}
+.doc__beats dt {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin-bottom: 0.2rem;
+}
+.doc__beats dd {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+}
+
+.doc__ways {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0;
+}
+.doc__ways li {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--color-rule);
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+}
+.doc__ways li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__ways strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__ways a,
+.doc__ways code {
+  margin-left: 0.4rem;
+}
+.doc__ways code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  padding: 0.1rem 0.4rem;
+  color: var(--color-ink);
+}
+.doc__num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-3);
+  padding-top: 0.25rem;
+}
+
+.doc__list {
+  display: grid;
+  gap: 0;
+}
+.doc__list li {
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--color-rule);
+  font-size: 15.5px;
+}
+.doc__list li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__quiet-p {
+  margin-top: 0.75rem;
+  font-size: 14px !important;
+  color: var(--color-ink-3) !important;
+}

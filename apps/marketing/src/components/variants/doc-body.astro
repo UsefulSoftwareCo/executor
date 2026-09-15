@@ -1,0 +1,188 @@
+---
+// Document-style homepage body. Reads like a short paper about the product:
+// one modest headline, plain first-person prose, six beats separated by
+// hairlines, the two demos kept as numbered figures, and one way to start.
+// Sits inside the rail layout; the rail's "On this page" list points at the
+// section ids below.
+import { AnimatedBeamDemo } from "../animated-beam-demo";
+import { ContextBloatDemo } from "../context-bloat-demo";
+import { setupPrompt } from "../../content/site-copy";
+import "../../styles/variants/doc.css";
+
+interface Props {
+  gh: string;
+}
+const { gh } = Astro.props;
+---
+
+<article class="doc">
+  {/* ── Intro ── */}
+  <header class="doc__intro">
+    <h1 class="doc__title">
+      Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
+    </h1>
+    <p class="doc__lede">
+      Claude Code, Cursor, Codex, or anything else that speaks MCP. Any tool from any
+      protocol. One place to add it, authenticate it, and decide what it is allowed to do.
+    </p>
+    <div class="doc__actions">
+      <a href="/cloud" class="btn-primary">Start on Cloud</a>
+      <button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+        <span>Copy setup prompt for your agent</span>
+        <span class="copy-icons" aria-hidden="true">
+          <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+          <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+        </span>
+      </button>
+      <a href={gh} class="doc__quiet">Source on GitHub ↗</a>
+    </div>
+    <p class="doc__works">
+      <span>Works with</span> Claude Code, Cursor, Codex, ChatGPT, and any MCP client.
+    </p>
+  </header>
+
+  {/* ── 01 Mission ── */}
+  <section id="mission" class="doc__section">
+    <h2 class="doc__h">What we think</h2>
+    <p>
+      Every agent client re-implements every integration. The same API gets wired up again
+      for each new tool, with its own auth and its own failure modes. Credentials end up
+      pasted in five places, and nothing shares an idea of what a tool is allowed to do.
+    </p>
+    <p>
+      We think tools should belong to you, not to one client or one model provider. So
+      Executor gives every tool one shape: a name, an input schema, an output schema. An
+      MCP server, an OpenAPI spec, and a GraphQL API all end up the same, and any agent
+      calls any of them the same way.
+    </p>
+    <p>
+      We also think the safe path has to be the easy path. Executor keeps the semantics it
+      imported, so a GET and a DELETE are not the same thing, and it runs every call in a
+      sandbox where a raw token never reaches the model.
+    </p>
+    <figure class="doc__fig">
+      <div class="surface-card p-6 sm:p-7">
+        <AnimatedBeamDemo client:load variant="stripe" />
+      </div>
+      <figcaption class="figcap">
+        <span class="figcap__n">Figure 1.</span> Three clients reach six tools through one
+        MCP endpoint. Each tool keeps the protocol it came from.
+      </figcaption>
+    </figure>
+  </section>
+
+  {/* ── 02 Context ── */}
+  <section id="context" class="doc__section">
+    <h2 class="doc__h">Thousands of tools, one in the prompt</h2>
+    <p>
+      Executor shows the model a single tool. It searches your catalog and loads a tool's
+      schema only when the code calls it, so connecting more services does not grow the
+      prompt. Toggle the services below to see the difference.
+    </p>
+    <figure class="doc__fig doc__fig--wide">
+      <ContextBloatDemo client:load />
+      <figcaption class="figcap">
+        <span class="figcap__n">Figure 2.</span> Prompt size with your selection of
+        integrations connected, with and without Executor.
+      </figcaption>
+    </figure>
+  </section>
+
+  {/* ── 03 Safety ── */}
+  <section id="safety" class="doc__section">
+    <h2 class="doc__h">Safe by default</h2>
+    <dl class="doc__beats">
+      <div>
+        <dt>Policies come from the source.</dt>
+        <dd>
+          GET versus DELETE for OpenAPI, destructiveHint for MCP, mutations for GraphQL.
+          Agents run the safe calls on their own and ask before the rest. You can override
+          any tool.
+        </dd>
+      </div>
+      <div>
+        <dt>Secrets never reach the model.</dt>
+        <dd>
+          Calls run in an isolated JavaScript sandbox. Credentials are attached host-side
+          at call time and never enter the sandbox, the agent, or the model's context.
+        </dd>
+      </div>
+      <div>
+        <dt>Set up once, whole team has it.</dt>
+        <dd>
+          Per-user credentials and shared ones. New teammates get the catalog on day one,
+          with the same policies.
+        </dd>
+      </div>
+    </dl>
+  </section>
+
+  {/* ── 04 Run it ── */}
+  <section id="install" class="doc__section">
+    <h2 class="doc__h">Run it where you want</h2>
+    <p>
+      Executor is MIT licensed. All forms expose the same tools, packaged differently.
+    </p>
+    <ol class="doc__ways">
+      <li>
+        <span class="doc__num">01</span>
+        <div>
+          <strong>Cloud.</strong> Hosted, free to start, nothing to install.
+          <a href="/cloud">executor.sh/cloud ↗</a>
+        </div>
+      </li>
+      <li>
+        <span class="doc__num">02</span>
+        <div>
+          <strong>Desktop.</strong> A native app for Mac, Windows, and Linux. Everything
+          stays on your machine.
+          <a href={`${gh}/releases/latest`}>Latest release ↗</a>
+        </div>
+      </li>
+      <li>
+        <span class="doc__num">03</span>
+        <div>
+          <strong>CLI.</strong> A background service for headless and server environments.
+          <code>npm i -g executor</code>
+        </div>
+      </li>
+      <li>
+        <span class="doc__num">04</span>
+        <div>
+          <strong>Self-hosted.</strong> A Docker image or a Cloudflare Worker.
+          <a href="https://executor.sh/docs/hosted/docker">Docs ↗</a>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  {/* ── 05 Pricing ── */}
+  <section id="pricing" class="doc__section">
+    <h2 class="doc__h">Pricing</h2>
+    <p>Cloud is free for up to three members and 100,000 executions a month. Team is $15 per member per month with unlimited executions. Enterprise adds self-hosted support, SSO and SCIM, and audit logs.</p>
+    <p class="doc__quiet-p"><a href="/pricing">Full pricing ↗</a> · <a href="mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry">Talk to us</a></p>
+  </section>
+
+  {/* ── 06 Writing ── */}
+  <section id="writing" class="doc__section">
+    <h2 class="doc__h">Writing</h2>
+    <ul class="doc__list">
+      <li><a href="/blog/why-mcp-had-growing-pains">Why MCP had growing pains ↗</a></li>
+      <li><a href="/blog">All posts ↗</a></li>
+    </ul>
+  </section>
+
+  {/* ── 07 About ── */}
+  <section id="about" class="doc__section">
+    <h2 class="doc__h">About</h2>
+    <p>
+      We are a small team backed by Y Combinator. We built Executor because we wanted our
+      own agents to reach our company's resources in a way that was not scary. Most setups
+      make you choose between locked down and useless, or wide open and risky. We wanted a
+      third option.
+    </p>
+    <p class="doc__quiet-p">
+      <a href="/about-executor">More about Executor ↗</a> · <a href="https://discord.gg/eF29HBHwM6">Discord ↗</a>
+    </p>
+  </section>
+</article>
