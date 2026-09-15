@@ -1,14 +1,21 @@
-// Scroll-spy for the sidebar rail variants.
+// Scroll-spy for the sidebar rail.
 //
-// Each rail renders a `.rail__toc` whose links point at the page's section
-// anchors. This marks the link for the section currently in the reading band
-// with `aria-current="true"`, and mirrors the id onto the aside as
+// The rail renders a `.rail__toc` whose links point at the page's section
+// anchors. This marks the link for the section the reader is in with
+// `aria-current="true"`, and mirrors the id onto the aside as
 // `data-active-section` so CSS can react without extra classes.
+//
+// "The section the reader is in" is the last section whose top has crossed a
+// line a little below the top of the viewport. An anchor jump lands a section
+// exactly on that line, so a clicked link is always the one that lights up,
+// even for short sections near the end of the page. At the very bottom of the
+// page the final section wins, since the reader cannot scroll any further.
 //
 // Tolerates missing sections and stays idempotent if the initializer runs
 // again on the same element.
 
 const BOUND = "railSpyBound";
+const LINE_PX = 120;
 
 export function initRailSpy(root: HTMLElement): void {
   if (root.dataset[BOUND] === "1") return;
@@ -17,10 +24,7 @@ export function initRailSpy(root: HTMLElement): void {
   const links = Array.from(root.querySelectorAll<HTMLAnchorElement>(".rail__toc a[href^='#']"));
   if (links.length === 0) return;
 
-  // Pair each link with its section. A link whose target is absent (for
-  // example #proof when no proof variant is picked) is hidden, not left
-  // pointing at nothing.
-  const pairs: Array<{ id: string; link: HTMLAnchorElement }> = [];
+  const pairs: Array<{ section: HTMLElement; link: HTMLAnchorElement }> = [];
   for (const link of links) {
     const id = decodeURIComponent(link.getAttribute("href")!.slice(1));
     const section = id ? document.getElementById(id) : null;
@@ -29,71 +33,48 @@ export function initRailSpy(root: HTMLElement): void {
       row.style.display = "none";
       continue;
     }
-    pairs.push({ id, link });
+    pairs.push({ section, link });
   }
   if (pairs.length === 0) return;
 
-  const order = pairs.map((p) => p.id);
-  const visible = new Set<string>();
-
-  // After a click, hold the clicked section active until the scroll settles.
-  // Short sections near the end of the page never fill the reading band, so
-  // without this the observer would hand the highlight to the next section.
-  let pinned: string | null = null;
-  let pinTimer: number | undefined;
-  for (const { id, link } of pairs) {
-    link.addEventListener("click", () => {
-      pinned = id;
-      window.clearTimeout(pinTimer);
-      apply();
-      const release = () => {
-        window.clearTimeout(pinTimer);
-        pinTimer = window.setTimeout(() => {
-          pinned = null;
-          window.removeEventListener("scroll", release);
-          apply();
-        }, 150);
-      };
-      window.addEventListener("scroll", release, { passive: true });
-      release();
-    });
-  }
-
   const apply = (): void => {
-    // Topmost visible section wins, so the rail never flickers between two
-    // sections that overlap the reading band.
-    let activeId: string | null = pinned;
-    for (const id of order) {
-      if (activeId != null) break;
-      if (visible.has(id)) {
-        activeId = id;
-        break;
+    const line = window.scrollY + LINE_PX;
+    const atBottom =
+      window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+
+    let active: HTMLElement | null = null;
+    if (atBottom) {
+      active = pairs[pairs.length - 1]!.section;
+    } else {
+      for (const { section } of pairs) {
+        if (section.offsetTop <= line) active = section;
+        else break;
       }
     }
-    if (activeId == null) {
+
+    if (active == null) {
       delete root.dataset.activeSection;
     } else {
-      root.dataset.activeSection = activeId;
+      root.dataset.activeSection = active.id;
     }
-    for (const { id, link } of pairs) {
-      if (id === activeId) link.setAttribute("aria-current", "true");
+    for (const { section, link } of pairs) {
+      if (section === active) link.setAttribute("aria-current", "true");
       else link.removeAttribute("aria-current");
     }
   };
 
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) visible.add(entry.target.id);
-        else visible.delete(entry.target.id);
-      }
+  let scheduled = false;
+  const schedule = (): void => {
+    if (scheduled) return;
+    scheduled = true;
+    window.requestAnimationFrame(() => {
+      scheduled = false;
       apply();
-    },
-    { rootMargin: "-40% 0px -55% 0px", threshold: 0 },
-  );
+    });
+  };
 
-  for (const { id } of pairs) {
-    const section = document.getElementById(id);
-    if (section != null) observer.observe(section);
-  }
+  window.addEventListener("scroll", schedule, { passive: true });
+  window.addEventListener("resize", schedule);
+  window.addEventListener("hashchange", schedule);
+  apply();
 }
