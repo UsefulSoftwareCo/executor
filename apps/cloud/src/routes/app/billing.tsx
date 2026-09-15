@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
+import { Effect, Exit } from "effect";
 import { toast } from "sonner";
 import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
@@ -276,12 +277,17 @@ function BillingPage() {
             // after the redirect). Either call redirects the page on success;
             // on failure the button must come back rather than sit on
             // "Loading…" forever.
-            const open = card
-              ? openCustomerPortal({ returnUrl: returnTo("managed") })
-              : setupPayment({ successUrl: returnTo("added") });
-            await open
-              .catch(() => toast.error("Could not open the payment form. Try again."))
-              .finally(() => setOpeningCardForm(false));
+            const exit = await Effect.runPromiseExit(
+              Effect.tryPromise(() =>
+                card
+                  ? openCustomerPortal({ returnUrl: returnTo("managed") })
+                  : setupPayment({ successUrl: returnTo("added") }),
+              ),
+            );
+            if (Exit.isFailure(exit)) {
+              toast.error("Could not open the payment form. Try again.");
+            }
+            setOpeningCardForm(false);
           }}
           className="text-xs"
         >
