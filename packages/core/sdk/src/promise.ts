@@ -62,6 +62,7 @@ export {
   type ElicitationRequest,
   type ElicitationContext,
   type ElicitationHandler,
+  type InvocationProgress,
 } from "./elicitation";
 
 // File-config helper for the CLI. Plain typed-object factory with no

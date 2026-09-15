@@ -233,6 +233,7 @@ export {
   type ElicitationContext,
   type OnElicitation,
   type InvokeOptions,
+  type InvocationProgress,
 } from "./elicitation";
 
 // Blob store — the plugin-facing contract (`BlobStore`/`PluginBlobStore`)

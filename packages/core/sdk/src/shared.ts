@@ -85,6 +85,7 @@ export {
   type ElicitationHandler,
   type OnElicitation,
   type InvokeOptions,
+  type InvocationProgress,
 } from "./elicitation";
 
 // Tool-policy helpers + projections (pure functions / Schema).
