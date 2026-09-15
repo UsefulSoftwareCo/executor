@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCustomer, useListPlans } from "autumn-js/react";
+import { toast } from "sonner";
 import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 import { Badge } from "@executor-js/react/components/badge";
@@ -266,19 +267,21 @@ function BillingPage() {
             setOpeningCardForm(true);
             const returnTo = (marker: CardReturn) =>
               `${window.location.origin}${window.location.pathname}?${CARD_RETURN_PARAM}=${marker}`;
-            if (card) {
-              // A setup session never REPLACES an existing default card at the
-              // provider (it only sets one when none is on file), so changing
-              // the card goes through the billing portal, where the user adds
-              // a card and makes it the default.
-              await openCustomerPortal({ returnUrl: returnTo("managed") });
-            } else {
-              // No card yet: the hosted card form sets it as the default. Tag
-              // the return URL so the page waits for the card when the form
-              // redirects back (the webhook lands moments after the redirect).
-              await setupPayment({ successUrl: returnTo("added") });
-            }
-            setOpeningCardForm(false);
+            // A setup session never REPLACES an existing default card at the
+            // provider (it only sets one when none is on file), so changing
+            // the card goes through the billing portal, where the user adds a
+            // card and makes it the default. With no card yet, the hosted card
+            // form sets it; its return URL is tagged so the page waits for the
+            // card when the form redirects back (the webhook lands moments
+            // after the redirect). Either call redirects the page on success;
+            // on failure the button must come back rather than sit on
+            // "Loading…" forever.
+            const open = card
+              ? openCustomerPortal({ returnUrl: returnTo("managed") })
+              : setupPayment({ successUrl: returnTo("added") });
+            await open
+              .catch(() => toast.error("Could not open the payment form. Try again."))
+              .finally(() => setOpeningCardForm(false));
           }}
           className="text-xs"
         >
