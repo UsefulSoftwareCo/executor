@@ -8,6 +8,10 @@ import { AnimatedBeamDemo } from "../animated-beam-demo";
 import { ContextBloatDemo } from "../context-bloat-demo";
 import { setupPrompt } from "../../content/site-copy";
 import "../../styles/variants/doc.css";
+// Avatar goes through Vite so it ships as a hashed asset; new /public files
+// are not picked up by the deploy pipeline.
+import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+const X_URL = "https://x.com/RhysSullivan";
 
 interface Props {
   gh: string;
@@ -20,7 +24,16 @@ const { gh } = Astro.props;
   <div data-uidotsh-pick="Hero" class="contents">
     <div data-uidotsh-option="Two buttons (current)" class="contents" hidden>
   <header class="doc__intro">
-    <h1 class="doc__title">
+    <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
+      <h1 class="doc__title">
       Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
     </h1>
     <p class="doc__lede">
@@ -45,6 +58,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="A: Three paths" class="contents">
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -84,6 +106,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="B: Spec sheet" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -112,6 +143,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="C: Tabs" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -155,6 +195,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="D: In the sentence" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -181,6 +230,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="E: Terminal block" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -208,6 +266,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="F: Numbered rows" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -246,6 +313,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="G: In the headline" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Hosted, on your machine, or on your own infrastructure.
       </h1>
@@ -274,6 +350,15 @@ const { gh } = Astro.props;
     </div>
     <div data-uidotsh-option="H: Icon row" class="contents" hidden>
     <header class="doc__intro">
+      <div data-uidotsh-pick="Byline" class="contents">
+        <div data-uidotsh-option="Above headline" class="contents"><a href={X_URL} class="doc__byline" rel="me noopener" target="_blank">
+        <img src={rhysAvatar.src} alt="" width="24" height="24" />
+        <span>Built by <strong>Rhys Sullivan</strong></span>
+        <span class="doc__byline-x">@RhysSullivan ↗</span>
+      </a>
+      </div>
+        <div data-uidotsh-option="In About only" class="contents" hidden></div>
+      </div>
       <h1 class="doc__title">
         Executor is an MCP gateway. Your agent points at one endpoint and reaches every tool you connect.
       </h1>
@@ -454,6 +539,13 @@ const { gh } = Astro.props;
       make you choose between locked down and useless, or wide open and risky. We wanted a
       third option.
     </p>
+    <a href={X_URL} class="doc__sig" rel="me noopener" target="_blank">
+      <img src={rhysAvatar.src} alt="" width="40" height="40" />
+      <span class="doc__sig-b">
+        <strong>Rhys Sullivan</strong>
+        <span>Founder. Say hi on X, @RhysSullivan ↗</span>
+      </span>
+    </a>
     <p class="doc__quiet-p">
       <a href="/about-executor">More about Executor ↗</a> · <a href="https://discord.gg/eF29HBHwM6">Discord ↗</a>
     </p>

@@ -485,3 +485,62 @@ a.doc__term-v:hover {
   font-size: 11px;
   color: var(--color-ink-3);
 }
+
+/* ── Byline ── */
+.doc__byline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 1.1rem;
+  font-size: 13.5px;
+  color: var(--color-ink-2);
+  text-decoration: none;
+}
+.doc__byline img {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+}
+.doc__byline strong {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.doc__byline-x {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-3);
+}
+.doc__byline:hover .doc__byline-x {
+  color: var(--color-ink);
+}
+
+.doc__sig {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 1.25rem;
+  text-decoration: none !important;
+}
+.doc__sig img {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+}
+.doc__sig-b {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 14px;
+}
+.doc__sig-b strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__sig-b span {
+  color: var(--color-ink-3);
+}
+.doc__sig:hover .doc__sig-b span {
+  color: var(--color-ink);
+}
