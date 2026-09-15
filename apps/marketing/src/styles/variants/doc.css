@@ -339,3 +339,8 @@
   padding: 0.55rem 0.75rem;
   color: var(--color-ink);
 }
+
+.doc__fig--hero {
+  margin-top: 2rem;
+  max-width: 720px;
+}

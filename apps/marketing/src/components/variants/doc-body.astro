@@ -155,6 +155,16 @@ const { gh } = Astro.props;
     </div>
   </div>
 
+    <figure class="doc__fig doc__fig--hero">
+      <div class="surface-card p-6 sm:p-7">
+        <AnimatedBeamDemo client:load variant="stripe" />
+      </div>
+      <figcaption class="figcap">
+        <span class="figcap__n">Figure 1.</span> Three clients reach six tools through one
+        MCP endpoint. Each tool keeps the protocol it came from.
+      </figcaption>
+    </figure>
+
   {/* ── 01 Mission ── */}
   <section id="mission" class="doc__section">
     <h2 class="doc__h">What we think</h2>
@@ -174,15 +184,6 @@ const { gh } = Astro.props;
       imported, so a GET and a DELETE are not the same thing, and it runs every call in a
       sandbox where a raw token never reaches the model.
     </p>
-    <figure class="doc__fig">
-      <div class="surface-card p-6 sm:p-7">
-        <AnimatedBeamDemo client:load variant="stripe" />
-      </div>
-      <figcaption class="figcap">
-        <span class="figcap__n">Figure 1.</span> Three clients reach six tools through one
-        MCP endpoint. Each tool keeps the protocol it came from.
-      </figcaption>
-    </figure>
   </section>
 
   {/* ── 02 Context ── */}
