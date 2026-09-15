@@ -41,7 +41,12 @@ export type ExecutorWrites =
   /** The default: writes are allowed, bounded by `assertOwnerWritable`. */
   | "allowed"
   /** Every create/update/delete is rejected outright, at every reach. */
-  | "denied";
+  | "denied"
+  /** Deletes only, at the context's reach; creates and updates are rejected.
+   *  The one sanctioned tenant-wide mutation: a catalog removal cascading to
+   *  every subject's rows under the removed integration. Built only inside
+   *  that cascade and never handed to a plugin or a request surface. */
+  | "delete-only";
 
 export interface ExecutorOwnerPolicyContext {
   readonly tenant: string;
@@ -131,6 +136,12 @@ export const ownerVisibilityCondition = (
  * Every write path calls this first and fails loudly — a write arriving on a
  * read-only handle is a programmer error, not something to quietly demote to
  * bound behavior.
+ *
+ * The single exception is `writes: "delete-only"`: a tenant-reach context that
+ * may DELETE (and only delete) across every subject. It exists for the
+ * integration-removal cascade, which must drop every member's connections and
+ * tools under the removed slug — a bound admin can only reach its own rows,
+ * and the leftovers would otherwise survive as orphans that agents still see.
  */
 export const assertReachReadOnly = (
   tableName: string,
@@ -138,6 +149,12 @@ export const assertReachReadOnly = (
   context: ExecutorOwnerPolicyContext | undefined,
 ): void => {
   if (context === undefined) return;
+  if (context.writes === "delete-only") {
+    if (access === "delete") return;
+    policyViolation(
+      `Storage ${access} on table "${tableName}" is not allowed: this context may only delete.`,
+    );
+  }
   if (context.reach !== "tenant" && context.writes !== "denied") return;
   policyViolation(
     `Storage ${access} on table "${tableName}" is not allowed: the platform view is read-only.`,

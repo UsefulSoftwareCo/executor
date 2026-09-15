@@ -96,6 +96,7 @@ export const CloudHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig, (
   // the e2e dev-server env opts in with `"true"` so in-scenario fixture
   // servers on localhost are reachable. See `hosted-http-client.ts`.
   allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
+  requireTls: true,
   webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
   oauthCallbackPath: `${CLOUD_MOUNT_PREFIX}/oauth/callback`,
   // WorkOS Vault is cloud's credential storage implementation detail, not a

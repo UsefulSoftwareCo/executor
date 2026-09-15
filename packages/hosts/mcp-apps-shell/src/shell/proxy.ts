@@ -33,12 +33,16 @@ export type RequestTrustedInteraction = (
   interaction: TrustedInteraction,
 ) => Promise<TrustedInteractionResponse>;
 
-const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$]*$/;
+const TOOL_PATH_IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+const TOOL_PATH_SEGMENT = /^[A-Za-z_$][\w$-]*$/;
+
+const formatToolPathSegment = (segment: string): string =>
+  TOOL_PATH_IDENTIFIER.test(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
 
 /**
  * The ONE grammar the shell ever puts on the `execute-action` wire:
  *
- *     return await tools.<ident>("<role>")?(.<ident>)*(<JSON>)
+ *     return await tools<segment>("<role>")?<segment>*(<JSON>)
  *
  * A single proxy-shaped tool call, nothing else — no statements, no loops, no
  * composition. The server parses `execute-action` against exactly this shape
@@ -71,10 +75,12 @@ export function toolCallCode(
   if (role !== undefined && (typeof role !== "string" || role.length === 0)) {
     throw new Error("Invalid tool role.");
   }
-  const [head, ...rest] = parts;
+  const head = parts[0];
+  if (head === undefined) throw new Error("Invalid tool path.");
+  const rest = parts.slice(1);
   const tag = role === undefined ? "" : `(${JSON.stringify(role)})`;
-  const trailer = rest.length > 0 ? `.${rest.join(".")}` : "";
-  return `return await tools.${head}${tag}${trailer}(${JSON.stringify(args[0] ?? {})})`;
+  const target = `${formatToolPathSegment(head)}${tag}${rest.map(formatToolPathSegment).join("")}`;
+  return `return await tools${target}(${JSON.stringify(args[0] ?? {})})`;
 }
 
 /**

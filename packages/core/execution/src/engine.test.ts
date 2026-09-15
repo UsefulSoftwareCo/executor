@@ -279,6 +279,34 @@ describe("formatPausedExecution approval terms", () => {
     });
   });
 
+  it("says how to answer when the terms leave the approval's lifetime to the caller", () => {
+    // Computer Use's app approval: a bare accept is one-time and the same
+    // prompt returns on the next call, so the caller has to be told the
+    // scopes on offer and how to pick one.
+    const result = formatPausedExecution(
+      paused(
+        FormElicitation.make({
+          message: 'Allow Computer Use to use "Finder"?',
+          requestedSchema: {},
+          meta: { persist: ["session", "always"], connector_name: "Computer Use" },
+        }),
+      ),
+    );
+
+    const interaction = result.structured["interaction"] as {
+      readonly meta?: unknown;
+      readonly instructions: string;
+    };
+    expect(interaction.meta).toEqual({
+      persist: ["session", "always"],
+      connector_name: "Computer Use",
+    });
+    expect(interaction.instructions).toContain(
+      'pass persist as one of "session", "always"; without it the approval is for this call only',
+    );
+    expect(result.text).toContain(interaction.instructions);
+  });
+
   it("says nothing about terms when the upstream attached none", () => {
     const result = formatPausedExecution(
       paused(FormElicitation.make({ message: "Proceed?", requestedSchema: {} })),
@@ -307,6 +335,35 @@ describe("formatExecuteResult output identity", () => {
     });
     expect(formatted.structured["result"]).toBe(value);
     expect(formatted.isError).toBe(false);
+  });
+
+  it("returns the sole distinct connected tool name without exposing the call trace", () => {
+    const result = {
+      result: { issues: [] },
+      logs: [],
+      toolPaths: ["linear.org.work.issues.list", "linear.org.work.issues.list"],
+    } as ExecuteResult & { readonly toolPaths: readonly string[] };
+
+    const formatted = formatExecuteResult(result);
+
+    expect(formatted.structured).toEqual({
+      status: "completed",
+      result: { issues: [] },
+      toolName: "linear.org.work.issues.list",
+      logs: [],
+    });
+  });
+
+  it("omits a tool name when distinct connected tools were used", () => {
+    const result = {
+      result: { issues: [], projects: [] },
+      logs: [],
+      toolPaths: ["linear.org.work.issues.list", "linear.org.work.projects.list"],
+    } as ExecuteResult & { readonly toolPaths: readonly string[] };
+
+    const formatted = formatExecuteResult(result);
+
+    expect(formatted.structured).not.toHaveProperty("toolName");
   });
 
   it("truncates a long preview with the exact suffix and untouched structured value", () => {

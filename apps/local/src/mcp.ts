@@ -15,12 +15,13 @@ import {
   type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
 import {
-  approvalUrlForRequest,
+  buildResumeApprovalUrl,
   decodeResumeResponse,
   formatResumeAcknowledgement,
   readArtifactsEnabled,
   readElicitationMode,
   readSearchToolsEnabled,
+  readToolMode,
 } from "@executor-js/host-mcp/browser-approval";
 import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
 import {
@@ -56,6 +57,14 @@ export interface LocalMcpRequestHandlerConfig {
   readonly createConfigForResource?: (
     resource: McpResource,
   ) => Promise<LocalMcpServerConfig> | LocalMcpServerConfig;
+  /**
+   * Pinned public origin for browser-approval URLs. When set (for example
+   * `EXECUTOR_WEB_BASE_URL` behind a TLS proxy) it is preferred over the
+   * request URL, whose scheme is the internal HTTP listener. Omit it on
+   * loopback so the request origin stays the approval link. Port 0 (an
+   * ephemeral bind placeholder) is treated as unset.
+   */
+  readonly webBaseUrl?: string;
 }
 
 // Local serves these error bodies in-process; like the self-host store they are
@@ -121,6 +130,14 @@ const engineFromConfig = (config: ExecutorMcpServerConfig): AnyExecutionEngine |
 const normalizeHandlerConfig = (
   input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
 ): LocalMcpRequestHandlerConfig => ("defaultConfig" in input ? input : { defaultConfig: input });
+
+// `--port 0` (e2e, some CLI boots) installs EXECUTOR_WEB_BASE_URL with port 0
+// before the OS assigns a listen port. That origin is not browser-reachable
+// (Chrome ERR_UNSAFE_PORT), so approval URLs fall back to the request.
+const resumeApprovalOrigin = (configured: string | undefined, requestUrl: string): string => {
+  if (configured === undefined || configured.length === 0) return requestUrl;
+  return new URL(configured).port === "0" ? requestUrl : configured;
+};
 
 export const createMcpRequestHandler = (
   input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
@@ -230,12 +247,17 @@ export const createMcpRequestHandler = (
             browserApprovalStore: approvals.store,
             artifactsEnabled: readArtifactsEnabled(request),
             searchToolsEnabled: readSearchToolsEnabled(request),
+            mode: readToolMode(request),
             elicitationMode:
               elicitationMode === "browser"
                 ? {
                     mode: "browser" as const,
                     approvalUrl: (executionId) =>
-                      approvalUrlForRequest(request, executionId, createdSessionId),
+                      buildResumeApprovalUrl({
+                        origin: resumeApprovalOrigin(handlerConfig.webBaseUrl, request.url),
+                        executionId,
+                        sessionId: createdSessionId,
+                      }),
                   }
                 : { mode: elicitationMode },
           }),

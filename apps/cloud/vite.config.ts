@@ -82,6 +82,8 @@ export default defineConfig(({ command, mode }) => {
   // pre-bundle. The "<pkg> > <dep>" syntax resolves it starting from that
   // package's own node_modules instead.
   const lateDiscoveredDeps = [
+    // Browser telemetry loads this after the initial route dependency scan.
+    "@opentelemetry/api",
     "effect/Match",
     "effect/Predicate",
     "effect/Exit",

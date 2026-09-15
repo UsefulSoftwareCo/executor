@@ -6,10 +6,15 @@ import type {
   Executor,
   InvokeOptions,
   ElicitationResponse,
+  ElicitationResponseMeta,
   ElicitationHandler,
   ElicitationContext,
 } from "@executor-js/sdk/core";
-import { CurrentOrgWriteAccess, type OrgWriteAccessState } from "@executor-js/sdk/core";
+import {
+  CurrentOrgWriteAccess,
+  offeredPersistence,
+  type OrgWriteAccessState,
+} from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
 import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
@@ -58,6 +63,9 @@ type InternalPausedExecution<E> = PausedExecution & {
 export type ResumeResponse = {
   readonly action: "accept" | "decline" | "cancel";
   readonly content?: Record<string, unknown>;
+  /** The answer's terms — `persist`, when the paused request offered a
+   *  choice of scopes and the approver picked one. */
+  readonly meta?: ElicitationResponseMeta;
 };
 
 // Auto-accept every elicitation. Used by the `autoApprove` path where the
@@ -138,6 +146,11 @@ const truncate = (value: string, max: number): string =>
     ? `${value.slice(0, max)}\n... [truncated ${value.length - max} chars]`
     : value;
 
+const soleConnectedToolName = (toolPaths: readonly string[] | undefined): string | undefined => {
+  const names = [...new Set(toolPaths ?? [])];
+  return names.length === 1 ? names[0] : undefined;
+};
+
 export const formatExecuteResult = (
   result: ExecuteResult,
 ): {
@@ -183,11 +196,13 @@ export const formatExecuteResult = (
       ? `(no return value; ${emittedNote})`
       : "(no result)";
   const parts = [resultPart, ...(logText ? [`\nLogs:\n${logText}`] : [])];
+  const toolName = soleConnectedToolName(result.toolPaths);
   return {
     text: parts.join("\n"),
     structured: {
       status: "completed",
       result: result.result ?? null,
+      ...(toolName ? { toolName } : {}),
       ...emittedField,
       logs: result.logs ?? [],
     },
@@ -215,10 +230,21 @@ export const formatPausedExecution = (
     : hasRequestedSchema
       ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
       : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
+  // When the upstream leaves the LIFETIME of an accept to the answer, the
+  // caller has to know that a bare accept is a one-time approval — the same
+  // prompt returns on the next call — and how to say otherwise.
+  const meta = req.meta;
+  const offered = offeredPersistence(meta);
+  const persistInstructions =
+    offered.length > 0
+      ? ` To have an accepted approval remembered, also pass persist as one of ${offered
+          .map((scope) => JSON.stringify(scope))
+          .join(", ")}; without it the approval is for this call only.`
+      : "";
   const deadlineInstructions = deadline
     ? ` Resume before ${deadline.expiresAt}; this approval window lasts ${formatTtlDuration(deadline.ttlMs)}.`
     : "";
-  const instructions = `${baseInstructions}${deadlineInstructions}`;
+  const instructions = `${baseInstructions}${persistInstructions}${deadlineInstructions}`;
 
   if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
@@ -237,7 +263,6 @@ export const formatPausedExecution = (
   // Terms the upstream attached to the approval. Stated plainly, because a
   // prompt whose schema is empty ("Allow X to access Y?") can still be
   // asking for a PERSISTENT grant, and the answer differs.
-  const meta = req.meta;
   if (meta !== undefined && Object.keys(meta).length > 0) {
     lines.push(`\nApproval terms:\n${JSON.stringify(meta, null, 2)}`);
   }
@@ -318,8 +343,9 @@ const makeFullInvoker = (
   executor: Executor,
   invokeOptions: InvokeOptions,
   toolDiscoveryProvider: ToolDiscoveryProvider,
+  onConnectedToolCall?: (path: string) => void,
 ): SandboxToolInvoker => {
-  const base = makeExecutorToolInvoker(executor, { invokeOptions });
+  const base = makeExecutorToolInvoker(executor, { invokeOptions, onConnectedToolCall });
   return {
     invoke: ({ path, args }) => {
       if (path === "search") {
@@ -694,13 +720,18 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         return yield* Deferred.await(responseDeferred);
       });
 
+    const toolPaths: string[] = [];
     const invoker = makeFullInvoker(
       executor,
       { onElicitation: elicitationHandler },
       toolDiscoveryProvider,
+      (path) => toolPaths.push(path),
     );
     fiber = yield* Effect.forkDetach(
-      codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
+      codeExecutor.execute(code, invoker).pipe(
+        Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
+        Effect.withSpan("executor.code.exec"),
+      ),
     );
     liveSandboxFibers.add(fiber);
 
@@ -798,6 +829,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     yield* Deferred.succeed(paused.response, {
       action: response.action as typeof ElicitationResponse.Type.action,
       content: response.content,
+      ...(response.meta === undefined ? {} : { meta: response.meta }),
     });
 
     const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
@@ -825,16 +857,19 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.mode": "inline",
       "mcp.execute.code_length": code.length,
     });
+    const toolPaths: string[] = [];
     const invoker = makeFullInvoker(
       executor,
       {
         onElicitation: options.onElicitation,
       },
       toolDiscoveryProvider,
+      (path) => toolPaths.push(path),
     );
-    const result = yield* codeExecutor
-      .execute(code, invoker)
-      .pipe(Effect.withSpan("executor.code.exec"));
+    const result = yield* codeExecutor.execute(code, invoker).pipe(
+      Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
+      Effect.withSpan("executor.code.exec"),
+    );
     yield* annotateExecuteOutcome(result);
     return result;
   });

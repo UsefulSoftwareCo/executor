@@ -1,12 +1,15 @@
 import { beforeAll, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
+// oxlint-disable-next-line executor/no-vitest-import -- boundary: fake-clock coverage for the active-work deadline
+import { afterEach, vi } from "vitest";
 
 import {
   ProtocolError,
   SdkErrorCode,
   SdkHttpError,
   type OAuthClientProvider,
+  type ClientContext,
 } from "@modelcontextprotocol/client";
 import { ElicitationResponse } from "@executor-js/sdk";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
@@ -19,7 +22,7 @@ import { createMcpConnector, type McpConnection, type McpConnector } from "./con
 // that precondition here — these tests construct SDK errors directly.
 beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
-import { invokeMcpTool } from "./invoke";
+import { invokeMcpTool, makeActiveWorkDeadline, MCP_ACTIVE_WORK_TIMEOUT_MS } from "./invoke";
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
 
@@ -148,6 +151,145 @@ const invocationRejectionCases = [
 ];
 
 describe("invokeMcpTool", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("pauses the active-work deadline across overlapping elicitations", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const deadline = makeActiveWorkDeadline(100);
+
+    vi.advanceTimersByTime(40);
+    deadline.pause();
+    deadline.pause();
+    vi.advanceTimersByTime(1_000);
+    expect(deadline.signal.aborted).toBe(false);
+
+    deadline.resume();
+    vi.advanceTimersByTime(100);
+    expect(deadline.signal.aborted).toBe(false);
+
+    deadline.resume();
+    vi.advanceTimersByTime(59);
+    expect(deadline.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(deadline.signal.aborted).toBe(true);
+    deadline.dispose();
+  });
+
+  it("uses the active signal for a tool call and excludes elicitation from its deadline", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+
+    let requestHandler:
+      | ((request: { params: unknown }, context: ClientContext) => Promise<unknown>)
+      | undefined;
+    let callOptions: { signal: AbortSignal; timeout: number } | undefined;
+    let finishElicitation: (() => void) | undefined;
+    let resolveElicitationStarted: (() => void) | undefined;
+    const elicitationStarted = new Promise<void>((resolve) => {
+      resolveElicitationStarted = resolve;
+    });
+    const connectionAbort = new AbortController();
+
+    const client = {
+      setRequestHandler: (_method: string, handler: unknown) => {
+        requestHandler = handler as typeof requestHandler;
+      },
+      callTool: async (_request: unknown, options: { signal: AbortSignal; timeout: number }) => {
+        callOptions = options;
+        await requestHandler!(
+          {
+            params: { mode: "form", message: "Approve?", requestedSchema: {} },
+          },
+          { mcpReq: { signal: connectionAbort.signal } } as ClientContext,
+        );
+        // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+        return await new Promise<never>((_resolve, reject) => {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+
+    const invocation = Effect.runPromise(
+      invokeMcpTool({
+        toolId: "slow",
+        toolName: "slow",
+        args: {},
+        transport: "streamable-http",
+        connector: Effect.succeed({
+          // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only invokeMcpTool's surface
+          client: client as unknown as McpConnection["client"],
+          close: () => Promise.resolve(),
+        }),
+        elicit: () =>
+          Effect.callback((resume) => {
+            resolveElicitationStarted!();
+            finishElicitation = () =>
+              resume(Effect.succeed(ElicitationResponse.make({ action: "accept" })));
+          }),
+      }),
+    ).then(
+      () => "completed" as const,
+      () => "failed" as const,
+    );
+
+    await elicitationStarted;
+    expect(callOptions?.timeout).toBeGreaterThan(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(false);
+
+    finishElicitation!();
+    await Promise.resolve();
+    await Promise.resolve();
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(true);
+    expect(await invocation).toBe("failed");
+  });
+
+  it("interrupts an elicitation when the MCP connection closes", async () => {
+    let requestHandler:
+      | ((request: { params: unknown }, context: ClientContext) => Promise<unknown>)
+      | undefined;
+    const connectionAbort = new AbortController();
+    const client = {
+      setRequestHandler: (_method: string, handler: unknown) => {
+        requestHandler = handler as typeof requestHandler;
+      },
+      callTool: async () => {
+        await requestHandler!(
+          {
+            params: { mode: "form", message: "Approve?", requestedSchema: {} },
+          },
+          { mcpReq: { signal: connectionAbort.signal } } as ClientContext,
+        );
+        return { content: [] };
+      },
+    };
+
+    const invocation = Effect.runPromise(
+      invokeMcpTool({
+        toolId: "closed",
+        toolName: "closed",
+        args: {},
+        transport: "streamable-http",
+        connector: Effect.succeed({
+          // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only invokeMcpTool's surface
+          client: client as unknown as McpConnection["client"],
+          close: () => Promise.resolve(),
+        }),
+        elicit: () => Effect.callback(() => undefined),
+      }),
+    ).then(
+      () => "completed" as const,
+      () => "failed" as const,
+    );
+
+    await Promise.resolve();
+    connectionAbort.abort();
+    expect(await invocation).toBe("failed");
+  });
+
   for (const testCase of invocationRejectionCases) {
     it.effect(testCase.name, () =>
       Effect.gen(function* () {

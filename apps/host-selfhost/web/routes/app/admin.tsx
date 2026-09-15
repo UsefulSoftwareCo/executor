@@ -10,6 +10,7 @@ import { CopyButton } from "@executor-js/react/components/copy-button";
 import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
+import { isTenantAdminMember, type TenantMemberRow } from "@executor-js/react/lib/admin-access";
 import { useExecutorDocumentTitle } from "@executor-js/react/lib/document-title";
 import {
   orgMembersAtom,
@@ -25,24 +26,64 @@ export const Route = createFileRoute("/{-$orgSlug}/admin")({
 });
 
 const ROLES = ["member", "admin"] as const;
+type AdminAccess = "loading" | "allowed" | "denied";
 
-// Instance admin console. Members reuse the shared account atoms; invite codes
-// are the self-host join mechanism. The API gates to owner/admin, so a
-// non-admin who opens this just sees load failures.
+// Instance admin console. The member list is also used by ordinary workspace
+// surfaces, so opening this route must check the active member's role before it
+// renders any member data or admin controls. The APIs remain the authority for
+// every admin mutation.
 function AdminPage() {
   useExecutorDocumentTitle("Admin");
+  const members = useAtomValue(orgMembersAtom);
+  const access = AsyncResult.match(members, {
+    onInitial: (): AdminAccess => "loading",
+    onFailure: (): AdminAccess => "denied",
+    onSuccess: ({ value }): AdminAccess =>
+      isTenantAdminMember(value.members as readonly TenantMemberRow[]) ? "allowed" : "denied",
+  });
+
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-10 px-6 py-10 lg:px-8 lg:py-14">
-        <header className="space-y-1">
-          <h1 className="font-display text-3xl tracking-tight text-foreground">Admin</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage members and invite links for this instance.
-          </p>
-        </header>
-        <MembersSection />
-        <InvitesSection />
+        {access === "loading" ? (
+          <Notice>Checking admin access…</Notice>
+        ) : access === "allowed" ? (
+          <AdminConsole />
+        ) : (
+          <AdminAccessDenied />
+        )}
       </div>
+    </div>
+  );
+}
+
+function AdminConsole() {
+  return (
+    <>
+      <header className="space-y-1">
+        <h1 className="font-display text-3xl tracking-tight text-foreground">Admin</h1>
+        <p className="text-sm text-muted-foreground">
+          Manage members and invite links for this instance.
+        </p>
+      </header>
+      <MembersSection />
+      <InvitesSection />
+    </>
+  );
+}
+
+function AdminAccessDenied() {
+  return (
+    <div className="rounded-lg border border-border bg-card p-8">
+      <p className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        Admin only
+      </p>
+      <h1 className="mt-2 text-base font-semibold text-foreground">
+        You don&apos;t have access to this instance&apos;s admin area
+      </h1>
+      <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+        Managing members and invite links requires an admin or owner role.
+      </p>
     </div>
   );
 }

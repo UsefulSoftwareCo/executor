@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+
 import { Effect, Layer } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -22,7 +24,9 @@ const signInToken = async (handler: Handler, email: string, password: string): P
       body: JSON.stringify({ email, password }),
     }),
   );
-  return response.headers.get("set-auth-token") ?? "";
+  const token = response.headers.get("set-auth-token");
+  assert(response.ok && token, `Test admin sign-in failed (${response.status}).`);
+  return token;
 };
 
 // A FetchHttpClient backed by the in-process handler, carrying the admin bearer.
@@ -39,18 +43,25 @@ const clientLayer = (handler: Handler, token: string) =>
     ),
   );
 
-export const mintInviteCode = async (
+/** Sign in once and mint each invitation through the authenticated admin API. */
+export const createInviteMinter = async (
   handler: Handler,
-  role: InviteRole = "member",
-): Promise<string> => {
+): Promise<(role?: InviteRole) => Promise<string>> => {
   const token = await signInToken(
     handler,
     process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL!,
     process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD!,
   );
-  return Effect.gen(function* () {
-    const client = yield* HttpApiClient.make(AdminHttpApi, { baseUrl: BASE });
-    const invite = yield* client.admin.createInvite({ payload: { role } });
-    return invite.code;
-  }).pipe(Effect.provide(clientLayer(handler, token)), Effect.runPromise);
+  return (role = "member") =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiClient.make(AdminHttpApi, { baseUrl: BASE });
+      const invite = yield* client.admin.createInvite({ payload: { role } });
+      return invite.code;
+    }).pipe(Effect.provide(clientLayer(handler, token)), Effect.runPromise);
 };
+
+/** Mint one invitation with a fresh authenticated admin session. */
+export const mintInviteCode = async (
+  handler: Handler,
+  role: InviteRole = "member",
+): Promise<string> => (await createInviteMinter(handler))(role);

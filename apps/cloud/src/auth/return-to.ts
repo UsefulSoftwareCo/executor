@@ -11,18 +11,29 @@
 // Pure string code — imported by server handlers and the login page alike.
 // ---------------------------------------------------------------------------
 
-const pathPart = (path: string): string => path.split(/[?#]/, 1)[0] ?? "";
+const RETURN_TO_ORIGIN = "https://executor.invalid";
 
-const isOAuthCallbackReturnTo = (path: string): boolean => pathPart(path) === "/api/oauth/callback";
+/** Parse a same-origin landing path, or return null for absent or unsafe input. */
+export const safeReturnTo = (path: string | null | undefined): string | null => {
+  if (!path || !path.startsWith("/") || path.startsWith("//")) return null;
+  // Browsers treat backslashes as path separators and strip some control
+  // characters. Reject those spellings before interpreting the destination.
+  for (const character of path) {
+    if (character === "\\" || character <= " " || character === "\u007f") return null;
+  }
 
-export const isSafeReturnTo = (path: string): boolean =>
-  path.startsWith("/") &&
-  !path.startsWith("//") &&
-  (!/^\/api(\/|$)/.test(path) || isOAuthCallbackReturnTo(path));
+  // The fixed origin and single leading slash guarantee a parseable URL.
+  // Check the normalized pathname so dot segments cannot bypass the API gate.
+  const destination = new URL(path, RETURN_TO_ORIGIN);
+  if (destination.origin !== RETURN_TO_ORIGIN) return null;
+  if (/^\/api(\/|$)/.test(destination.pathname) && destination.pathname !== "/api/oauth/callback") {
+    return null;
+  }
+  return `${destination.pathname}${destination.search}${destination.hash}`;
+};
 
-/** The validated returnTo, or null when absent/unsafe. */
-export const safeReturnTo = (path: string | null | undefined): string | null =>
-  path && isSafeReturnTo(path) ? path : null;
+/** Whether a value parses as a same-origin landing path. */
+export const isSafeReturnTo = (path: string): boolean => safeReturnTo(path) !== null;
 
 /** The /login URL that comes back to `returnTo` ("/" needs no parameter). */
 export const loginPath = (returnTo: string): string =>

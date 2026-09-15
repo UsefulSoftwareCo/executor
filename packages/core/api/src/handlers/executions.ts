@@ -251,6 +251,7 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
             engine.resume(path.executionId, {
               action: payload.action,
               content: payload.content as Record<string, unknown> | undefined,
+              ...(payload.persist === undefined ? {} : { meta: { persist: payload.persist } }),
             }),
           );
 

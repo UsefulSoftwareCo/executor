@@ -85,6 +85,7 @@ type LocalMcpResumeInput = {
   readonly executionId: string;
   readonly action: ElicitationAction;
   readonly content?: Record<string, unknown>;
+  readonly persist?: string;
 };
 
 const resumeLocalMcpExecution = Atom.fn<LocalMcpResumeInput>()((input) =>
@@ -106,7 +107,11 @@ const resumeLocalMcpExecution = Atom.fn<LocalMcpResumeInput>()((input) =>
             },
             body: JSON.stringify(
               input.action === "accept"
-                ? { action: input.action, content: input.content ?? {} }
+                ? {
+                    action: input.action,
+                    content: input.content ?? {},
+                    ...(input.persist === undefined ? {} : { persist: input.persist }),
+                  }
                 : { action: input.action },
             ),
           },
@@ -159,12 +164,18 @@ function LocalMcpResumeApproval(props: { executionId: string; mcpSessionId: stri
   );
   const doResume = useAtomSet(resumeLocalMcpExecution, { mode: "promiseExit" });
   const resume = useCallback(
-    (executionId: string, action: ElicitationAction, content?: Record<string, unknown>) =>
+    (
+      executionId: string,
+      action: ElicitationAction,
+      content?: Record<string, unknown>,
+      persist?: string,
+    ) =>
       doResume({
         mcpSessionId: props.mcpSessionId,
         executionId,
         action,
         content,
+        persist,
       }),
     [doResume, props.mcpSessionId],
   );

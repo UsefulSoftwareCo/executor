@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
+import { waitUntil } from "cloudflare:workers";
 
 import { WorkOSClient } from "../../auth/workos";
 import { AutumnService } from "./service";
@@ -38,9 +39,9 @@ export const reportMemberSeats = (
 /**
  * Fork `reportMemberSeats` off the calling request, mirroring how execution
  * tracking is forked: billing must never stall or fail a user-facing
- * request. Only boot-scoped services are captured (WorkOS + Autumn — no
- * request-scoped resources), so the forked fiber cannot outlive anything it
- * depends on.
+ * request. Cloudflare owns the promise through waitUntil, so the recount can
+ * finish after the response. Only boot-scoped WorkOS and Autumn services are
+ * captured.
  */
 export const forkReportMemberSeats = (
   organizationId: string,
@@ -48,6 +49,6 @@ export const forkReportMemberSeats = (
   Effect.gen(function* () {
     const ctx = yield* Effect.context<WorkOSClient | AutumnService>();
     yield* Effect.sync(() => {
-      Effect.runForkWith(ctx)(reportMemberSeats(organizationId));
+      waitUntil(Effect.runPromiseWith(ctx)(reportMemberSeats(organizationId)));
     });
   });

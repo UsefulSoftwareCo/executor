@@ -86,7 +86,7 @@ const LUCIDE_ICONS =
   "Plus, Minus, Check, X, Search, Loader2, AlertCircle, ExternalLink, Copy, Trash2, Edit, Settings, User, Globe, Star, TrendingUp, Activity, Database, Shield, Package, and more";
 
 const CREATE_ARTIFACT_SKILL_BODY = [
-  "# create-artifact",
+  "## Build the artifact",
   "",
   "Render an interactive React UI component as an MCP app, and save it as an artifact.",
   "",
@@ -103,7 +103,7 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "",
   "## Workflow",
   "",
-  "1. If you need to understand tool names, query syntax, required arguments, response shapes, IDs, mutation inputs, or a list tool's cursor field, first use the regular `execute` tool to inspect them.",
+  "1. Follow the discovery workflow above to inspect tool names, input schemas, response shapes, and pagination before writing the artifact.",
   "2. Then call `create-artifact` with a component named `App` in the `code` parameter.",
   "3. Recreate every read from the discovery step inside `App` with `useQuery(tools.<integration>.<tool>.queryOptions(args))` so the UI stays live.",
   "4. Use `useMutation(tools.<integration>.<tool>.mutationOptions({ onSuccess }))` for user-triggered writes or actions.",
@@ -146,14 +146,14 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "",
   "## Addressing: Integrations, Not Connections",
   "",
-  "This is the one place artifact code differs from `execute` code, and getting it",
+  "Artifact code differs from the full tool IDs used during discovery. Getting it",
   "wrong is rejected outright.",
   "",
-  "`execute` addresses a tool by its full five-segment address, because discovery has",
+  "A tool ID includes its full five-segment address, because discovery has",
   "to say exactly which saved connection it means:",
   "",
   "```",
-  "return await tools.linear.org.linearProd.issues.list({ first: 20 })",
+  "tools.linear.org.linearProd.issues.list",
   "```",
   "",
   "Artifact code drops the middle two segments and names only the INTEGRATION:",
@@ -174,8 +174,8 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   'connections: { "linear": "linear.org.linearProd" }',
   "```",
   "",
-  "The value is the `<integration>.<user|org>.<connection>` triple — exactly the",
-  "`address` field from `tools.executor.coreTools.connections.list({})`, minus the",
+  "The value is the `<integration>.<user|org>.<connection>` triple.",
+  "Use the integration, owner, and connection from discovery. Omit the",
   "leading `tools.`. The key is the ROLE, which for a single-account artifact is just",
   "the integration slug.",
   "",
@@ -188,12 +188,11 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   '// connections: { "prod": "linear.org.linearProd", "staging": "linear.user.myLinear" }',
   "```",
   "",
-  "Worked example, end to end. Discovery through `execute` shows the full address:",
+  "For example, discovery identifies the account and its operation:",
   "",
   "```",
-  "await tools.executor.coreTools.connections.list({})",
-  '// -> [{ address: "tools.linear.org.linearProd", integration: "linear", ... }]',
-  "return await tools.linear.org.linearProd.issues.list({ first: 5 })",
+  "Integration: linear; owner: org; connection: linearProd",
+  "Tool ID: tools.linear.org.linearProd.issues.list; input: { first: 5 }",
   "```",
   "",
   "The artifact you then create says:",
@@ -203,8 +202,7 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   'connections: { "linear": "linear.org.linearProd" }   // optional if linearProd is your only linear connection',
   "```",
   "",
-  "System tools keep their usual paths and need no binding: `tools.search(...)`,",
-  "`tools.describe.tool(...)`, `tools.executor.coreTools.*`.",
+  "Keep tool discovery outside the component. The component uses integration operations.",
   "",
   "## The Contract: tools.* Only",
   "",
@@ -215,12 +213,12 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "- **Never hand-roll `useQuery({ queryKey, queryFn })`.** Always pass the proxy's options object: `useQuery(tools.<integration>.<tool>.queryOptions(args))`. A hand-written `queryKey` is invisible to `queryFilter`/`pathFilter`, so mutations silently stop refreshing the UI, and it hides which tool the artifact uses from artifact analysis.",
   "- **Never fetch in a loop by hand.** Cursor pagination is declarative — see below.",
   "",
-  "## Using Execute For Discovery",
+  "## Keep Discovered Data Live",
   "",
-  "- `execute` is for exploration: list datasets, inspect schemas, test a query, fetch one small sample row, or learn the exact mutation input shape.",
+  "- Use the discovery workflow above to inspect schemas, test a query, fetch a small sample, or learn mutation inputs.",
   "- `create-artifact` is for the final interactive surface. Do not paste discovery results into JSX as literal rows, cards, summaries, metrics, or chart series.",
-  "- After discovering an API call with `execute`, put the same call in TanStack Query options inside the generated component.",
-  "- Example discovery: call `execute` with `return await tools.axiom_mcp.querydataset({ ... })` to confirm columns, then call `create-artifact` with `useQuery(tools.axiom_mcp.querydataset.queryOptions({ ... }))`.",
+  "- After discovering an API call, put that integration operation in TanStack Query options inside the generated component.",
+  "- For example, inspect a dataset query to confirm columns, then use its integration operation with `.queryOptions(...)` in the component.",
   "- Use discovered result shapes exactly. If a sample or schema returns `{ renew, expiresAt }`, read `data?.renew`, not `data?.domain?.renew`.",
   "- Keep discovery small. Use limits, narrow time ranges, or schema/list tools when possible.",
   "",
@@ -243,7 +241,7 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "",
   "- `getNextPageParam(lastPage, allPages)` reads the cursor out of the tool's own response. Return `undefined` (or `null`) when there are no more pages — that is what stops the paging.",
   "- `initialPageParam` defaults to `null`, which means the FIRST request carries no cursor at all. Set it only when a tool requires an explicit starting value (e.g. `initialPageParam: 1` for page numbers).",
-  '- `cursorKey` says where the page param lands in the tool input. It defaults to `"cursor"`. Use a dotted path for nested inputs — `cursorKey: "query.since"` writes `{ query: { since: <pageParam> } }`. Read the tool\'s input shape with `execute` first; do not guess the field name.',
+  '- `cursorKey` says where the page param lands in the tool input. It defaults to `"cursor"`. Use a dotted path for nested inputs — `cursorKey: "query.since"` writes `{ query: { since: <pageParam> } }`. Read the tool\'s input schema during discovery first; do not guess the field name.',
   "- Render `data.pages` (an array of tool results, newest page last) and drive further loading from `hasNextPage` / `fetchNextPage` / `isFetchingNextPage`. Do not call `fetchNextPage` in a loop on mount — let the user pull more, or paginate deliberately with a bounded `useEffect`.",
   "",
   "**Never chain `useQuery` calls in a loop to page through a cursor.** This is",
@@ -326,7 +324,7 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "",
   "## Rules",
   "",
-  "- Use this tool instead of `execute` whenever the output should be an interactive UI.",
+  "- Use this tool whenever the output should be an interactive UI.",
   "- Export a component named `App`. A top-level `const config = { maxHeight }` caps the frame height where the artifact is embedded in a scrolling page; it is ignored where the artifact has been given the whole viewport.",
   '- Lay the artifact out as an APP, not a document: root `flex h-full flex-col`, headers and filters as ordinary children, and the one long list or table as `flex-1 min-h-0 overflow-auto` so it scrolls under a header that stays put. See `skills({ name: "artifact-style" })`.',
   "- Do not call API tools first and paste returned data into JSX.",
@@ -347,11 +345,32 @@ const CREATE_ARTIFACT_SKILL_BODY = [
   "- Clients that cannot display MCP apps get a link to the artifact in the web app instead; pass that URL on to the user verbatim.",
 ].join("\n");
 
+const createArtifactSkillBody = (searchAndInvoke: boolean): string =>
+  [
+    "# create-artifact",
+    "",
+    "## Discover accounts and data",
+    "",
+    ...(searchAndInvoke
+      ? [
+          "1. Call `integrations({})` to choose an account. Its `integration`, `owner`, and `connection` fields form the artifact binding, joined with dots.",
+          '2. Call `search({ query: "list issues", integration: "linear", owner: "org", connection: "linearProd" })` using that account. Read the returned inputSchema.',
+          "3. Call `invoke({ tool: <exact returned id>, arguments: <JSON input> })` to inspect a small sample response. Use search and invoke, not general code execution, to learn the data shape.",
+        ]
+      : [
+          '1. Use `execute` to call `tools.search({ query: "list issues" })`, then `tools.describe.tool({ path })` to inspect the matched tool.',
+          "2. Use `tools.executor.coreTools.connections.list({})` for saved accounts. The connection address without its leading `tools.` is the artifact binding.",
+          "3. Call the discovered tool in `execute` to inspect a small sample response.",
+        ]),
+    "",
+    CREATE_ARTIFACT_SKILL_BODY,
+  ].join("\n");
+
 export const CREATE_ARTIFACT_SKILL: Skill = {
   name: "create-artifact",
   summary:
     "How to write a React component for the create-artifact tool: discover data with execute, keep it live with TanStack Query (including cursor pagination), and what is already in scope.",
-  body: CREATE_ARTIFACT_SKILL_BODY,
+  body: createArtifactSkillBody(false),
 };
 
 // The design system, kept SEPARATE from the capability manifest above.
@@ -631,8 +650,25 @@ const ARTIFACT_SKILLS: ReadonlySet<Skill> = new Set([CREATE_ARTIFACT_SKILL, ARTI
  * artifact skills so the index never advertises a doc for tools this connection
  * does not have; a session that opted in gets the full {@link SKILLS} list.
  */
-export const skillCatalogFor = (options: { readonly artifacts: boolean }): readonly Skill[] =>
-  options.artifacts ? SKILLS : SKILLS.filter((skill) => !ARTIFACT_SKILLS.has(skill));
+export const skillCatalogFor = (options: {
+  readonly artifacts: boolean;
+  readonly discovery?: "execute" | "search-invoke";
+}): readonly Skill[] => {
+  if (options.discovery === "search-invoke") {
+    return options.artifacts
+      ? [
+          {
+            ...CREATE_ARTIFACT_SKILL,
+            summary:
+              "Build a live React artifact after discovering accounts and data with integrations, search, and invoke.",
+            body: createArtifactSkillBody(true),
+          },
+          ARTIFACT_STYLE_SKILL,
+        ]
+      : [];
+  }
+  return options.artifacts ? SKILLS : SKILLS.filter((skill) => !ARTIFACT_SKILLS.has(skill));
+};
 
 /** Look up a skill by its exact name within a session's catalog. */
 export const findSkill = (name: string, catalog: readonly Skill[] = SKILLS): Skill | undefined =>

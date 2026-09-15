@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@sentry/bun": "^10.57.0",
-    "@sentry/electron": "^7.13.0",
+    "@sentry/electron": "7.19.0",
     "electron-log": "^5",
     "electron-store": "^10",
     "electron-updater": "^6",
@@ -47,7 +47,7 @@
     "@types/node": "catalog:",
     "@zip.js/zip.js": "^2.8.26",
     "bun-types": "catalog:",
-    "electron": "41.2.1",
+    "electron": "41.10.3",
     "electron-builder": "^26",
     "electron-vite": "^5",
     "quickjs-emscripten": "catalog:",

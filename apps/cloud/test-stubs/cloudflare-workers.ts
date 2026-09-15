@@ -7,6 +7,10 @@
 // from `process.env` into this stub at import time. Without this bridge
 // the test DbService would dial the default postgres port instead of the
 // PGlite socket server started by `scripts/test-globalsetup.ts`.
+import { vi } from "@effect/vitest";
+
+export const waitUntil = vi.fn<(work: Promise<unknown>) => void>();
+
 export const env: Record<string, unknown> = {
   DATABASE_URL: process.env.DATABASE_URL,
   WORKOS_API_KEY: process.env.WORKOS_API_KEY,

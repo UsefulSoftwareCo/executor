@@ -7,6 +7,7 @@ import { Context, Data, Effect, Layer, Option, Predicate, Schema } from "effect"
 import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
 import { defaults as ironDefaults, unseal as unsealIron } from "iron-webcrypto";
 import { decodeJwt, jwtVerify } from "jose";
+import { workosAccessTokenOptions } from "./access-token-options";
 import { JWKSInvalid, JWKSNoMatchingKey, JWKSTimeout } from "jose/errors";
 import { parseCookie } from "./cookies";
 import { createCachedRemoteJWKSet, type CachedRemoteJWKSet } from "./jwks-cache";
@@ -179,7 +180,7 @@ const getWorkOSSessionJwks = (() => {
 
 const verifyJwtOnce = (accessToken: string, jwks: CachedRemoteJWKSet) =>
   Effect.tryPromise({
-    try: () => jwtVerify(accessToken, jwks),
+    try: () => jwtVerify(accessToken, jwks, workosAccessTokenOptions),
     catch: (cause) => new ServiceAdapterError({ cause }),
   });
 

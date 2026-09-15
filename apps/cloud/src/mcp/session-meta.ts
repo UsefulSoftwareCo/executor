@@ -127,6 +127,7 @@ const metaFromIdentity = (
     elicitationMode: token.elicitationMode,
     artifactsEnabled: token.artifactsEnabled,
     searchToolsEnabled: token.searchToolsEnabled,
+    toolMode: token.toolMode,
   };
 };
 

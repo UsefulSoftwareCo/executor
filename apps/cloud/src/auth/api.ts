@@ -65,9 +65,9 @@ const CliLoginResponse = Schema.Struct({
   clientId: Schema.String,
 });
 
-// `state` is optional — some WorkOS-initiated redirects arrive at the
-// callback without the state we set on /auth/login. The CSRF check is
-// only enforced when state is present (see callback handler).
+// Decode missing state so the callback can reject it with the same explicit
+// login-state failure as a mismatched value. Every successful callback must
+// match the state cookie created by /auth/login.
 const AuthCallbackSearch = Schema.Struct({
   code: Schema.String,
   state: Schema.optional(Schema.String),
@@ -115,6 +115,7 @@ const McpSessionExecutionParams = {
 const ResumeMcpExecutionBody = Schema.Struct({
   action: Schema.Literals(["accept", "decline", "cancel"]),
   content: Schema.optional(Schema.Unknown),
+  persist: Schema.optional(Schema.String),
 });
 
 const McpPausedExecutionResponse = Schema.Struct({

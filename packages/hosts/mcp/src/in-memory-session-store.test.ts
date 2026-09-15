@@ -691,4 +691,89 @@ describe("pre-initialize dispatch through the in-memory session store", () => {
     expect(response.status).toBe(406);
     await sessions.close();
   });
+
+  it("shuts down the scoped executor and custom closer when an idle session is evicted", async () => {
+    let executorClosed = 0;
+    let customClosed = 0;
+    const realExecutor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const testExecutor = {
+      ...realExecutor,
+      close: () =>
+        realExecutor.close().pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              executorClosed += 1;
+            }),
+          ),
+        ),
+    };
+    const engine = makeIdleTestEngine();
+    const sessions = makeInMemoryMcpSessionStore(
+      () =>
+        createExecutorMcpServer({ engine }).pipe(
+          Effect.map((mcpServer) => ({
+            mcpServer,
+            engine,
+            executor: testExecutor,
+            close: () => {
+              customClosed += 1;
+              return Promise.resolve();
+            },
+          })),
+        ),
+      { sessionIdleTtlMs: IDLE_TTL_MS },
+    );
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the store
+    try {
+      await openSession(sessions);
+      expect(sessions.sessionCount()).toBe(1);
+      expect(executorClosed).toBe(0);
+      expect(customClosed).toBe(0);
+
+      // Advance clock past idle window and sweep.
+      expect(await sessions.sweepIdleSessions(Date.now() + IDLE_TTL_MS + 1)).toBe(1);
+      expect(sessions.sessionCount()).toBe(0);
+      expect(executorClosed).toBe(1);
+      expect(customClosed).toBe(1);
+    } finally {
+      await sessions.close();
+    }
+  });
+
+  it("shuts down the scoped executor when sessions.close() is called", async () => {
+    let executorClosed = 0;
+    const realExecutor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const testExecutor = {
+      ...realExecutor,
+      close: () =>
+        realExecutor.close().pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              executorClosed += 1;
+            }),
+          ),
+        ),
+    };
+    const engine = makeIdleTestEngine();
+    const sessions = makeInMemoryMcpSessionStore(
+      () =>
+        createExecutorMcpServer({ engine }).pipe(
+          Effect.map((mcpServer) => ({
+            mcpServer,
+            engine,
+            executor: testExecutor,
+          })),
+        ),
+      { sessionIdleTtlMs: IDLE_TTL_MS },
+    );
+
+    await openSession(sessions);
+    expect(sessions.sessionCount()).toBe(1);
+    expect(executorClosed).toBe(0);
+
+    await sessions.close();
+    expect(executorClosed).toBe(1);
+    expect(sessions.sessionCount()).toBe(0);
+  });
 });

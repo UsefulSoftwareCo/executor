@@ -16,6 +16,7 @@ import {
   readArtifactsEnabled,
   readElicitationMode,
   readSearchToolsEnabled,
+  readToolMode,
   withVerifiedIdentityHeaders,
 } from "@executor-js/cloudflare/mcp/do-headers";
 import type { McpSessionProps } from "@executor-js/cloudflare/mcp/agent-durable-object";
@@ -189,6 +190,7 @@ const propsForPrincipal = (
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
+        toolMode: readToolMode(request),
         resource,
         webOrigin: new URL(request.url).origin,
       },
@@ -254,14 +256,19 @@ export const makeCloudMcpAgentHandler = () => {
       });
     }
 
+    const resource = resourceFromPath(request);
+
     if (sessionId) {
       let owner: "ok" | "not_found" | "forbidden" | "terminated";
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary: a Durable Object stub RPC rejects with a plain platform Error, never a typed failure
       try {
-        owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner({
-          accountId: outcome.principal.accountId,
-          organizationId: outcome.principal.organizationId,
-        });
+        owner = await mcpSessionStub(env.MCP_SESSION, sessionId).validateMcpSessionOwner(
+          {
+            accountId: outcome.principal.accountId,
+            organizationId: outcome.principal.organizationId,
+          },
+          resource,
+        );
       } catch (error) {
         // The sibling stub touchpoints in this handler are both guarded — the
         // `_cf_scheduleDestroy` call above with `Effect.ignore`, the
@@ -290,7 +297,6 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const resource = resourceFromPath(request);
     const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(

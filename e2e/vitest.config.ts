@@ -62,6 +62,7 @@ export default defineConfig({
       project("cloudflare", {
         include: [
           "scenarios/browser-approval.test.ts",
+          "scenarios/mcp-approval-persistence.test.ts",
           "scenarios/microsoft-graph-full.test.ts",
           "scenarios/toolkits-mcp.test.ts",
           "cloudflare/**/*.test.ts",

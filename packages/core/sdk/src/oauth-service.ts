@@ -60,6 +60,7 @@ import {
   type OAuthClientOrigin,
   type OAuthClientSummary,
   type OAuthCompleteInput,
+  type OAuthCompleteOptions,
   type OAuthGrant,
   type OAuthProbeInput,
   type OAuthProbeResult,
@@ -149,6 +150,12 @@ export interface MintOAuthConnectionInput {
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
   readonly oauthTokenUrl?: string | null;
+  /** Whether connection tool discovery must finish before the mint returns.
+   *  Interactive authorization-code callbacks persist the fresh grant first,
+   *  then synchronize the remote catalog in host-kept background work so a
+   *  slow MCP server cannot strand the browser popup. Non-interactive grants
+   *  keep the explicit behavior because their caller has no callback window. */
+  readonly toolSync?: "explicit" | "background";
 }
 
 /** Project an enterprise-managed mint failure onto the connect boundary,
@@ -199,7 +206,14 @@ const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAu
  *  8707 resource: a user may clear the client's resource (Entra v2 rejects
  *  the parameter, #1789) without losing scope discovery. */
 export type OAuthScopePolicy =
-  | { readonly kind: "scopes"; readonly scopes: readonly string[] }
+  | {
+      readonly kind: "scopes";
+      readonly scopes: readonly string[];
+      /** Provider-specific scopes declared on the integration's authorization
+       *  endpoint (HubSpot `optional_scope`). These must not also be sent in
+       *  the RFC `scope` parameter. */
+      readonly optionalScopes?: readonly string[];
+    }
   | { readonly kind: "discover"; readonly discoveryUrl: string };
 
 /** Everything the OAuth service needs from the executor: fuma access for the
@@ -227,6 +241,11 @@ export interface OAuthServiceDeps {
   readonly mintOAuthConnection: (
     input: MintOAuthConnectionInput,
   ) => Effect.Effect<Connection, StorageFailure>;
+  /** Whether `slug` is in the tenant's integration catalog. `start` refuses a
+   *  flow for a missing integration up front — otherwise the user authorizes
+   *  at the provider and only the mint at `complete` discovers there is
+   *  nothing to mint against (the reconnect-an-orphan failure). */
+  readonly integrationExists: (slug: IntegrationSlug) => Effect.Effect<boolean, StorageFailure>;
   /** Whether a connection row exists under `(owner, integration, name)`: the
    *  raw row, not the policy-filtered list, so `start` can resolve a free
    *  name for `newConnection` flows against what is actually stored. */
@@ -553,6 +572,23 @@ interface LoadedOAuthClient {
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly tokenRequestFormat?: "form" | "json";
 }
+
+/** Provider lifecycle scopes that are required to keep an authorization-code
+ *  connection renewable but are omitted from the protected resource's API
+ *  scope list. Vercel's MCP resource advertises only `openid`, while its
+ *  authorization server issues a refresh token only when `offline_access` is
+ *  requested. Keep the exception bound to Vercel's exact official authorize
+ *  endpoint so an unrelated OAuth server never receives a broader request. */
+const additionalAuthorizationLifecycleScopes = (client: {
+  readonly authorizationUrl: string;
+}): readonly string[] => {
+  if (!URL.canParse(client.authorizationUrl)) return [];
+  const authorization = new URL(client.authorizationUrl);
+  return authorization.origin === "https://vercel.com" &&
+    authorization.pathname === "/oauth/authorize"
+    ? ["offline_access"]
+    : [];
+};
 
 /** Where an OAuth app's client secret is stored in the default writable
  *  provider — derived solely from the app's (owner, slug) identity. */
@@ -1414,6 +1450,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       const authMethod = pickDcrAuthMethod(input.tokenEndpointAuthMethodsSupported);
+      const registrationScopes = dedupeScopes([
+        ...input.scopes,
+        ...additionalAuthorizationLifecycleScopes(input),
+      ]);
       const information = yield* registerDynamicClientDcr(
         {
           registrationEndpoint: input.registrationEndpoint,
@@ -1424,7 +1464,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             response_types: ["code"],
             token_endpoint_auth_method: authMethod,
             application_type: isLoopbackHttpUrl(flowRedirectUri) ? "native" : "web",
-            scope: input.scopes.length > 0 ? input.scopes.join(" ") : undefined,
+            scope: registrationScopes.length > 0 ? registrationScopes.join(" ") : undefined,
           },
         },
         { httpClientLayer, endpointUrlPolicy: deps.endpointUrlPolicy },
@@ -1662,6 +1702,15 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             cause,
           }),
       });
+      // The integration must exist BEFORE any session or provider round trip.
+      // A stale reference (a connection whose integration was removed, or an
+      // agent replaying an old slug) would otherwise complete authorization at
+      // the provider and fail only at the mint.
+      if (!(yield* deps.integrationExists(input.integration))) {
+        return yield* new OAuthStartError({
+          message: `Integration not found: ${String(input.integration)}`,
+        });
+      }
       // Sharing is one-directional (org → members): a Workspace (org) connection
       // cannot be backed by a member's private (user) app. The connection owner
       // and the app owner are otherwise independent — a Personal connection
@@ -1974,9 +2023,22 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           : scopePolicy.kind === "discover"
             ? requestedScopes
             : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+      const providerExtras = providerAuthorizeExtras(client.authorizationUrl);
+      const workspaceOptionalScopes = firstPartyFlow
+        ? []
+        : dedupeScopes([
+            ...(providerExtras.optional_scope ?? "").split(/\s+/).filter(Boolean),
+            ...(scopePolicy.kind === "scopes" ? (scopePolicy.optionalScopes ?? []) : []),
+          ]);
+      const workspaceOptionalScopeSet = new Set(workspaceOptionalScopes);
       const completeAuthorizationScopes = dedupeScopes([
-        ...authorizationRequestedScopes,
+        ...authorizationRequestedScopes.filter((scope) => !workspaceOptionalScopeSet.has(scope)),
         ...(firstParty?.additionalAuthorizationScopes ?? []),
+        ...additionalAuthorizationLifecycleScopes(client),
+      ]);
+      const completeRequestedScopes = dedupeScopes([
+        ...completeAuthorizationScopes,
+        ...workspaceOptionalScopes,
       ]);
 
       // authorization_code: persist a session + build the authorize URL.
@@ -2039,7 +2101,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           payload: {
             owner: input.owner,
             clientOwner: input.clientOwner,
-            requestedScopes: completeAuthorizationScopes,
+            requestedScopes: completeRequestedScopes,
           },
           expires_at: expiresAt,
           created_at: now,
@@ -2061,7 +2123,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
             extraParams: {
-              ...providerAuthorizeExtras(client.authorizationUrl),
+              ...providerExtras,
+              ...(workspaceOptionalScopes.length > 0
+                ? { optional_scope: workspaceOptionalScopes.join(" ") }
+                : {}),
               ...(firstParty?.authorizationExtraParams ?? {}),
             },
             endpointUrlPolicy: deps.endpointUrlPolicy,
@@ -2081,6 +2146,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // -----------------------------------------------------------------------
   const complete = (
     input: OAuthCompleteInput,
+    options?: OAuthCompleteOptions,
   ): Effect.Effect<
     Connection,
     OAuthCompleteError | OAuthSessionNotFoundError | OrgWriteDeniedError | StorageFailure
@@ -2218,6 +2284,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // Persist the regional token endpoint ONLY when it differs from the
         // client's configured one, so refresh redeems against the same region.
         tokenUrl === client.tokenUrl ? null : tokenUrl,
+        // The grant and connection row are the callback's durable contract.
+        // Remote catalog discovery can be arbitrarily slow and must not keep
+        // the popup waiting after that contract has committed.
+        options?.toolSync ?? "explicit",
       ).pipe(
         Effect.mapError((cause) =>
           Predicate.isTagged(cause, "OrgWriteDeniedError")
@@ -2293,6 +2363,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     /** Regional token endpoint override to persist when the code was redeemed
      *  off the client's configured host; null to use the client's token URL. */
     oauthTokenUrl: string | null,
+    toolSync: "explicit" | "background" = "explicit",
   ): Effect.Effect<Connection, OrgWriteDeniedError | StorageFailure> =>
     Effect.gen(function* () {
       // The token exchange may outlive the role that admitted `start`. Re-read
@@ -2360,6 +2431,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         oauthScope,
         missingOAuthScopes: missingScopes,
         oauthTokenUrl,
+        toolSync,
       });
     });
 

@@ -63,6 +63,8 @@ export interface HostConfigShape {
    * production hosts leave it off. Drives `makeHostedHttpClientLayer`.
    */
   readonly allowLocalNetwork: boolean;
+  /** Require TLS for public outbound requests from both execution and admin views. */
+  readonly requireTls?: boolean;
   /**
    * Base URL of the executor's web UI. Threaded into `coreTools.webBaseUrl` so
    * `connections.createHandoff` can point the user at
@@ -308,6 +310,7 @@ export const makeScopedExecutor = <
     const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins));
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
+      requireTls: config.requireTls,
     };
     const httpClientLayer = makeHostedHttpClientLayer(hostedHttpOptions);
     const hostedFetch = makeHostedFetch(hostedHttpOptions);
@@ -408,7 +411,10 @@ export const makePlatformExecutor = (
     const plugins = yield* Effect.sync(() => pluginsFactory()).pipe(
       Effect.withSpan("executor.platform.plugins.init"),
     );
-    const hostedHttpOptions = { allowLocalNetwork: config.allowLocalNetwork };
+    const hostedHttpOptions = {
+      allowLocalNetwork: config.allowLocalNetwork,
+      requireTls: config.requireTls,
+    };
 
     return yield* createExecutor({
       tenant: Tenant.make(organizationId),

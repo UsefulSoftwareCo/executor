@@ -37,13 +37,17 @@ function CloudMcpResumeApproval(props: { executionId: string; mcpSessionId: stri
       executionId: string,
       action: "accept" | "decline" | "cancel",
       content?: Record<string, unknown>,
+      persist?: string,
     ) =>
       doResume({
         params: {
           mcpSessionId: props.mcpSessionId,
           executionId,
         },
-        payload: action === "accept" ? { action, content: content ?? {} } : { action },
+        payload:
+          action === "accept"
+            ? { action, content: content ?? {}, ...(persist === undefined ? {} : { persist }) }
+            : { action },
       }),
     [doResume, props.mcpSessionId],
   );

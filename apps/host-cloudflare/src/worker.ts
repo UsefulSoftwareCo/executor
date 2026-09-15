@@ -4,6 +4,7 @@ import {
   missingCloudflareAccessVars,
   type CloudflareEnv,
 } from "./config";
+import { mcpResourceFromPath } from "./mcp/resource";
 
 // The MCP Durable Object classes, bound in wrangler.jsonc. They must be exported
 // at the Worker entry module scope for the runtime to find them.
@@ -11,9 +12,9 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
-// handler. `/mcp` stays at this edge boundary because `McpAgent.serve()` needs
-// the Cloudflare `ExecutionContext` to pass authenticated session props into the
-// hibernatable Durable Object bridge.
+// handler. `/mcp` and `/mcp/toolkits/:slug` stay at this edge boundary because
+// `McpAgent.serve()` needs the Cloudflare `ExecutionContext` to pass
+// authenticated session props into the hibernatable Durable Object bridge.
 // ---------------------------------------------------------------------------
 
 let handlerPromise: Promise<{
@@ -48,7 +49,8 @@ export default {
     }
 
     const serve = await resolveHandler(env);
-    if (new URL(request.url).pathname === "/mcp") {
+    const resource = mcpResourceFromPath(new URL(request.url).pathname);
+    if (resource !== null) {
       return serve.mcp(request, env, ctx);
     }
     return serve.app(request);

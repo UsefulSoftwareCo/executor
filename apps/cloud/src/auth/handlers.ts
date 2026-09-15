@@ -189,17 +189,17 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           const workos = yield* WorkOSClient;
           const users = yield* UserStoreService;
           const cookieState = request.cookies[STATE_COOKIE] ?? null;
-          // CSRF check is only enforced when the redirect carries a state
-          // value — some WorkOS-initiated redirects don't include one.
-          // When state is present, it MUST match the cookie we set on
-          // /login.
-          if (query.state !== undefined) {
-            if (!cookieState || !timingSafeEqual(cookieState, query.state)) {
-              return deleteResponseCookie(
-                HttpServerResponse.text("Invalid login state", { status: 400 }),
-                STATE_COOKIE,
-              );
-            }
+          // CSRF is unconditional: every callback must carry a state that
+          // matches the cookie set on /login. There is no legitimate
+          // no-state entry path — omitting state previously allowed an
+          // attacker to complete their own OAuth round-trip and redirect a
+          // victim's browser through this callback, signing the victim into
+          // the attacker's account (login CSRF).
+          if (!cookieState || !timingSafeEqual(cookieState, query.state ?? "")) {
+            return deleteResponseCookie(
+              HttpServerResponse.text("Invalid login state", { status: 400 }),
+              STATE_COOKIE,
+            );
           }
 
           const result = yield* workos.authenticateWithCode(query.code);
@@ -210,7 +210,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           let sealedSession = result.sealedSession;
 
           // Resume where the SSR gate interrupted them. The state passed the
-          // CSRF check above whenever it's present, but it's still a
+          // CSRF check above, but it's still a
           // round-tripped value, so the returnTo inside it is re-validated like
           // any other untrusted path.
           const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
@@ -317,7 +317,10 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           // make the next page load optimistically paint the app shell for a
           // signed-out browser.
           return deleteResponseCookie(
-            deleteResponseCookie(response, "wos-session"),
+            deleteResponseCookie(
+              HttpServerResponse.setHeader(response, "Clear-Site-Data", '"cache", "storage"'),
+              "wos-session",
+            ),
             AUTH_HINT_COOKIE,
           );
         }),
@@ -704,6 +707,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               {
                 action: payload.action,
                 content: payload.content as Record<string, unknown> | undefined,
+                ...(payload.action === "accept" && payload.persist !== undefined
+                  ? { meta: { persist: payload.persist } }
+                  : {}),
               },
             ),
           );

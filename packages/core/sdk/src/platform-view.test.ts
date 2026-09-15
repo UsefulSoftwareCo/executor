@@ -501,6 +501,10 @@ describe("platform view — read-only across every surface", () => {
     withDb((db) =>
       Effect.gen(function* () {
         yield* seed(db);
+        // The list surface serves only catalog-backed connections.
+        yield* insertIntegration(db, "github");
+        yield* insertIntegration(db, "linear");
+        yield* insertIntegration(db, "stripe");
         const executor = yield* makePlatformExecutor(db, { subject: null });
 
         const connections = yield* executor.connections.list().pipe(Effect.orDie);
@@ -799,6 +803,10 @@ describe("platform view — default off", () => {
     withDb((db) =>
       Effect.gen(function* () {
         yield* seed(db);
+        // The list surface serves only catalog-backed connections.
+        yield* insertIntegration(db, "github");
+        yield* insertIntegration(db, "linear");
+        yield* insertIntegration(db, "stripe");
         // Enabling the platform view must not widen ANY existing surface.
         const executor = yield* makePlatformExecutor(db, { subject: SUBJECT_A });
 

@@ -56,3 +56,34 @@ Executor:
 
 Once a client is connected, every integration you add to Executor appears in that
 agent automatically.
+
+## Search and invoke mode
+
+Add `?mode=passthrough` to your MCP endpoint, or enable **Search and invoke**
+in the Connect card. This mode exposes four discovery and invocation tools:
+
+- `integrations`: list connected accounts with integration descriptions, account
+  labels, and their last recorded health. Results are paginated, with one item per
+  account. Health is not checked again by this call.
+- `skills`: list this server's guides, or read `skills({ name: "search-invoke" })`.
+- `search`: find tools and read their JSON input schemas. Use the exact
+  `integration`, `owner`, and `connection` fields from `integrations` to select an
+  account.
+- `invoke`: call the exact tool ID from search with JSON arguments.
+
+For example, call `integrations({})`, then
+`search({ query: "create issue", integration: "github", owner: "org", connection: "main" })`
+using the account names returned by your server. Call `invoke` with the matching
+result's `id` and arguments that follow its `inputSchema`.
+
+Both `integrations` and `search` return `items`, `total`, `hasMore`, and
+`nextOffset`. To get another page, repeat the same query and filters with
+`offset: nextOffset`. This pagination finds tools and accounts; each upstream API
+has its own pagination for records.
+
+The tool list stays small as you add integrations. Input schemas are loaded only
+for matching search results. Your client handles approval for `invoke`, and
+workspace block policies still apply. This mode does not expose a general code execution tool. Artifacts remain
+available unless you disable them with `artifacts=false` or the Artifacts toggle.
+Use `skills({ name: "create-artifact" })` for the guide to building artifacts
+after discovering data with search and invoke.
