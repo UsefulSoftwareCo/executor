@@ -20,6 +20,7 @@ import { CloudAuthPublicHandlers } from "./handlers";
 import { CloudAuthPublicApi } from "./api";
 import { UserStoreService } from "./context";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
+import { WorkOsMirror } from "./workos-mirror";
 import { encodeLoginState } from "./login-state";
 import { AutumnService } from "../extensions/billing/service";
 
@@ -79,23 +80,49 @@ const stubUsers = Layer.succeed(UserStoreService)({
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
         getOrganization: async (id: string) => ({
           id,
           name: "Org " + id,
           slug: id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug,
           name: slug,
           slug,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
         deleteOrganizationCascade: async () => {},
       }),
     ),
+});
+
+// The callback records the sign-in (user + memberships) in the membership
+// mirror; every other mirror operation is out of this route's reach.
+const stubMirror = Layer.succeed(WorkOsMirror)({
+  upsertUser: () => Effect.succeed(true),
+  upsertMembership: () => Effect.succeed(true),
+  deleteMembership: () => Effect.die("the callback does not delete memberships"),
+  deleteUser: () => Effect.die("the callback does not delete users"),
+  getCursor: () => Effect.die("the callback does not read the events cursor"),
+  setCursor: () => Effect.die("the callback does not move the events cursor"),
+  applyOrganizationScan: () => Effect.die("the callback does not run the backfill"),
+  replayBoundary: () => Effect.die("the callback does not run the reconciler"),
+  setReplayBoundary: () => Effect.die("the callback does not run the backfill"),
+  backfillCompletedAt: () => Effect.die("the callback does not check mirror readiness"),
+  markBackfillCompleted: () => Effect.die("the callback does not run the backfill"),
+  organizationBackfilledAt: () => Effect.die("the callback does not report seats"),
 });
 
 // Only the public group is under test; the session group (and its SessionAuth
@@ -107,6 +134,7 @@ const App = HttpApiBuilder.layer(PublicApi).pipe(
   Layer.provide(CloudAuthPublicHandlers),
   Layer.provide(stubWorkOS),
   Layer.provide(stubUsers),
+  Layer.provide(stubMirror),
   Layer.provide(AutumnService.Default),
   Layer.provide(HttpServer.layerServices),
 );

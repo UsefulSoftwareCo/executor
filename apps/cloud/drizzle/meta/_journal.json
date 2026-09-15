@@ -134,6 +134,13 @@
       "when": 1789570778982,
       "tag": "0018_member_directory_mirror",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789571259533,
+      "tag": "0019_workos_mirror_sync_state",
+      "breakpoints": true
     }
   ]
 }

@@ -94,7 +94,11 @@ describe("DbService", () => {
         Effect.gen(function* () {
           const { db } = yield* DbService;
           yield* Effect.promise(() =>
-            makeUserStore(db).upsertOrganization({ id: organizationId, name: "Acme" }),
+            makeUserStore(db).upsertOrganization({
+              id: organizationId,
+              name: "Acme",
+              updatedAt: new Date(),
+            }),
           );
         }),
       ),
@@ -121,16 +125,24 @@ describe("DbService", () => {
 });
 
 describe("upsertOrganization · slug is minted at insert", () => {
-  const upsert = (org: { id: string; name: string }) =>
+  const upsert = (org: { id: string; name: string; updatedAt?: Date }) =>
     program(
       Effect.gen(function* () {
         const { db } = yield* DbService;
-        return yield* Effect.promise(() => makeUserStore(db).upsertOrganization(org));
+        return yield* Effect.promise(() =>
+          makeUserStore(db).upsertOrganization({
+            updatedAt: new Date(),
+            ...org,
+          }),
+        );
       }),
     );
 
   it("mints a valid slug on insert", async () => {
-    const org = await upsert({ id: `org_${crypto.randomUUID()}`, name: "Slug Mint Co" });
+    const org = await upsert({
+      id: `org_${crypto.randomUUID()}`,
+      name: "Slug Mint Co",
+    });
     expect(org.slug, "a new org row is born with a slug").toBeTruthy();
     expect(isValidOrgSlug(org.slug), "the minted slug fits the URL grammar").toBe(true);
   });
@@ -141,6 +153,32 @@ describe("upsertOrganization · slug is minted at insert", () => {
     const renamed = await upsert({ id, name: "Renamed Org" });
     expect(renamed.slug, "the slug survives a rename").toBe(created.slug);
     expect(renamed.name, "the name is refreshed on conflict").toBe("Renamed Org");
+  });
+
+  it("refuses a name stamped earlier than the one it holds, and never renames a deleted org", async () => {
+    const id = `org_${crypto.randomUUID()}`;
+    const t1 = new Date("2026-01-01T00:00:00.000Z");
+    const t2 = new Date("2026-01-02T00:00:00.000Z");
+    const t3 = new Date("2026-01-03T00:00:00.000Z");
+    await upsert({ id, name: "Original Name", updatedAt: t2 });
+    // A payload fetched before the rename landed (a login that stalled).
+    const stale = await upsert({ id, name: "Stale Name", updatedAt: t1 });
+    expect(stale.name, "an older name never reverts a newer one").toBe("Original Name");
+    const replay = await upsert({ id, name: "Replayed Name", updatedAt: t2 });
+    expect(replay.name, "the same instant is accepted, so replays converge").toBe("Replayed Name");
+    await program(
+      Effect.gen(function* () {
+        const { db } = yield* DbService;
+        yield* Effect.promise(() => makeUserStore(db).deleteOrganizationCascade(id, t3));
+      }),
+    );
+    const afterDelete = await upsert({
+      id,
+      name: "Resurrected Name",
+      updatedAt: t3,
+    });
+    expect(afterDelete.deletedAt, "a deleted org stays deleted").toEqual(t3);
+    expect(afterDelete.name, "and keeps its last name").toBe("Replayed Name");
   });
 
   it("discriminates same-name collisions into distinct slugs", async () => {

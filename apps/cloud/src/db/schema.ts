@@ -9,7 +9,9 @@
 //   - `organizations`  — billing entity, scoping root for all domain data
 //   - `memberships`    — which accounts belong to which organizations, with
 //                        the WorkOS role and status
-//   - `workos_sync`    — the WorkOS Events API cursor the reconciler resumes from
+//   - `workos_sync`    — the WorkOS Events API cursor the reconciler resumes
+//                        from, and the replay boundary the one-off backfill
+//                        records
 //
 // The mirror is fed by login (the callback has the user + memberships in
 // hand), write-through on every Executor-initiated change, and the WorkOS
@@ -65,6 +67,41 @@ export const organizations = pgTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    /**
+     * When this organization's membership list was last FULLY scanned from
+     * WorkOS (the one-off backfill, or the on-demand scan a seat count
+     * triggers), or null if it never was. Until then the mirror may hold only
+     * the members login and write-through happened to record, so a count read
+     * from it is partial; every seat gate checks this mark first. Per
+     * organization, never database-wide: an org mirrored lazily after a
+     * backfill ran starts unmarked and is scanned on its first count. The
+     * mark also orders membership writes: a payload stamped before it is
+     * refused, since the scan was the full listing at that instant and a
+     * membership it did not contain was revoked before it — before the
+     * events replay boundary, so nothing would tombstone it again.
+     */
+    backfilledAt: timestamp("backfilled_at", { withTimezone: true }),
+    /**
+     * When this organization was deleted, or null while it is live. Set by
+     * cloud's own deletion flow and by the `organization.deleted` event, and
+     * KEPT by the local purge (`db/org-deletion.ts`), which removes the
+     * organization's memberships and tenant data but leaves this row as a
+     * tombstone: a feeder that fetched a membership before the deletion and
+     * writes it after (a login that stalled across the purge) finds the
+     * tombstone and does not re-mint the organization live. A marked
+     * organization is never renamed and authorizes nobody.
+     */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /**
+     * The instant the stored `name` is known to have been the organization's
+     * name in WorkOS: the WorkOS `updatedAt` of the organization payload that
+     * wrote it, or — for a name learned from a membership list at sign-in,
+     * which carries no organization timestamp — the instant that list was
+     * fetched. A name write stamped earlier than this is refused
+     * (`upsertOrganization`), so a sign-in whose list predates a rename cannot
+     * revert it. Null only on rows written before the stamp existed.
+     */
+    workosUpdatedAt: timestamp("workos_updated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -157,13 +194,42 @@ export const membershipTombstones = pgTable(
 );
 
 /**
- * The WorkOS Events API cursor. One row per stream (`id` names the stream;
- * the reconciler uses `"events"`), holding the id of the last event applied.
- * Advanced only by compare-and-set, so two concurrent reconciler runs cannot
- * both believe they own the stream: the loser's CAS fails and it stops.
+ * The WorkOS Events API sync state. One row per stream (`id` names the
+ * stream; the reconciler uses `"events"`), holding the id of the last event
+ * applied. Advanced only by compare-and-set, so two concurrent reconciler
+ * runs cannot both believe they own the stream: the loser's CAS fails and it
+ * stops.
+ *
+ * `range_start` on the `"events"` row is the REPLAY BOUNDARY: the instant the
+ * FIRST completed one-off backfill (`scripts/backfill-workos-mirror.ts`) began
+ * reading WorkOS. Everything before it is covered by that backfill; the
+ * reconciler's first run (no cursor yet) reads the events stream from here,
+ * so a revocation between the backfill and the first run is never skipped.
+ * Written once: a backfill that fails part-way records nothing, and a later
+ * completed one keeps it, because the backfill does not refresh everything
+ * the events stream carries (organization renames, deleted users'
+ * profiles) — those between two runs are replayed from the first boundary.
+ * Without a cursor or a boundary the reconciler does not guess; it waits for
+ * the backfill.
+ *
+ * `backfill_completed_at` is when a backfill run first wrote EVERY live
+ * organization (`scripts/backfill-workos-mirror.ts` completing, or refusing
+ * an organization only because a later listing was already applied). Until
+ * it is set, the mirror may lack members who have not signed in since it
+ * shipped, so a membership check read from it would deny them: it is the
+ * first half of the mirror-readiness mark the authorization path consults
+ * before trusting the mirror over WorkOS. Write-once — a later completed run
+ * keeps the first instant, so readiness never flips back. Per-organization
+ * completeness for the seat gates is tracked separately
+ * (`organizations.backfilled_at`).
+ *
+ * Migration 0019 seeds the boundary and the completion mark on a database
+ * with no organizations, where there is nothing to backfill.
  */
 export const workosSync = pgTable("workos_sync", {
   id: text("id").primaryKey(),
   cursor: text("cursor"),
+  rangeStart: timestamp("range_start", { withTimezone: true }),
+  backfillCompletedAt: timestamp("backfill_completed_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

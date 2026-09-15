@@ -1,6 +1,6 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { UserStoreError, WorkOSError } from "./errors";
+import { UserStoreError, WorkOSError, WorkOsMirrorError } from "./errors";
 import { NoOrganization } from "@executor-js/api/server";
 import { SessionAuth } from "./middleware";
 
@@ -172,7 +172,9 @@ export const AUTH_PATHS = {
   callback: "/api/auth/callback",
 } as const;
 
-const AuthErrors = [UserStoreError, WorkOSError] as const;
+// The login callback and the org handlers feed the membership mirror, so a
+// mirror write failure is one of their wire errors (same 500 as a store failure).
+const AuthErrors = [UserStoreError, WorkOSError, WorkOsMirrorError] as const;
 const McpApprovalErrors = [
   NoOrganization,
   McpExecutionNotFoundError,

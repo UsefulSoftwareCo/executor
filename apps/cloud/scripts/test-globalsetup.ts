@@ -42,7 +42,11 @@ export default async function setup() {
   db = await PGlite.create();
   await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 
-  server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1" });
+  // PGlite is single-session; pglite-socket multiplexes connections onto it
+  // by queueing whole transactions. Two connections let a test open two
+  // transactions and interleave them (the mirror's scan-vs-feeder race in
+  // auth/workos-mirror.node.test.ts); a third would be refused at once.
+  server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1", maxConnections: 2 });
   await server.start();
 
   // eslint-disable-next-line no-console

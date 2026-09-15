@@ -7,7 +7,7 @@
 // so domain tables can foreign-key against them and so we can resolve org
 // metadata without an API call on every request.
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 
 import { generateOrgSlug } from "@executor-js/api";
 
@@ -17,6 +17,29 @@ import { purgeOrganizationData } from "../db/org-deletion";
 
 export type Account = typeof accounts.$inferSelect;
 export type Organization = typeof organizations.$inferSelect;
+
+/**
+ * An organization as a feeder hands it to the mirror. `updatedAt` is when
+ * `name` is known to have been the organization's name in WorkOS: the WorkOS
+ * `updatedAt` of an organization payload, or the instant a membership list
+ * naming the organization was fetched (a list carries the name but no
+ * organization timestamp).
+ */
+export interface OrganizationPayload {
+  readonly id: string;
+  readonly name: string;
+  readonly updatedAt: Date;
+}
+
+/**
+ * Which stored organization rows a name stamped `updatedAt` may rename: a
+ * row with no stamp (predating the stamp), or one stamped at or before
+ * `updatedAt` — feeders replay the same payload and must converge. Every
+ * writer of `organizations.name` applies this, so a name fetched before a
+ * rename can never revert the rename after it landed.
+ */
+export const organizationAcceptsName = (updatedAt: Date) =>
+  or(isNull(organizations.workosUpdatedAt), lte(organizations.workosUpdatedAt, updatedAt));
 
 export const makeUserStore = (db: DrizzleDb) => {
   const getOrganization = async (id: string) => {
@@ -38,10 +61,15 @@ export const makeUserStore = (db: DrizzleDb) => {
   // candidate was claimed by a different org). Returns the inserted row, or
   // null when either conflict swallowed the insert — the caller decides whether
   // to re-read (id race) or retry with a new candidate (slug race).
-  const tryInsertOrg = async (id: string, name: string, slug: string) => {
+  const tryInsertOrg = async (org: OrganizationPayload, slug: string) => {
     const [row] = await db
       .insert(organizations)
-      .values({ id, name, slug })
+      .values({
+        id: org.id,
+        name: org.name,
+        slug,
+        workosUpdatedAt: org.updatedAt,
+      })
       .onConflictDoNothing()
       .returning();
     return row ?? null;
@@ -49,20 +77,27 @@ export const makeUserStore = (db: DrizzleDb) => {
 
   // Every new org row is born with a slug — there is no nullable window and no
   // self-healing. Existing rows keep their slug (stable across renames, so org
-  // URLs survive) and only refresh their name.
-  const upsertOrganization = async (org: { id: string; name: string }) => {
+  // URLs survive) and only refresh their name — and only from a payload at
+  // least as new as the one that last named it (`organizationAcceptsName`):
+  // a sign-in whose membership list was fetched before a rename would
+  // otherwise revert the rename after it landed. A row marked deleted is
+  // returned as it is: the organization is gone, and nothing a feeder still
+  // holds about it (a name, a membership fetched before the deletion) is
+  // written — never re-minted live, never renamed.
+  const upsertOrganization = async (org: OrganizationPayload) => {
     const existing = await getOrganization(org.id);
     if (existing) {
+      if (existing.deletedAt !== null) return existing;
       const [updated] = await db
         .update(organizations)
-        .set({ name: org.name })
-        .where(eq(organizations.id, org.id))
+        .set({ name: org.name, workosUpdatedAt: org.updatedAt })
+        .where(and(eq(organizations.id, org.id), organizationAcceptsName(org.updatedAt)))
         .returning();
       return updated ?? existing;
     }
     for (let attempt = 0; attempt < 4; attempt++) {
       const slug = await generateOrgSlug(org.name, slugTaken);
-      const inserted = await tryInsertOrg(org.id, org.name, slug);
+      const inserted = await tryInsertOrg(org, slug);
       if (inserted) return inserted;
       // The insert was swallowed by a conflict. If the id now exists, a
       // concurrent request mirrored it — return that row. Otherwise the slug
@@ -98,9 +133,11 @@ export const makeUserStore = (db: DrizzleDb) => {
       return rows[0] ?? null;
     },
 
-    // Permanently delete an org and everything it owns (tenant data, secrets,
-    // identity mirror + cascaded memberships) in a single transaction. Callers
-    // sequence the external WorkOS/Autumn deletions around this.
-    deleteOrganizationCascade: (id: string) => purgeOrganizationData(db, id),
+    // Permanently delete everything an org owns (tenant data, secrets, its
+    // memberships) in a single transaction, leaving the organization row as
+    // a tombstone marked `deletedAt` (see `purgeOrganizationData` for why).
+    // Callers sequence the external WorkOS/Autumn deletions around this.
+    deleteOrganizationCascade: (id: string, deletedAt: Date) =>
+      purgeOrganizationData(db, id, deletedAt),
   };
 };

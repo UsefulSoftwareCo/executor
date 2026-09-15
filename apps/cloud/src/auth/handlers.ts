@@ -1,6 +1,6 @@
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { Duration, Effect, Predicate } from "effect";
+import { Clock, Duration, Effect, Predicate } from "effect";
 import { isValidOrgSlug } from "@executor-js/api";
 
 import {
@@ -18,6 +18,7 @@ import { SessionContext, SessionCookies } from "./middleware";
 import { encodeLoginState, decodeLoginState } from "./login-state";
 import { safeReturnTo } from "./return-to";
 import { UserStoreService } from "./context";
+import { mirrorMembership, mirrorSignIn } from "./mirror-feeders";
 import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
 import { WorkOSClient } from "./workos";
@@ -209,8 +210,16 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
 
           const result = yield* workos.authenticateWithCode(query.code);
 
-          // Mirror the account locally
-          yield* users.use("ensureAccount", (s) => s.ensureAccount(result.user.id));
+          // ONE membership list for the whole callback. It feeds the mirror
+          // (the user + every org they hold a membership in, all already in
+          // hand) and it is the membership check for every landing-org
+          // candidate below, so the callback makes no per-candidate WorkOS
+          // call. The user's account row is minted by the mirror's user
+          // upsert. The list's fetch instant, taken before the read, stamps
+          // the organization names it carries (see `mirrorSignIn`).
+          const fetchedAt = new Date(yield* Clock.currentTimeMillis);
+          const memberships = yield* workos.listUserMemberships(result.user.id);
+          yield* mirrorSignIn(result.user, memberships.data, fetchedAt);
 
           let sealedSession = result.sealedSession;
 
@@ -220,34 +229,43 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           // any other untrusted path.
           const returnTo = safeReturnTo(decodeLoginState(query.state)?.returnTo) ?? "/";
           const requestedOrgSelector = requestedOrgSelectorFromReturnTo(returnTo);
-          const requestedOrg = requestedOrgSelector
-            ? yield* authorizeOrganizationSelector(result.user.id, requestedOrgSelector).pipe(
+
+          // An org SLUG (both candidate sources below are slug-validated, so
+          // an `org_…` id never reaches here) resolves to its id only when the
+          // list above holds an ACTIVE membership in it. Pending memberships
+          // are skipped because refreshing into one 400s and would bypass
+          // invite consent. A slug that fails to resolve (unknown, or a store
+          // hiccup) is not a candidate, the same as an org the user is not in.
+          const activeOrganizationIds = new Set(
+            memberships.data.filter((m) => m.status === "active").map((m) => m.organizationId),
+          );
+          const activeOrganizationFor = (slug: string) =>
+            users
+              .use("getOrganizationBySlug", (s) => s.getOrganizationBySlug(slug))
+              .pipe(
+                Effect.map((org) => (org && activeOrganizationIds.has(org.id) ? org.id : null)),
                 Effect.orElseSucceed(() => null),
-              )
-            : null;
+              );
 
           // Prefer the org in the URL that sent the user to login. If the URL
           // is bare, or not an org route, prefer the org this browser last
           // worked in (the last-org cookie — it outlives the session precisely
           // so a fresh login lands where the user left off), then WorkOS's
           // org, then the first active membership for org-less sessions.
-          // Pending memberships are skipped because refreshing into one 400s
-          // and would bypass invite consent. The cookie is membership-checked
-          // like any selector, so a stale one just falls through.
-          let targetOrganizationId = requestedOrg?.id ?? null;
+          // The cookie is membership-checked like any selector, so a stale
+          // one just falls through.
+          let targetOrganizationId = requestedOrgSelector
+            ? yield* activeOrganizationFor(requestedOrgSelector)
+            : null;
           if (!targetOrganizationId && !requestedOrgSelector) {
             const lastOrgSlug = request.cookies[LAST_ORG_COOKIE];
-            const lastOrg =
+            targetOrganizationId =
               lastOrgSlug && isValidOrgSlug(lastOrgSlug)
-                ? yield* authorizeOrganizationSelector(result.user.id, lastOrgSlug).pipe(
-                    Effect.orElseSucceed(() => null),
-                  )
+                ? yield* activeOrganizationFor(lastOrgSlug)
                 : null;
-            targetOrganizationId = lastOrg?.id ?? null;
           }
           targetOrganizationId ??= result.organizationId ?? null;
           if (!targetOrganizationId && !requestedOrgSelector) {
-            const memberships = yield* workos.listUserMemberships(result.user.id);
             const existingActive = memberships.data.find((m) => m.status === "active");
             targetOrganizationId = existingActive?.organizationId ?? null;
           }
@@ -311,7 +329,9 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             ? yield* workos.logoutUrl(sealedSession, origin ? `${origin}/` : undefined)
             : null;
 
-          const response = HttpServerResponse.redirect(logoutUrl ?? "/", { status: 302 });
+          const response = HttpServerResponse.redirect(logoutUrl ?? "/", {
+            status: 302,
+          });
 
           // Drop only what this browser actually presented. Both cookies are
           // SameSite=Lax, so a cross-site form POST carries neither — it gets
@@ -447,11 +467,18 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           }
 
           const org = yield* workos.createOrganization(name);
-          yield* workos.createMembership(org.id, session.accountId, "admin");
+          const membership = yield* workos.createMembership(org.id, session.accountId, "admin");
           // `upsertOrganization` mints the slug at insert — no separate heal step.
           const mirrored = yield* users.use("upsertOrganization", (s) =>
-            s.upsertOrganization({ id: org.id, name: org.name }),
+            s.upsertOrganization({
+              id: org.id,
+              name: org.name,
+              updatedAt: new Date(org.updatedAt),
+            }),
           );
+          // Write-through: the creator's admin membership, from the create
+          // response, lands in the mirror before anything reads it.
+          yield* mirrorMembership(membership);
 
           // Provision the org's billing customer while we're the ones creating
           // the org. Without this the first billing call an org ever makes is a
@@ -535,13 +562,18 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // empty workspace when a later request re-mirrors it with a new slug.
           yield* workos.deleteOrganization(organizationId);
 
-          // Purge all local tenant data, secrets, and the identity mirror
-          // (cascades local memberships) in one transaction. If this fails
-          // after the WorkOS delete already succeeded, the org is gone for
-          // everyone (unreachable) but its secrets/tenant rows linger orphaned —
-          // alert loudly so that window gets swept, then surface the failure.
+          // Purge all local tenant data, secrets, and the org's memberships in
+          // one transaction, leaving the org row as a tombstone marked deleted
+          // (so a login that fetched its membership list before the deletion
+          // cannot re-mint the org afterwards). If this fails after the WorkOS
+          // delete already succeeded, the org is gone for everyone
+          // (unreachable) but its secrets/tenant rows linger orphaned — alert
+          // loudly so that window gets swept, then surface the failure.
+          const deletedAt = new Date(yield* Clock.currentTimeMillis);
           yield* users
-            .use("deleteOrganizationCascade", (s) => s.deleteOrganizationCascade(organizationId))
+            .use("deleteOrganizationCascade", (s) =>
+              s.deleteOrganizationCascade(organizationId, deletedAt),
+            )
             .pipe(
               Effect.tapError((error) =>
                 Effect.logError(
@@ -645,8 +677,30 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // upsert mints the slug at insert — no separate heal step.
           const org = yield* workos.getOrganization(invitation.organizationId);
           const mirrored = yield* users.use("upsertOrganization", (s) =>
-            s.upsertOrganization({ id: org.id, name: org.name }),
+            s.upsertOrganization({
+              id: org.id,
+              name: org.name,
+              updatedAt: new Date(org.updatedAt),
+            }),
           );
+
+          // Write-through: acceptance returns the invitation, not the
+          // membership it activated, so this is the one feeder that reads the
+          // membership back (a rare path; one extra call). WorkOS activates it
+          // as part of acceptance, so its absence is worth a warning — the
+          // Events reconciler will still land it.
+          const membership = yield* workos.getUserOrgMembership(org.id, session.accountId);
+          if (membership) {
+            yield* mirrorMembership(membership);
+          } else {
+            yield* Effect.logWarning(
+              "acceptInvitation: accepted invitation has no membership yet",
+              {
+                userId: session.accountId,
+                organizationId: org.id,
+              },
+            );
+          }
 
           // The membership is active in WorkOS from this point even if
           // attaching the session below fails, so reconcile the org's billed

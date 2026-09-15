@@ -6,10 +6,13 @@
 //
 // What this pins:
 //   - an older WorkOS payload never overwrites a newer row (replay-safe)
-//   - a delete tombstones the row (inactive, stamped with the deletion time):
-//     a stale OR equal-timestamp upsert cannot resurrect it, a newer one
-//     reactivates it, and every default read treats the tombstone as no
-//     membership
+//   - a delete tombstones the row (inactive, `deleted_at` set) by IDENTITY:
+//     no payload naming the deleted membership id ever reactivates it,
+//     however it is stamped — not a stale one, not one stamped after the
+//     removal — while a replacement under a NEW id takes the row over live;
+//     every default read treats the tombstone as no membership
+//   - a membership WorkOS merely deactivated (inactive, no `deleted_at`)
+//     reactivates under the same id like any other update
 //   - a delete of a membership or user the mirror has not seen yet leaves
 //     the tombstone behind, so the backfill's older payload cannot insert
 //     the row live afterwards
@@ -17,25 +20,40 @@
 //     still carries the id it was replaced from) is recorded all the same,
 //     so a later, newer payload of the deleted id cannot take the row over
 //   - a deleted user takes no membership at all, however the payload is
-//     stamped: the account tombstone refuses the insert by identity
+//     stamped: the account tombstone refuses the insert by identity — and a
+//     membership write racing the deletion waits for its commit and sees
+//     the tombstone, never inserting a live membership for a deleted user
 //   - a delete with no WorkOS instant keeps the row's own WorkOS stamp, so
 //     a replacement membership WorkOS created meanwhile is not refused,
 //     while the removed membership's own payload still is
 //   - the cursor advances only by compare-and-set (one owner per stream)
+//   - a backfill scan is applied only if its listing is newer than the one
+//     already applied to the organization (one owner per listing instant),
+//     so an older listing cannot insert a membership the newer one lacked;
+//     a deleted organization takes no scan
+//   - a membership payload stamped before the organization's last scan is
+//     refused (a login list fetched before a revocation the scan already
+//     applied cannot reinstate it); one stamped at or after it is written —
+//     and a write racing a scan waits for the scan's commit and sees its
+//     mark, so it cannot insert a membership the scan just proved revoked
+//   - the events replay boundary is recorded once and never advanced
 //   - `members` searches email AND name case-insensitively, pages stably
 //   - `findByEmail` ignores the casing WorkOS stored
 //   - a membership arriving before its user still holds (FK via ensureAccount)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { eq, sql } from "drizzle-orm";
+import { Context, Deferred, Effect, Fiber, Layer, Option } from "effect";
 
 import { MemberDirectory } from "@executor-js/api/server";
 
-import { DbService } from "../db/db";
+import { DbService, makeDbLayer } from "../db/db";
+import { accounts, organizations } from "../db/schema";
 import { cloudMemberDirectoryLayer } from "./member-directory";
 import { UserStoreService } from "./context";
 import { WorkOsMirror, type WorkOsMirrorMembership, type WorkOsMirrorUser } from "./workos-mirror";
+import { makeWorkOsMirrorStore } from "./workos-mirror-store";
 
 const DbLive = DbService.Live;
 const Services = Layer.mergeAll(
@@ -44,8 +62,14 @@ const Services = Layer.mergeAll(
   UserStoreService.Live,
 ).pipe(Layer.provideMerge(DbLive));
 
-const run = <A, E>(body: Effect.Effect<A, E, WorkOsMirror | MemberDirectory | UserStoreService>) =>
-  Effect.runPromise(body.pipe(Effect.provide(Services), Effect.scoped));
+const run = <A, E>(
+  body: Effect.Effect<A, E, WorkOsMirror | MemberDirectory | UserStoreService | DbService>,
+) => Effect.runPromise(body.pipe(Effect.provide(Services), Effect.scoped));
+
+/** The events row is instance-wide: drop it so a test starts as a never-backfilled database. */
+const clearEventsRow = Effect.flatMap(DbService.asEffect(), ({ db }) =>
+  Effect.promise(() => db.execute(sql`delete from workos_sync where id = 'events'`)),
+);
 
 const at = (iso: string) => new Date(iso);
 const T1 = at("2026-01-01T00:00:00.000Z");
@@ -59,7 +83,9 @@ const freshOrg = () =>
   Effect.gen(function* () {
     const id = `org_${crypto.randomUUID().replaceAll("-", "")}`;
     const store = yield* UserStoreService;
-    yield* store.use("upsertOrganization", (s) => s.upsertOrganization({ id, name: "Mirror Org" }));
+    yield* store.use("upsertOrganization", (s) =>
+      s.upsertOrganization({ id, name: "Mirror Org", updatedAt: T1 }),
+    );
     return id;
   });
 
@@ -168,7 +194,7 @@ describe("WorkOsMirror upserts", () => {
     expect(result.filled?.name).toBe("Late");
   });
 
-  it("tombstones a deleted membership so a stale upsert cannot resurrect it, and a newer one can", async () => {
+  it("tombstones a deleted membership by identity: no payload of that id resurrects it, a replacement under a new id does", async () => {
     const result = await run(
       Effect.gen(function* () {
         const mirror = yield* WorkOsMirror;
@@ -198,6 +224,14 @@ describe("WorkOsMirror upserts", () => {
           membership(org, id, { id: membershipId, updatedAt: T2 }),
         );
         const afterEqual = yield* directory.membership(id, org, ["inactive"]);
+        // A role change issued before the removal and delivered after it (a
+        // stalled login list, a lagging feeder), stamped NEWER than anything
+        // the row holds — the payload a timestamp guard would let through.
+        // Same id: the membership is deleted, it never returns.
+        const newerSameId = yield* mirror.upsertMembership(
+          membership(org, id, { id: membershipId, role: "admin", updatedAt: T3 }),
+        );
+        const afterNewerSameId = yield* directory.membership(id, org, ["inactive"]);
         // The member re-added in WorkOS: a payload newer than the deletion,
         // under a new membership id (a deleted id is never reused).
         const readded = yield* mirror.upsertMembership(
@@ -224,6 +258,8 @@ describe("WorkOsMirror upserts", () => {
           afterStale,
           equal,
           afterEqual,
+          newerSameId,
+          afterNewerSameId,
           readded,
           afterReadd,
           lateDelete,
@@ -245,7 +281,12 @@ describe("WorkOsMirror upserts", () => {
     expect(result.afterStale?.status).toBe("inactive");
     expect(result.equal, "an upsert stamped AT the deletion is refused too").toBe(false);
     expect(result.afterEqual?.status).toBe("inactive");
-    expect(result.readded, "an upsert newer than the deletion reactivates").toBe(true);
+    expect(
+      result.newerSameId,
+      "a payload of the deleted id stamped AFTER the removal is refused: identity, not time",
+    ).toBe(false);
+    expect(result.afterNewerSameId).toMatchObject({ status: "inactive", role: "member" });
+    expect(result.readded, "a replacement under a new id reactivates").toBe(true);
     expect(result.afterReadd?.status).toBe("active");
     expect(result.lateDelete, "a replayed deletion of the OLD id is refused").toBe(false);
     expect(result.afterLateDelete?.status).toBe("active");
@@ -447,6 +488,59 @@ describe("WorkOsMirror upserts", () => {
     expect(result.afterReadd?.status).toBe("active");
   });
 
+  it("reactivates a membership WorkOS deactivated under the same id: a deactivation is not a deletion", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        const directory = yield* MemberDirectory;
+        const org = yield* freshOrg();
+        const id = `user_${crypto.randomUUID()}`;
+        const membershipId = `om_${id}_${org}`;
+        yield* mirror.upsertUser(user(id));
+        yield* mirror.upsertMembership(membership(org, id, { id: membershipId, updatedAt: T1 }));
+        // WorkOS deactivates the membership (an `organization_membership.updated`
+        // with status inactive): the row is inactive but still WorkOS's, with
+        // no `deleted_at` to protect it.
+        const deactivated = yield* mirror.upsertMembership(
+          membership(org, id, { id: membershipId, status: "inactive", updatedAt: T2 }),
+        );
+        const whileInactive = yield* directory.membership(id, org);
+        // A payload older than the deactivation cannot undo it, nor one
+        // stamped at the same instant.
+        const older = yield* mirror.upsertMembership(
+          membership(org, id, { id: membershipId, updatedAt: T1 }),
+        );
+        const equal = yield* mirror.upsertMembership(
+          membership(org, id, { id: membershipId, updatedAt: T2 }),
+        );
+        // WorkOS reactivates it, same id, newer stamp: live again.
+        const reactivated = yield* mirror.upsertMembership(
+          membership(org, id, { id: membershipId, role: "admin", updatedAt: T3 }),
+        );
+        const afterReactivate = yield* directory.membership(id, org);
+        return {
+          membershipId,
+          deactivated,
+          whileInactive,
+          older,
+          equal,
+          reactivated,
+          afterReactivate,
+        };
+      }),
+    );
+    expect(result.deactivated).toBe(true);
+    expect(result.whileInactive, "an inactive membership reads as no membership").toBeNull();
+    expect(result.older, "an older payload cannot undo the deactivation").toBe(false);
+    expect(result.equal, "nor one stamped at the deactivation").toBe(false);
+    expect(result.reactivated, "a newer payload under the same id reactivates it").toBe(true);
+    expect(result.afterReactivate).toMatchObject({
+      status: "active",
+      role: "admin",
+      membershipId: result.membershipId,
+    });
+  });
+
   it("tombstones every membership of a deleted user and clears the profile, keeping the account row", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -465,11 +559,13 @@ describe("WorkOsMirror upserts", () => {
         const inB = yield* directory.membership(id, orgB, ["inactive"]);
         // A stale user payload cannot restore the profile, nor can one
         // stamped at the deletion itself. No membership of the deleted user
-        // is written again — not one stamped after the deletion under a new
-        // id, the payload a timestamp guard would let through: the user is
-        // gone, and WorkOS never reuses the id.
+        // is written again — not the deleted id (a deleted membership id
+        // never returns), and not one stamped after the deletion under a
+        // NEW id, the payload a timestamp guard would let through: the user
+        // is gone, and WorkOS never reuses the id.
         const staleUser = yield* mirror.upsertUser(user(id, { firstName: "Back", updatedAt: T1 }));
         const equalUser = yield* mirror.upsertUser(user(id, { firstName: "Same", updatedAt: T2 }));
+        const sameId = yield* mirror.upsertMembership(membership(orgA, id, { updatedAt: T3 }));
         const rejoined = yield* mirror.upsertMembership(
           membership(orgA, id, { id: `om_${id}_${orgA}_2`, updatedAt: T3 }),
         );
@@ -499,6 +595,7 @@ describe("WorkOsMirror upserts", () => {
           inB,
           staleUser,
           equalUser,
+          sameId,
           rejoined,
           afterRejoin,
           unknown,
@@ -518,14 +615,12 @@ describe("WorkOsMirror upserts", () => {
     });
     expect(result.staleUser).toBe(false);
     expect(result.equalUser, "a profile stamped AT the deletion is refused").toBe(false);
+    expect(result.sameId, "a deleted membership id never returns").toBe(false);
     expect(
       result.rejoined,
       "a membership of a deleted user is refused however it is stamped: identity, not time",
     ).toBe(false);
-    expect(result.afterRejoin).toMatchObject({
-      status: "inactive",
-      name: null,
-    });
+    expect(result.afterRejoin).toMatchObject({ status: "inactive", name: null });
     expect(result.unknown, "deleting an unseen user leaves a tombstone").toBe(true);
     expect(result.unseenProfile, "which the older profile cannot fill").toBe(false);
     expect(
@@ -533,6 +628,150 @@ describe("WorkOsMirror upserts", () => {
       "and a membership the mirror never held is not inserted for the deleted user",
     ).toBe(false);
     expect(result.unseenRow).toBeNull();
+  });
+
+  it("waits for a user deletion holding the account row before judging a membership write against its tombstone", async () => {
+    // A feeder (a stalled login list, the backfill's older listing) writes a
+    // membership of a user whose `user.deleted` the reconciler is applying
+    // at this moment. The deletion locks the account row for the length of
+    // its transaction; the feeder's write must wait for that commit, see the
+    // tombstone, and refuse the payload — never insert a live membership
+    // for a deleted user. The deletion runs on the test's shared connection;
+    // the feeder runs the same store over a second one, so the two
+    // transactions are real peers on the server.
+    const result = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const org = yield* freshOrg();
+          const gone = `user_${crypto.randomUUID()}`;
+          const mirror = yield* WorkOsMirror;
+          const { db: deleterDb } = yield* DbService;
+          // The second connection is owned by this test body's scope.
+          const feederDb = Context.get(yield* Layer.build(makeDbLayer()), DbService).db;
+          const feeder = makeWorkOsMirrorStore(feederDb);
+          const directory = yield* MemberDirectory;
+          yield* mirror.upsertUser(user(gone, { firstName: "Gone" }));
+
+          // The deletion's transaction: the account row is locked as
+          // `deleteUser` locks it, and the transaction is held open until
+          // `release` — the window a feeder can race. The tombstone itself
+          // is written after the feeder has started waiting.
+          const locked = yield* Deferred.make<void>();
+          let release: () => void = () => undefined;
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const deletion = yield* Effect.forkChild(
+            Effect.promise(() =>
+              deleterDb.transaction(async (tx) => {
+                await tx
+                  .select({ id: accounts.id })
+                  .from(accounts)
+                  .where(eq(accounts.id, gone))
+                  .for("no key update");
+                await Effect.runPromise(Deferred.succeed(locked, undefined));
+                await held;
+                await makeWorkOsMirrorStore(tx).deleteUser(gone, T2).pipe(Effect.runPromise);
+              }),
+            ),
+            { startImmediately: true },
+          );
+          yield* Deferred.await(locked);
+
+          // The feeder's write starts while the deletion holds the row.
+          const written = yield* Deferred.make<boolean>();
+          yield* Effect.forkChild(
+            feeder
+              .upsertMembership(membership(org, gone, { updatedAt: T3 }))
+              .pipe(Effect.flatMap((wrote) => Deferred.succeed(written, wrote))),
+            { startImmediately: true },
+          );
+          const beforeCommit = yield* Effect.timeoutOption(Deferred.await(written), "250 millis");
+          release();
+          yield* Fiber.join(deletion);
+          const afterCommit = yield* Deferred.await(written);
+          const row = yield* directory.membership(gone, org, ["active", "pending", "inactive"]);
+          return { beforeCommit, afterCommit, row };
+        }),
+      ),
+    );
+    expect(
+      Option.isNone(result.beforeCommit),
+      "the write waits while the deletion holds the account row",
+    ).toBe(true);
+    expect(
+      result.afterCommit,
+      "once the deletion has committed, its tombstone refuses the payload",
+    ).toBe(false);
+    expect(result.row, "so no membership was inserted for the deleted user").toBeNull();
+  });
+
+  it("waits for a membership deletion holding the account row before judging a write of that id against the ledger", async () => {
+    // Same race for a single membership: a feeder writes membership `om`
+    // while the reconciler is applying its `organization_membership.deleted`.
+    // The delete locks the account row for its transaction, so the feeder's
+    // FOR SHARE read waits, then finds the ledger entry and refuses. Without
+    // the lock the feeder could pass the ledger check first and insert the
+    // deleted membership live after the delete committed.
+    const result = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const org = yield* freshOrg();
+          const id = `user_${crypto.randomUUID()}`;
+          const mirror = yield* WorkOsMirror;
+          const { db: deleterDb } = yield* DbService;
+          const feederDb = Context.get(yield* Layer.build(makeDbLayer()), DbService).db;
+          const feeder = makeWorkOsMirrorStore(feederDb);
+          const directory = yield* MemberDirectory;
+          yield* mirror.upsertUser(user(id));
+          const gone = membership(org, id, { updatedAt: T3 });
+
+          const locked = yield* Deferred.make<void>();
+          let release: () => void = () => undefined;
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const deletion = yield* Effect.forkChild(
+            Effect.promise(() =>
+              deleterDb.transaction(async (tx) => {
+                await tx
+                  .select({ id: accounts.id })
+                  .from(accounts)
+                  .where(eq(accounts.id, id))
+                  .for("no key update");
+                await Effect.runPromise(Deferred.succeed(locked, undefined));
+                await held;
+                await makeWorkOsMirrorStore(tx).deleteMembership(gone, T2).pipe(Effect.runPromise);
+              }),
+            ),
+            { startImmediately: true },
+          );
+          yield* Deferred.await(locked);
+
+          const written = yield* Deferred.make<boolean>();
+          yield* Effect.forkChild(
+            feeder
+              .upsertMembership(gone)
+              .pipe(Effect.flatMap((wrote) => Deferred.succeed(written, wrote))),
+            { startImmediately: true },
+          );
+          const beforeCommit = yield* Effect.timeoutOption(Deferred.await(written), "250 millis");
+          release();
+          yield* Fiber.join(deletion);
+          const afterCommit = yield* Deferred.await(written);
+          const row = yield* directory.membership(id, org, ["active", "pending", "inactive"]);
+          return { beforeCommit, afterCommit, status: row?.status ?? null };
+        }),
+      ),
+    );
+    expect(
+      Option.isNone(result.beforeCommit),
+      "the write waits while the deletion holds the account row",
+    ).toBe(true);
+    expect(result.afterCommit, "once the deletion has committed, the ledger refuses the id").toBe(
+      false,
+    );
+    expect(result.status, "and the row is the tombstone, never live").toBe("inactive");
   });
 });
 
@@ -557,6 +796,291 @@ describe("WorkOsMirror cursor", () => {
     expect(result.afterWrong).toBe("event_1");
     expect(result.right).toBe(true);
     expect(result.after).toBe("event_2");
+  });
+});
+
+describe("WorkOsMirror backfill sync state", () => {
+  it("records the replay boundary and the backfill completion once each, without touching the cursor", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        // The events row is instance-wide (migration 0019 seeds it on the
+        // empty test database, other tests may have written it): start from
+        // no row, as a database that has never been backfilled has.
+        yield* clearEventsRow;
+        const first = yield* mirror.setReplayBoundary(T2);
+        const boundary = yield* mirror.replayBoundary();
+        const cursorAfterBoundary = yield* mirror.getCursor();
+        // A later completed backfill: its boundary is not recorded.
+        const again = yield* mirror.setReplayBoundary(T3);
+        const afterAgain = yield* mirror.replayBoundary();
+        // Nor once the stream is being followed.
+        const cursorBefore = yield* mirror.getCursor();
+        yield* mirror.setCursor(cursorBefore, "event_boundary");
+        const afterCursor = yield* mirror.setReplayBoundary(T1);
+        const boundaryWithCursor = yield* mirror.replayBoundary();
+        const cursor = yield* mirror.getCursor();
+        // The completion mark: absent until a run covers every organization,
+        // then written once, beside the boundary and the cursor.
+        const notCompleted = yield* mirror.backfillCompletedAt();
+        const completed = yield* mirror.markBackfillCompleted(T3);
+        const completedAgain = yield* mirror.markBackfillCompleted(T4);
+        const completedAt = yield* mirror.backfillCompletedAt();
+        const boundaryAfterCompletion = yield* mirror.replayBoundary();
+        const cursorAfterCompletion = yield* mirror.getCursor();
+        return {
+          first,
+          boundary,
+          cursorAfterBoundary,
+          again,
+          afterAgain,
+          afterCursor,
+          boundaryWithCursor,
+          cursor,
+          notCompleted,
+          completed,
+          completedAgain,
+          completedAt,
+          boundaryAfterCompletion,
+          cursorAfterCompletion,
+        };
+      }),
+    );
+    expect(result.first, "the first boundary is recorded").toBe(true);
+    expect(result.boundary, "and reads back as written").toEqual(T2);
+    expect(result.cursorAfterBoundary, "writing the boundary mints no cursor").toBeNull();
+    expect(result.again, "a later run's boundary is refused").toBe(false);
+    expect(result.afterAgain, "the first stands").toEqual(T2);
+    expect(result.afterCursor).toBe(false);
+    expect(result.boundaryWithCursor).toEqual(T2);
+    expect(result.cursor, "and the cursor is untouched").toBe("event_boundary");
+    expect(result.notCompleted, "no completion until a run covers every org").toBeNull();
+    expect(result.completed, "the first completion is recorded").toBe(true);
+    expect(result.completedAgain, "a later one is refused").toBe(false);
+    expect(result.completedAt, "the first stands").toEqual(T3);
+    expect(result.boundaryAfterCompletion, "the boundary is untouched").toEqual(T2);
+    expect(result.cursorAfterCompletion, "and so is the cursor").toBe("event_boundary");
+  });
+
+  it("refuses a membership payload stamped before the organization's last scan, and accepts one stamped at or after it", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        const directory = yield* MemberDirectory;
+        const org = yield* freshOrg();
+        const revoked = `user_${crypto.randomUUID()}`;
+        const kept = `user_${crypto.randomUUID()}`;
+        const joined = `user_${crypto.randomUUID()}`;
+        // A login fetched its membership list at T1, while `revoked` was a
+        // member, then stalled. WorkOS revoked them, and the backfill scanned
+        // the org at T2 without them — nothing to tombstone, the row was
+        // never there.
+        yield* mirror.applyOrganizationScan({
+          organizationId: org,
+          listedAt: T2,
+          members: [{ user: user(kept), membership: membership(org, kept, { updatedAt: T1 }) }],
+        });
+        // The stalled login resumes and writes what it holds: refused, the
+        // revocation predates the scan and nothing would ever undo the row.
+        const stale = yield* mirror.upsertMembership(membership(org, revoked, { updatedAt: T1 }));
+        const staleRow = yield* directory.membership(revoked, org, [
+          "active",
+          "pending",
+          "inactive",
+        ]);
+        // The same list's payload for a member the scan kept: refused too —
+        // it changes nothing, the scan already wrote that state.
+        const repeated = yield* mirror.upsertMembership(membership(org, kept, { updatedAt: T1 }));
+        const keptRow = yield* directory.membership(kept, org);
+        // A membership WorkOS created after the scan (its event, or a login
+        // after it): stamped past the mark, written.
+        const later = yield* mirror.upsertMembership(membership(org, joined, { updatedAt: T3 }));
+        const atMark = yield* mirror.upsertMembership(
+          membership(org, kept, { role: "admin", updatedAt: T2 }),
+        );
+        const keptAfter = yield* directory.membership(kept, org);
+        return { stale, staleRow, repeated, keptRow, later, atMark, keptAfter };
+      }),
+    );
+    expect(result.stale, "a payload older than the scan is refused").toBe(false);
+    expect(result.staleRow, "and no row is minted for the revoked member").toBeNull();
+    expect(result.repeated, "even for a member the scan kept").toBe(false);
+    expect(result.keptRow?.status).toBe("active");
+    expect(result.later, "a payload newer than the scan is written").toBe(true);
+    expect(result.atMark, "as is one stamped at the scan's instant").toBe(true);
+    expect(result.keptAfter?.role).toBe("admin");
+  });
+
+  it("waits for a scan holding the organization row before judging a payload against the scan's mark", async () => {
+    // A feeder (a login) writes a membership it fetched at T1 while a scan
+    // listed at T2 — which no longer contains that membership — is being
+    // applied. The scan claims the organization row for the length of its
+    // transaction; the feeder's write must wait for that commit, observe
+    // the mark, and refuse the payload — never insert the membership the
+    // scan proved revoked. The scan holds the test's shared connection; the
+    // feeder runs the same store over a second one, so the two transactions
+    // are real peers on the server.
+    const result = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const org = yield* freshOrg();
+          const revoked = `user_${crypto.randomUUID()}`;
+          const { db: scanDb } = yield* DbService;
+          // The second connection is owned by this test body's scope.
+          const feederDb = Context.get(yield* Layer.build(makeDbLayer()), DbService).db;
+          const feeder = makeWorkOsMirrorStore(feederDb);
+          const directory = yield* MemberDirectory;
+
+          // The scan's transaction: its claim (the `backfilled_at` CAS, an
+          // UPDATE that locks the row) is done, and the transaction is held
+          // open until `release` — the window a feeder can race.
+          const claimed = yield* Deferred.make<void>();
+          let release: () => void = () => undefined;
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const scan = yield* Effect.forkChild(
+            Effect.promise(() =>
+              scanDb.transaction(async (tx) => {
+                await tx
+                  .update(organizations)
+                  .set({ backfilledAt: T2 })
+                  .where(eq(organizations.id, org));
+                await Effect.runPromise(Deferred.succeed(claimed, undefined));
+                await held;
+              }),
+            ),
+            { startImmediately: true },
+          );
+          yield* Deferred.await(claimed);
+
+          // The feeder's write starts while the scan holds the row.
+          const written = yield* Deferred.make<boolean>();
+          yield* Effect.forkChild(
+            feeder
+              .upsertMembership(membership(org, revoked, { updatedAt: T1 }))
+              .pipe(Effect.flatMap((wrote) => Deferred.succeed(written, wrote))),
+            { startImmediately: true },
+          );
+          const beforeCommit = yield* Effect.timeoutOption(Deferred.await(written), "250 millis");
+          release();
+          yield* Fiber.join(scan);
+          const afterCommit = yield* Deferred.await(written);
+          const row = yield* directory.membership(revoked, org, ["active", "pending", "inactive"]);
+          return { beforeCommit, afterCommit, row };
+        }),
+      ),
+    );
+    expect(
+      Option.isNone(result.beforeCommit),
+      "the write waits while the scan holds the organization row",
+    ).toBe(true);
+    expect(result.afterCommit, "once the scan has committed, its mark refuses the payload").toBe(
+      false,
+    );
+    expect(result.row, "so the revoked membership was never inserted").toBeNull();
+  });
+
+  it("applies a scan only when its listing is newer than the one already applied, and never to a deleted or unknown organization", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        const directory = yield* MemberDirectory;
+        const store = yield* UserStoreService;
+        const scanned = yield* freshOrg();
+        const untouched = yield* freshOrg();
+        const staying = `user_${crypto.randomUUID()}`;
+        const leaving = `user_${crypto.randomUUID()}`;
+        const member = (id: string) => ({
+          user: user(id),
+          membership: membership(scanned, id),
+        });
+
+        const before = yield* mirror.organizationBackfilledAt(scanned);
+        // The later listing (T2) no longer contains `leaving`; applied first.
+        const later = yield* mirror.applyOrganizationScan({
+          organizationId: scanned,
+          listedAt: T2,
+          members: [member(staying)],
+        });
+        const afterLater = yield* mirror.organizationBackfilledAt(scanned);
+        // The earlier listing (T1) still contains `leaving`: refused whole.
+        const earlier = yield* mirror.applyOrganizationScan({
+          organizationId: scanned,
+          listedAt: T1,
+          members: [member(staying), member(leaving)],
+        });
+        const afterEarlier = yield* mirror.organizationBackfilledAt(scanned);
+        const leavingRow = yield* directory.membership(leaving, scanned, [
+          "active",
+          "pending",
+          "inactive",
+        ]);
+        // The same instant is not newer either: a replayed listing writes nothing.
+        const same = yield* mirror.applyOrganizationScan({
+          organizationId: scanned,
+          listedAt: T2,
+          members: [],
+        });
+        const stayingRow = yield* directory.membership(staying, scanned);
+        const other = yield* mirror.organizationBackfilledAt(untouched);
+        const unknown = yield* mirror.applyOrganizationScan({
+          organizationId: "org_never_mirrored",
+          listedAt: T3,
+          members: [],
+        });
+        yield* store.use("deleteOrganizationCascade", (s) =>
+          s.deleteOrganizationCascade(untouched, T3),
+        );
+        const deleted = yield* mirror.applyOrganizationScan({
+          organizationId: untouched,
+          listedAt: T4,
+          members: [{ user: user(staying), membership: membership(untouched, staying) }],
+        });
+        const deletedRow = yield* directory.membership(staying, untouched);
+        return {
+          before,
+          later,
+          afterLater,
+          earlier,
+          afterEarlier,
+          leavingRow,
+          same,
+          stayingRow,
+          other,
+          unknown,
+          deleted,
+          deletedRow,
+        };
+      }),
+    );
+    expect(result.before, "a freshly mirrored organization is unscanned").toBeNull();
+    expect(result.later).toEqual(
+      Option.some({
+        usersWritten: 1,
+        membershipsWritten: 1,
+        membershipsTombstoned: 0,
+      }),
+    );
+    expect(result.afterLater, "the scan marks the organization as of its listing").toEqual(T2);
+    expect(result.earlier, "an older listing is refused whole").toEqual(Option.none());
+    expect(result.afterEarlier, "and the mark never moves backwards").toEqual(T2);
+    expect(
+      result.leavingRow,
+      "the membership only the older listing held was never written",
+    ).toBeNull();
+    expect(result.same, "a listing at the recorded instant is refused too").toEqual(Option.none());
+    expect(result.stayingRow?.status, "so it tombstones nothing the newer one wrote").toBe(
+      "active",
+    );
+    expect(result.other, "another organization's mark is its own").toBeNull();
+    expect(result.unknown, "an organization the mirror does not hold takes no scan").toEqual(
+      Option.none(),
+    );
+    expect(result.deleted, "nor does a deleted one, however new the listing").toEqual(
+      Option.none(),
+    );
+    expect(result.deletedRow).toBeNull();
   });
 });
 

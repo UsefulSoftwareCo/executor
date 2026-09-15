@@ -7,7 +7,8 @@
 // two orgs across every tenant table + blob namespace, purges one, and asserts:
 //   - every executor tenant table row for the target org is gone
 //   - org- and user-scoped secret blobs for the target org are gone
-//   - the identity row is gone and its memberships cascade with it
+//   - the org's memberships are gone; the identity row stays as a tombstone
+//     marked deleted (so a delayed feeder cannot re-mint the org live)
 //   - a second org's data is completely untouched
 //   - the blob prefix match escapes LIKE wildcards (a `_` in the org id must
 //     not widen the match to a look-alike namespace)
@@ -196,11 +197,12 @@ const NOT_ORG_OWNED: Record<string, string> = {
   blob: "org-scoped by namespace prefix, purged via the LIKE match",
   // Instance-wide, not owned by any org.
   private_executor_cloud_settings: "singleton instance settings, not org-scoped",
-  // Identity mirror. `organizations` is deleted directly and `memberships`
-  // cascades from its FK; `accounts` deliberately outlives the org.
-  organizations: "the identity row itself, deleted directly",
-  memberships: "cascades from the organizations FK",
-  membership_tombstones: "cascades from the organizations FK",
+  // Identity mirror. `organizations` is kept as a tombstone marked deleted,
+  // `memberships` are deleted by organization id; `accounts` deliberately
+  // outlives the org.
+  organizations: "the identity row itself, kept as a tombstone marked deleted",
+  memberships: "deleted by organization id",
+  membership_tombstones: "deleted by organization id",
   accounts: "shared across orgs — deliberately survives",
   workos_sync: "the WorkOS Events API cursor, instance-wide and not org-scoped",
 };
@@ -231,14 +233,24 @@ describe("purgeOrganizationData", () => {
     // A look-alike blob that only an UNescaped `_` wildcard would match:
     // `o:<orgA>/…` with the underscore replaced by another char.
     const trapNs = `o:${orgA.replace("_", "X")}/plugin`;
+    const now = new Date();
+    const deletedAt = new Date("2026-01-02T00:00:00.000Z");
 
     await program(
       Effect.gen(function* () {
         const { db } = yield* DbService;
         yield* Effect.promise(async () => {
           const store = makeUserStore(db);
-          await store.upsertOrganization({ id: orgA, name: "Delete Me" });
-          await store.upsertOrganization({ id: orgB, name: "Keep Me" });
+          await store.upsertOrganization({
+            id: orgA,
+            name: "Delete Me",
+            updatedAt: now,
+          });
+          await store.upsertOrganization({
+            id: orgB,
+            name: "Keep Me",
+            updatedAt: now,
+          });
           await store.ensureAccount(accountId);
           await db.insert(memberships).values({ accountId, organizationId: orgA });
           await db.insert(memberships).values({ accountId, organizationId: orgB });
@@ -257,7 +269,7 @@ describe("purgeOrganizationData", () => {
     await program(
       Effect.gen(function* () {
         const { db } = yield* DbService;
-        yield* Effect.promise(() => makeUserStore(db).deleteOrganizationCascade(orgA));
+        yield* Effect.promise(() => makeUserStore(db).deleteOrganizationCascade(orgA, deletedAt));
       }),
     );
 
@@ -267,10 +279,13 @@ describe("purgeOrganizationData", () => {
         yield* Effect.promise(async () => {
           const store = makeUserStore(db);
 
-          // Target org: every tenant row + blob gone, identity gone, membership
-          // cascaded, but the shared account survives (it may join other orgs).
+          // Target org: every tenant row + blob gone, memberships gone, the
+          // identity row kept as a tombstone, and the shared account survives
+          // (it may join other orgs).
           expect(await countTenantRows(db, orgA)).toBe(0);
-          expect(await store.getOrganization(orgA)).toBeNull();
+          const tombstone = await store.getOrganization(orgA);
+          expect(tombstone?.deletedAt, "the org row stays, marked deleted").toEqual(deletedAt);
+          expect(tombstone?.name, "as it was").toBe("Delete Me");
           const orgAMemberships = await db
             .select()
             .from(memberships)
@@ -285,7 +300,7 @@ describe("purgeOrganizationData", () => {
 
           // Second org: fully intact.
           expect(await countTenantRows(db, orgB)).toBeGreaterThan(0);
-          expect(await store.getOrganization(orgB)).not.toBeNull();
+          expect((await store.getOrganization(orgB))?.deletedAt).toBeNull();
           const orgBMemberships = await db
             .select()
             .from(memberships)

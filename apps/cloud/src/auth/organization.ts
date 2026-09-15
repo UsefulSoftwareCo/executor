@@ -44,7 +44,11 @@ export const resolveOrganization = (organizationId: string) =>
     const workos = yield* WorkOSClient;
     const fresh = yield* workos.getOrganization(organizationId);
     return yield* users.use("upsertOrganization", (s) =>
-      s.upsertOrganization({ id: fresh.id, name: fresh.name }),
+      s.upsertOrganization({
+        id: fresh.id,
+        name: fresh.name,
+        updatedAt: new Date(fresh.updatedAt),
+      }),
     );
   });
 

@@ -86,12 +86,18 @@ const stubUsers = Layer.succeed(UserStoreService)({
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         getOrganization: async (id: string) => ({
           id,
           name: `Org ${id}`,
           slug: id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         // The URL slug maps to URL_ORG (the member's other org); any other slug
@@ -100,6 +106,9 @@ const stubUsers = Layer.succeed(UserStoreService)({
           id: slug === URL_SLUG ? URL_ORG : "org_outsider",
           name: `Org ${slug}`,
           slug,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         deleteOrganizationCascade: async () => {},

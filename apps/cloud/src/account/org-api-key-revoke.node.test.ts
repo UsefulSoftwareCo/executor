@@ -8,6 +8,7 @@ import { ApiKeyService, OrgApiKeyNotFound } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import { ORG_SELECTOR_HEADER } from "../auth/organization";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { AutumnService } from "../extensions/billing/service";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
 
@@ -100,23 +101,48 @@ const stubUsers = Layer.succeed(UserStoreService)({
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         getOrganization: async (id: string) => ({
           id,
           name: `Org ${id}`,
           slug: id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug,
           name: `Org ${slug}`,
           slug,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         deleteOrganizationCascade: async () => {},
       }),
     ),
+});
+
+// Revoke changes no membership, so the mirror is never written.
+const stubMirror = Layer.succeed(WorkOsMirror)({
+  upsertUser: () => Effect.die("revoke does not write the membership mirror"),
+  upsertMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteUser: () => Effect.die("revoke does not write the membership mirror"),
+  getCursor: () => Effect.die("revoke does not read the events cursor"),
+  setCursor: () => Effect.die("revoke does not move the events cursor"),
+  applyOrganizationScan: () => Effect.die("revoke does not run the backfill"),
+  replayBoundary: () => Effect.die("revoke does not run the reconciler"),
+  setReplayBoundary: () => Effect.die("revoke does not run the backfill"),
+  backfillCompletedAt: () => Effect.die("revoke does not check mirror readiness"),
+  markBackfillCompleted: () => Effect.die("revoke does not run the backfill"),
+  organizationBackfilledAt: () => Effect.die("revoke does not report seats"),
 });
 
 const stubAutumn = Layer.succeed(AutumnService)({
@@ -156,6 +182,7 @@ const providerWith = (accountId: string) => {
           Layer.mergeAll(
             stubWorkOS,
             stubUsers,
+            stubMirror,
             stubApiKeys,
             stubAutumn,
             Layer.succeed(AccountCaller)({ session: session(accountId) }),

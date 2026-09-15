@@ -56,7 +56,9 @@ export const BootSharedServices = Layer.mergeAll(
 // `AutumnService.Default` is provided HERE because the `createOrganization`
 // handler reads it for the free-organizations-per-user limit gate — one of the
 // few app-only billing touchpoints. (It is NOT on the neutral boot core.)
-export const makeNonProtectedApiLive = (rsLive: Layer.Layer<DbService | UserStoreService>) =>
+export const makeNonProtectedApiLive = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+) =>
   HttpApiBuilder.layer(NonProtectedApi).pipe(
     Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
     Layer.provide(requestScopedMiddleware(rsLive).layer),
