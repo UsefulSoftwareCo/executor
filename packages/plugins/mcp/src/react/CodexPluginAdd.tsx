@@ -5,6 +5,7 @@ import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { Button } from "@executor-js/react/components/button";
 import { FloatActions } from "@executor-js/react/components/float-actions";
+import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
 import { integrationsOptimisticAtom } from "@executor-js/react/api/atoms";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { addIntegrationErrorMessage } from "@executor-js/react/lib/integration-add";
@@ -150,10 +151,11 @@ export default function CodexPluginAdd(props: {
         {/* The plugin's own icon comes from the local Codex install; without
             one the card still identifies its provider rather than showing a
             gap, which matters most on the machines that have no install. */}
-        <img
-          src={plugin.icon ?? plugin.fallbackIcon ?? "https://integrations.sh/logo/openai.com"}
-          alt=""
-          className="size-16 rounded-2xl"
+        <IntegrationFavicon
+          icon={plugin.icon}
+          fallbackSrc={plugin.fallbackIcon ?? "https://integrations.sh/logo/openai.com"}
+          size={64}
+          className="rounded-2xl"
         />
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">

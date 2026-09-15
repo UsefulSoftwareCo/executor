@@ -28,7 +28,7 @@ import { composePluginApi } from "@executor-js/api/server";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 
 import { scenario } from "../src/scenario";
-import { Cli, RunDir } from "../src/services";
+import { Browser, Cli, RunDir, Target } from "../src/services";
 import { withLocalServer } from "./local-server";
 
 const api = composePluginApi([mcpHttpPlugin()] as const);
@@ -109,7 +109,10 @@ scenario(
   { timeout: 300_000 },
   Effect.gen(function* () {
     const cli = yield* Cli;
+    const browser = yield* Browser;
     const runDir = yield* RunDir;
+    const target = yield* Target;
+    const identity = yield* target.newIdentity();
     const codexHome = makeCodexHome();
 
     yield* withLocalServer(
@@ -142,6 +145,25 @@ scenario(
               CODEX_HOME: codexHome,
             });
           }
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            await step("Find Computer Use on the integration browse page", async () => {
+              await page.goto(server.url, { waitUntil: "domcontentloaded" });
+              await page.getByRole("link", { name: "Add integration" }).click();
+              await page
+                .getByRole("textbox", { name: "Search integrations, or paste a URL" })
+                .fill("Computer Use");
+
+              const card = page.getByTestId("preset-mcp-codex-computer-use");
+              await card.getByText("Computer Use MCP").waitFor({ timeout: 30_000 });
+              await card
+                .locator(
+                  'img[src="https://learn.chatgpt.com/images/codex/icons/computer-use-plugin-icon.png"]',
+                )
+                .waitFor({ timeout: 30_000 });
+            });
+          });
+
           // Curated entries carry the app-server bridge recipe: `codex
           // app-server`, the server name the bridge calls tools on, and the
           // preset it came from — that last one is what lets a macOS refusal

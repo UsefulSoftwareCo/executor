@@ -21,7 +21,7 @@ import { Button } from "../components/button";
 import { Input } from "../components/input";
 import { PageHeader } from "../components/page";
 import {
-  integrationFaviconUrl,
+  IntegrationFavicon,
   integrationInferredUrl,
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
@@ -29,7 +29,6 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import {
   availableCatalogKinds,
-  catalogLogoUrl,
   filterCatalogEntries,
   resolveConnectTarget,
   useCatalogBrowse,
@@ -168,7 +167,10 @@ interface Row {
    *  distinguishable. Omitted when the title is already the domain. */
   readonly domain?: string;
   readonly description?: string;
-  readonly iconUrl?: string;
+  readonly icon?: string;
+  readonly fallbackSrc?: string;
+  readonly integrationId?: string;
+  readonly url?: string;
   readonly onSelect: () => void;
   readonly added: boolean;
   /** Namespace of the installed integration this row matched — the View
@@ -214,36 +216,6 @@ function LoadMoreSentinel(props: { readonly onVisible: () => void }) {
 // Row
 // ---------------------------------------------------------------------------
 
-/** Registry logos 404 for plenty of hosts; a broken-image glyph in a list of
- *  brand marks looks like a bug, so failures fall back to a neutral mark. */
-function RowIcon(props: { readonly src?: string; readonly alt: string }) {
-  const [failed, setFailed] = useState(false);
-  if (!props.src || failed) {
-    return (
-      <span
-        aria-hidden
-        className="flex size-5 items-center justify-center rounded-sm bg-muted text-[10px] font-medium text-muted-foreground"
-      >
-        {props.alt.charAt(0).toUpperCase()}
-      </span>
-    );
-  }
-  return (
-    <img
-      src={props.src}
-      alt=""
-      width={20}
-      height={20}
-      // NOT lazy. The console scrolls inside a nested container, and Chrome's
-      // lazy loading never brings these into view there — every icon sits
-      // pending forever while an eager load of the same URL succeeds instantly.
-      // A 20px favicon is not worth deferring anyway.
-      onError={() => setFailed(true)}
-      className="size-5 object-contain"
-    />
-  );
-}
-
 function ResultCard(props: { readonly row: Row }) {
   const { row } = props;
   return (
@@ -253,7 +225,13 @@ function ResultCard(props: { readonly row: Row }) {
     >
       <div className="flex items-start justify-between gap-2">
         <span className="flex size-8 shrink-0 items-center justify-center">
-          <RowIcon {...(row.iconUrl ? { src: row.iconUrl } : {})} alt={row.title} />
+          <IntegrationFavicon
+            icon={row.icon}
+            fallbackSrc={row.fallbackSrc}
+            integrationId={row.integrationId}
+            url={row.url}
+            size={20}
+          />
         </span>
         {row.added ? (
           // The add happened HERE — the card is the receipt. View jumps to
@@ -725,7 +703,8 @@ export function IntegrationBrowsePage() {
         title,
         kindKey,
         ...(entry.preset.summary ? { description: entry.preset.summary } : {}),
-        ...(entry.preset.icon ? { iconUrl: entry.preset.icon } : {}),
+        ...(entry.preset.icon ? { icon: entry.preset.icon } : {}),
+        ...(entry.preset.fallbackIcon ? { fallbackSrc: entry.preset.fallbackIcon } : {}),
         onSelect: () => pickPreset(entry),
         // The rendered title is also what the add flow derives the namespace
         // from, so the card recognises an add made through it even when the
@@ -774,8 +753,8 @@ export function IntegrationBrowsePage() {
           kindKey: surface.kind,
           domain: entry.domain,
           ...(description ? { description } : {}),
-          iconUrl:
-            (known && "icon" in known ? known.icon : undefined) ?? catalogLogoUrl(entry.domain, 10),
+          ...(known && "icon" in known && known.icon ? { icon: known.icon } : {}),
+          url: `https://${entry.domain}`,
           onSelect: () =>
             void pickCatalogEntry(entry, surface.kind, title, rowKey, known ?? undefined),
           added:
@@ -854,38 +833,34 @@ export function IntegrationBrowsePage() {
             String(row.slug).includes(text)),
       )
       .map((row): Row => {
-        // The SAME icon cascade the sidebar runs — preset icon by exact
-        // identity, else the logo proxy from the integration's own URL. Two
-        // resolvers for one integration is how the sidebar and the picker
-        // ended up disagreeing about what DeepWiki looks like.
-        const iconUrl =
-          integrationPresetIconUrl(
-            {
-              id: String(row.slug),
-              kind: row.kind,
-              name: row.name,
-              ...(row.displayUrl ? { url: row.displayUrl } : {}),
-            },
-            integrationPlugins,
-          ) ??
-          integrationFaviconUrl(
-            row.displayUrl ??
-              integrationInferredUrl({ id: String(row.slug), name: row.name }) ??
-              undefined,
-            10,
-          );
+        const integrationId = String(row.slug);
+        const url =
+          row.displayUrl ??
+          integrationInferredUrl({ id: integrationId, name: row.name }) ??
+          undefined;
         return {
-          key: `installed-${String(row.slug)}`,
-          testId: `installed-${String(row.slug)}`,
+          key: `installed-${integrationId}`,
+          testId: `installed-${integrationId}`,
           title: row.name,
           kindKey: row.kind,
           ...(row.description && row.description !== row.name
             ? { description: tidyDescription(row.description) }
             : {}),
-          ...(iconUrl ? { iconUrl } : {}),
+          icon:
+            integrationPresetIconUrl(
+              {
+                id: integrationId,
+                kind: row.kind,
+                name: row.name,
+                ...(row.displayUrl ? { url: row.displayUrl } : {}),
+              },
+              integrationPlugins,
+            ) ?? undefined,
+          integrationId,
+          url,
           onSelect: () => {},
           added: true,
-          viewSlug: String(row.slug),
+          viewSlug: integrationId,
           busy: false,
         };
       });

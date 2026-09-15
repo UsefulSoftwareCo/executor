@@ -33,6 +33,26 @@ describe("IntegrationFavicon", () => {
     expect(integrationFaviconSrc({ url, size: 20, failedSrcs: [primary ?? ""] })).toBeNull();
   });
 
+  it("tries the explicit fallback before the integration-derived favicon", () => {
+    const icon = "executor:/mcp/codex-plugins/computer-use/icon";
+    const fallbackSrc = "https://integrations.sh/logo/openai.com";
+    const url = "https://example.com/mcp";
+
+    expect(integrationFaviconSrc({ icon, fallbackSrc, url, size: 20 })).toBe(icon);
+    expect(integrationFaviconSrc({ icon, fallbackSrc, url, size: 20, failedSrcs: [icon] })).toBe(
+      fallbackSrc,
+    );
+    expect(
+      integrationFaviconSrc({
+        icon,
+        fallbackSrc,
+        url,
+        size: 20,
+        failedSrcs: [icon, fallbackSrc],
+      }),
+    ).toBe("https://integrations.sh/logo/example.com?sz=40");
+  });
+
   it("uses the Executor favicon for the built-in executor integration", () => {
     expect(integrationLocalIconUrl("executor")).toBe("/favicon-32.png");
     expect(integrationLocalIconUrl("openapi")).toBeNull();
