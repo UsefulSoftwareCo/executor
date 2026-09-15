@@ -6,21 +6,27 @@
 //
 // What this pins:
 //   - an older WorkOS payload never overwrites a newer row (replay-safe)
-//   - the cursor advances only by compare-and-set (one owner per stream)
+//   - the cursor advances only by compare-and-set (one owner per stream),
+//     and a page that loses the CAS writes nothing
 //   - `members` searches email AND name case-insensitively, pages stably
 //   - `findByEmail` ignores the casing WorkOS stored
 //   - a membership arriving before its user still holds (FK via ensureAccount)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import { MemberDirectory } from "@executor-js/api/server";
 
 import { DbService } from "../db/db";
 import { cloudMemberDirectoryLayer } from "./member-directory";
 import { UserStoreService } from "./context";
-import { WorkOsMirror, type WorkOsMirrorMembership, type WorkOsMirrorUser } from "./workos-mirror";
+import {
+  WorkOsMirror,
+  WorkOsMirrorWrite,
+  type WorkOsMirrorMembership,
+  type WorkOsMirrorUser,
+} from "./workos-mirror";
 
 const DbLive = DbService.Live;
 const Services = Layer.mergeAll(
@@ -178,26 +184,43 @@ describe("WorkOsMirror upserts", () => {
 });
 
 describe("WorkOsMirror cursor", () => {
-  it("advances only by compare-and-set", async () => {
+  it("advances only by compare-and-set, and a page that loses the CAS writes nothing", async () => {
     const result = await run(
       Effect.gen(function* () {
         const mirror = yield* WorkOsMirror;
+        const directory = yield* MemberDirectory;
+        const org = yield* freshOrg();
+        const id = `user_${crypto.randomUUID()}`;
         // The cursor is instance-wide; read whatever a previous test left so
         // this test's expectations are relative, not absolute.
         const before = yield* mirror.getCursor();
-        const first = yield* mirror.setCursor(before, "event_1");
-        const wrongPrev = yield* mirror.setCursor(before === null ? "event_0" : null, "event_x");
+        const first = yield* mirror.applyPage(before, "event_1", []);
+        const wrongPrev = yield* mirror.applyPage(before === null ? "event_0" : null, "event_x", [
+          WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
+          WorkOsMirrorWrite.UpsertMembership({ membership: membership(org, id) }),
+        ]);
         const afterWrong = yield* mirror.getCursor();
-        const right = yield* mirror.setCursor("event_1", "event_2");
+        const notWritten = yield* directory.membership(id, org);
+        const right = yield* mirror.applyPage("event_1", "event_2", [
+          WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
+          WorkOsMirrorWrite.UpsertMembership({ membership: membership(org, id) }),
+          WorkOsMirrorWrite.DeleteMembership({ membershipId: "om_nobody" }),
+        ]);
         const after = yield* mirror.getCursor();
-        return { first, wrongPrev, afterWrong, right, after };
+        const written = yield* directory.membership(id, org);
+        return { id, org, first, wrongPrev, afterWrong, notWritten, right, after, written };
       }),
     );
-    expect(result.first).toBe(true);
-    expect(result.wrongPrev, "a run holding a stale prev cannot move the cursor").toBe(false);
+    expect(Option.isSome(result.first)).toBe(true);
+    expect(
+      Option.isNone(result.wrongPrev),
+      "a run holding a stale prev cannot move the cursor",
+    ).toBe(true);
     expect(result.afterWrong).toBe("event_1");
-    expect(result.right).toBe(true);
+    expect(result.notWritten, "and none of its page's writes land").toBeNull();
+    expect(result.right).toEqual(Option.some(["applied", "applied", "absent"]));
     expect(result.after).toBe("event_2");
+    expect(result.written?.membershipId).toBe(`om_${result.id}_${result.org}`);
   });
 });
 

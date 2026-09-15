@@ -13,6 +13,7 @@ import handler from "@tanstack/react-start/server-entry";
 import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
+import { runWorkOsEventsSync } from "./auth/workos-events-runner";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
@@ -432,6 +433,20 @@ const cloudflareHandler: ExportedHandler<Env> = {
         }
       },
     );
+  },
+
+  // Cron: the membership-mirror reconciler (wrangler.jsonc `triggers.crons`,
+  // every minute). One pass over the WorkOS Events API from the persisted
+  // cursor, on fresh request-scoped services. `Sentry.withSentry` instruments
+  // `scheduled` alongside `fetch` (`instrumentExportedHandlerScheduled`), so
+  // a failing pass reports like a failing request. The tracer is installed
+  // here as on the fetch path — a scheduled invocation may be the isolate's
+  // first — and flushed past the pass so the run's spans export before the
+  // isolate goes idle.
+  scheduled: async (_controller, _env, ctx) => {
+    installTracerProvider();
+    await runWorkOsEventsSync();
+    ctx.waitUntil(flushTracerProvider());
   },
 };
 
