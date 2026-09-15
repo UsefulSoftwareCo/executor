@@ -1673,3 +1673,23 @@ body {
 .blog-prose h3 + p {
   margin-top: 0;
 }
+
+/* ── Figure captions (paper-style numbered figures) ── */
+.figcap {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-ink-3);
+  letter-spacing: 0;
+  text-wrap: pretty;
+}
+.figcap__n {
+  color: var(--color-ink-2);
+  font-weight: 500;
+}
+
+@media (min-width: 720px) {
+  .cap-grid--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

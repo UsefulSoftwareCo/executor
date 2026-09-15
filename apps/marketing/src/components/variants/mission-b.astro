@@ -1,0 +1,106 @@
+---
+// Mission, variant B: "Numbered claims".
+// A short headline, then three hairline-separated rows. Each row is a mono
+// index, a bold one-sentence claim, and two sentences of support.
+import "../../styles/variants/mission.css";
+---
+
+<section class="py-20 sm:py-28 border-t border-rule">
+  <div class="reveal max-w-[840px] mx-auto px-6 sm:px-10">
+    <div class="eyebrow mb-5">Mission</div>
+    <h2 class="section-title max-w-[22ch]">
+      Three things we think are
+      <span class="serif-italic">true</span>.
+    </h2>
+
+    <div class="mission-claims">
+      <div class="mission-claim">
+        <div class="mission-claim__num">001</div>
+        <div class="mission-claim__body">
+          <p class="mission-claim__lead">Tools should outlive the client.</p>
+          <p class="mission-claim__support">
+            Today every agent client re-implements every integration, and the
+            same credentials get pasted in five places. Your tools should belong
+            to you, not to one client or one model provider.<a
+              class="mission-ref"
+              href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+              target="_blank"
+              rel="noopener"
+              aria-label="Reference 1">1</a
+            >
+          </p>
+        </div>
+      </div>
+
+      <div class="mission-claim">
+        <div class="mission-claim__num">002</div>
+        <div class="mission-claim__body">
+          <p class="mission-claim__lead">One shape for every tool.</p>
+          <p class="mission-claim__support">
+            An MCP server, an OpenAPI spec, and a GraphQL API all become a name,
+            an input schema, and an output schema. Any agent then calls any of
+            them the same way, on any surface.<a
+              class="mission-ref"
+              href="https://blog.cloudflare.com/code-mode/"
+              target="_blank"
+              rel="noopener"
+              aria-label="Reference 2">2</a
+            >
+          </p>
+        </div>
+      </div>
+
+      <div class="mission-claim">
+        <div class="mission-claim__num">003</div>
+        <div class="mission-claim__body">
+          <p class="mission-claim__lead">The safe path is the easy path.</p>
+          <p class="mission-claim__support">
+            Executor keeps the semantics it imported: GET against DELETE,
+            destructiveHint, GraphQL mutations.<a
+              class="mission-ref"
+              href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+              target="_blank"
+              rel="noopener"
+              aria-label="Reference 3">3</a
+            > Calls run in a sandbox, and credentials are attached host-side at call
+            time, so a raw token never reaches the model.<a
+              class="mission-ref"
+              href="https://executor.sh/docs"
+              aria-label="Reference 4">4</a
+            >
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mission-refs-row">
+      <span class="mission-refs-row__label">References</span>
+      <span
+        ><span class="mission-refs-row__n">[1]</span><a
+          href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+          target="_blank"
+          rel="noopener">Anthropic, Code execution with MCP</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[2]</span><a
+          href="https://blog.cloudflare.com/code-mode/"
+          target="_blank"
+          rel="noopener">Cloudflare, Code Mode</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[3]</span><a
+          href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+          target="_blank"
+          rel="noopener">MCP spec, tool annotations</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[4]</span><a
+          href="https://executor.sh/docs">Executor docs</a
+        ></span
+      >
+    </div>
+  </div>
+</section>

@@ -1,0 +1,91 @@
+/* ---------------------------------------------------------------------------
+   "For humans / For agents" footer fragment.
+
+   Grayscale only, existing tokens (--color-ink, --color-ink-3, --color-rule).
+   Mono 11px uppercase, matching the eyebrow/metadata voice of the site.
+   All selectors are prefixed `.agents-`.
+   --------------------------------------------------------------------------- */
+
+.agents-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+/* ── Two-segment toggle ── */
+
+.agents-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.agents-toggle__item {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.5rem 0.7rem;
+  color: var(--color-ink-3);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.agents-toggle__item + .agents-toggle__item {
+  border-left: 1px solid var(--color-rule);
+}
+
+.agents-toggle__item:hover {
+  color: var(--color-ink);
+}
+
+.agents-toggle__item.is-active,
+.agents-toggle__item.is-active:hover {
+  background: var(--color-ink);
+  color: var(--color-surface);
+}
+
+/* ── Markdown path list ── */
+
+.agents-markdown {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0;
+}
+
+.agents-markdown__label {
+  color: var(--color-ink-3);
+}
+
+.agents-markdown a {
+  color: var(--color-ink-3);
+  text-decoration: none;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  transition: color 0.15s ease;
+}
+
+.agents-markdown a:hover {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agents-markdown__sep {
+  color: var(--color-rule);
+}

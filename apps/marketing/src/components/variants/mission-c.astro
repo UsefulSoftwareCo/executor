@@ -1,0 +1,122 @@
+---
+// Mission, variant C: "Two column with pull quotes".
+// Tightened thesis prose on the left, two margin notes on the right. The
+// notes column sits beside the prose from 900px up and stacks beneath it
+// below that. Both quotes are verbatim from the linked sources.
+import "../../styles/variants/mission.css";
+---
+
+<section class="py-20 sm:py-28 border-t border-rule">
+  <div class="reveal max-w-[1000px] mx-auto px-6 sm:px-10">
+    <div class="eyebrow mb-6">Mission</div>
+
+    <div class="mission-grid">
+      <div class="mission-prose">
+        <p>
+          <span class="mission-lede"
+            >Every agent client re-implements every integration.</span
+          > The same API is wired up again for each client, with its own auth and
+          its own failure modes. Credentials get pasted in five places. No client
+          shares an idea of what a tool may do.<a
+            class="mission-ref"
+            href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+            target="_blank"
+            rel="noopener"
+            aria-label="Reference 1">1</a
+          >
+        </p>
+
+        <p>
+          Executor gives every tool one shape. A name, an input schema, an
+          output schema. MCP, OpenAPI, or GraphQL, it makes no difference: any
+          agent calls any of them the same way. Tools should belong to you, not
+          to one client or one model provider.<a
+            class="mission-ref"
+            href="https://blog.cloudflare.com/code-mode/"
+            target="_blank"
+            rel="noopener"
+            aria-label="Reference 2">2</a
+          >
+        </p>
+
+        <p>
+          The safe path has to be the easy path. Executor keeps the semantics it
+          imported: GET against DELETE, destructiveHint, GraphQL mutations.<a
+            class="mission-ref"
+            href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+            target="_blank"
+            rel="noopener"
+            aria-label="Reference 3">3</a
+          > Calls run in a sandbox. Credentials are attached host-side, so a raw token
+          never reaches the model.<a
+            class="mission-ref"
+            href="https://executor.sh/docs"
+            aria-label="Reference 4">4</a
+          >
+        </p>
+      </div>
+
+      <aside class="mission-notes">
+        <div class="mission-note">
+          <div class="mission-note__n">Note 01</div>
+          <blockquote class="mission-note__quote">
+            &ldquo;Tool descriptions occupy more context window space,
+            increasing response time and costs.&rdquo;
+          </blockquote>
+          <div class="mission-note__attr">
+            Anthropic, <a
+              href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+              target="_blank"
+              rel="noopener">Code execution with MCP</a
+            >
+          </div>
+        </div>
+
+        <div class="mission-note">
+          <div class="mission-note__n">Note 02</div>
+          <blockquote class="mission-note__quote">
+            &ldquo;If true, the tool may perform destructive updates to its
+            environment.&rdquo;
+          </blockquote>
+          <div class="mission-note__attr">
+            MCP spec, <a
+              href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+              target="_blank"
+              rel="noopener">destructiveHint</a
+            >
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="mission-refs-row">
+      <span class="mission-refs-row__label">References</span>
+      <span
+        ><span class="mission-refs-row__n">[1]</span><a
+          href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+          target="_blank"
+          rel="noopener">Anthropic, Code execution with MCP</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[2]</span><a
+          href="https://blog.cloudflare.com/code-mode/"
+          target="_blank"
+          rel="noopener">Cloudflare, Code Mode</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[3]</span><a
+          href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+          target="_blank"
+          rel="noopener">MCP spec, tool annotations</a
+        ></span
+      >
+      <span
+        ><span class="mission-refs-row__n">[4]</span><a
+          href="https://executor.sh/docs">Executor docs</a
+        ></span
+      >
+    </div>
+  </div>
+</section>

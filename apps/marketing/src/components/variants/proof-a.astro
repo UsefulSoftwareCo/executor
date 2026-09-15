@@ -1,0 +1,228 @@
+---
+/**
+ * Proof section, variant A: "Tile grid".
+ *
+ * A 1px-gap grid of evidence tiles. Every tile is one real, checkable number
+ * with a mono caption, its source, a big tabular numeral, and a small
+ * grayscale visual. Nothing here is illustrative: each value links out to
+ * where it came from, or to the demo that produces it on the page.
+ */
+import "../../styles/variants/proof.css";
+
+interface Props {
+  readonly stars: string | null;
+}
+
+const { stars } = Astro.props;
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const NPM_SRC = "https://api.npmjs.org/downloads/point/last-month/executor";
+
+// Context figures come from the interactive demo on this page, with GitHub,
+// Stripe, Jira and Sentry connected.
+const NAIVE_TOKENS = 278_800;
+const EXEC_TOKENS = 1_044;
+const NAIVE_TOOLS = 1_640;
+const EXEC_TOOLS = 1;
+
+// The two pairs span three orders of magnitude, so the tile bars use a log
+// scale (labelled as such) to stay readable. The hero variant shows the same
+// pair linearly.
+const logWidth = (value: number, max: number): string =>
+  `${Math.max(2, (Math.log10(value + 1) / Math.log10(max + 1)) * 100).toFixed(1)}%`;
+
+const fmt = (n: number): string => n.toLocaleString("en-US");
+---
+
+<section id="proof" class="py-20 sm:py-28 border-t border-rule">
+  <div class="reveal max-w-[1100px] mx-auto px-6 sm:px-10">
+    <div class="proof-head max-w-[42rem]">
+      <div class="eyebrow mb-4">In practice</div>
+      <h2 class="section-title mb-5">Numbers you can check.</h2>
+      <p class="proof-lede max-w-[54ch]">
+        No benchmark we ran on ourselves in private. Each figure below links to
+        the place it comes from: the demo on this page, the repo, or the
+        registry.
+      </p>
+    </div>
+
+    <div class="proof-grid">
+      {/* Context tokens: the headline pair, on a log scale */}
+      <div class="proof-tile">
+        <div class="proof-cap">Context tokens</div>
+        <div class="proof-sub">Four integrations connected</div>
+        <div class="proof-value proof-tile__value">
+          {fmt(EXEC_TOKENS)}<span class="proof-unit">tok</span>
+        </div>
+        <div class="proof-tile__viz">
+          <div class="proof-bars">
+            <div class="proof-bar">
+              <span class="proof-bar__lbl">Naive</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(NAIVE_TOKENS, NAIVE_TOKENS)}`}></span
+                ></span
+              >
+              <span>{fmt(NAIVE_TOKENS)}</span>
+            </div>
+            <div class="proof-bar proof-bar--now">
+              <span class="proof-bar__lbl">Executor</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(EXEC_TOKENS, NAIVE_TOKENS)}`}></span
+                ></span
+              >
+              <span>{fmt(EXEC_TOKENS)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="proof-tile__foot">
+          <span class="proof-sub">Log scale</span>
+          <a href="#context" class="proof-src">Source ↗</a>
+        </div>
+      </div>
+
+      {/* Tools exposed to the model */}
+      <div class="proof-tile">
+        <div class="proof-cap">Tools exposed</div>
+        <div class="proof-sub">Measured in the demo below</div>
+        <div class="proof-value proof-tile__value">
+          {EXEC_TOOLS}<span class="proof-unit">tool</span>
+        </div>
+        <div class="proof-tile__viz">
+          <div class="proof-bars">
+            <div class="proof-bar">
+              <span class="proof-bar__lbl">Naive</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(NAIVE_TOOLS, NAIVE_TOOLS)}`}></span
+                ></span
+              >
+              <span>{fmt(NAIVE_TOOLS)}</span>
+            </div>
+            <div class="proof-bar proof-bar--now">
+              <span class="proof-bar__lbl">Executor</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(EXEC_TOOLS, NAIVE_TOOLS)}`}></span
+                ></span
+              >
+              <span>{fmt(EXEC_TOOLS)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="proof-tile__foot">
+          <span class="proof-sub">Log scale</span>
+          <a href="#context" class="proof-src">Source ↗</a>
+        </div>
+      </div>
+
+      {/* GitHub stars: only rendered when the page fetch succeeded */}
+      {
+        stars != null && (
+          <div class="proof-tile">
+            <div class="proof-cap">GitHub stars</div>
+            <div class="proof-sub">UsefulSoftwareCo / executor</div>
+            <div class="proof-value proof-tile__value">{stars}</div>
+            <div class="proof-tile__viz">
+              <svg
+                class="proof-glyph"
+                width="26"
+                height="26"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
+              </svg>
+            </div>
+            <div class="proof-tile__foot">
+              <span class="proof-sub">305 forks</span>
+              <a href={GH} target="_blank" rel="noopener" class="proof-src">
+                Source ↗
+              </a>
+            </div>
+          </div>
+        )
+      }
+
+      {/* npm downloads */}
+      <div class="proof-tile">
+        <div class="proof-cap">npm downloads</div>
+        <div class="proof-sub">Package: executor, last 30 days</div>
+        <div class="proof-value proof-tile__value">
+          70k<span class="proof-unit">/ 30d</span>
+        </div>
+        <div class="proof-tile__viz">
+          <svg
+            class="proof-glyph"
+            width="26"
+            height="26"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3v11"></path>
+            <path d="M7.5 9.5 12 14l4.5-4.5"></path>
+            <path d="M4 18.5h16"></path>
+          </svg>
+        </div>
+        <div class="proof-tile__foot">
+          <span class="proof-sub">MIT licensed</span>
+          <a href={NPM_SRC} target="_blank" rel="noopener" class="proof-src"
+            >Source ↗</a
+          >
+        </div>
+      </div>
+
+      {/* Free tier */}
+      <div class="proof-tile">
+        <div class="proof-cap">Free tier</div>
+        <div class="proof-sub">Executions per month</div>
+        <div class="proof-value proof-tile__value">100,000</div>
+        <div class="proof-tile__viz">
+          <div class="proof-units" aria-hidden="true">
+            {
+              Array.from({ length: 10 }).map(() => (
+                <span class="proof-unit-sq" />
+              ))
+            }
+          </div>
+        </div>
+        <div class="proof-tile__foot">
+          <span class="proof-sub">1 square = 10,000</span>
+          <a href="/pricing" class="proof-src">Source ↗</a>
+        </div>
+      </div>
+
+      {/* Protocols */}
+      <div class="proof-tile">
+        <div class="proof-cap">Protocols supported</div>
+        <div class="proof-sub">MCP, OpenAPI, GraphQL, Discovery</div>
+        <div class="proof-value proof-tile__value">4</div>
+        <div class="proof-tile__viz">
+          <div class="proof-units" aria-hidden="true">
+            <span class="proof-unit-sq"></span>
+            <span class="proof-unit-sq"></span>
+            <span class="proof-unit-sq"></span>
+            <span class="proof-unit-sq"></span>
+            <span class="proof-unit-sq proof-unit-sq--off"></span>
+            <span class="proof-unit-sq proof-unit-sq--off"></span>
+          </div>
+        </div>
+        <div class="proof-tile__foot">
+          <span class="proof-sub">More on request</span>
+          <a href="https://executor.sh/docs" class="proof-src">Source ↗</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

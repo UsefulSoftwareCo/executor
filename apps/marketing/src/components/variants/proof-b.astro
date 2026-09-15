@@ -1,0 +1,232 @@
+---
+/**
+ * Proof section, variant B: "Ledger".
+ *
+ * The same evidence as variant A, but set as one hairline-ruled spec sheet:
+ * caption, a thin proportional bar where there is a before/after, the value in
+ * right-aligned tabular numerals, and the source. It reads like a data sheet
+ * rather than a set of cards.
+ *
+ * Deliberately absent: an "independent benchmark" card. We do not have a
+ * third-party benchmark yet, so there is no social-proof slot to fill. The
+ * closing line points at the sources instead.
+ */
+import "../../styles/variants/proof.css";
+
+interface Props {
+  readonly stars: string | null;
+}
+
+const { stars } = Astro.props;
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const NPM_SRC = "https://api.npmjs.org/downloads/point/last-month/executor";
+
+const NAIVE_TOKENS = 278_800;
+const EXEC_TOKENS = 1_044;
+const NAIVE_TOOLS = 1_640;
+const EXEC_TOOLS = 1;
+
+// Three orders of magnitude between the pairs, so the row bars use a log
+// scale. Each such row says so in its caption.
+const logWidth = (value: number, max: number): string =>
+  `${Math.max(2, (Math.log10(value + 1) / Math.log10(max + 1)) * 100).toFixed(1)}%`;
+
+const fmt = (n: number): string => n.toLocaleString("en-US");
+---
+
+<section id="proof" class="py-20 sm:py-28 border-t border-rule">
+  <div class="reveal max-w-[1100px] mx-auto px-6 sm:px-10">
+    <div class="proof-head max-w-[42rem]">
+      <div class="eyebrow mb-4">In practice</div>
+      <h2 class="section-title mb-5">Numbers you can check.</h2>
+      <p class="proof-lede max-w-[54ch]">
+        The whole record, in one sheet. Two of these you can reproduce yourself
+        in the demo on this page. The rest are public counters.
+      </p>
+    </div>
+
+    <div class="proof-ledger">
+      {/* Context tokens */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Context tokens</span>
+          <span class="proof-sub">Four integrations, log scale</span>
+        </div>
+        <div class="proof-row__mid">
+          <div class="proof-bars">
+            <div class="proof-bar">
+              <span class="proof-bar__lbl">Naive</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(NAIVE_TOKENS, NAIVE_TOKENS)}`}></span
+                ></span
+              >
+              <span>{fmt(NAIVE_TOKENS)}</span>
+            </div>
+            <div class="proof-bar proof-bar--now">
+              <span class="proof-bar__lbl">Executor</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(EXEC_TOKENS, NAIVE_TOKENS)}`}></span
+                ></span
+              >
+              <span>{fmt(EXEC_TOKENS)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="proof-row__val">
+          {fmt(EXEC_TOKENS)}<span class="proof-unit">tok</span>
+        </div>
+        <a href="#context" class="proof-src proof-row__src">Source ↗</a>
+      </div>
+
+      {/* Tools exposed */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Tools exposed</span>
+          <span class="proof-sub">Four integrations, log scale</span>
+        </div>
+        <div class="proof-row__mid">
+          <div class="proof-bars">
+            <div class="proof-bar">
+              <span class="proof-bar__lbl">Naive</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(NAIVE_TOOLS, NAIVE_TOOLS)}`}></span
+                ></span
+              >
+              <span>{fmt(NAIVE_TOOLS)}</span>
+            </div>
+            <div class="proof-bar proof-bar--now">
+              <span class="proof-bar__lbl">Executor</span>
+              <span class="proof-bar__track"
+                ><span
+                  class="proof-bar__fill"
+                  style={`width:${logWidth(EXEC_TOOLS, NAIVE_TOOLS)}`}></span
+                ></span
+              >
+              <span>{fmt(EXEC_TOOLS)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="proof-row__val">
+          {EXEC_TOOLS}<span class="proof-unit">tool</span>
+        </div>
+        <a href="#context" class="proof-src proof-row__src">Source ↗</a>
+      </div>
+
+      {/* GitHub stars: hidden when the fetch failed */}
+      {
+        stars != null && (
+          <div class="proof-row">
+            <div class="proof-row__head">
+              <span class="proof-cap">GitHub stars</span>
+              <span class="proof-sub">UsefulSoftwareCo / executor</span>
+            </div>
+            <div class="proof-row__mid">
+              <span class="proof-sub">305 forks, MIT licensed</span>
+            </div>
+            <div class="proof-row__val">{stars}</div>
+            <a
+              href={GH}
+              target="_blank"
+              rel="noopener"
+              class="proof-src proof-row__src"
+            >
+              Source ↗
+            </a>
+          </div>
+        )
+      }
+
+      {/* npm downloads */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">npm downloads</span>
+          <span class="proof-sub">Package: executor</span>
+        </div>
+        <div class="proof-row__mid">
+          <span class="proof-sub">Last 30 days, rounded</span>
+        </div>
+        <div class="proof-row__val">70k<span class="proof-unit">/ 30d</span></div>
+        <a
+          href={NPM_SRC}
+          target="_blank"
+          rel="noopener"
+          class="proof-src proof-row__src">Source ↗</a
+        >
+      </div>
+
+      {/* Free tier */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Free tier executions</span>
+          <span class="proof-sub">Unlimited integrations</span>
+        </div>
+        <div class="proof-row__mid">
+          <span class="proof-sub">No card to start</span>
+        </div>
+        <div class="proof-row__val">
+          100,000<span class="proof-unit">/ mo</span>
+        </div>
+        <a href="/pricing" class="proof-src proof-row__src">Source ↗</a>
+      </div>
+
+      {/* Protocols */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Protocols supported</span>
+          <span class="proof-sub">One tool shape for all of them</span>
+        </div>
+        <div class="proof-row__mid">
+          <span class="proof-sub">MCP, OpenAPI, GraphQL, Google Discovery</span>
+        </div>
+        <div class="proof-row__val">4</div>
+        <a href="https://executor.sh/docs" class="proof-src proof-row__src"
+          >Source ↗</a
+        >
+      </div>
+
+      {/* Ways to run it */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Ways to run it</span>
+          <span class="proof-sub">Same code paths, different packaging</span>
+        </div>
+        <div class="proof-row__mid">
+          <span class="proof-sub"
+            >Desktop app, CLI, Executor Cloud, self-hosted Docker or Cloudflare
+            Worker</span
+          >
+        </div>
+        <div class="proof-row__val">4</div>
+        <a href="https://executor.sh/docs" class="proof-src proof-row__src"
+          >Source ↗</a
+        >
+      </div>
+
+      {/* Secrets */}
+      <div class="proof-row">
+        <div class="proof-row__head">
+          <span class="proof-cap">Secrets in the sandbox</span>
+          <span class="proof-sub">Injected host-side at call time</span>
+        </div>
+        <div class="proof-row__mid">
+          <span class="proof-sub"
+            >Tool calls run in an isolated JavaScript sandbox</span
+          >
+        </div>
+        <div class="proof-row__val">0</div>
+        <a href="https://executor.sh/docs" class="proof-src proof-row__src"
+          >Source ↗</a
+        >
+      </div>
+    </div>
+
+    <p class="proof-foot">Every number above links to where it came from.</p>
+  </div>
+</section>

@@ -23,6 +23,14 @@ Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted
 - [Pricing](https://executor.sh/#pricing): plans for Executor Cloud.
 - [Install](https://executor.sh/#install): install the CLI and connect your first agent.
 
+## For agents
+
+Markdown representations of the pages above, for machines rather than browsers.
+
+- [/index.md](https://executor.sh/index.md): the homepage as Markdown — what Executor is, how it works, what you get, ways to run it, pricing, and FAQ.
+- [/setup-prompt.md](https://executor.sh/setup-prompt.md): a prompt to paste into a coding agent. It picks the right form of Executor, installs it, connects over MCP, and gets a first connection working.
+- [/pricing.md](https://executor.sh/pricing.md): the Executor Cloud plans as Markdown.
+
 ## Source
 
 - [GitHub](https://github.com/UsefulSoftwareCo/executor): source for the integration layer, plugins, and hosts.

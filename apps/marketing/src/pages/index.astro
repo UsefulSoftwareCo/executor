@@ -6,6 +6,14 @@ import { ContextBloatDemo } from "../components/context-bloat-demo";
 // the deploy pipeline does not pick up newly added /public files.
 import ycBackedBy from "../assets/yc-backed-by.svg?url";
 import { getStars, formatStars } from "../lib/github";
+import { setupPrompt } from "../content/site-copy";
+import MissionA from "../components/variants/mission-a.astro";
+import MissionB from "../components/variants/mission-b.astro";
+import MissionC from "../components/variants/mission-c.astro";
+import ProofA from "../components/variants/proof-a.astro";
+import ProofB from "../components/variants/proof-b.astro";
+import ProofC from "../components/variants/proof-c.astro";
+import AgentsFooter from "../components/variants/agents-footer.astro";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 // Cloud sign-in. Same origin in prod: the cloud Worker owns executor.sh and
@@ -14,42 +22,6 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
 const SIGN_IN = "/api/auth/login";
 const stars = await getStars();
 
-// Copied to the clipboard by the "Set up with your agent" hero CTA. A visitor
-// pastes it into their coding agent (Claude, Cursor, ...) and the agent picks
-// the right form of Executor, installs it, connects over MCP, and gets a first
-// connection working. Keep in sync with the docs "Set up with your agent"
-// section (apps/docs/index.mdx).
-const setupPrompt = `Help me set up Executor and get my first connection working.
-
-Executor is an open source integration layer for AI agents: one place to configure every integration (MCP servers, OpenAPI specs, GraphQL APIs) and connect to them over MCP.
-
-Start by helping me pick the right form to run it in. Chat with me about it rather than jumping straight to a yes/no question, and recommend one. If I just want the fastest path, suggest Executor Cloud (free tier, nothing to install). All forms expose the same functionality, just packaged differently:
-
-Local (everything stays on my machine):
-- Desktop app: a native app for Mac, Windows, and Linux. Best for a regular desktop environment.
-- CLI (\`executor\`): best for a headless or server environment.
-Both run a local HTTP server as a background service that any MCP client can connect to.
-
-Hosted (use it from multiple agents, including cloud ones, with nothing running locally):
-- Executor Cloud: hosted, generous free tier, sign in and start immediately.
-- Self-hosted: a Docker image or a Cloudflare Worker.
-
-How to think about it:
-- Want all your data on your own machine? Go local: the desktop app for a regular environment, the CLI for a headless one.
-- Want to use it from multiple agents (including cloud agents like ChatGPT), or not run anything locally? Go hosted: Executor Cloud is the fastest start; the self-hosted Docker or Cloudflare versions give you full control.
-
-Terms you'll come across:
-- Integration: anything you add (an MCP server, an OpenAPI spec, a GraphQL API).
-- Connection: one configured instance of an integration. An integration can have many connections, and a connection doesn't have to be authenticated.
-- Policy: whether each tool is always allowed, requires approval, or is blocked. Policies start from a sensible default derived from the imported spec (for example, GET requests on an OpenAPI spec are allowed by default).
-
-Once you know which form I want:
-1. Walk me through installing it.
-2. Connect Executor to you over MCP. Most MCP clients only load servers at startup, so after adding it I may need to restart the client or open a new chat before the Executor tools appear. Tell me if that's needed and wait for me to do it before continuing.
-3. Once the tools are available, help me add my first integration and get one tool working end to end.
-
-Docs: https://executor.sh/docs
-Source (and the place to start if something breaks): https://github.com/UsefulSoftwareCo/executor`;
 ---
 
 <Layout>
@@ -151,6 +123,14 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
               <div class="surface-card p-6 sm:p-7">
                 <AnimatedBeamDemo client:load variant="stripe" />
               </div>
+              <div data-uidotsh-pick="Figure captions" class="contents">
+                <div data-uidotsh-option="None (current)" class="contents"></div>
+                <div data-uidotsh-option="Numbered figures" class="contents" hidden>
+                  <p class="figcap mt-4 text-left">
+                    <span class="figcap__n">Figure 1.</span> Three clients reach six tools through one MCP endpoint. Each tool keeps the protocol it came from.
+                  </p>
+                </div>
+              </div>
             </div>
             {/* ── CTA: For humans / For agents ── */}
             <div class="rise-4 hero-cta" data-audience="agents">
@@ -225,6 +205,8 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
         </div>
       </section>
 
+      <div data-uidotsh-pick="Mission section" class="contents">
+        <div data-uidotsh-option="Wedge sentence (current)" class="contents">
       {/* ─── WEDGE ─── */}
       <section class="py-20 sm:py-28 border-t border-rule">
         <div class="reveal max-w-[840px] mx-auto px-6 sm:px-10">
@@ -240,8 +222,14 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
         </div>
       </section>
 
+        </div>
+        <div data-uidotsh-option="A: Thesis + references" class="contents" hidden><MissionA /></div>
+        <div data-uidotsh-option="B: Numbered claims" class="contents" hidden><MissionB /></div>
+        <div data-uidotsh-option="C: Prose + margin notes" class="contents" hidden><MissionC /></div>
+      </div>
+
       {/* ─── NO CONTEXT BLOAT (interactive) ─── */}
-      <section class="py-20 sm:py-28 border-t border-rule">
+      <section id="context" class="py-20 sm:py-28 border-t border-rule">
         <div class="reveal max-w-[1100px] mx-auto px-6 sm:px-10">
           <div class="text-center max-w-2xl mx-auto mb-12">
             <div class="eyebrow mb-4">Context efficiency</div>
@@ -257,8 +245,23 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
           </div>
 
           <ContextBloatDemo client:load />
+          <div data-uidotsh-pick="Figure caption 2" class="contents">
+            <div data-uidotsh-option="None (current)" class="contents"></div>
+            <div data-uidotsh-option="Numbered figures" class="contents" hidden>
+              <p class="figcap mt-6 mx-auto max-w-[60ch] text-center">
+                <span class="figcap__n">Figure 2.</span> Prompt size with your selection of integrations connected, with and without Executor. Toggle the services to reproduce it.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
+
+      <div data-uidotsh-pick="Proof section" class="contents">
+        <div data-uidotsh-option="None (current)" class="contents"></div>
+        <div data-uidotsh-option="A: Stat tiles" class="contents" hidden><ProofA stars={stars != null ? formatStars(stars) : null} /></div>
+        <div data-uidotsh-option="B: Ledger" class="contents" hidden><ProofB stars={stars != null ? formatStars(stars) : null} /></div>
+        <div data-uidotsh-option="C: Before/after" class="contents" hidden><ProofC stars={stars != null ? formatStars(stars) : null} /></div>
+      </div>
 
       {/* ─── CAPABILITIES ─── */}
       <section class="py-14 sm:py-20 border-t border-rule">
@@ -271,6 +274,8 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
             </h2>
           </div>
 
+          <div data-uidotsh-pick="Capability cards" class="contents">
+            <div data-uidotsh-option="Six cards (current)" class="contents">
           <div class="cap-grid">
             {/* One tool shape */}
             <div class="cap-card">
@@ -365,6 +370,86 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
                 injected host-side at call time and never enter the sandbox
                 heap, so the agent and model never see a raw token.
               </p>
+            </div>
+          </div>
+            </div>
+            <div data-uidotsh-option="Four cards" class="contents" hidden>
+          <div class="cap-grid cap-grid--4">
+
+
+            {/* Trace every call (coming soon) */}
+            <div class="cap-card cap-card--soon">
+              <span class="cap-soon-badge">Coming soon</span>
+              <span class="cap-num">01</span>
+              <h3>Trace every call</h3>
+              <p class="mb-1">
+                One place to see every run and tool call. Audit any
+                decision after the fact.
+              </p>
+              <div class="cap-visual trace">
+                <div class="trace-row is-root">
+                  <span class="lbl">run_7421</span>
+                  <span class="track"
+                    ><span class="bar" style="left:0%;width:100%"></span></span
+                  >
+                  <span class="dur">1.42s</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">sentry.getIssue</span>
+                  <span class="track"
+                    ><span class="bar" style="left:0%;width:18%"></span></span
+                  >
+                  <span class="dur">184ms</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">github.searchCode</span>
+                  <span class="track"
+                    ><span class="bar" style="left:18%;width:34%"></span></span
+                  >
+                  <span class="dur">391ms</span>
+                </div>
+                <div class="trace-row">
+                  <span class="lbl">linear.createIssue</span>
+                  <span class="track"
+                    ><span class="bar" style="left:52%;width:48%"></span></span
+                  >
+                  <span class="dur">612ms</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Teams */}
+            <div class="cap-card">
+              <span class="cap-num">02</span>
+              <h3>Set up once, whole team has it</h3>
+              <p>
+                Per-user credentials and shared ones. No onboarding ritual, no
+                toggling MCPs on and off mid-task.
+              </p>
+            </div>
+
+            {/* Destructive gating */}
+            <div class="cap-card">
+              <span class="cap-num">03</span>
+              <h3>Destructive actions pull you back in</h3>
+              <p>
+                Executor keeps the semantics it imported: GET vs DELETE for
+                OpenAPI, destructiveHint for MCP, mutations for GraphQL. Agents
+                auto-run the safe stuff and ask before the rest.
+              </p>
+            </div>
+
+            {/* Sandboxed */}
+            <div class="cap-card">
+              <span class="cap-num">04</span>
+              <h3>Sandboxed execution</h3>
+              <p>
+                Tool calls run in an isolated JavaScript sandbox. Secrets are
+                injected host-side at call time and never enter the sandbox
+                heap, so the agent and model never see a raw token.
+              </p>
+            </div>
+          </div>
             </div>
           </div>
         </div>
@@ -771,8 +856,17 @@ Source (and the place to start if something breaks): https://github.com/UsefulSo
             <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
           </div>
         </div>
+        <div data-uidotsh-pick="Agents footer" class="contents">
+          <div data-uidotsh-option="None (current)" class="contents"></div>
+          <div data-uidotsh-option="For humans / For agents toggle" class="contents" hidden>
+            <div class="max-w-[1200px] mx-auto px-6 sm:px-10 mt-8">
+              <AgentsFooter />
+            </div>
+          </div>
+        </div>
       </footer>
     </div>
+    <script is:inline src="https://ui.sh/ui-picker.js"></script>
   </main>
 </Layout>
 

@@ -1,0 +1,100 @@
+---
+// Mission, variant A: "Thesis".
+// Three short paragraphs of prose with inline reference markers, and a
+// numbered reference list at the foot of the section. Replaces the old
+// one-sentence wedge.
+import "../../styles/variants/mission.css";
+---
+
+<section class="py-20 sm:py-28 border-t border-rule">
+  <div class="reveal max-w-[840px] mx-auto px-6 sm:px-10">
+    <div class="eyebrow mb-6">Mission</div>
+
+    <div class="mission-prose">
+      <p>
+        <span class="mission-lede"
+          >Every agent client re-implements every integration.</span
+        > The same API gets wired up again for each new client, with its own auth,
+        its own schema handling, and its own failure modes. Credentials end up pasted
+        in five places. Nothing shares an idea of what a tool is allowed to do, so
+        each client guesses.<a
+          class="mission-ref"
+          href="#mission-ref-1"
+          aria-label="Reference 1">1</a
+        >
+      </p>
+
+      <p>
+        Executor gives every tool one shape. A name, an input schema, an output
+        schema. It does not matter whether the tool came from an MCP server, an
+        OpenAPI spec, or a GraphQL API. Any agent calls any of them the same
+        way. Tools should belong to you, not to one client or one model
+        provider.<a
+          class="mission-ref"
+          href="#mission-ref-2"
+          aria-label="Reference 2">2</a
+        >
+      </p>
+
+      <p>
+        The safe path has to be the easy path. Executor keeps the semantics it
+        imported: GET against DELETE for OpenAPI, destructiveHint for MCP,
+        mutations for GraphQL.<a
+          class="mission-ref"
+          href="#mission-ref-3"
+          aria-label="Reference 3">3</a
+        > Calls run in a sandbox. Credentials are attached host-side at call time,
+        so a raw token never reaches the sandbox, the agent, or the model.<a
+          class="mission-ref"
+          href="#mission-ref-4"
+          aria-label="Reference 4">4</a
+        >
+      </p>
+    </div>
+
+    <div class="mission-refs">
+      <div class="mission-refs__label">References</div>
+      <ol class="mission-refs__list">
+        <li id="mission-ref-1">
+          <span class="mission-refs__n">[1]</span>
+          <span
+            ><a
+              href="https://www.anthropic.com/engineering/code-execution-with-mcp"
+              target="_blank"
+              rel="noopener">Code execution with MCP</a
+            > <span class="mission-refs__src">Anthropic, 2025</span></span
+          >
+        </li>
+        <li id="mission-ref-2">
+          <span class="mission-refs__n">[2]</span>
+          <span
+            ><a
+              href="https://blog.cloudflare.com/code-mode/"
+              target="_blank"
+              rel="noopener">Code Mode</a
+            > <span class="mission-refs__src">Cloudflare</span></span
+          >
+        </li>
+        <li id="mission-ref-3">
+          <span class="mission-refs__n">[3]</span>
+          <span
+            ><a
+              href="https://modelcontextprotocol.io/specification/2025-06-18/server/tools"
+              target="_blank"
+              rel="noopener">Tools, tool annotations</a
+            > <span class="mission-refs__src"
+              >Model Context Protocol, 2025-06-18</span
+            ></span
+          >
+        </li>
+        <li id="mission-ref-4">
+          <span class="mission-refs__n">[4]</span>
+          <span
+            ><a href="https://executor.sh/docs">Sandboxing and credentials</a>
+            <span class="mission-refs__src">Executor docs</span></span
+          >
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
