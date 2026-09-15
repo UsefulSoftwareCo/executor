@@ -51,13 +51,18 @@ const api = composePluginApi([] as const);
  */
 const ARTIFACT_ROW_COUNT = 40;
 
-const artifactSource = (marker: string) => `
+const artifactSource = (marker: string, linkUrl?: string) => `
 function App() {
   return (
     <div className="flex h-full flex-col gap-4">
       <div data-testid="artifact-header" className="shrink-0">
         <h2>Release Readiness</h2>
         <p data-testid="artifact-marker">${marker}</p>
+        ${
+          linkUrl === undefined
+            ? ""
+            : `<a data-testid="artifact-pr-link" href={${JSON.stringify(linkUrl)}} target="_blank" rel="noreferrer">Open pull request</a>`
+        }
       </div>
       <div data-testid="artifact-scroll" className="min-h-0 flex-1 overflow-auto">
         {Array.from({ length: ${ARTIFACT_ROW_COUNT} }, (_, i) => (
@@ -144,14 +149,14 @@ const recordHandshakeOrdering = async (page: Page): Promise<void> => {
 const readHandshakeOrdering = (page: Page): Promise<ReadonlyArray<string>> =>
   page.evaluate(() => globalThis.__handshakeOrder ?? []);
 
-const readConsoleStyle = (page: Page): Promise<{ primary: string; buttonBg: string }> =>
-  page.evaluate(() => {
-    const button = document.querySelector("button");
-    return {
-      primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
-      buttonBg: button ? getComputedStyle(button).backgroundColor : "",
-    };
-  });
+const readConsoleStyle = async (page: Page): Promise<{ primary: string; buttonBg: string }> => {
+  const button = page.getByRole("button", { name: "Rename", exact: true });
+  await button.waitFor();
+  return button.evaluate((element) => ({
+    primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
+    buttonBg: getComputedStyle(element).backgroundColor,
+  }));
+};
 
 // The shell's compiled stylesheet declares `--mcp-apps-shell-stylesheet: 1`
 // on `:root` as a provenance marker (see the shell's globals.css): the shell's
@@ -187,7 +192,8 @@ scenario(
     const suffix = uniqueSuffix();
     const title = `Release Readiness ${suffix}`;
     const marker = `artifact-ok-${suffix}`;
-    const source = artifactSource(marker).trim();
+    const pullRequestUrl = new URL("/policies?from=artifact-link", target.baseUrl).toString();
+    const source = artifactSource(marker, pullRequestUrl).trim();
 
     // Tracked so cleanup runs even when an assertion below fails.
     let artifactId: ArtifactId | undefined;
@@ -307,6 +313,19 @@ scenario(
               message: "the shell completed the handshake rather than sitting on Connecting",
             })
             .not.toContain("Connecting");
+        });
+
+        await step("A pull request link opens with a normal left-click", async () => {
+          const openedPage = page.context().waitForEvent("page");
+          await artifactContent(page).getByTestId("artifact-pr-link").click();
+          const popup = await openedPage;
+          await popup.waitForURL(pullRequestUrl, { timeout: 20_000 });
+
+          expect(
+            popup.url(),
+            "the sandbox handed the link to the host, which opened a new tab",
+          ).toBe(pullRequestUrl);
+          await popup.close();
         });
 
         await step("The host was listening before the shell could speak", async () => {

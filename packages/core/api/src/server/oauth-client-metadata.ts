@@ -9,6 +9,10 @@ export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_TARGET_PATH_PREFIX =
 export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_DEFAULT_TARGET = "default" as const;
 export const OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_TARGET = "local" as const;
 
+// Keep CIMD aligned with DCR: providers may reject `offline_access` unless the
+// client declares that it can use the refresh-token grant.
+const OAUTH_CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token"] as const;
+
 type MetadataTarget =
   | typeof OAUTH_CLIENT_ID_METADATA_DOCUMENT_DEFAULT_TARGET
   | typeof OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_TARGET
@@ -19,7 +23,7 @@ interface OAuthClientIdMetadataDocument {
   readonly client_name: string;
   readonly client_uri: string;
   readonly redirect_uris: readonly string[];
-  readonly grant_types: readonly ["authorization_code"];
+  readonly grant_types: typeof OAUTH_CLIENT_GRANT_TYPES;
   readonly response_types: readonly ["code"];
   readonly token_endpoint_auth_method: "none";
   readonly application_type: "web" | "native";
@@ -129,7 +133,7 @@ export const oauthClientIdMetadataDocumentFromRequest = ({
       client_name: "Executor Local",
       client_uri: url.origin,
       redirect_uris: localLoopbackRedirectUris(mountPrefix),
-      grant_types: ["authorization_code"],
+      grant_types: OAUTH_CLIENT_GRANT_TYPES,
       response_types: ["code"],
       token_endpoint_auth_method: "none",
       application_type: "native",
@@ -150,7 +154,7 @@ export const oauthClientIdMetadataDocumentFromRequest = ({
     client_name: "Executor",
     client_uri: url.origin,
     redirect_uris: [redirectUri.toString()],
-    grant_types: ["authorization_code"],
+    grant_types: OAUTH_CLIENT_GRANT_TYPES,
     response_types: ["code"],
     token_endpoint_auth_method: "none",
     application_type: "web",

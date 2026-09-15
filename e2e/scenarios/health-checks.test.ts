@@ -70,6 +70,11 @@ const identitySpec = (baseUrl: string): string =>
           summary: "Send a message",
           responses: { "201": { description: "created" } },
         },
+        delete: {
+          operationId: "deleteMessages",
+          summary: "Delete messages",
+          responses: { "204": { description: "deleted" } },
+        },
       },
     },
   });
@@ -486,14 +491,13 @@ scenario(
         Effect.gen(function* () {
           yield* registerIdentityIntegration(client, slug, server.url);
 
-          // Deliberately declare the DESTRUCTIVE POST as the health check (the
-          // editor warns but allows saving; the runtime is the enforcement).
+          // API configuration must not bypass the runtime's method restriction.
           const candidates = yield* client.integrations.healthCheckCandidates({ params: { slug } });
-          const post = candidates.find((candidate) => candidate.method === "post");
-          if (!post) return yield* Effect.die("identity spec exposed no POST candidate");
+          const mutation = candidates.find((candidate) => candidate.method === "delete");
+          if (!mutation) return yield* Effect.die("identity spec exposed no DELETE candidate");
           yield* client.integrations.healthCheckSet({
             params: { slug },
-            payload: { spec: { operation: post.operation } },
+            payload: { spec: { operation: mutation.operation } },
           });
 
           yield* client.connections.create({
@@ -508,13 +512,15 @@ scenario(
 
           // A health check runs unattended and repeatedly with no approval
           // gate, so the probe REFUSES to execute a mutating operation: the
-          // result is unknown-with-reason and the upstream never sees a POST.
+          // result is unknown-with-reason and the upstream never sees a DELETE.
           const result = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
             query: {},
           });
           expect(result.status, "a mutating probe refuses to run").toBe("unknown");
-          expect(result.detail ?? "", "the refusal names the problem").toContain("mutating");
+          expect(result.detail ?? "", "the refusal names the problem").toContain(
+            "not supported for health checks",
+          );
           expect(result.httpStatus, "no request reached the upstream").toBeUndefined();
         }),
         Effect.gen(function* () {

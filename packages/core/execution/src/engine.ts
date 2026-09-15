@@ -138,6 +138,11 @@ const truncate = (value: string, max: number): string =>
     ? `${value.slice(0, max)}\n... [truncated ${value.length - max} chars]`
     : value;
 
+const soleConnectedToolName = (toolPaths: readonly string[] | undefined): string | undefined => {
+  const names = [...new Set(toolPaths ?? [])];
+  return names.length === 1 ? names[0] : undefined;
+};
+
 export const formatExecuteResult = (
   result: ExecuteResult,
 ): {
@@ -183,11 +188,13 @@ export const formatExecuteResult = (
       ? `(no return value; ${emittedNote})`
       : "(no result)";
   const parts = [resultPart, ...(logText ? [`\nLogs:\n${logText}`] : [])];
+  const toolName = soleConnectedToolName(result.toolPaths);
   return {
     text: parts.join("\n"),
     structured: {
       status: "completed",
       result: result.result ?? null,
+      ...(toolName ? { toolName } : {}),
       ...emittedField,
       logs: result.logs ?? [],
     },
@@ -318,8 +325,9 @@ const makeFullInvoker = (
   executor: Executor,
   invokeOptions: InvokeOptions,
   toolDiscoveryProvider: ToolDiscoveryProvider,
+  onConnectedToolCall?: (path: string) => void,
 ): SandboxToolInvoker => {
-  const base = makeExecutorToolInvoker(executor, { invokeOptions });
+  const base = makeExecutorToolInvoker(executor, { invokeOptions, onConnectedToolCall });
   return {
     invoke: ({ path, args }) => {
       if (path === "search") {
@@ -694,13 +702,18 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         return yield* Deferred.await(responseDeferred);
       });
 
+    const toolPaths: string[] = [];
     const invoker = makeFullInvoker(
       executor,
       { onElicitation: elicitationHandler },
       toolDiscoveryProvider,
+      (path) => toolPaths.push(path),
     );
     fiber = yield* Effect.forkDetach(
-      codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
+      codeExecutor.execute(code, invoker).pipe(
+        Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
+        Effect.withSpan("executor.code.exec"),
+      ),
     );
     liveSandboxFibers.add(fiber);
 
@@ -825,16 +838,19 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       "mcp.execute.mode": "inline",
       "mcp.execute.code_length": code.length,
     });
+    const toolPaths: string[] = [];
     const invoker = makeFullInvoker(
       executor,
       {
         onElicitation: options.onElicitation,
       },
       toolDiscoveryProvider,
+      (path) => toolPaths.push(path),
     );
-    const result = yield* codeExecutor
-      .execute(code, invoker)
-      .pipe(Effect.withSpan("executor.code.exec"));
+    const result = yield* codeExecutor.execute(code, invoker).pipe(
+      Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
+      Effect.withSpan("executor.code.exec"),
+    );
     yield* annotateExecuteOutcome(result);
     return result;
   });

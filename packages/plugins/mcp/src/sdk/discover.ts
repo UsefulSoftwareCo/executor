@@ -31,6 +31,12 @@ const MAX_LIST_TOOLS_PAGES = 100;
 // shape probe's single unauth POST.
 const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
 
+// Teardown is best-effort and paid for by the request that performed discovery.
+// A remote transport may accept close and then never settle, so use the same
+// bound as the invocation connection pool instead of stranding the caller in an
+// uninterruptible finalizer after discovery itself has already completed.
+const CLOSE_TIMEOUT = Duration.seconds(2);
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -243,13 +249,11 @@ export const discoverTools = (
 const closeConnection = (connection: {
   readonly close: () => Promise<void>;
 }): Effect.Effect<void, never> =>
-  Effect.ignore(
-    Effect.tryPromise({
-      try: () => connection.close(),
-      catch: () =>
-        new McpToolDiscoveryError({
-          stage: "list_tools",
-          message: "Failed closing MCP connection",
-        }),
-    }),
-  );
+  Effect.tryPromise({
+    try: () => connection.close(),
+    catch: () =>
+      new McpToolDiscoveryError({
+        stage: "list_tools",
+        message: "Failed closing MCP connection",
+      }),
+  }).pipe(Effect.timeout(CLOSE_TIMEOUT), Effect.ignore);

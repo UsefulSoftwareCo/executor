@@ -1,5 +1,5 @@
 import { Cause, Context, Data, Effect, Exit, Layer, Predicate } from "effect";
-import type { AbstractQuery } from "@executor-js/fumadb/query";
+import { withQueryContext, type AbstractQuery } from "@executor-js/fumadb/query";
 import type { AnySchema, AnyTable, Schema as FumaSchema } from "@executor-js/fumadb/schema";
 
 export class StorageError extends Data.TaggedError("StorageError")<{
@@ -306,6 +306,12 @@ export type IFumaClient<TSchema extends AnySchema = AnySchema> = Readonly<{
 
 export interface MakeFumaClientOptions {
   readonly tables?: ReadonlySet<string>;
+  /** Owner-policy context to rebind EVERY query to, including queries issued
+   *  inside an enclosing transaction (whose handle otherwise carries the
+   *  context of whoever opened it). Lets a narrowly-scoped client (the
+   *  integration-removal cascade) join a bound transaction without inheriting
+   *  the bound reach. */
+  readonly context?: unknown;
 }
 
 const isAllowedTable = (tables: ReadonlySet<string> | undefined, table: PropertyKey): boolean =>
@@ -347,9 +353,11 @@ const makeSafeFumaQuery = <TSchema extends AnySchema>(
 };
 
 export const makeFumaClient = (db: FumaDb, options: MakeFumaClientOptions = {}): IFumaClient => {
+  const rebind = (handle: FumaDb): FumaDb =>
+    options.context === undefined ? handle : withQueryContext(handle, options.context);
   const use: IFumaClient["use"] = (label, fn) =>
     Effect.flatMap(Effect.service(activeFumaDbRef), (active) =>
-      fumaEffect(label, () => fn(makeSafeFumaQuery(active ?? db, options))),
+      fumaEffect(label, () => fn(makeSafeFumaQuery(rebind(active ?? db), options))),
     ).pipe(Effect.withSpan(`fumadb.${label}`));
 
   const transaction = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | StorageFailure> =>

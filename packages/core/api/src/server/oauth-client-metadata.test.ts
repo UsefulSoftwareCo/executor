@@ -19,6 +19,7 @@ describe("OAuth client ID metadata document", () => {
       "http://100.81.219.45:42384/api/oauth/client-id-metadata/acme.json",
     );
     expect(metadata.redirect_uris).toEqual(["http://100.81.219.45:42384/api/oauth/callback"]);
+    expect(metadata.grant_types).toEqual(["authorization_code", "refresh_token"]);
     expect(metadata.token_endpoint_auth_method).toBe("none");
     expect(metadata.application_type).toBe("web");
   });
@@ -63,6 +64,7 @@ describe("OAuth client ID metadata document", () => {
       "http://localhost/api/oauth/callback",
       "http://[::1]/api/oauth/callback",
     ]);
+    expect(metadata.grant_types).toEqual(["authorization_code", "refresh_token"]);
     expect(metadata.application_type).toBe("native");
   });
 

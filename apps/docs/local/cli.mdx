@@ -43,6 +43,18 @@ executor web        # open the web UI at http://127.0.0.1:4788
 `executor install` registers Executor so it keeps running across restarts. For a
 throwaway foreground runtime instead, run `executor web --foreground`.
 
+## Behind a TLS reverse proxy
+
+The daemon listens over HTTP on loopback. If a reverse proxy terminates TLS in
+front of it, set `EXECUTOR_WEB_BASE_URL` to the public HTTPS origin so browser
+approval links use that origin:
+
+```bash
+EXECUTOR_WEB_BASE_URL=https://executor.example.test executor daemon run --foreground
+```
+
+Generated approval URLs take this value, not `X-Forwarded-Proto` or `Host`.
+
 ## Connect an agent
 
 Add Executor to any MCP client (Claude Code, Cursor, OpenCode) with `npx add-mcp`.
