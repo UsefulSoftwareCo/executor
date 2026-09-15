@@ -228,6 +228,8 @@ const CancelResponse = Schema.Struct({
 
 const ProbePayload = Schema.Struct({
   url: Schema.String,
+  integration: Schema.optional(IntegrationSlug),
+  template: Schema.optional(AuthTemplateSlug),
 });
 
 const ProbeResponse = Schema.Struct({

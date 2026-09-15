@@ -10,6 +10,24 @@ import {
 import type { Authentication } from "../sdk/types";
 
 describe("authMethodsFromConfig", () => {
+  it("uses the original base URL for issuer-only legacy discovery", () => {
+    const methods = authMethodsFromConfig(
+      [
+        {
+          kind: "oauth2",
+          slug: AuthTemplateSlug.make("oauth-DiscoveredOAuth2"),
+          authorizationUrl: "https://provider.example/tenant/oauth/authorize",
+          tokenUrl: "https://provider.example/tenant/oauth/token",
+          resource: null,
+          scopes: [],
+          supportsClientIdMetadataDocument: true,
+        },
+      ],
+      { baseUrl: "https://provider.example/tenant" },
+    );
+    expect(methods[0]?.oauth?.discoveryUrl).toBe("https://provider.example/tenant");
+  });
+
   it("projects oauth templates with their stored endpoints + scopes", () => {
     const methods = authMethodsFromConfig([
       {
@@ -20,6 +38,7 @@ describe("authMethodsFromConfig", () => {
         resource: "https://api.example",
         scopes: ["read"],
         supportsClientIdMetadataDocument: true,
+        discoveryUrl: "https://api.example",
       },
     ]);
     expect(methods[0]).toMatchObject({
@@ -32,8 +51,23 @@ describe("authMethodsFromConfig", () => {
         resource: "https://api.example",
         scopes: ["read"],
         supportsClientIdMetadataDocument: true,
+        discoveryUrl: "https://api.example",
       },
     });
+  });
+
+  it("re-probes older discovered OAuth templates even without a stored CIMD flag", () => {
+    const [method] = authMethodsFromConfig([
+      {
+        slug: AuthTemplateSlug.make("oauth-DiscoveredOAuth2"),
+        kind: "oauth2",
+        authorizationUrl: "https://x.example/auth",
+        tokenUrl: "https://x.example/token",
+        resource: "https://api.example",
+        scopes: [],
+      },
+    ]);
+    expect(method?.oauth?.discoveryUrl).toBe("https://api.example");
   });
 
   it("projects apikey methods, multi-placement and multi-variable intact", () => {
@@ -80,6 +114,7 @@ describe("editor round-trip", () => {
         resource: "https://api.example",
         scopes: ["a", "b"],
         supportsClientIdMetadataDocument: true,
+        discoveryUrl: "https://api.example",
       }),
     ).toEqual({
       kind: "oauth",
@@ -88,6 +123,7 @@ describe("editor round-trip", () => {
       resource: "https://api.example",
       scopes: ["a", "b"],
       supportsClientIdMetadataDocument: true,
+      discoveryUrl: "https://api.example",
     });
   });
 
@@ -96,6 +132,7 @@ describe("editor round-trip", () => {
       slug: AuthTemplateSlug.make("azureAdDelegated"),
       kind: "oauth2",
       label: "OAuth2 (user)",
+      discoveryUrl: "https://api.example",
       authorizationUrl: "https://x.example/auth",
       tokenUrl: "https://x.example/token",
       resource: null,

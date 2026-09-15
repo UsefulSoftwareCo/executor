@@ -169,6 +169,59 @@ When handing results to the user, follow the evidence contract in the root
 [AGENTS.md](../AGENTS.md) (direct run links + a live instance + what to try);
 [RUNNING.md](../RUNNING.md) has the current sharing/demo mechanics.
 
+## Docker OAuth deployment switch
+
+`selfhost-docker-cimd` is an opt-in browser suite for MCP and OpenAPI CIMD/DCR
+selection. It creates isolated hosted emulator instances and restarts the same
+Docker image and data volume with `EXECUTOR_OAUTH_CIMD_ENABLED=false`, then with
+the variable absent. It checks provider registration, token exchange, and an
+authenticated tool call through Executor, and records browser traces and ledgers.
+The separate OpenAPI scenario removes a custom method while CIMD is disabled
+and checks that restarting preserves the original OAuth configuration.
+
+Provide an explicit image, the dedicated test container port, and its reachable
+web URL (the CIMD document must be reachable by the hosted authorization server):
+
+```sh
+E2E_SELFHOST_DOCKER_IMAGE=executor-selfhost:e2e \
+E2E_SELFHOST_DOCKER_PORT=42885 \
+E2E_SELFHOST_DOCKER_URL=https://your-test-instance.example \
+bunx vitest run --project selfhost-docker-cimd
+```
+
+The initial container must already be running at that URL. The suite owns and
+restarts `executor-e2e-selfhost-docker-<port>`; use a dedicated synthetic test
+instance. The hosted MCP emulator must implement the
+`mcp.oauth.clientIdMetadataDocumentSupported` seed option.
+
+For explicitly authorized local emulator verification, set `E2E_CIMD_MCP_URL`
+and `E2E_CIMD_OPENAPI_URL` to dedicated fresh emulator processes reachable from
+both Docker and the browser. This attaches to those processes instead of creating
+hosted instances; the same browser, token, and authenticated-operation assertions
+still run. Runtime `/_emulate/seed` bodies contain the service configuration
+directly, without the service-name wrapper used by startup configuration.
+
+The separate `selfhost-docker-cimd-legacy` project checks an upgrade from an
+image that stored discovered CIMD templates without `discoveryUrl`. Set
+`E2E_CIMD_LEGACY_IMAGE` to that older image and `E2E_SELFHOST_DOCKER_IMAGE` to the
+image under review, using the same port, URL, and optional local provider settings
+above. It uses the emulator's fault control to return 404 for protected-resource
+metadata while retaining issuer discovery. The old image must create the template
+and complete real CIMD authorization; the upgraded image must preserve the existing
+connection and complete another authorization on the same integration. It also
+checks persistence of the recovered URL and rejection of mismatched OAuth endpoints.
+Set `E2E_CIMD_OPENAPI_PATH_URL` to a second emulator mounted at a path-based issuer
+(e.g. `https://provider.example/tenant`) to run the same upgrade for both issuer shapes.
+
+```sh
+E2E_CIMD_LEGACY_IMAGE=executor-cimd:before \
+E2E_CIMD_OPENAPI_PATH_URL=https://provider.example/tenant \
+E2E_SELFHOST_DOCKER_IMAGE=executor-cimd:legacy-fixed \
+E2E_SELFHOST_DOCKER_PORT=42905 \
+E2E_SELFHOST_DOCKER_URL=https://your-test-instance.example \
+bunx vitest run --project selfhost-docker-cimd-legacy
+```
+
 ## Desktop targets (the app on real OSes, filmed)
 
 The packaged desktop app runs as its own targets, each landing in its own

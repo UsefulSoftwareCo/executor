@@ -85,10 +85,8 @@ export interface AuthMethodOAuth {
    *  registration. Drives the transparent auto-register connect flow (probe →
    *  register → start, with no app picker). */
   readonly supportsDynamicRegistration?: boolean;
-  /** True when the authorization server supports OAuth Client ID Metadata
-   *  Document. The connect flow can create a public local client whose
-   *  `client_id` is this host's metadata document URL, with no provider-side app
-   *  registration. */
+  /** See the SDK's `AuthMethodOAuthDescriptor.supportsClientIdMetadataDocument`
+   *  contract for catalog capability semantics. */
   readonly supportsClientIdMetadataDocument?: boolean;
 }
 

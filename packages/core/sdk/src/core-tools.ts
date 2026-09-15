@@ -288,6 +288,8 @@ const OAuthRemoveClientInput = Schema.Struct({
 });
 const OAuthProbeInput = Schema.Struct({
   url: Schema.String,
+  integration: Schema.optional(IntegrationSlug),
+  template: Schema.optional(AuthTemplateSlug),
 });
 const OAuthProbeOutput = Schema.Struct({
   issuer: Schema.optional(Schema.NullOr(Schema.String)),
@@ -916,11 +918,11 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "oauth.probe",
           description:
-            "Discover OAuth authorization-server metadata from an issuer or protected-resource URL so client registration can be pre-filled.",
+            "Discover OAuth authorization-server metadata from an issuer or protected-resource URL. Pass integration and template when connecting a catalog method so legacy discovery can be recovered.",
           inputSchema: OAuthProbeInputStd,
           outputSchema: OAuthProbeOutputStd,
           execute: (input: typeof OAuthProbeInput.Type, { ctx }) =>
-            Effect.map(ctx.oauth.probe({ url: input.url }), (result) => ({
+            Effect.map(ctx.oauth.probe(input), (result) => ({
               issuer: result.issuer ?? null,
               authorizationUrl: result.authorizationUrl,
               tokenUrl: result.tokenUrl,

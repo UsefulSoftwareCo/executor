@@ -117,6 +117,8 @@ export interface OAuthAuthentication {
    *  `client_id` is this host's metadata-document URL, not a provider-side
    *  registered app id. */
   readonly supportsClientIdMetadataDocument?: boolean;
+  /** Endpoint to re-probe before choosing CIMD or dynamic registration. */
+  readonly discoveryUrl?: string;
 }
 
 /** A registered OAuth app — pure app identity: clientId/secret + its endpoints.
@@ -387,6 +389,9 @@ export interface OAuthCompleteOptions {
  *  onboarding UI can pre-fill a client's endpoints. */
 export interface OAuthProbeInput {
   readonly url: string;
+  /** Resolve discovery from a stored integration method when available. */
+  readonly integration?: IntegrationSlug;
+  readonly template?: AuthTemplateSlug;
 }
 
 export interface OAuthProbeResult {
@@ -404,8 +409,9 @@ export interface OAuthProbeResult {
   /** RFC 8414 `token_endpoint_auth_methods_supported`. Surfaced so DCR can pick
    *  a public ("none") client when the server allows it. */
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
-  /** Draft OAuth Client ID Metadata Document support, advertised by providers
-   *  such as PostHog as `client_id_metadata_document_supported`. */
+  /** Effective OAuth Client ID Metadata Document support from discovery, not
+   *  raw `client_id_metadata_document_supported` metadata. See
+   *  `ExecutorConfig.oauthClientIdMetadataDocumentEnabled` for deployment gating. */
   readonly clientIdMetadataDocumentSupported?: boolean;
 }
 
