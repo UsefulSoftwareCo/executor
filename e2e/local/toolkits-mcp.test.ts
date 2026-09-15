@@ -14,7 +14,7 @@ import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
-import { Cli, RunDir } from "../src/services";
+import { Browser, Cli, RunDir, Target } from "../src/services";
 import { withLocalServer } from "./local-server";
 
 const api = composePluginApi([openApiHttpPlugin(), toolkitsPlugin()] as const);
@@ -313,6 +313,97 @@ scenario(
             }),
           );
           expect(crossResource.status, "default session id cannot cross into toolkit").toBe(403);
+        }),
+      );
+    }),
+  ),
+);
+
+scenario(
+  "Local toolkits · UI creates a personal toolkit that executes a personal connection",
+  { timeout: 240_000 },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cli = yield* Cli;
+      const runDir = yield* RunDir;
+      const browser = yield* Browser;
+      const target = yield* Target;
+      const identity = yield* target.newIdentity();
+      const upstream = yield* servePingApi;
+      yield* withLocalServer(cli, runDir, (server) =>
+        Effect.gen(function* () {
+          const client = yield* HttpApiClient.make(api, {
+            baseUrl: new URL("/api", server.origin).toString(),
+            transformClient: HttpClient.mapRequest((request) =>
+              HttpClientRequest.setHeader(request, "authorization", `Bearer ${server.token}`),
+            ),
+          }).pipe(Effect.provide(FetchHttpClient.layer));
+          const integration = unique("personal_ping");
+          const name = unique("personal-kit");
+          yield* client.openapi.addSpec({
+            payload: {
+              spec: { kind: "blob", value: pingSpec(upstream.url) },
+              slug: IntegrationSlug.make(integration),
+              baseUrl: upstream.url,
+              authenticationTemplate: [
+                {
+                  slug: "apiKey",
+                  type: "apiKey",
+                  headers: {
+                    "x-e2e-token": [{ type: "variable", name: "token" }],
+                  },
+                },
+              ],
+            },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "user",
+              name: ConnectionName.make("personal"),
+              integration: IntegrationSlug.make(integration),
+              template: AuthTemplateSlug.make("apiKey"),
+              value: "unused-token",
+            },
+          });
+          yield* browser.session(identity, async ({ page, step }) => {
+            await step("Create a toolkit on the local console", async () => {
+              await page.goto(server.url, { waitUntil: "domcontentloaded" });
+              await page.goto(new URL("/toolkits/", server.origin).toString());
+              await page.getByRole("button", { name: "Add toolkit", exact: true }).click();
+              await page.getByLabel("Toolkit name", { exact: true }).fill(name);
+              await page.getByRole("button", { name: "Create toolkit", exact: true }).click();
+              await page.getByRole("link", { name: `Open toolkit ${name}` }).waitFor();
+            });
+          });
+          const toolkit = (yield* client.toolkits.list()).toolkits.find((t) => t.name === name);
+          expect(toolkit?.owner).toBe("user");
+          if (!toolkit) return yield* Effect.die("Created toolkit missing");
+          yield* client.toolkits.createConnection({
+            params: { toolkitId: toolkit.id },
+            payload: { pattern: `${integration}.user.personal.*` },
+          });
+          const scoped = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              makeMcp(
+                new URL(`/mcp/toolkits/${toolkit.slug}`, server.origin).toString(),
+                server.token,
+                "personal-kit-test",
+              ),
+            ),
+            ({ client }) => Effect.promise(() => client.close()).pipe(Effect.ignore),
+          );
+          const result = yield* Effect.promise(() =>
+            executeJson(
+              scoped.client,
+              callPingCode({
+                integration,
+                connection: "personal",
+                id: "personal-result",
+              }).replaceAll(`${integration}.org.`, `${integration}.user.`),
+            ),
+          );
+          expect(result.ok).toBe(true);
+          expect(result.data).toMatchObject({ id: "personal-result" });
         }),
       );
     }),
