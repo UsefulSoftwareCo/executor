@@ -1688,24 +1688,12 @@ body {
   font-weight: 500;
 }
 
-@media (min-width: 720px) {
-  .cap-grid--4 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 /* ── Sidebar ("rail") layout. Active when a rail option is visible. ──
    One centred frame (rail + content) of fixed max width, like a document
    with a margin column. Content never exceeds its column. */
 .page:has(> .page__rail) {
-  --rail-w: 280px;
-  --frame-w: 1240px;
-}
-.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail--b) {
   --rail-w: 240px;
-}
-.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail--c) {
-  --rail-w: 220px;
+  --frame-w: 1240px;
 }
 @media (min-width: 1024px) {
   .page:has(> .page__rail) {

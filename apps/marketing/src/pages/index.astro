@@ -4,7 +4,6 @@ import Layout from "../layouts/Layout.astro";
 // the deploy pipeline does not pick up newly added /public files.
 import { getStars, formatStars } from "../lib/github";
 import { setupPrompt } from "../content/site-copy";
-import AgentsFooter from "../components/variants/agents-footer.astro";
 import RailB from "../components/variants/rail-b.astro";
 import DocBody from "../components/variants/doc-body.astro";
 
@@ -59,47 +58,9 @@ const stars = await getStars();
             <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
           </div>
         </div>
-        <div data-uidotsh-pick="Agents footer" class="contents">
-          <div data-uidotsh-option="None (current)" class="contents"></div>
-          <div data-uidotsh-option="For humans / For agents toggle" class="contents" hidden>
-            <div class="max-w-[1200px] mx-auto px-6 sm:px-10 mt-8">
-              <AgentsFooter />
-            </div>
-          </div>
-        </div>
       </footer>
       </div>
     </div>
-    <script is:inline src="https://ui.sh/ui-picker.js"></script>
-    <script is:inline>
-      // Fallback variant switcher for when the ui.sh picker is blocked
-      // (ad blockers). Same data attributes, plain <select>s, no network.
-      setTimeout(() => {
-        if (document.querySelector("uidotsh-picker")) return;
-        const box = document.createElement("div");
-        box.style.cssText =
-          "position:fixed;right:16px;bottom:16px;z-index:99999;background:#111;color:#fff;padding:10px 12px;border-radius:10px;font:12px/1.4 ui-monospace,Menlo,monospace;display:grid;gap:6px;box-shadow:0 8px 24px rgba(0,0,0,.25)";
-        for (const pick of document.querySelectorAll("[data-uidotsh-pick]")) {
-          const opts = [...pick.querySelectorAll(":scope > [data-uidotsh-option]")];
-          const row = document.createElement("label");
-          row.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
-          const name = document.createElement("span");
-          name.textContent = pick.dataset.uidotshPick;
-          const sel = document.createElement("select");
-          sel.style.cssText = "font:inherit;background:#222;color:#fff;border:1px solid #444;border-radius:6px;padding:2px 6px";
-          for (const o of opts) {
-            const op = document.createElement("option");
-            op.value = op.textContent = o.dataset.uidotshOption;
-            op.selected = !o.hidden;
-            sel.append(op);
-          }
-          sel.onchange = () => { for (const o of opts) o.hidden = o.dataset.uidotshOption !== sel.value; };
-          row.append(name, sel);
-          box.append(row);
-        }
-        document.body.append(box);
-      }, 1500);
-    </script>
   </main>
 </Layout>
 
@@ -153,115 +114,6 @@ const stars = await getStars();
       }, 1500);
     });
   }
-</script>
-
-<script>
-  // ── Hero "For humans / For agents" audience toggle ─────────────────
-  const heroCta = document.querySelector<HTMLElement>(".hero-cta");
-  if (heroCta) {
-    const tabs = Array.from(
-      heroCta.querySelectorAll<HTMLButtonElement>("[data-audience-set]"),
-    );
-    const panes = Array.from(
-      heroCta.querySelectorAll<HTMLElement>("[data-audience-pane]"),
-    );
-    const setAudience = (aud: string) => {
-      heroCta.dataset.audience = aud;
-      for (const t of tabs) {
-        t.setAttribute(
-          "aria-selected",
-          t.dataset.audienceSet === aud ? "true" : "false",
-        );
-      }
-      for (const p of panes) {
-        p.hidden = p.dataset.audiencePane !== aud;
-      }
-    };
-    for (const t of tabs) {
-      t.addEventListener("click", () =>
-        setAudience(t.dataset.audienceSet ?? "humans"),
-      );
-    }
-  }
-</script>
-
-<script>
-  // ── Auto-detect download platform ──────────────────────────────────
-  // Shows ONE primary button matching the visitor's OS in the Desktop
-  // card; tucks the others behind an "Other platforms" popover. No-JS /
-  // unrecognised UA: all four buttons visible (still functional, just
-  // less polished).
-  type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64";
-
-  type UserAgentData = {
-    readonly platform: string;
-    readonly getHighEntropyValues?: (
-      hints: ReadonlyArray<string>,
-    ) => Promise<{ readonly architecture?: string; readonly bitness?: string }>;
-  };
-
-  const detectOs = async (): Promise<DownloadOs | null> => {
-    const navAny = navigator as Navigator & {
-      readonly userAgentData?: UserAgentData;
-    };
-    const uad = navAny.userAgentData;
-    const platformRaw =
-      uad?.platform ?? navigator.platform ?? navigator.userAgent ?? "";
-    const platform = platformRaw.toLowerCase();
-    const ua = navigator.userAgent.toLowerCase();
-
-    if (platform.includes("win") || ua.includes("windows")) return "win-x64";
-    if (platform.includes("linux") || ua.includes("linux")) return "linux-x64";
-    if (platform.includes("mac") || ua.includes("mac")) {
-      // Apple Silicon vs Intel: ask client hints first, then fall back to
-      // a heuristic. Most modern Macs are arm64.
-      if (uad?.getHighEntropyValues) {
-        try {
-          const hints = await uad.getHighEntropyValues([
-            "architecture",
-            "bitness",
-          ]);
-          if (hints.architecture === "arm") return "mac-arm64";
-          if (hints.architecture === "x86") return "mac-x64";
-        } catch {}
-      }
-      return "mac-arm64";
-    }
-    return null;
-  };
-
-  void (async () => {
-    const root = document.querySelector<HTMLElement>("[data-download]");
-    if (!root) return;
-    const buttons = Array.from(
-      root.querySelectorAll<HTMLAnchorElement>("a[data-os]"),
-    );
-    const other = root.querySelector<HTMLDetailsElement>(
-      "[data-download-other]",
-    );
-    const otherList = root.querySelector<HTMLDivElement>(
-      "[data-download-other-list]",
-    );
-    if (buttons.length === 0 || !other || !otherList) return;
-
-    const detected = await detectOs();
-    if (!detected) return;
-
-    for (const btn of buttons) {
-      const os = btn.dataset.os as DownloadOs | undefined;
-      if (os && os !== detected) {
-        btn.classList.add("hidden");
-        const clone = btn.cloneNode(true) as HTMLAnchorElement;
-        clone.classList.remove(
-          "btn-primary",
-          "btn-primary--hero",
-          "hidden",
-        );
-        otherList.appendChild(clone);
-      }
-    }
-    other.classList.remove("hidden");
-  })();
 </script>
 
 <script>

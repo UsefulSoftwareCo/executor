@@ -11,7 +11,7 @@ How it works:
 - Set policies: decide whether each tool is always allowed, needs approval, or is blocked.
 - Use it from any MCP-compatible agent: one catalog of tools, shared across every client.
 
-Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted on Docker or Cloudflare.
+Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted on Docker.
 
 ## Docs
 

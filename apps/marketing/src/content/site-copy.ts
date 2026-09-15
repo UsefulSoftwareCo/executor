@@ -27,11 +27,11 @@ Both run a local HTTP server as a background service that any MCP client can con
 
 Hosted (use it from multiple agents, including cloud ones, with nothing running locally):
 - Executor Cloud: hosted, generous free tier, sign in and start immediately.
-- Self-hosted: a Docker image or a Cloudflare Worker.
+- Self-hosted: a Docker image.
 
 How to think about it:
 - Want all your data on your own machine? Go local: the desktop app for a regular environment, the CLI for a headless one.
-- Want to use it from multiple agents (including cloud agents like ChatGPT), or not run anything locally? Go hosted: Executor Cloud is the fastest start; the self-hosted Docker or Cloudflare versions give you full control.
+- Want to use it from multiple agents (including cloud agents like ChatGPT), or not run anything locally? Go hosted: Executor Cloud is the fastest start; the self-hosted Docker version gives you full control.
 
 Terms you'll come across:
 - Integration: anything you add (an MCP server, an OpenAPI spec, a GraphQL API).

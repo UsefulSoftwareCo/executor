@@ -5,10 +5,8 @@
 // with `aria-current="true"`, and mirrors the id onto the aside as
 // `data-active-section` so CSS can react without extra classes.
 //
-// Rails can be mounted inside a hidden picker wrapper, and the picker can swap
-// which one is visible at any time. So: bind unconditionally (an observer on a
-// hidden subtree is cheap and harmless), tolerate missing sections, and stay
-// idempotent if the initializer runs again on the same element.
+// Tolerates missing sections and stays idempotent if the initializer runs
+// again on the same element.
 
 const BOUND = "railSpyBound";
 
@@ -25,10 +23,8 @@ export function initRailSpy(root: HTMLElement): void {
   const pairs: Array<{ id: string; link: HTMLAnchorElement }> = [];
   for (const link of links) {
     const id = decodeURIComponent(link.getAttribute("href")!.slice(1));
-    // Picker wrappers can hold several copies of a section under one id; only
-    // the visible copy ever intersects, so observe all of them.
-    const sections = id ? document.querySelectorAll(`[id="${CSS.escape(id)}"]`) : [];
-    if (sections.length === 0) {
+    const section = id ? document.getElementById(id) : null;
+    if (section == null) {
       const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
       row.style.display = "none";
       continue;
@@ -36,32 +32,6 @@ export function initRailSpy(root: HTMLElement): void {
     pairs.push({ id, link });
   }
   if (pairs.length === 0) return;
-
-  // A target that only exists inside a hidden picker wrapper is not on the
-  // page the reader sees; hide its row, and re-check when wrappers toggle.
-  const refreshRows = (): void => {
-    for (const { id, link } of pairs) {
-      const targets = document.querySelectorAll<HTMLElement>(`[id="${CSS.escape(id)}"]`);
-      const shown = Array.from(targets).some((t) => t.closest("[hidden]") == null);
-      const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
-      row.style.display = shown ? "" : "none";
-    }
-    // Keep any mono index contiguous over the rows that remain.
-    let n = 0;
-    for (const { link } of pairs) {
-      const row = link.closest<HTMLElement>(".rail__toc-item") ?? link;
-      if (row.style.display === "none") continue;
-      n += 1;
-      const num = row.querySelector<HTMLElement>(".rail__num");
-      if (num) num.textContent = String(n).padStart(2, "0");
-    }
-  };
-  refreshRows();
-  new MutationObserver(refreshRows).observe(document.body, {
-    attributes: true,
-    attributeFilter: ["hidden"],
-    subtree: true,
-  });
 
   const order = pairs.map((p) => p.id);
   const visible = new Set<string>();
@@ -99,8 +69,7 @@ export function initRailSpy(root: HTMLElement): void {
   );
 
   for (const { id } of pairs) {
-    for (const section of document.querySelectorAll(`[id="${CSS.escape(id)}"]`)) {
-      observer.observe(section);
-    }
+    const section = document.getElementById(id);
+    if (section != null) observer.observe(section);
   }
 }

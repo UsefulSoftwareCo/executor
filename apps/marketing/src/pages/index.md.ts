@@ -124,7 +124,7 @@ npm i -g executor
 
 ### Self-hosted
 
-A Docker image or a Cloudflare Worker: https://executor.sh/docs/hosted/docker
+A Docker image: https://executor.sh/docs/hosted/docker
 
 ## Pricing
 
