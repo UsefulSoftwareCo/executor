@@ -7,6 +7,7 @@
 import { AnimatedBeamDemo } from "../animated-beam-demo";
 import { ContextBloatDemo } from "../context-bloat-demo";
 import { setupPrompt } from "../../content/site-copy";
+import Testimonials from "./testimonials.astro";
 import "../../styles/variants/doc.css";
 // Avatar goes through Vite so it ships as a hashed asset; new /public files
 // are not picked up by the deploy pipeline.
@@ -109,6 +110,13 @@ const { gh } = Astro.props;
         integrations connected, with and without Executor.
       </figcaption>
     </figure>
+  </section>
+
+  {/* ── What people say ── */}
+  <section id="people" class="doc__section doc__section--people">
+    <h2 class="doc__h">What people say</h2>
+    <p>Posts about Executor on X. Each card links to the original.</p>
+    <Testimonials />
   </section>
 
   {/* ── 03 Safety ── */}

@@ -15,7 +15,7 @@
     padding-inline: 0;
   }
   .doc__intro,
-  .doc__section > :not(.doc__fig--wide) {
+  .doc__section > :not(.doc__fig--wide):not(.testi) {
     max-width: 720px;
   }
 }

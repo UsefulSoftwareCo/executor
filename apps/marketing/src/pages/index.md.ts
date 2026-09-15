@@ -8,6 +8,7 @@ import {
   pricingTiers,
   tagline,
 } from "../content/site-copy";
+import { testimonials } from "../content/testimonials";
 
 // ---------------------------------------------------------------------------
 // `/index.md` — the homepage as Markdown, for agents.
@@ -130,6 +131,12 @@ A Docker image: https://executor.sh/docs/hosted/docker
 Start free, pay per member. Full details: https://executor.sh/pricing.md
 
 ${pricingLines.join("\n\n")}
+
+## What people say
+
+Public posts about Executor on X. Each line links to the original.
+
+${testimonials.map((t) => `- ${t.name} (@${t.handle}): "${t.text}" https://x.com/${t.handle}/status/${t.id}`).join("\n")}
 
 ## FAQ
 
