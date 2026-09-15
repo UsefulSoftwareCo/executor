@@ -196,6 +196,7 @@ export interface AnalyticsEvents {
   };
   billing_manage_opened: {};
   billing_cancel_plan_clicked: { plan_id: string };
+  billing_payment_method_update_clicked: { has_card: boolean };
   support_opened: {};
   support_link_clicked: { label: string };
   org_domain_added: { success: boolean };

@@ -78,6 +78,21 @@ export interface AutumnSurface {
    *  the billing backend becomes consistent. The `sessionId` is the last path
    *  segment of the hosted checkout URL the browser was sent to. */
   readonly settleCheckout: (sessionId: string) => Effect.Effect<void, unknown>;
+  /** Land the asynchronous webhook for a hosted card-update (setup) session,
+   *  replacing the customer's default payment method. Same race as
+   *  `settleCheckout`: the browser is redirected back first, the card only
+   *  changes once this is called. The `sessionId` is the last path segment of
+   *  the hosted setup URL the browser was sent to. */
+  readonly settleSetup: (sessionId: string) => Effect.Effect<void, unknown>;
+  /** The customer's default payment method as Autumn holds it (the
+   *  `payment_method` expand on `customers.get_or_create`), or null when no
+   *  card is on file. */
+  readonly paymentMethod: (
+    customerId: string,
+  ) => Effect.Effect<
+    { brand: string; last4: string; expMonth: number; expYear: number } | null,
+    unknown
+  >;
   /** Burn an org's entire remaining "executions" balance in one `balances.track`,
    *  so the next `balances.check` reports `allowed: false`. The amount is the
    *  default plan's included allotment (read from the plan seed, never hardcoded),
@@ -180,6 +195,50 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
           `autumn checkout settle responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
         );
       }
+    });
+
+  const settleSetup = (sessionId: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        fetch(`${autumnUrl}/checkout/setup/${encodeURIComponent(sessionId)}/settle`, {
+          method: "POST",
+        }),
+      );
+      if (!response.ok) {
+        return yield* Effect.fail(
+          `autumn setup settle responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
+        );
+      }
+    });
+
+  const paymentMethod = (customerId: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        fetch(`${autumnUrl}/v1/customers.get_or_create`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ customer_id: customerId, expand: ["payment_method"] }),
+        }),
+      );
+      if (!response.ok) {
+        return yield* Effect.fail(
+          `autumn customers.get_or_create responded ${response.status}: ${yield* Effect.promise(() => response.text())}`,
+        );
+      }
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly payment_method?: {
+          readonly card?: {
+            readonly brand: string;
+            readonly last4: string;
+            readonly exp_month: number;
+            readonly exp_year: number;
+          };
+        } | null;
+      };
+      const card = body.payment_method?.card;
+      return card
+        ? { brand: card.brand, last4: card.last4, expMonth: card.exp_month, expYear: card.exp_year }
+        : null;
     });
 
   // Track exactly the plan's included allotment in one event, driving
@@ -328,6 +387,8 @@ export const makeAutumnSurface = (autumnUrl: string): AutumnSurface => {
     usageEvents,
     customerIds,
     settleCheckout,
+    settleSetup,
+    paymentMethod,
     exhaustExecutions,
     attachPlan,
     armFault,
