@@ -51,6 +51,11 @@ export function parse(
   const types = normalizedSchema[Types];
 
   if (intersection) {
+    // A recursive reference can re-enter this schema while its branches are
+    // still being parsed. Reuse the cached intersection instead of appending
+    // the sibling types again or reading a placeholder's params too early.
+    const cached = processed.get(intersection)?.get("ALL_OF");
+    if (cached) return cached;
     const ast = parseAsTypeWithCache(
       intersection,
       "ALL_OF",
@@ -146,7 +151,11 @@ function parseNonLiteral(
   usedNames: UsedNames,
 ): AST {
   const definitions = getDefinitionsMemoized(getRootSchema(schema as any)); // TODO
-  const keyNameFromDefinition = findKey(definitions, (_) => _ === schema);
+  // A synthesized intersection stands for the whole definition. Its source
+  // schema now holds only the sibling constraints and must not take the name.
+  const keyNameFromDefinition = schema[Intersection]
+    ? undefined
+    : findKey(definitions, (_) => _ === schema || _[Intersection] === schema);
 
   switch (type) {
     case "ALL_OF":
