@@ -14,6 +14,9 @@ import ProofA from "../components/variants/proof-a.astro";
 import ProofB from "../components/variants/proof-b.astro";
 import ProofC from "../components/variants/proof-c.astro";
 import AgentsFooter from "../components/variants/agents-footer.astro";
+import RailA from "../components/variants/rail-a.astro";
+import RailB from "../components/variants/rail-b.astro";
+import RailC from "../components/variants/rail-c.astro";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 // Cloud sign-in. Same origin in prod: the cloud Worker owns executor.sh and
@@ -38,7 +41,9 @@ const stars = await getStars();
     >
     </div>
 
-    <div class="relative z-10">
+    <div class="relative z-10 page">
+      <div data-uidotsh-pick="Layout" class="contents">
+        <div data-uidotsh-option="Top nav (current)" class="contents">
       {/* ─── NAV ─── */}
       <nav class="border-b border-rule bg-surface">
         <div
@@ -101,12 +106,24 @@ const stars = await getStars();
           </div>
         </div>
       </nav>
+        </div>
+        <div data-uidotsh-option="A: Paper rail" class="contents" hidden>
+          <div class="page__rail page__rail--a"><RailA stars={stars != null ? formatStars(stars) : null} /></div>
+        </div>
+        <div data-uidotsh-option="B: Gridline rail" class="contents" hidden>
+          <div class="page__rail page__rail--b"><RailB stars={stars != null ? formatStars(stars) : null} /></div>
+        </div>
+        <div data-uidotsh-option="C: Minimal rail" class="contents" hidden>
+          <div class="page__rail page__rail--c"><RailC stars={stars != null ? formatStars(stars) : null} /></div>
+        </div>
+      </div>
+      <div class="page__body">
 
       {/* ─── HERO ─── */}
       <section class="relative">
         <div class="hero-glow" aria-hidden="true"></div>
         <div class="relative z-10 px-6 sm:px-10 pt-24 pb-28 sm:pt-32 sm:pb-36">
-          <div class="max-w-[920px] mx-auto text-center">
+          <div class="hero-inner max-w-[920px] mx-auto text-center">
             <h1
               class="rise-1 text-[clamp(2.8rem,7.2vw,6rem)] font-semibold tracking-[-0.025em] leading-[1.02] text-ink mb-6 mx-auto max-w-[18ch] text-balance"
             >
@@ -208,7 +225,7 @@ const stars = await getStars();
       <div data-uidotsh-pick="Mission section" class="contents">
         <div data-uidotsh-option="Wedge sentence (current)" class="contents">
       {/* ─── WEDGE ─── */}
-      <section class="py-20 sm:py-28 border-t border-rule">
+      <section id="mission" class="py-20 sm:py-28 border-t border-rule">
         <div class="reveal max-w-[840px] mx-auto px-6 sm:px-10">
           <p
             class="text-[clamp(1.5rem,3.4vw,2.2rem)] font-medium tracking-[-0.02em] leading-[1.28] text-ink text-balance"
@@ -264,7 +281,7 @@ const stars = await getStars();
       </div>
 
       {/* ─── CAPABILITIES ─── */}
-      <section class="py-14 sm:py-20 border-t border-rule">
+      <section id="capabilities" class="py-14 sm:py-20 border-t border-rule">
         <div class="reveal max-w-[1100px] mx-auto px-6 sm:px-10">
           <div class="mb-10 max-w-[38rem]">
             <div class="eyebrow mb-4">What you get</div>
@@ -580,7 +597,7 @@ const stars = await getStars();
       </section>
 
       {/* ─── FAQ ─── */}
-      <section class="py-20 sm:py-28 border-t border-rule">
+      <section id="faq" class="py-20 sm:py-28 border-t border-rule">
         <div class="reveal max-w-[760px] mx-auto px-6 sm:px-10">
           <div class="mb-10">
             <h2 class="section-title">FAQ</h2>
@@ -865,6 +882,7 @@ const stars = await getStars();
           </div>
         </div>
       </footer>
+      </div>
     </div>
     <script is:inline src="https://ui.sh/ui-picker.js"></script>
   </main>

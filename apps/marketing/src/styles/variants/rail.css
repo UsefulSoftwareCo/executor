@@ -1,0 +1,371 @@
+/* ═══════════════════════════════════════════════════════════════
+   Sidebar rail variants
+   The page shell owns the column (sticky, 100dvh, its own width).
+   Everything here is internal to the rail.
+     A "Paper rail"    280px  full nav + ticked "On this page"
+     B "Gridline rail" 240px  compact, numbered mono toc, right rule
+     C "Minimal rail"  220px  five section links, no toc label
+   ═══════════════════════════════════════════════════════════════ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-surface);
+  font-family: var(--font-sans);
+}
+
+/* Everything below the wordmark. On desktop it is the vertical body of the
+   rail; on mobile it becomes the right-hand cluster of the top bar. */
+.rail__stack {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* ── Wordmark ── */
+.rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rail__brand-mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.rail__brand-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+/* ── Primary / secondary link lists ── */
+.rail__nav {
+  display: flex;
+  flex-direction: column;
+}
+.rail__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-2);
+  transition: color 0.15s ease;
+}
+.rail__link:hover {
+  color: var(--color-ink);
+}
+.rail__link[aria-current="page"] {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.rail__ext {
+  font-size: 0.85em;
+  color: var(--color-ink-3);
+}
+
+/* ── Shared toc scaffolding ── */
+.rail__toc {
+  display: flex;
+  flex-direction: column;
+}
+.rail__toc-item {
+  display: block;
+}
+.rail__toc a {
+  display: flex;
+  align-items: center;
+  color: var(--color-ink-2);
+  transition: color 0.15s ease;
+}
+.rail__toc a:hover {
+  color: var(--color-ink);
+}
+
+/* ── Foot ── */
+.rail__foot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  transition: color 0.15s ease;
+}
+.rail__foot:hover {
+  color: var(--color-ink-2);
+}
+
+/* ═══ A: Paper rail ═══════════════════════════════════════════ */
+.rail--a,
+.rail--a .rail__stack {
+  gap: 32px;
+}
+.rail--a {
+  padding: 40px 32px;
+}
+.rail--a .rail__nav {
+  gap: 2px;
+}
+.rail--a .rail__link {
+  font-size: 14px;
+  padding: 6px 0 6px 14px;
+}
+/* Active tab bar, drawn as a pseudo-element so the text never shifts. */
+.rail--a .rail__link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 14px;
+  background: var(--color-ink);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.rail--a .rail__link[aria-current="page"]::before {
+  opacity: 1;
+}
+.rail--a .rail__cta {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 18px;
+}
+.rail--a .gh-star {
+  justify-content: flex-start;
+}
+.rail--a .rail__cta .btn-primary {
+  text-align: center;
+}
+.rail--a .rail__divider {
+  border-top: 1px dashed var(--color-rule-strong);
+}
+.rail--a .rail__toc-label {
+  margin-bottom: 16px;
+}
+.rail--a .rail__toc {
+  gap: 4px;
+}
+.rail--a .rail__toc a {
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13.5px;
+}
+.rail--a .rail__tick {
+  flex-shrink: 0;
+  width: 12px;
+  height: 1px;
+  background: var(--color-ink-3);
+  transition:
+    width 0.2s ease,
+    height 0.2s ease,
+    background 0.2s ease;
+}
+.rail--a .rail__toc a[aria-current="true"] {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.rail--a .rail__toc a[aria-current="true"] .rail__tick {
+  width: 20px;
+  height: 2px;
+  background: var(--color-ink);
+}
+.rail--a .rail__foot {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* ═══ B: Gridline rail ════════════════════════════════════════ */
+.rail--b,
+.rail--b .rail__stack {
+  gap: 28px;
+}
+.rail--b {
+  padding: 32px 24px;
+  border-right: 1px solid var(--color-rule);
+}
+.rail--b .rail__brand-mark {
+  width: 18px;
+  height: 18px;
+}
+.rail--b .rail__nav {
+  gap: 4px;
+}
+.rail--b .rail__link {
+  font-size: 14px;
+  padding-left: 12px;
+}
+.rail--b .rail__link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: var(--color-ink);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.rail--b .rail__link[aria-current="page"]::before {
+  opacity: 1;
+}
+.rail--b .rail__cta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+}
+.rail--b .rail__box {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-ink);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--color-ink);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.rail--b .rail__box:hover {
+  background: var(--color-ink);
+  color: var(--color-surface);
+}
+.rail--b .rail__toc {
+  gap: 8px;
+}
+.rail--b .rail__toc a {
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-3);
+}
+.rail--b .rail__num {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-3);
+  transition: color 0.15s ease;
+}
+.rail--b .rail__toc a[aria-current="true"],
+.rail--b .rail__toc a[aria-current="true"] .rail__num {
+  color: var(--color-ink);
+}
+.rail--b .rail__foot {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* ═══ C: Minimal rail ═════════════════════════════════════════ */
+.rail--c,
+.rail--c .rail__stack {
+  gap: 36px;
+}
+.rail--c {
+  padding: 48px 32px;
+}
+.rail--c .rail__toc {
+  gap: 12px;
+}
+.rail--c .rail__toc a {
+  position: relative;
+  padding-left: 14px;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+.rail--c .rail__toc a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.5px;
+  height: 15px;
+  background: var(--color-ink);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.rail--c .rail__toc a[aria-current="true"] {
+  color: var(--color-ink);
+}
+.rail--c .rail__toc a[aria-current="true"]::before {
+  opacity: 1;
+}
+.rail--c .rail__divider {
+  border-top: 1px solid var(--color-rule);
+}
+.rail--c .rail__nav {
+  gap: 10px;
+}
+.rail--c .rail__link {
+  font-size: 13.5px;
+}
+.rail--c .rail__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-3);
+}
+
+/* ═══ Mobile: every rail collapses to one horizontal top bar ═══ */
+@media (max-width: 1023.98px) {
+  .rail {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    height: 56px;
+    padding: 0 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .rail .rail__toc,
+  .rail .rail__toc-label,
+  .rail .rail__divider,
+  .rail .rail__foot,
+  .rail .rail__secondary {
+    display: none;
+  }
+  .rail .rail__nav {
+    flex-direction: row;
+    align-items: center;
+    gap: 20px;
+  }
+  .rail .rail__cta {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    margin-top: 0;
+  }
+  .rail .rail__stack {
+    flex: 0 1 auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 20px;
+  }
+  .rail .rail__link {
+    padding: 0 0 0 0;
+    font-size: 14px;
+  }
+  .rail .rail__link::before {
+    display: none;
+  }
+  /* The star pill and the mono count are the first things to go when the bar
+     gets tight; the links themselves survive longest. */
+  .rail .gh-star {
+    display: none;
+  }
+}
+
+@media (max-width: 719.98px) {
+  .rail .rail__nav .rail__link:not(.rail__link--keep) {
+    display: none;
+  }
+}

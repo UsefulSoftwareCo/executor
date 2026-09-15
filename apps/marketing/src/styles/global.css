@@ -1693,3 +1693,64 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Sidebar ("rail") layout. Active when a rail option is visible. ── */
+.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) {
+  --rail-w: 280px;
+}
+.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail--b) {
+  --rail-w: 240px;
+}
+.page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail--c) {
+  --rail-w: 220px;
+}
+@media (min-width: 1024px) {
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) {
+    display: grid;
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    align-items: start;
+  }
+  .page__rail {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow: hidden auto;
+  }
+  /* Content sits against the rail with a fixed gutter, like a document. */
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body {
+    max-width: 1120px;
+    padding-left: clamp(24px, 4vw, 72px);
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner {
+    text-align: left;
+    margin-left: 0;
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .mx-auto {
+    margin-left: 0;
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .hero-cta,
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .audience-pane {
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner h1 {
+    font-size: clamp(2.6rem, 5vw, 4.4rem);
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .text-center {
+    text-align: left;
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .text-center .mx-auto,
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .text-center.mx-auto {
+    margin-left: 0;
+  }
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner .pt-24,
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body > section:first-child > .relative {
+    padding-top: 4.5rem;
+  }
+}
+@media (min-width: 1024px) {
+  /* In rail mode every section shares the hero's left edge, like a document. */
+  .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body [class*="max-w-"].mx-auto {
+    margin-left: 0;
+  }
+}

@@ -1,0 +1,60 @@
+---
+// Rail, variant C: "Minimal rail".
+// Five section links carry the whole rail, so they double as the index. The
+// secondary links sit below a hairline. No CTA here: the hero already has one.
+import "../../styles/variants/rail.css";
+
+interface Props {
+  stars: string | null;
+}
+const { stars } = Astro.props;
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const SIGN_IN = "/api/auth/login";
+
+const sections = [
+  { id: "mission", label: "What it is" },
+  { id: "context", label: "Context" },
+  { id: "install", label: "Get started" },
+  { id: "pricing", label: "Pricing" },
+  { id: "faq", label: "FAQ" },
+];
+---
+
+<aside class="rail rail--c">
+  <a href="/" class="rail__brand">
+    <img src="/favicon-192.png" alt="" class="rail__brand-mark" />
+    <span class="rail__brand-name">executor</span>
+  </a>
+
+  <div class="rail__stack">
+    <nav class="rail__toc" aria-label="On this page">
+      {
+        sections.map((section) => (
+          <span class="rail__toc-item">
+            <a href={`#${section.id}`}>{section.label}</a>
+          </span>
+        ))
+      }
+    </nav>
+
+    <div class="rail__divider"></div>
+
+    <nav class="rail__nav" aria-label="Secondary">
+      <a href="https://executor.sh/docs" class="rail__link rail__link--keep"
+        >Docs <span class="rail__ext" aria-hidden="true">↗</span></a
+      >
+      <a href="/blog" class="rail__link">Blog</a>
+      <a href={GH} target="_blank" rel="noopener" class="rail__link rail__link--keep">
+        GitHub <span class="rail__ext" aria-hidden="true">↗</span>
+        {stars != null && <span class="rail__count">{stars}</span>}
+      </a>
+      <a href={SIGN_IN} class="rail__link rail__link--keep">Sign in</a>
+    </nav>
+  </div>
+</aside>
+
+<script>
+  import { initRailSpy } from "./rail-spy";
+  document.querySelectorAll<HTMLElement>(".rail").forEach(initRailSpy);
+</script>
