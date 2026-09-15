@@ -2,7 +2,8 @@
 // with @-mentions and links reduced to plain words so a card reads on its own.
 // Avatars live in src/assets/pfps/<handle>.<ext> and ship as hashed assets.
 //
-// Order is the display order; the marquee rows draw from this list in turn.
+// Order is the display order; the marquee rows draw from this list in turn, so
+// the first twelve are what a reader sees before the rows start to move.
 
 export interface Testimonial {
   readonly handle: string;
@@ -25,16 +26,64 @@ export const testimonials: readonly Testimonial[] = [
     text: "For the last 3 months I've been telling all my clients to move everything to MCPs and executor.sh.",
   },
   {
+    handle: "cramforce",
+    name: "Malte Ubl",
+    id: "2042626213697720632",
+    text: "I've been working on integrating Rhys's excellent `executor` package into just-bash.",
+  },
+  {
+    handle: "aidenybai",
+    name: "Aiden Bai",
+    id: "2052907020202979362",
+    text: "executor is very good software",
+  },
+  {
     handle: "chribjel",
     name: "Christoffer Bjelke",
     id: "2092939357980123545",
     text: "update: it *is* the perfect wrapper. now executor.sh is my only mcp for all my agents, and i just configure my other connected services through executor. all integrations can have multiple connections, so i can have personal/work accounts for every integration. so so nice, literally perfect",
   },
   {
+    handle: "ethanniser",
+    name: "Ethan Niser",
+    id: "2094632205570207834",
+    text: "I dont think I've ever oauthed so much in my life until AI. connections, connections, connections. s/o executor.sh",
+  },
+  {
     handle: "ThomsenDrake",
     name: "Drake Thomsen",
     id: "2093758541798506783",
     text: "Moving my connectors onto executor.sh is such a refreshing experience. I now only have to configure a single connector when I'm setting up a new agent instead of 15 different OAuths or API keys",
+  },
+  {
+    handle: "NathanFlurry",
+    name: "Nathan Flurry",
+    id: "2078663475782685025",
+    text: "really digging executor + browserbase for unifying my integrations. i use agents in a lot of places: linux rig over ssh, amp orbs for bg agents, claude/chatgpt on mobile. this setup lets me sign in once (browser or mcp) and access it everywhere",
+  },
+  {
+    handle: "samhogan",
+    name: "Sam Hogan",
+    id: "2094813654202089970",
+    text: "My favorite features: Quick set-up. Easily share MCPs between agent harnesses with centralized authentication and access control. Auth once, use everywhere. Codemode execution by default",
+  },
+  {
+    handle: "DanielLockyer",
+    name: "Daniel Lockyer",
+    id: "2084357678105563583",
+    text: "I've been using Executor since this mini-pitch and honestly it's great. I just configure my MCPs/OpenAPIs in one place and all my clients can use the connections. I've also used the blocklist feature to remove dangerous actions from some MCPs, very nice. Can recommend!",
+  },
+  {
+    handle: "JosXa_",
+    name: "JosXa",
+    id: "2054494157096329504",
+    text: "I compared dozens of MCP aggregators and we finally have a winner. Executor is going to become a standard, I can smell it",
+  },
+  {
+    handle: "davis7",
+    name: "Ben Davis",
+    id: "2036226001877999868",
+    text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
   },
   {
     handle: "BenceRedmond",
@@ -67,12 +116,6 @@ export const testimonials: readonly Testimonial[] = [
     text: "I was thinking about building some custom Effect-based MCPs like you did with YNAB, until I realized that Executor already did everything I wanted. It's been incredibly useful.",
   },
   {
-    handle: "JosXa_",
-    name: "JosXa",
-    id: "2054494157096329504",
-    text: "I compared dozens of MCP aggregators and we finally have a winner. Executor is going to become a standard, I can smell it",
-  },
-  {
     handle: "shuv1337",
     name: "shuv",
     id: "2099997871403876730",
@@ -83,18 +126,6 @@ export const testimonials: readonly Testimonial[] = [
     name: "Serge",
     id: "2090812289427386851",
     text: "very much enjoying Executor. configure different connections for the same MCP: I have a work and a personal Cloudflare account so I don't need to re-auth into different ones. manage all the connections between different clients. 1Password to manage secrets instead of storing them in plain text. really well done",
-  },
-  {
-    handle: "NathanFlurry",
-    name: "Nathan Flurry",
-    id: "2078663475782685025",
-    text: "really digging executor + browserbase for unifying my integrations. i use agents in a lot of places: linux rig over ssh, amp orbs for bg agents, claude/chatgpt on mobile. this setup lets me sign in once (browser or mcp) and access it everywhere",
-  },
-  {
-    handle: "cramforce",
-    name: "Malte Ubl",
-    id: "2042626213697720632",
-    text: "I've been working on integrating Rhys's excellent `executor` package into just-bash.",
   },
   {
     handle: "kr0der",
@@ -229,12 +260,6 @@ export const testimonials: readonly Testimonial[] = [
     text: "Executor makes it so incredibly easy for end users",
   },
   {
-    handle: "aidenybai",
-    name: "Aiden Bai",
-    id: "2052907020202979362",
-    text: "executor is very good software",
-  },
-  {
     handle: "alexrigler",
     name: "Alex Rigler",
     id: "2064741056835715141",
@@ -275,12 +300,6 @@ export const testimonials: readonly Testimonial[] = [
     name: "Zaher",
     id: "2083113232080724033",
     text: "all I had to do is to add it as integration to my executor, and now I have access to it as mcp without deploying any MCP",
-  },
-  {
-    handle: "samhogan",
-    name: "Sam Hogan",
-    id: "2094813654202089970",
-    text: "My favorite features: Quick set-up. Easily share MCPs between agent harnesses with centralized authentication and access control. Auth once, use everywhere. Codemode execution by default",
   },
   {
     handle: "UltraLinx",
@@ -355,12 +374,6 @@ export const testimonials: readonly Testimonial[] = [
     text: "What are we doing people?! Just use executor.sh or find an alternative.",
   },
   {
-    handle: "ethanniser",
-    name: "Ethan Niser",
-    id: "2094632205570207834",
-    text: "I dont think I've ever oauthed so much in my life until AI. connections, connections, connections. s/o executor.sh",
-  },
-  {
     handle: "aidansunbury",
     name: "Aidan Sunbury",
     id: "2086974526706086293",
@@ -371,17 +384,5 @@ export const testimonials: readonly Testimonial[] = [
     name: "Erik Rogne",
     id: "2098769030735864132",
     text: "Finally. This is a great idea",
-  },
-  {
-    handle: "DanielLockyer",
-    name: "Daniel Lockyer",
-    id: "2084357678105563583",
-    text: "I've been using Executor since this mini-pitch and honestly it's great. I just configure my MCPs/OpenAPIs in one place and all my clients can use the connections. I've also used the blocklist feature to remove dangerous actions from some MCPs, very nice. Can recommend!",
-  },
-  {
-    handle: "davis7",
-    name: "Ben Davis",
-    id: "2036226001877999868",
-    text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
   },
 ];

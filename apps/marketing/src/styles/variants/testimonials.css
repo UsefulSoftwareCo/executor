@@ -26,11 +26,18 @@
   gap: 12px;
   flex-shrink: 0;
   animation: testi-drift var(--testi-duration) linear infinite;
+  /* Hold still until the section has been seen once, so the first cards a
+     reader meets are the ones at the head of the list, not wherever the
+     loop happened to be. */
+  animation-play-state: paused;
+}
+.testi[data-seen] .testi__track {
+  animation-play-state: running;
 }
 .testi__row[data-row="1"] .testi__track {
   animation-direction: reverse;
 }
-.testi:hover .testi__track {
+.testi[data-seen]:hover .testi__track {
   animation-play-state: paused;
 }
 @keyframes testi-drift {

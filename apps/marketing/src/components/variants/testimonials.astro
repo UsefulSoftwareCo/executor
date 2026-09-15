@@ -58,3 +58,18 @@ testimonials.forEach((t, i) => rows[i % ROWS]!.push(t));
     ))
   }
 </div>
+
+<script>
+  // Start the drift only once the section has entered the viewport.
+  for (const el of document.querySelectorAll<HTMLElement>("[data-testimonials]")) {
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        el.dataset.seen = "1";
+        io.disconnect();
+      },
+      { threshold: 0.2 },
+    );
+    io.observe(el);
+  }
+</script>
