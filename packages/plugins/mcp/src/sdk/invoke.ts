@@ -366,12 +366,20 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        const protocolFailure = asProtocolError(cause) !== undefined;
+        const protocolError = asProtocolError(cause);
         return new McpInvocationError({
           toolName,
           message: `MCP tool call failed for ${toolName}`,
           ...(status === undefined ? {} : { status }),
-          ...(!protocolFailure ? { transportFailure: true } : {}),
+          ...(protocolError === undefined
+            ? { transportFailure: true }
+            : {
+                // A JSON-RPC error is the server's answer to this call, written
+                // for the caller (the same trust level as an `isError` result
+                // envelope), so its message may travel back to the sandbox.
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message is the server's JSON-RPC error text
+                protocolError: { code: protocolError.code, message: protocolError.message },
+              }),
           ...(isUnknownToolCause(cause, toolName) ? { unknownTool: true } : {}),
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }

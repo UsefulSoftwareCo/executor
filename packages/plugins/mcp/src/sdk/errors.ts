@@ -79,6 +79,14 @@ export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
    *  grant cannot fix it, so the failure must not be labelled
    *  connection_rejected. */
   readonly insufficientScope?: boolean;
+  /** The server answered `tools/call` with a JSON-RPC error response (the
+   *  spec's protocol error: invalid params, internal error, ...). The call
+   *  reached the server and was refused on its merits, so the code and the
+   *  server's own message are the failure — not an infrastructure defect. */
+  readonly protocolError?: {
+    readonly code: number;
+    readonly message: string;
+  };
 }> {}
 
 export class McpOAuthReauthorizationRequired extends Data.TaggedError(

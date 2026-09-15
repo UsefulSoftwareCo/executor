@@ -1159,17 +1159,57 @@ describe("mcpPlugin", () => {
           callTool: jsonRpcErrorCallTool(401),
         });
 
-        const failure = yield* executor
-          .execute(toolAddress, {}, { onElicitation: "accept-all" })
-          .pipe(Effect.flip);
-        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
 
-        const error = failure as { readonly message: string; readonly cause?: unknown };
-        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
-        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
-        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
-        const cause = error.cause as McpInvocationError;
-        expect(cause.status).toBeUndefined();
+        // A JSON-RPC error code is not an HTTP status: 401 here is the
+        // server's application-level answer, not an auth wall.
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "mcp_tool_error", details: { jsonrpc: { code: 401 } } },
+        });
+        expect(result).not.toMatchObject({ error: { status: 401 } });
+        expect(result).not.toMatchObject({ error: { details: { category: "authentication" } } });
+      }),
+    ),
+  );
+
+  // A server that validates arguments itself (Stripe's MCP, for one) refuses a
+  // bad call with `-32602 Invalid params` and a message naming the offending
+  // field. That answer is for the caller: without it the model cannot fix the
+  // arguments, and scrubbing it into "Internal tool error [id]" reads as an
+  // outage of the whole integration.
+  it.effect("surfaces a JSON-RPC invalid-params refusal as a typed tool failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_jsonrpc_invalid_params",
+          callTool: (rpc) =>
+            HttpServerResponse.jsonUnsafe({
+              jsonrpc: "2.0",
+              id: rpc.id ?? null,
+              error: {
+                code: -32602,
+                message:
+                  "Invalid method parameters: The property '#/intent' value \"x\" did not match one of the following values: a, b",
+              },
+            }),
+        });
+
+        const result = yield* executor.execute(
+          toolAddress,
+          { intent: "x" },
+          { onElicitation: "accept-all" },
+        );
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "mcp_tool_error",
+            message: expect.stringContaining("'#/intent'"),
+            retryable: false,
+            details: { jsonrpc: { code: -32602 } },
+          },
+        });
       }),
     ),
   );

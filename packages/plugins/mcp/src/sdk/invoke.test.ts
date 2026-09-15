@@ -124,13 +124,18 @@ const invocationRejectionCases = [
       status: 401,
     }),
     expectedStatus: 401 as number | undefined,
+    expectedProtocolError: undefined as { code: number; message: string } | undefined,
   },
   {
+    // The JSON-RPC error is the server's own answer to the call: its code is
+    // not an HTTP status, and its message is kept (structurally, beside the
+    // sanitized invocation message) so the plugin can hand it to the caller.
     name: "does not treat MCP protocol error codes as HTTP statuses",
     toolId: "protocol_error",
     transport: "streamable-http",
     cause: new ProtocolError(401, "application-level do-not-leak"),
     expectedStatus: undefined,
+    expectedProtocolError: { code: 401, message: "application-level do-not-leak" },
   },
   {
     name: "does not invent a status from non-HTTP rejection shapes",
@@ -138,6 +143,7 @@ const invocationRejectionCases = [
     transport: "streamable-http",
     cause: { code: -1, message: "socket said do-not-leak" },
     expectedStatus: undefined,
+    expectedProtocolError: undefined,
   },
   {
     name: "extracts the status from the SDK SSE POST error prefix without leaking the body",
@@ -147,6 +153,7 @@ const invocationRejectionCases = [
       message: "Error POSTing to endpoint (HTTP 403): do-not-leak: upstream auth challenge",
     },
     expectedStatus: 403,
+    expectedProtocolError: undefined,
   },
 ];
 
@@ -313,6 +320,7 @@ describe("invokeMcpTool", () => {
         });
         expect(invocation.status).toBe(testCase.expectedStatus);
         expect("cause" in invocation).toBe(false);
+        expect(invocation.protocolError).toEqual(testCase.expectedProtocolError);
       }),
     );
   }

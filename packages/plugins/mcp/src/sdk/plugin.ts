@@ -1805,6 +1805,21 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               })
               .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
           }
+          // The server refused the call itself (typically -32602 invalid
+          // params: an argument outside the schema's enum, a missing required
+          // field). That is an expected tool failure the caller can act on —
+          // it needs the server's message to fix the arguments — not a
+          // dispatch defect to scrub into an opaque correlation id.
+          if (error.protocolError !== undefined) {
+            return Effect.succeed(
+              ToolResult.fail({
+                code: "mcp_tool_error",
+                message: error.protocolError.message,
+                retryable: false,
+                details: { jsonrpc: { code: error.protocolError.code } },
+              }),
+            );
+          }
           return Effect.fail(error);
         }),
         Effect.withSpan("mcp.plugin.invoke_tool", {
