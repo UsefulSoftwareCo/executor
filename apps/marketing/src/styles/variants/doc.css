@@ -9,11 +9,14 @@
   }
 }
 @media (min-width: 1024px) {
-  /* Centre the column in the space beside the rail. */
+  /* Fill the content column; the frame around rail + content is centred. */
   .doc {
-    margin-inline: auto;
-    padding-inline: 2.5rem;
-    max-width: calc(720px + 5rem);
+    max-width: none;
+    padding-inline: 0;
+  }
+  .doc__intro,
+  .doc__section > :not(.doc__fig--wide) {
+    max-width: 720px;
   }
 }
 
@@ -107,12 +110,9 @@
 }
 /* The context demo is designed for a wide canvas; let it break out of the
    prose measure on large screens. */
-@media (min-width: 1200px) {
-  .doc__fig--wide {
-    width: min(1040px, calc(100vw - var(--rail-w, 0px) - 6rem));
-    margin-left: 50%;
-    transform: translateX(-50%);
-  }
+/* The context demo spans the full content column but never past it. */
+.doc__fig--wide {
+  max-width: 100%;
 }
 
 .doc__beats {
