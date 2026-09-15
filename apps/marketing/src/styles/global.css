@@ -1718,8 +1718,8 @@ body {
   }
   /* Content sits against the rail with a fixed gutter, like a document. */
   .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body {
-    max-width: 1120px;
-    padding-left: clamp(24px, 4vw, 72px);
+    max-width: none;
+    padding-left: 0;
   }
   .page:has(> [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) .page__body .hero-inner {
     text-align: left;
