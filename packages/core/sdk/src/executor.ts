@@ -592,6 +592,14 @@ export interface AdminSubjectWithConnections extends AdminSubject {
 export interface AdminListSubjectsOptions {
   readonly limit?: number;
   readonly offset?: number;
+  /**
+   * Keep only subjects whose `external_id` is in this set — the host's answer
+   * to a directory search (name or email), paged through storage rather than
+   * in memory. An EMPTY set matches nothing; `undefined` is no filter. Paging
+   * applies to the filtered set: "filter, then page", the same order the
+   * `?email=` read follows.
+   */
+  readonly externalIds?: readonly string[];
 }
 
 /**
@@ -6960,8 +6968,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // them through independently produced a bare OFFSET, which SQLite
         // rejects outright.
         const { limit, offset } = normalizeAdminPaging(options);
+        const externalIds = options?.externalIds;
+        // An empty id set is a query that cannot match; answer it without a
+        // round trip rather than emitting `in ()`, which some drivers reject.
+        if (externalIds !== undefined && externalIds.length === 0) return Effect.succeed([]);
         return platformCore
           .findMany("subject", {
+            // The id filter is the ONLY predicate here; the tenant clause is
+            // the policy's, added to every read the same way `getSubject`
+            // relies on it.
+            ...(externalIds === undefined
+              ? {}
+              : { where: (b: AnyCb) => b("external_id", "in", [...externalIds]) }),
             // Oldest first, ties broken on the unique key so the order is
             // total and paging can't repeat or skip a row.
             orderBy: [

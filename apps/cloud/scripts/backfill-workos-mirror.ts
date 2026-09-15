@@ -12,6 +12,13 @@
 // Idempotent — the upserts refuse anything older than the stored WorkOS
 // `updatedAt`, so re-running is safe and never rewinds a fresher row.
 // Pass --dry-run to read and count without writing.
+//
+// DEPLOY ORDER: run this against production BEFORE deploying the build that
+// reads member lists and seat counts from the mirror. A completed run stamps
+// the `workos_sync` "backfill" marker; until it exists, seat reporting to
+// Autumn is skipped (with a warning) rather than pushing a partial count, and
+// member lists show only the members who have signed in since the mirror
+// shipped. Verify the printed membership count against the WorkOS dashboard.
 // ---------------------------------------------------------------------------
 
 import { asc } from "drizzle-orm";

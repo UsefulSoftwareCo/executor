@@ -9,7 +9,8 @@
 //   - `organizations`  — billing entity, scoping root for all domain data
 //   - `memberships`    — which accounts belong to which organizations, with
 //                        the WorkOS role and status
-//   - `workos_sync`    — the WorkOS Events API cursor the reconciler resumes from
+//   - `workos_sync`    — the WorkOS Events API cursor the reconciler resumes
+//                        from, and the marker the one-off backfill stamps
 //
 // The mirror is fed by login (the callback has the user + memberships in
 // hand), write-through on every Executor-initiated change, and the WorkOS
@@ -113,6 +114,12 @@ export const memberships = pgTable(
  * the reconciler uses `"events"`), holding the id of the last event applied.
  * Advanced only by compare-and-set, so two concurrent reconciler runs cannot
  * both believe they own the stream: the loser's CAS fails and it stops.
+ *
+ * The `"backfill"` row (no cursor; `updated_at` is the completion time) is the
+ * marker the one-off backfill stamps when it has filled the mirror from
+ * WorkOS. Seat reporting reads the mirror only once it exists (see
+ * `extensions/billing/member-seats.ts`); migration 0019 seeds it on a database
+ * with no organizations, where there is nothing to backfill.
  */
 export const workosSync = pgTable("workos_sync", {
   id: text("id").primaryKey(),

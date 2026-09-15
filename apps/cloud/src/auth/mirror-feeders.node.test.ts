@@ -12,10 +12,16 @@
 //   - the callback picks the landing org from that same list: a returnTo
 //     slug or last-org cookie lands only in an ACTIVE membership, an unknown
 //     or pending one falls through
+//   - `inviteMember` mirrors the PENDING membership WorkOS created for the
+//     invitee (found by email among the org's pending memberships), so the
+//     member list shows the invite and can revoke it
 //   - `removeMember` deletes the mirror row after the WorkOS delete
 //   - `updateMemberRole` writes the role WorkOS returned
+//   - the seat reporter pushes the active count only once the mirror's
+//     backfill marker exists, and skips (never a partial count) before
 //   - the backfill mirrors every org's members and counts what it wrote,
-//     writes nothing on a dry run, and converges on a re-run
+//     writes nothing on a dry run, converges on a re-run, and stamps the
+//     backfill marker
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
@@ -33,6 +39,7 @@ import {
 import { AccountCaller, workosAccountProvider } from "../account/workos-account-service";
 import { RequestScopedServicesLive } from "../api/layers";
 import { DbService } from "../db/db";
+import { forkReportMemberSeats } from "../extensions/billing/member-seats";
 import { AutumnService } from "../extensions/billing/service";
 import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
@@ -43,7 +50,7 @@ import { cloudMemberDirectoryLayer } from "./member-directory";
 import { SessionAuthLive } from "./middleware-live";
 import { ORG_SELECTOR_HEADER } from "./organization";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
-import { WorkOsMirror } from "./workos-mirror";
+import { WorkOsMirror, type WorkOsMirrorShape } from "./workos-mirror";
 import { backfillWorkOsMirror } from "./workos-mirror-backfill";
 import type { WorkOsMembershipPayload, WorkOsUserPayload } from "./workos-mirror-store";
 
@@ -182,13 +189,6 @@ describe("login callback", () => {
             listMetadata: { before: null, after: null },
           });
         },
-        // The forked seat recount after login.
-        listOrgMembers: () =>
-          Effect.succeed({
-            object: "list" as const,
-            data: [] as never[],
-            listMetadata: { before: null, after: null },
-          }),
         refreshSession: (_sealed, organizationId) => {
           refreshedInto.push(organizationId);
           return Effect.succeed("sealed-refreshed");
@@ -369,7 +369,14 @@ describe("account service writes through to the mirror", () => {
    * Provided around the WHOLE test body so the postgres socket outlives the
    * provider call under test.
    */
-  const providerLayer = (org: string, deleted: string[]) => {
+  const providerLayer = (
+    org: string,
+    deleted: string[],
+    options: {
+      readonly workos?: Partial<WorkOSClientService>;
+      readonly autumn?: Layer.Layer<AutumnService>;
+    } = {},
+  ) => {
     const list = (data: readonly unknown[]) =>
       Effect.succeed({
         object: "list" as const,
@@ -377,6 +384,7 @@ describe("account service writes through to the mirror", () => {
         listMetadata: { before: null, after: null },
       });
     const workos = stubWorkOS({
+      ...options.workos,
       listUserMemberships: (userId) => list([workosMembership(userId, org)]),
       getUserOrgMembership: (organizationId, userId) =>
         Effect.succeed(
@@ -398,7 +406,6 @@ describe("account service writes through to the mirror", () => {
             updatedAt: T2,
           }) as never,
         ),
-      listOrgMembers: () => list([]),
     });
     // The test database serves ONE connection at a time, so the seed, the
     // provider, and the directory read all share this layer's socket.
@@ -412,7 +419,7 @@ describe("account service writes through to the mirror", () => {
         Layer.mergeAll(
           workos,
           stubApiKeys,
-          stubAutumn,
+          options.autumn ?? stubAutumn,
           Layer.succeed(AccountCaller)({ session: session(ADMIN) }),
         ),
       ),
@@ -441,6 +448,83 @@ describe("account service writes through to the mirror", () => {
 
   const membersOf = (org: string) =>
     Effect.flatMap(MemberDirectory.asEffect(), (directory) => directory.members(org));
+
+  it.effect("inviteMember mirrors the pending membership WorkOS created for the invitee", () => {
+    const org = freshId("org");
+    // Two people are already invited; the new invitee is a third pending
+    // membership, and only their user carries the invited address — with
+    // different casing than the admin typed, as WorkOS may store it.
+    const earlier = [freshId("user"), freshId("user")];
+    const invitee = freshId("user");
+    const invitedEmail = `${invitee}@placeholder.test`;
+    const userCalls: string[] = [];
+    // The plan gate reads the customer's plan before inviting: an unlimited
+    // plan so the seat cap never interferes with what is under test.
+    const teamAutumn = Layer.succeed(AutumnService)({
+      use: () => Effect.succeed({ subscriptions: [{ planId: "team", status: "active" }] } as never),
+      ensureCustomer: () => Effect.void,
+      checkExecutionBalance: () => Effect.die("invite does not check balances"),
+      trackExecution: () => Effect.void,
+      setMemberSeats: () => Effect.void,
+    });
+    const layer = providerLayer(org, [], {
+      autumn: teamAutumn,
+      workos: {
+        listPendingInvitations: () =>
+          Effect.succeed({
+            object: "list" as const,
+            data: [] as never[],
+            listMetadata: { before: null, after: null },
+          }),
+        sendInvitation: ({ email }) =>
+          Effect.succeed({ id: `invitation_${invitee}`, email: email.toUpperCase() } as never),
+        listOrgMembers: (organizationId, statuses) => {
+          expect(organizationId).toBe(org);
+          expect(statuses, "only the pending set is listed").toEqual(["pending"]);
+          return Effect.succeed({
+            object: "list" as const,
+            data: [...earlier, invitee].map((userId) =>
+              workosMembership(userId, org, { status: "pending" }),
+            ) as never[],
+            listMetadata: { before: null, after: null },
+          });
+        },
+        getUser: (userId) =>
+          Effect.sync(() => {
+            userCalls.push(userId);
+            return workosUser(userId, { firstName: "Invited", lastName: "Person" }) as never;
+          }),
+      },
+    });
+    return Effect.gen(function* () {
+      yield* seedTarget(org);
+      const account = yield* AccountProvider;
+
+      const result = yield* account.inviteMember(
+        { [ORG_SELECTOR_HEADER]: org },
+        { email: invitedEmail },
+      );
+
+      expect(result.id).toBe(`invitation_${invitee}`);
+      const members = yield* membersOf(org);
+      const pending = members.find((m) => m.status === "pending");
+      expect(pending, "the invitee appears as a pending member").toMatchObject({
+        accountId: invitee,
+        membershipId: `om_${invitee}_${org}`,
+        email: invitedEmail,
+        name: "Invited Person",
+        role: "member",
+      });
+      expect(
+        members.filter((m) => m.status === "pending"),
+        "only the invitee's pending membership is mirrored, not the other pending ones",
+      ).toHaveLength(1);
+      expect(
+        userCalls.sort(),
+        "one getUser per pending membership, bounded to the pending set",
+      ).toEqual([...earlier, invitee].sort());
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("removeMember deletes the mirror row after the WorkOS delete", () => {
     const org = freshId("org");
@@ -482,6 +566,84 @@ describe("account service writes through to the mirror", () => {
   });
 });
 
+describe("seat reporter", () => {
+  /** A `WorkOsMirror` whose only answer is the backfill marker. */
+  const mirrorWithMarker = (backfilledAt: Date | null) =>
+    Layer.succeed(WorkOsMirror)({
+      upsertUser: () => Effect.die("the seat reporter does not write"),
+      upsertMembership: () => Effect.die("the seat reporter does not write"),
+      deleteMembership: () => Effect.die("the seat reporter does not write"),
+      deleteUser: () => Effect.die("the seat reporter does not write"),
+      getCursor: () => Effect.die("the seat reporter does not read the cursor"),
+      setCursor: () => Effect.die("the seat reporter does not move the cursor"),
+      backfillCompletedAt: () => Effect.succeed(backfilledAt),
+      markBackfillComplete: () => Effect.die("the seat reporter does not run the backfill"),
+    } satisfies WorkOsMirrorShape);
+
+  /** A directory holding `active` active members and one pending one. */
+  const directoryWith = (org: string, active: number) =>
+    Layer.succeed(MemberDirectory)({
+      membership: () => Effect.die("the seat reporter lists, it does not look up"),
+      membersById: () => Effect.die("the seat reporter lists, it does not look up"),
+      findByEmail: () => Effect.die("the seat reporter lists, it does not look up"),
+      members: (organizationId, query) => {
+        expect(organizationId).toBe(org);
+        expect(query?.statuses, "billed seats are active members only").toEqual(["active"]);
+        return Effect.succeed(
+          Array.from({ length: active }, (_, i) => ({
+            accountId: `user_${i}`,
+            membershipId: `om_${i}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          })),
+        );
+      },
+    });
+
+  const report = (org: string, backfilledAt: Date | null, active: number) =>
+    Effect.gen(function* () {
+      const reported: { organizationId: string; seats: number }[] = [];
+      const recording = Layer.succeed(AutumnService)({
+        use: () => Effect.die("the seat reporter sets seats, it does not read"),
+        ensureCustomer: () => Effect.void,
+        checkExecutionBalance: () => Effect.die("the seat reporter does not check balances"),
+        trackExecution: () => Effect.void,
+        setMemberSeats: (organizationId, seats) =>
+          Effect.sync(() => {
+            reported.push({ organizationId, seats });
+          }),
+      });
+      yield* forkReportMemberSeats(org).pipe(
+        Effect.provide(
+          Layer.mergeAll(mirrorWithMarker(backfilledAt), directoryWith(org, active), recording),
+        ),
+      );
+      // The Autumn call is forked; it is synchronous here, so it has landed.
+      return reported;
+    });
+
+  it.effect("skips the Autumn write while the mirror has not been backfilled", () => {
+    const org = freshId("org");
+    return Effect.gen(function* () {
+      const reported = yield* report(org, null, 2);
+      expect(reported, "a partial count is never pushed to billing").toEqual([]);
+    });
+  });
+
+  it.effect("sets the active member count once the backfill marker exists", () => {
+    const org = freshId("org");
+    return Effect.gen(function* () {
+      const reported = yield* report(org, new Date(T1), 3);
+      expect(reported).toEqual([{ organizationId: org, seats: 3 }]);
+    });
+  });
+});
+
 describe("backfill", () => {
   /** A fake WorkOS holding `orgs` → members, counting `getUser` calls. */
   const source = (orgs: ReadonlyMap<string, readonly FakeMembership[]>, userCalls: string[]) => ({
@@ -493,6 +655,14 @@ describe("backfill", () => {
         return workosUser(userId);
       }),
   });
+
+  const backfillMarker = () =>
+    Effect.runPromise(
+      Effect.flatMap(WorkOsMirror.asEffect(), (mirror) => mirror.backfillCompletedAt()).pipe(
+        Effect.provide(WorkOsMirror.Live.pipe(Layer.provide(DbService.Live))),
+        Effect.scoped,
+      ),
+    );
 
   const runBackfill = (
     orgs: ReadonlyMap<string, readonly FakeMembership[]>,
@@ -529,7 +699,13 @@ describe("backfill", () => {
     expect(await readMembers(orgA), "a dry run writes nothing").toEqual([]);
 
     const userCalls: string[] = [];
+    // The marker is instance-wide (migration 0019 seeds it on the empty test
+    // database), so assert the stamp relative to what is there.
+    const markerBefore = (await backfillMarker())?.getTime() ?? 0;
     const first = await runBackfill(orgs, false, userCalls);
+    const markerAfter = await backfillMarker();
+    expect(markerAfter, "a completed run stamps the backfill marker").not.toBeNull();
+    expect(markerAfter!.getTime()).toBeGreaterThanOrEqual(markerBefore);
     expect(first).toEqual({
       organizations: 2,
       memberships: 3,

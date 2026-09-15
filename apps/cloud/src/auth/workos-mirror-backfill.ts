@@ -10,6 +10,12 @@
 // unchanged data writes nothing (`usersWritten` / `membershipsWritten` count
 // only rows the guard let through). `dryRun` reads everything and writes
 // nothing, so the printed counts are the plan.
+//
+// A completed (non-dry) run stamps the mirror's backfill marker
+// (`WorkOsMirrorShape.backfillCompletedAt`). The seat reporter
+// (`extensions/billing/member-seats.ts`) refuses to push a member count to
+// billing until that marker exists, so this script MUST complete against
+// production before the deploy that reads seats from the mirror.
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
@@ -105,5 +111,12 @@ export const backfillWorkOsMirror = <E>(
         ? `dry run — ${counts.organizations} organization(s), ${counts.memberships} membership(s) would be mirrored`
         : `${counts.organizations} organization(s), ${counts.memberships} membership(s): wrote ${counts.usersWritten} user(s), ${counts.membershipsWritten} membership(s)`,
     );
+    if (!options.dryRun) {
+      // Every organization was read and written without failure (a failure
+      // above fails the whole run), so the mirror is now complete: unblock
+      // seat reporting.
+      yield* mirror.markBackfillComplete();
+      options.log("marked the mirror backfill complete — seat reporting is unblocked");
+    }
     return counts;
   });

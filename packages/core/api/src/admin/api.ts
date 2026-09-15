@@ -261,6 +261,15 @@ const AdminUserIdentifierParams = { identifier: Schema.String };
 // handler seam (`normalizeEmail`), which is also where the single-user path
 // parameter is normalized, so both entry points share ONE rule rather than a
 // schema transform on one and hand-rolled code on the other.
+//
+// `search` is the SUBSTRING counterpart: a case-insensitive match over each
+// member's email and name in the host's directory, for the operator who knows
+// a person's name or part of an address rather than the exact one. Like
+// `email` it narrows the fixed list shape and is applied BEFORE paging (the
+// directory names the matching principals; storage pages that set), so a
+// window on a searched list is a window on the matches. A blank term is no
+// filter. When both filters are present `email` wins: it names one principal,
+// and there is nothing left for a search to narrow.
 const AdminListQuery = Schema.Struct({
   limit: Schema.optional(
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 500 })),
@@ -272,6 +281,7 @@ const AdminListQuery = Schema.Struct({
     ),
   ),
   email: Schema.optional(Schema.String),
+  search: Schema.optional(Schema.String),
 });
 
 // ---------------------------------------------------------------------------

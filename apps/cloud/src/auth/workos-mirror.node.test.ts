@@ -201,6 +201,31 @@ describe("WorkOsMirror cursor", () => {
   });
 });
 
+describe("WorkOsMirror backfill marker", () => {
+  it("reads null before the backfill, and the stamp time after; stamping is idempotent", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const mirror = yield* WorkOsMirror;
+        // The marker is instance-wide: migration 0019 seeds it on the empty
+        // test database and other tests may have stamped it, so assert the
+        // stamp's effect relative to what is there.
+        const before = (yield* mirror.backfillCompletedAt())?.getTime() ?? 0;
+        yield* mirror.markBackfillComplete();
+        const first = yield* mirror.backfillCompletedAt();
+        yield* mirror.markBackfillComplete();
+        const second = yield* mirror.backfillCompletedAt();
+        return { before, first: first?.getTime() ?? null, second: second?.getTime() ?? null };
+      }),
+    );
+    expect(result.first, "a completed run stamps the marker").not.toBeNull();
+    expect(result.first!).toBeGreaterThanOrEqual(result.before);
+    expect(
+      result.second!,
+      "re-stamping moves the time forward, never fails",
+    ).toBeGreaterThanOrEqual(result.first!);
+  });
+});
+
 describe("cloud MemberDirectory", () => {
   const seed = (org: string) =>
     Effect.gen(function* () {

@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 
-import { AccountProvider, type AccountHeaders } from "@executor-js/api/server";
+import { AccountProvider, MemberDirectory, type AccountHeaders } from "@executor-js/api/server";
 import {
   AccountError,
   AccountForbidden,
@@ -12,6 +12,7 @@ import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import type { Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
+import { mirrorInvitedMember } from "../auth/mirror-feeders";
 import { WorkOsMirror, mirrorMembershipFromWorkOs } from "../auth/workos-mirror";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { AutumnService } from "../extensions/billing/service";
@@ -66,7 +67,13 @@ const toAccountError = () => Effect.fail(new AccountError({ message: "Account re
 export const workosAccountProvider: Layer.Layer<
   AccountProvider,
   never,
-  WorkOSClient | UserStoreService | WorkOsMirror | ApiKeyService | AutumnService | AccountCaller
+  | WorkOSClient
+  | UserStoreService
+  | WorkOsMirror
+  | MemberDirectory
+  | ApiKeyService
+  | AutumnService
+  | AccountCaller
 > = Layer.effect(AccountProvider)(
   Effect.gen(function* () {
     const workos = yield* WorkOSClient;
@@ -77,6 +84,10 @@ export const workosAccountProvider: Layer.Layer<
     // written through to the local mirror so the member list and the seat
     // count read the change without waiting for the Events reconciler.
     const mirror = yield* WorkOsMirror;
+    // Membership READS come from the mirror through the shared directory: the
+    // member list and the seat count are one local query each, never a
+    // WorkOS read per member.
+    const directory = yield* MemberDirectory;
 
     // The caller, resolved once per request by the cookie-only session
     // middleware (account-api.ts) — the same credential `SessionAuthLive`
@@ -85,10 +96,12 @@ export const workosAccountProvider: Layer.Layer<
     const caller = yield* AccountCaller;
 
     // Capture the resolved service context once so the method bodies — which
-    // call `authorizeOrganization` (yields `WorkOSClient` + `UserStoreService`) —
-    // can be erased to `R = never`, as the neutral AccountProvider shape
-    // requires. Provided per method below.
-    const ctx = yield* Effect.context<WorkOSClient | UserStoreService | AutumnService>();
+    // call `authorizeOrganization` (yields `WorkOSClient` + `UserStoreService`),
+    // the mirror feeders, and the seat reporter — can be erased to `R = never`,
+    // as the neutral AccountProvider shape requires. Provided per method below.
+    const ctx = yield* Effect.context<
+      WorkOSClient | UserStoreService | AutumnService | MemberDirectory | WorkOsMirror
+    >();
 
     // Unauthenticated (missing/invalid session) => AccountUnauthorized, exactly
     // as the old inline `requireSession` did.
@@ -144,7 +157,9 @@ export const workosAccountProvider: Layer.Layer<
         }
       });
 
-    // Mirror of org/handlers `getMemberSeats` — live seat usage from WorkOS.
+    // Seat usage: memberships from the local directory (active + pending, the
+    // `members` default), pending invitations live from WorkOS — invitations
+    // are not mirrored.
     const getMemberSeats = (organizationId: string) =>
       Effect.gen(function* () {
         const customer = yield* autumn.use((client) =>
@@ -153,15 +168,15 @@ export const workosAccountProvider: Layer.Layer<
         const planId = selectActiveMemberLimitPlan(customer.subscriptions);
         const limit = getMemberLimitForPlan(planId);
 
-        // `listOrgMembers` returns active members AND pending memberships (an
-        // invited user shows up as status "pending"); `listPendingInvitations`
+        // The directory reports active members AND pending memberships (an
+        // invited user is mirrored with status "pending"); `listPendingInvitations`
         // returns the same invited users again. `countSeatsUsed` dedupes them
         // so an outstanding invite is not counted twice.
-        const memberships = yield* workos.listOrgMembers(organizationId);
+        const memberships = yield* directory.members(organizationId);
         const invitations = yield* workos.listPendingInvitations(organizationId);
 
         return {
-          used: countSeatsUsed(memberships.data, invitations.data.length),
+          used: countSeatsUsed(memberships, invitations.data.length),
           granted: limit ?? 0,
           unlimited: limit === null,
         };
@@ -309,29 +324,23 @@ export const workosAccountProvider: Layer.Layer<
             Effect.catchCause(() => Effect.succeed({ used: 0, granted: 0, unlimited: false })),
           );
 
-          const memberships = yield* workos
-            .listOrgMembers(org.id)
-            .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          // One directory read (active + pending, ordered by email) with the
+          // profile already joined — no per-member WorkOS user fetch.
+          const directoryMembers = yield* directory
+            .members(org.id)
+            .pipe(Effect.catchTag("MemberDirectoryError", toAccountError));
 
-          const members = yield* Effect.all(
-            memberships.data.map((m) =>
-              Effect.gen(function* () {
-                const user = yield* workos.getUser(m.userId);
-                return {
-                  id: m.id,
-                  userId: m.userId,
-                  email: user.email,
-                  name: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
-                  avatarUrl: user.profilePictureUrl ?? null,
-                  role: m.role?.slug ?? "member",
-                  status: m.status,
-                  lastActiveAt: user.lastSignInAt ?? null,
-                  isCurrentUser: m.userId === session.accountId,
-                };
-              }),
-            ),
-            { concurrency: 5 },
-          ).pipe(Effect.catchTag("WorkOSError", toAccountError));
+          const members = directoryMembers.map((m) => ({
+            id: m.membershipId,
+            userId: m.accountId,
+            email: m.email,
+            name: m.name,
+            avatarUrl: m.avatarUrl,
+            role: m.role,
+            status: m.status,
+            lastActiveAt: m.lastActiveAt === null ? null : new Date(m.lastActiveAt).toISOString(),
+            isCurrentUser: m.accountId === session.accountId,
+          }));
 
           return { members, seats };
         }),
@@ -359,6 +368,20 @@ export const workosAccountProvider: Layer.Layer<
               ...(body.roleSlug ? { roleSlug: body.roleSlug } : {}),
             })
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          // Write-through: WorkOS creates a PENDING membership for the invitee
+          // alongside the invitation, and the member list (the "Invited" row
+          // and its revoke button) reads memberships from the mirror only, so
+          // the row must land now — the Events reconciler is not on this path.
+          const mirrored = yield* mirrorInvitedMember(org.id, invitation.email).pipe(
+            Effect.provideContext(ctx),
+            Effect.catchTags({ WorkOSError: toAccountError, WorkOsMirrorError: toAccountError }),
+          );
+          if (!mirrored) {
+            yield* Effect.logWarning("inviteMember: no pending membership for the invitee yet", {
+              organizationId: org.id,
+              invitationId: invitation.id,
+            });
+          }
           return { id: invitation.id, email: invitation.email };
         }),
 
