@@ -87,6 +87,16 @@ export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
     readonly code: number;
     readonly message: string;
   };
+  /** Operator-facing summary of the SDK rejection this error sanitized:
+   *  the error's class name and its stable `code` (an `SdkErrorCode`,
+   *  `ProtocolErrorCode`, or HTTP status). Never the message — a transport
+   *  message can embed an upstream body. Carried so the dispatch defect log
+   *  (`tool dispatch failed`, keyed by correlation id) names WHAT the SDK
+   *  refused instead of only the tool it refused. */
+  readonly sdkFailure?: {
+    readonly name: string;
+    readonly code?: string | number;
+  };
 }> {}
 
 export class McpOAuthReauthorizationRequired extends Data.TaggedError(

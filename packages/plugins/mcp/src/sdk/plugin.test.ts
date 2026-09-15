@@ -1140,7 +1140,11 @@ describe("mcpPlugin", () => {
         expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
 
         const error = failure as { readonly message: string; readonly cause?: unknown };
-        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        // The defect log renders only the message, so it names the SDK
+        // rejection (class + code) without carrying the upstream body.
+        expect(error).toMatchObject({
+          message: "MCP tool call failed for explode (SdkHttpError CLIENT_HTTP_NOT_IMPLEMENTED)",
+        });
         expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
         expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
         const cause = error.cause as McpInvocationError;

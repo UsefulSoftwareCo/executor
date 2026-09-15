@@ -125,6 +125,10 @@ const invocationRejectionCases = [
     }),
     expectedStatus: 401 as number | undefined,
     expectedProtocolError: undefined as { code: number; message: string } | undefined,
+    expectedSdkFailure: { name: "SdkHttpError", code: SdkErrorCode.ClientHttpAuthentication } as {
+      name: string;
+      code?: string | number;
+    },
   },
   {
     // The JSON-RPC error is the server's own answer to the call: its code is
@@ -136,6 +140,7 @@ const invocationRejectionCases = [
     cause: new ProtocolError(401, "application-level do-not-leak"),
     expectedStatus: undefined,
     expectedProtocolError: { code: 401, message: "application-level do-not-leak" },
+    expectedSdkFailure: { name: "ProtocolError", code: 401 },
   },
   {
     name: "does not invent a status from non-HTTP rejection shapes",
@@ -144,6 +149,7 @@ const invocationRejectionCases = [
     cause: { code: -1, message: "socket said do-not-leak" },
     expectedStatus: undefined,
     expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object", code: -1 },
   },
   {
     name: "extracts the status from the SDK SSE POST error prefix without leaking the body",
@@ -154,6 +160,7 @@ const invocationRejectionCases = [
     },
     expectedStatus: 403,
     expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object" },
   },
 ];
 
@@ -312,9 +319,10 @@ describe("invokeMcpTool", () => {
         expect(Predicate.isTagged(error, "McpInvocationError")).toBe(true);
         const invocation = error as McpInvocationError;
         expect(invocation.toolName).toBe(testCase.toolId);
-        expect(invocation).toMatchObject({
-          message: `MCP tool call failed for ${testCase.toolId}`,
-        });
+        expect(invocation.message.startsWith(`MCP tool call failed for ${testCase.toolId} (`)).toBe(
+          true,
+        );
+        expect(invocation.sdkFailure).toEqual(testCase.expectedSdkFailure);
         expect(invocation).toMatchObject({
           message: expect.not.stringContaining("do-not-leak"),
         });

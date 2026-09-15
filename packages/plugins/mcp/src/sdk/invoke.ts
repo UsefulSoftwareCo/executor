@@ -152,6 +152,15 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
   ).test(message);
 };
 
+/** The class name and stable code of an SDK rejection, for the defect log.
+ *  Structural only: the message is deliberately not read here. */
+const summarizeSdkFailure = (cause: unknown): { name: string; code?: string | number } => {
+  // oxlint-disable-next-line executor/no-instanceof-error -- boundary: the MCP SDK rejects with Error subclasses whose constructor name is the only class discriminator for non-branded errors
+  const name = cause instanceof Error ? cause.constructor.name : typeof cause;
+  const code = Predicate.hasProperty(cause, "code") ? cause.code : undefined;
+  return typeof code === "string" || typeof code === "number" ? { name, code } : { name };
+};
+
 const asProtocolError = (cause: unknown): ProtocolError | undefined => {
   const sdk = mcpClientSdkIfLoaded();
   if (sdk === undefined) return undefined;
@@ -367,9 +376,14 @@ const useConnection = (
         }
         const status = httpStatusFromCause(cause);
         const protocolError = asProtocolError(cause);
+        const sdkFailure = summarizeSdkFailure(cause);
         return new McpInvocationError({
           toolName,
-          message: `MCP tool call failed for ${toolName}`,
+          // The class and code ride in the message because the dispatch
+          // defect log renders only `Error#toString()`: without them the
+          // trace says which tool failed and nothing about how.
+          message: `MCP tool call failed for ${toolName} (${sdkFailure.name}${sdkFailure.code === undefined ? "" : ` ${sdkFailure.code}`})`,
+          sdkFailure,
           ...(status === undefined ? {} : { status }),
           ...(protocolError === undefined
             ? { transportFailure: true }
