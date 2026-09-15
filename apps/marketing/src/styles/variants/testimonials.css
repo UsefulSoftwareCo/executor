@@ -105,6 +105,36 @@
   overflow: hidden;
 }
 
+/* "Add yours": an empty-looking card at the head of the middle row. */
+.testi__card--add {
+  border-style: dashed;
+  border-color: var(--color-rule-strong);
+  background: transparent;
+}
+.testi__card--add:hover {
+  border-style: solid;
+  border-color: var(--color-ink);
+  background: var(--color-surface);
+}
+.testi__add-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--color-rule-strong);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--color-ink-2);
+  flex-shrink: 0;
+}
+.testi__card--add:hover .testi__add-mark {
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+}
+
 /* Reduced motion: no drift, one copy, wrap into a grid. */
 @media (prefers-reduced-motion: reduce) {
   .testi {

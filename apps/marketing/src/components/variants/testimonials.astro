@@ -23,6 +23,11 @@ const avatarFor = (handle: string): string | null => {
 const ROWS = 3;
 const rows: (typeof testimonials)[number][][] = Array.from({ length: ROWS }, () => []);
 testimonials.forEach((t, i) => rows[i % ROWS]!.push(t));
+
+// "Add yours" opens X's composer with a draft the reader can edit or delete.
+const composeUrl = `https://x.com/intent/post?text=${encodeURIComponent(
+  "I've been using @executorsh to ",
+)}`;
 ---
 
 <div class="testi" data-testimonials>
@@ -32,6 +37,24 @@ testimonials.forEach((t, i) => rows[i % ROWS]!.push(t));
         {/* Two copies of the row make the marquee loop seamless. */}
         {[0, 1].map((copy) => (
           <div class="testi__track" aria-hidden={copy === 1 ? "true" : undefined}>
+            {r === 1 ? (
+              <a
+                class="testi__card testi__card--add"
+                href={composeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                tabindex={copy === 1 ? -1 : undefined}
+              >
+                <span class="testi__who">
+                  <span class="testi__add-mark" aria-hidden="true">+</span>
+                  <span class="testi__name">Add yours</span>
+                  <span class="testi__handle">on X</span>
+                </span>
+                <span class="testi__text">
+                  Using Executor? Post about it and tag @executorsh. We read every one.
+                </span>
+              </a>
+            ) : null}
             {row.map((t) => {
               const src = avatarFor(t.handle);
               return (
