@@ -1746,3 +1746,11 @@ body {
   /* The rail column has no page gutter of its own inside the frame; keep the
      graph-paper hero texture behind the whole frame, not just the body. */
 }
+
+/* The hero graph-paper texture is a landing-page device. In rail mode the
+   page reads as a document, so it goes: the texture would sit behind the
+   sidebar and the hairline frame and fight both. */
+main:has(.page > [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) > .pattern-bg,
+main:has(.page > [data-uidotsh-pick="Layout"] > [data-uidotsh-option]:not([hidden]) > .page__rail) > .pattern-bg + div {
+  display: none;
+}
