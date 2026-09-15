@@ -50,6 +50,11 @@ import {
   unwrapInvocation,
 } from "../testing";
 
+// URL-hosted spec tests boot real 127.0.0.1 listeners and fetch them through
+// the production path; the egress guard's loopback block must trust them in
+// this suite. Set before the plugin reads it.
+process.env.EXECUTOR_ALLOW_LOOPBACK_SPECS = "1";
+
 const TOOL_ERROR_TYPESCRIPT =
   "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
 
