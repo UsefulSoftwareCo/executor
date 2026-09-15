@@ -41,12 +41,33 @@ export interface OrganizationPayload {
 export const organizationAcceptsName = (updatedAt: Date) =>
   or(isNull(organizations.workosUpdatedAt), lte(organizations.workosUpdatedAt, updatedAt));
 
-export const makeUserStore = (db: DrizzleDb) => {
-  const getOrganization = async (id: string) => {
-    const rows = await db.select().from(organizations).where(eq(organizations.id, id));
-    return rows[0] ?? null;
-  };
+const readOrganization = async (db: DrizzleDb, id: string) => {
+  const rows = await db.select().from(organizations).where(eq(organizations.id, id));
+  return rows[0] ?? null;
+};
 
+/**
+ * Insert the organization row for `row.id` with a freshly minted URL slug,
+ * and return the row now held for that id: the one inserted, or the one a
+ * concurrent writer minted first. THE single mint point for slugs: every
+ * organization row is born with one, so there is no nullable window and no
+ * self-healing. With `deletedAt` set this mints a TOMBSTONE — the row an
+ * organization deleted in WorkOS before the mirror ever saw it leaves
+ * behind, so a feeder still holding a membership of it cannot mint it live
+ * (`upsertOrganization` returns a marked row untouched).
+ *
+ * `ON CONFLICT DO NOTHING` (no target) absorbs BOTH unique violations
+ * without throwing: an id collision (the org was mirrored concurrently),
+ * which resolves to the row now held, and a slug collision (the candidate
+ * was claimed by a different org), which retries with a fresh candidate.
+ *
+ * @throws when slug minting exhausts its retries — `isTaken` is broken;
+ *   surfacing loudly beats a silently unslugged organization.
+ */
+export const insertOrganization = async (
+  db: DrizzleDb,
+  row: Pick<Organization, "id" | "name" | "workosUpdatedAt" | "deletedAt">,
+): Promise<Organization> => {
   const slugTaken = async (slug: string) => {
     const rows = await db
       .select({ id: organizations.id })
@@ -54,36 +75,36 @@ export const makeUserStore = (db: DrizzleDb) => {
       .where(eq(organizations.slug, slug));
     return rows.length > 0;
   };
-
-  // Insert a brand-new org row carrying a freshly-minted slug. `ON CONFLICT DO
-  // NOTHING` (no target) absorbs BOTH unique violations without throwing: an
-  // id collision (the org was mirrored concurrently) and a slug collision (the
-  // candidate was claimed by a different org). Returns the inserted row, or
-  // null when either conflict swallowed the insert — the caller decides whether
-  // to re-read (id race) or retry with a new candidate (slug race).
-  const tryInsertOrg = async (org: OrganizationPayload, slug: string) => {
-    const [row] = await db
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const slug = await generateOrgSlug(row.name, slugTaken);
+    const [inserted] = await db
       .insert(organizations)
-      .values({
-        id: org.id,
-        name: org.name,
-        slug,
-        workosUpdatedAt: org.updatedAt,
-      })
+      .values({ ...row, slug })
       .onConflictDoNothing()
       .returning();
-    return row ?? null;
-  };
+    if (inserted) return inserted;
+    // The insert was swallowed by a conflict. If the id now exists, a
+    // concurrent writer mirrored it — return that row. Otherwise the slug
+    // candidate collided; loop and mint a fresh one.
+    const held = await readOrganization(db, row.id);
+    if (held) return held;
+  }
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: slug minting exhausted retries; surfacing loudly beats a silently unslugged org
+  throw new Error(`unable to mint a slug for organization ${row.id}`);
+};
 
-  // Every new org row is born with a slug — there is no nullable window and no
-  // self-healing. Existing rows keep their slug (stable across renames, so org
-  // URLs survive) and only refresh their name — and only from a payload at
-  // least as new as the one that last named it (`organizationAcceptsName`):
-  // a sign-in whose membership list was fetched before a rename would
+export const makeUserStore = (db: DrizzleDb) => {
+  const getOrganization = (id: string) => readOrganization(db, id);
+
+  // Existing rows keep their slug (stable across renames, so org URLs
+  // survive) and only refresh their name — and only from a payload at least
+  // as new as the one that last named it (`organizationAcceptsName`): a
+  // sign-in whose membership list was fetched before a rename would
   // otherwise revert the rename after it landed. A row marked deleted is
   // returned as it is: the organization is gone, and nothing a feeder still
   // holds about it (a name, a membership fetched before the deletion) is
-  // written — never re-minted live, never renamed.
+  // written — never re-minted live, never renamed. A row the mirror does not
+  // hold is minted live (`insertOrganization`).
   const upsertOrganization = async (org: OrganizationPayload) => {
     const existing = await getOrganization(org.id);
     if (existing) {
@@ -95,18 +116,12 @@ export const makeUserStore = (db: DrizzleDb) => {
         .returning();
       return updated ?? existing;
     }
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const slug = await generateOrgSlug(org.name, slugTaken);
-      const inserted = await tryInsertOrg(org, slug);
-      if (inserted) return inserted;
-      // The insert was swallowed by a conflict. If the id now exists, a
-      // concurrent request mirrored it — return that row. Otherwise the slug
-      // candidate collided; loop and mint a fresh one.
-      const fresh = await getOrganization(org.id);
-      if (fresh) return fresh;
-    }
-    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: slug minting exhausted retries; surfacing loudly beats a silently unslugged org
-    throw new Error(`unable to mint a slug for organization ${org.id}`);
+    return insertOrganization(db, {
+      id: org.id,
+      name: org.name,
+      workosUpdatedAt: org.updatedAt,
+      deletedAt: null,
+    });
   };
 
   return {

@@ -4,7 +4,12 @@
 
 import { env } from "cloudflare:workers";
 import { Context, Data, Effect, Layer, Option, Predicate, Schema } from "effect";
-import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
+import {
+  GeneratePortalLinkIntent,
+  WorkOS,
+  type Event as WorkOSEvent,
+  type EventName as WorkOSEventName,
+} from "@workos-inc/node/worker";
 import { defaults as ironDefaults, unseal as unsealIron } from "iron-webcrypto";
 import { decodeJwt, jwtVerify } from "jose";
 import { workosAccessTokenOptions } from "./access-token-options";
@@ -16,6 +21,7 @@ import {
   tryPromiseService,
   withServiceLogging,
   workosErrorFromFailure,
+  type WorkOSError,
 } from "./errors";
 
 const COOKIE_NAME = "wos-session";
@@ -46,6 +52,20 @@ type WorkOSAutoPaginatable<Resource> = {
   readonly data: Resource[];
   readonly listMetadata: WorkOSListMetadata;
   readonly autoPagination: () => Promise<Resource[]>;
+};
+
+/**
+ * One read of the WorkOS Events API stream. `events` names the types to
+ * return; `after` resumes from an event id (exclusive), `rangeStart` (ISO)
+ * bounds a first read that has no cursor yet. Mirrors the SDK's
+ * `ListEventOptions` with readonly inputs.
+ */
+export type WorkOSListEventsOptions = {
+  readonly events: readonly WorkOSEventName[];
+  readonly after?: string;
+  readonly rangeStart?: string;
+  readonly limit?: number;
+  readonly order?: "asc" | "desc";
 };
 
 export type WorkOSCollectedList<Resource> = {
@@ -751,6 +771,48 @@ const make = Effect.gen(function* () {
     listOrgRoles: (organizationId: string) =>
       use("organizations.listOrganizationRoles", (wos) =>
         wos.organizations.listOrganizationRoles({ organizationId }),
+      ),
+
+    /**
+     * One page of the Events API stream, oldest first when `order` is `asc`.
+     * The reconciler (`workos-events-sync.ts`) is the only consumer: it pages
+     * by `after` = the last event id it applied, so the stream is replayable
+     * from the persisted cursor. Returns the SDK page as-is (`data` +
+     * `listMetadata.after`); paging is the caller's loop, not
+     * `collectWorkOSList`, because each page is committed before the next is
+     * read.
+     */
+    listEvents: (options: WorkOSListEventsOptions) =>
+      use("events.listEvents", (wos) =>
+        wos.events.listEvents({
+          events: [...options.events],
+          ...(options.after === undefined ? {} : { after: options.after }),
+          ...(options.rangeStart === undefined ? {} : { rangeStart: options.rangeStart }),
+          ...(options.limit === undefined ? {} : { limit: options.limit }),
+          ...(options.order === undefined ? {} : { order: options.order }),
+        }),
+      ),
+
+    /**
+     * Verify a webhook delivery against `secret` (the endpoint's signing
+     * secret from the WorkOS dashboard) and decode its event. A local HMAC
+     * check, no network: it fails with a status-less `WorkOSError` when the
+     * `WorkOS-Signature` header is missing its parts, older than the SDK's
+     * tolerance, or does not match `payload`. The decoded event is returned
+     * for the caller to inspect; the webhook route deliberately does NOT
+     * apply it (the Events API is the only source the mirror replays from).
+     */
+    constructWebhookEvent: (params: {
+      readonly payload: Record<string, unknown>;
+      readonly sigHeader: string;
+      readonly secret: string;
+    }): Effect.Effect<WorkOSEvent, WorkOSError> =>
+      use("webhooks.constructEvent", (wos) =>
+        wos.webhooks.constructEvent({
+          payload: params.payload,
+          sigHeader: params.sigHeader,
+          secret: params.secret,
+        }),
       ),
 
     /** Get an organization (includes domains). */

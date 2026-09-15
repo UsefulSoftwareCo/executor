@@ -83,13 +83,14 @@ export const organizations = pgTable(
     backfilledAt: timestamp("backfilled_at", { withTimezone: true }),
     /**
      * When this organization was deleted, or null while it is live. Set by
-     * cloud's own deletion flow and by the `organization.deleted` event, and
-     * KEPT by the local purge (`db/org-deletion.ts`), which removes the
-     * organization's memberships and tenant data but leaves this row as a
-     * tombstone: a feeder that fetched a membership before the deletion and
-     * writes it after (a login that stalled across the purge) finds the
-     * tombstone and does not re-mint the organization live. A marked
-     * organization is never renamed and authorizes nobody.
+     * cloud's own deletion flow and by the `organization.deleted` event —
+     * which MINTS the row as a tombstone when the mirror has never seen the
+     * organization — and KEPT by the local purge (`db/org-deletion.ts`),
+     * which removes the organization's memberships and tenant data but
+     * leaves this row as a tombstone: a feeder that fetched a membership
+     * before the deletion and writes it after (a login that stalled across
+     * the deletion) finds the tombstone and does not mint the organization
+     * live. A marked organization is never renamed and authorizes nobody.
      */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     /**
@@ -201,16 +202,16 @@ export const membershipTombstones = pgTable(
  * stops.
  *
  * `range_start` on the `"events"` row is the REPLAY BOUNDARY: the instant the
- * FIRST completed one-off backfill (`scripts/backfill-workos-mirror.ts`) began
- * reading WorkOS. Everything before it is covered by that backfill; the
- * reconciler's first run (no cursor yet) reads the events stream from here,
- * so a revocation between the backfill and the first run is never skipped.
- * Written once: a backfill that fails part-way records nothing, and a later
- * completed one keeps it, because the backfill does not refresh everything
- * the events stream carries (organization renames, deleted users'
- * profiles) — those between two runs are replayed from the first boundary.
- * Without a cursor or a boundary the reconciler does not guess; it waits for
- * the backfill.
+ * FIRST one-off backfill run (`scripts/backfill-workos-mirror.ts`) began
+ * reading WorkOS, recorded BEFORE its first listing. Everything before it is
+ * covered by that backfill; the reconciler's first run (no cursor yet) reads
+ * the events stream from here, so a revocation between the backfill and the
+ * first run is never skipped. Written once: a run that fails part-way leaves
+ * it standing and its retry keeps it, and a later run keeps it too, because
+ * the backfill does not refresh everything the events stream carries
+ * (organization renames, deleted users' profiles) — those after the first
+ * boundary are replayed from it. Without a cursor or a boundary the
+ * reconciler does not guess; it waits for the backfill.
  *
  * `backfill_completed_at` is when a backfill run first wrote EVERY live
  * organization (`scripts/backfill-workos-mirror.ts` completing, or refusing
@@ -223,13 +224,23 @@ export const membershipTombstones = pgTable(
  * completeness for the seat gates is tracked separately
  * (`organizations.backfilled_at`).
  *
+ * `drained_at` is when a reconciler run last read the events stream to its
+ * END (an empty page, or a page with nothing after it) — the second half of
+ * the readiness mark: a mirror whose reconciler has not caught up recently
+ * may still grant a member WorkOS already revoked, so the authorization
+ * path trusts the mirror only while this is within its lag budget. Moved
+ * forward by every draining run; never cleared. A run that stops at its
+ * page budget or yields to another run leaves it as it was.
+ *
  * Migration 0019 seeds the boundary and the completion mark on a database
- * with no organizations, where there is nothing to backfill.
+ * with no organizations, where there is nothing to backfill; `drained_at`
+ * is left for the reconciler's first run to set (migration 0020).
  */
 export const workosSync = pgTable("workos_sync", {
   id: text("id").primaryKey(),
   cursor: text("cursor"),
   rangeStart: timestamp("range_start", { withTimezone: true }),
   backfillCompletedAt: timestamp("backfill_completed_at", { withTimezone: true }),
+  drainedAt: timestamp("drained_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

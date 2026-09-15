@@ -45,14 +45,17 @@
 // cleared, stamped with the deletion), and no membership naming that account
 // is written again, however the payload is stamped — WorkOS never reuses a
 // user id, and a membership the mirror had not seen has no row of its own
-// for a guard to refuse the insert against. The cursor advances only by
-// compare-and-set, so two reconciler runs cannot both own the stream.
+// for a guard to refuse the insert against. The reconciler applies a page
+// of events and advances the cursor in ONE transaction that
+// compare-and-sets the cursor first (`applyPage`), so a run that has lost
+// the stream to another run writes nothing — the `updatedAt` guard alone
+// cannot stop it re-applying a page the leading run has moved past.
 //
 // A backfill SCAN of one organization (its full membership listing, taken
-// at one instant) is applied in ONE transaction that first compare-and-sets
-// the organization's `backfilled_at` to the listing's instant
-// (`applyOrganizationScan`): the row stays locked until commit, so two
-// overlapping scans serialize on it, and the one whose listing is older
+// at one instant) is applied the same way: ONE transaction that first
+// compare-and-sets the organization's `backfilled_at` to the listing's
+// instant (`applyOrganizationScan`), so the row stays locked until commit,
+// two overlapping scans serialize on it, and the one whose listing is older
 // than the recorded one writes NOTHING. The `updatedAt` guard alone cannot
 // order two scans: a scan that listed a membership, stalled, and resumed
 // after a later scan had found it gone would insert it live — the later scan
@@ -72,15 +75,16 @@
 // listing that sets the mark.
 //
 // The events replay boundary (`workos_sync.range_start`) is written ONCE, by
-// the first completed backfill, and never advanced: a later backfill
-// refreshes memberships only, so an organization rename or user deletion
-// between two runs is covered by the events stream alone, and moving the
-// boundary past it would skip it for good.
+// the first backfill run BEFORE its first listing, and never advanced: a
+// scan refreshes memberships only, so an organization rename or user
+// deletion after that instant — between two runs, or between a run that
+// failed part-way and its retry — is covered by the events stream alone,
+// and moving the boundary past it would skip it for good.
 // ---------------------------------------------------------------------------
 
 import { and, eq, isNotNull, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { Effect, Option } from "effect";
+import { Data, Effect, Option } from "effect";
 
 import type { MemberStatus } from "@executor-js/api/server";
 
@@ -92,6 +96,7 @@ import {
   workosSync,
 } from "../db/schema";
 import type { DrizzleDb } from "../db/db";
+import { insertOrganization, organizationAcceptsName } from "./user-store";
 import {
   WorkOsMirrorError,
   tryPromiseService,
@@ -162,6 +167,70 @@ export interface WorkOsOrganizationScanWrites {
   readonly membershipsWritten: number;
   readonly membershipsTombstoned: number;
 }
+
+/**
+ * One write of a reconciler page, applied by `applyPage` inside the page's
+ * transaction. The reconciler plans a page into these BEFORE the transaction
+ * opens, so every WorkOS read (resolving an organization the mirror has never
+ * seen) is done by then: the transaction holds the mirror's single connection
+ * and must not wait on the network.
+ */
+export type WorkOsMirrorWrite = Data.TaggedEnum<{
+  readonly UpsertUser: { readonly user: WorkOsMirrorUser };
+  readonly UpsertMembership: { readonly membership: WorkOsMirrorMembership };
+  /**
+   * A membership together with its member's profile, read from WorkOS at
+   * plan time because the mirror held no profile for the account
+   * (`workos-events-sync.ts`): the user is upserted first, under the usual
+   * guard, then the membership. The outcome is the membership's.
+   */
+  readonly UpsertMember: {
+    readonly user: WorkOsMirrorUser;
+    readonly membership: WorkOsMirrorMembership;
+  };
+  /** Tombstone a membership as of `deletedAt` (the event's `createdAt`). */
+  readonly DeleteMembership: {
+    readonly membership: WorkOsMirrorMembershipRef;
+    readonly deletedAt: Date;
+  };
+  /** Tombstone a user and their memberships as of `deletedAt`. */
+  readonly DeleteUser: { readonly accountId: string; readonly deletedAt: Date };
+  /**
+   * Rename an organization the mirror already holds — never inserts one —
+   * from a payload stamped `updatedAt` (the WorkOS organization's own), under
+   * the same name guard every feeder applies (`organizationAcceptsName`).
+   */
+  readonly RenameOrganization: {
+    readonly organizationId: string;
+    readonly name: string;
+    readonly updatedAt: Date;
+  };
+  /**
+   * Mark an organization deleted as of `deletedAt` (the event's
+   * `createdAt`) — minting the row as a TOMBSTONE, named `name`, when the
+   * mirror has never seen the organization, so a feeder still holding a
+   * membership of it (a login that stalled across the deletion) finds the
+   * tombstone and cannot mint the organization live. Never purges tenant
+   * data (that is cloud's own flow, `db/org-deletion.ts`). An earlier mark
+   * stands (`absent`).
+   */
+  readonly MarkOrganizationDeleted: {
+    readonly organizationId: string;
+    readonly name: string;
+    readonly deletedAt: Date;
+  };
+}>;
+export const WorkOsMirrorWrite = Data.taggedEnum<WorkOsMirrorWrite>();
+
+/**
+ * What one write did: a row was written, renamed, or tombstoned (`applied`);
+ * the `updatedAt` guard refused an older payload (`stale`); or a delete found
+ * its row already tombstoned or superseded by a newer membership (a
+ * replayed delete), or a rename found no live organization row to change —
+ * the mirror has never seen it, or it is marked deleted — or a deletion
+ * mark found the organization already marked (`absent`).
+ */
+export type WorkOsMirrorWriteOutcome = "applied" | "stale" | "absent";
 
 export interface WorkOsMirrorShape {
   /**
@@ -250,14 +319,20 @@ export interface WorkOsMirrorShape {
   /** The id of the last WorkOS event applied, or `null` before the first run. */
   readonly getCursor: () => Effect.Effect<string | null, WorkOsMirrorError>;
   /**
-   * Compare-and-set the cursor: advance to `next` only if it still reads
-   * `prev` (`null` = no cursor yet). `false` means another run moved it first
-   * — the caller must stop, it no longer owns the stream.
+   * Apply one reconciler page atomically: in a single transaction,
+   * compare-and-set the cursor from `prev` (`null` = no cursor yet) to
+   * `next`, and only if that succeeded apply `writes` in order. The cursor
+   * row stays locked until commit, so two runs applying pages serialize on
+   * it and the one whose `prev` is stale sees the moved cursor and writes
+   * nothing: `None` means another run owns the stream and the caller must
+   * stop. `Some` carries one outcome per write, in order. An empty `writes`
+   * is a bare cursor advance.
    */
-  readonly setCursor: (
+  readonly applyPage: (
     prev: string | null,
     next: string,
-  ) => Effect.Effect<boolean, WorkOsMirrorError>;
+    writes: readonly WorkOsMirrorWrite[],
+  ) => Effect.Effect<Option.Option<readonly WorkOsMirrorWriteOutcome[]>, WorkOsMirrorError>;
   /**
    * Apply one organization's backfill scan — the memberships (with their
    * users) a WorkOS listing taken at `listedAt` contained — atomically: in a
@@ -283,24 +358,25 @@ export interface WorkOsMirrorShape {
     scan: WorkOsOrganizationScan,
   ) => Effect.Effect<Option.Option<WorkOsOrganizationScanWrites>, WorkOsMirrorError>;
   /**
-   * The Events API replay boundary: the instant the FIRST completed one-off
-   * backfill began reading WorkOS, or `null` if none has completed. The
+   * The Events API replay boundary: the instant the FIRST one-off backfill
+   * run began reading WorkOS, or `null` if none has started. The
    * reconciler's first run (no cursor yet) reads the stream from here — the
    * backfill covers everything before it — and without a boundary it must
    * not guess.
    */
   readonly replayBoundary: () => Effect.Effect<Date | null, WorkOsMirrorError>;
   /**
-   * Record the replay boundary, ONCE: `at` is the instant a completed
-   * backfill began reading WorkOS, and it is kept only when no boundary is
-   * recorded yet — `true` when this call recorded it. A later completed run
-   * never moves it: the backfill refreshes memberships and tombstones only,
-   * not organization names or deleted users' profiles, so a change between
-   * two runs is covered only by the events stream, which must still be read
-   * from the first boundary. Written only after every organization has been
-   * written, so a run that fails part-way records nothing. Never touches the
-   * cursor: a stream already being followed keeps its position, and the
-   * boundary is then unused.
+   * Record the replay boundary, ONCE: `at` is the instant a backfill run
+   * began reading WorkOS, and it is kept only when no boundary is recorded
+   * yet — `true` when this call recorded it. A later run never moves it: the
+   * backfill refreshes memberships and tombstones only, not organization
+   * names or deleted users' profiles, so a change after the first boundary
+   * is covered only by the events stream, which must still be read from
+   * there. Written BEFORE the run's first listing, so a run that fails
+   * part-way leaves the boundary standing and its retry keeps it — a
+   * `user.deleted` between the attempts stays inside the replay. Never
+   * touches the cursor: a stream already being followed keeps its position,
+   * and the boundary is then unused.
    */
   readonly setReplayBoundary: (at: Date) => Effect.Effect<boolean, WorkOsMirrorError>;
   /**
@@ -323,6 +399,22 @@ export interface WorkOsMirrorShape {
    * boundary.
    */
   readonly markBackfillCompleted: (at: Date) => Effect.Effect<boolean, WorkOsMirrorError>;
+  /**
+   * When a reconciler run last read the events stream to its end
+   * (`workos_sync.drained_at`), or `null` if none has. The second half of
+   * the mirror's readiness for authorization: a mirror whose reconciler
+   * has not caught up within the lag budget may still hold a membership
+   * WorkOS has since revoked.
+   */
+  readonly drainedAt: () => Effect.Effect<Date | null, WorkOsMirrorError>;
+  /**
+   * Record that a reconciler run read the stream to its end at `at`. Moves
+   * the mark forward only — a run that finished after a later one keeps the
+   * later mark — and only on the row a run already owns: the events row is
+   * minted by the boundary or the first cursor advance, so a missing row
+   * means nothing was drained and nothing is written (`false`).
+   */
+  readonly markDrained: (at: Date) => Effect.Effect<boolean, WorkOsMirrorError>;
   /**
    * When the organization's membership list was last FULLY scanned from
    * WorkOS (`backfillOrganization` in workos-mirror-backfill.ts), or `null`
@@ -502,9 +594,9 @@ const membershipDeletableBy = (id: string) =>
   and(or(isNull(memberships.membershipId), eq(memberships.membershipId, id)), notDeleted);
 
 // The write queries, over `db` or over a transaction handle (drizzle's is a
-// `PgDatabase` too): the one `applyOrganizationScan` opens, or the one the
-// store opens per `upsertMembership`. Each answers whether it wrote a row;
-// the public shape translates that.
+// `PgDatabase` too): the one `applyPage` or `applyOrganizationScan` opens,
+// or the one the store opens per `upsertMembership`. Each answers whether
+// it wrote a row; the public shape and the transactions translate that.
 const makeWrites = (db: DrizzleDb) => {
   const ensureAccount = (id: string) =>
     db.insert(accounts).values({ id }).onConflictDoNothing({ target: accounts.id });
@@ -742,6 +834,82 @@ const makeWrites = (db: DrizzleDb) => {
       return cleared.length > 0;
     },
 
+    // An UPDATE, never an insert: the slug is minted only by
+    // `upsertOrganization` (auth/user-store.ts), and an org purged by cloud's
+    // own deletion flow must not come back — with a fresh slug and no members
+    // — because a rename that preceded the deletion is replayed after it.
+    // Only of a LIVE row, and only from a payload at least as new as the one
+    // that last named it: the same guard `upsertOrganization` applies, so
+    // an event rename and a sign-in's name (stamped by its fetch) order
+    // each other however they arrive.
+    renameOrganization: async (
+      organizationId: string,
+      name: string,
+      updatedAt: Date,
+    ): Promise<WorkOsMirrorWriteOutcome> => {
+      const renamed = await db
+        .update(organizations)
+        .set({ name, workosUpdatedAt: updatedAt })
+        .where(
+          and(
+            eq(organizations.id, organizationId),
+            isNull(organizations.deletedAt),
+            organizationAcceptsName(updatedAt),
+          ),
+        )
+        .returning({ id: organizations.id });
+      if (renamed.length > 0) return "applied";
+      // Refused: tell a live row the guard held back (`stale`) from a row
+      // the mirror does not hold or holds as deleted (`absent`).
+      const live = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.id, organizationId), isNull(organizations.deletedAt)));
+      return live.length > 0 ? "stale" : "absent";
+    },
+
+    // Marks a live row, or MINTS a tombstone row when the mirror has never
+    // seen the organization: an org created, populated, and deleted in the
+    // WorkOS dashboard before anyone signed in leaves no row behind
+    // otherwise, and a login that fetched its memberships before the
+    // deletion (and stalled) would then mint the org live, with nothing
+    // left in the stream to revoke it — this event is consumed. A row
+    // already marked is left alone: cloud's own deletion flow marks the org
+    // before deleting it in WorkOS, so the event that follows finds the
+    // mark already there and changes nothing — `false`, as for a replayed
+    // event. Minted through the one slug mint point (`insertOrganization`),
+    // so a tombstone is a routable, unique-slugged row like any other; the
+    // mark alone is what refuses it.
+    markOrganizationDeleted: async (
+      organizationId: string,
+      name: string,
+      deletedAt: Date,
+    ): Promise<boolean> => {
+      const mark = async () => {
+        const marked = await db
+          .update(organizations)
+          .set({ deletedAt })
+          .where(and(eq(organizations.id, organizationId), isNull(organizations.deletedAt)))
+          .returning({ id: organizations.id });
+        return marked.length > 0;
+      };
+      if (await mark()) return true;
+      const held = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId));
+      if (held.length > 0) return false;
+      const minted = await insertOrganization(db, {
+        id: organizationId,
+        name,
+        workosUpdatedAt: null,
+        deletedAt,
+      });
+      // A concurrent feeder may have minted the row LIVE between the read
+      // and the insert (the insert then yields its row): mark that one.
+      return minted.deletedAt !== null || mark();
+    },
+
     // Tombstone (at `listedAt`) every membership of the organization that a
     // listing taken at `listedAt` did not contain. Only inside a scan's
     // transaction, after its `backfilled_at` CAS: on its own this could
@@ -798,6 +966,57 @@ const makeWrites = (db: DrizzleDb) => {
       return tombstoned.length;
     },
   };
+};
+
+type Writes = ReturnType<typeof makeWrites>;
+
+const applyWrite = (writes: Writes, write: WorkOsMirrorWrite): Promise<WorkOsMirrorWriteOutcome> =>
+  WorkOsMirrorWrite.$match(write, {
+    UpsertUser: async ({ user }) => ((await writes.upsertUser(user)) ? "applied" : "stale"),
+    UpsertMembership: async ({ membership }) =>
+      (await writes.upsertMembership(membership)) ? "applied" : "stale",
+    UpsertMember: async ({ user, membership }) => {
+      await writes.upsertUser(user);
+      return (await writes.upsertMembership(membership)) ? "applied" : "stale";
+    },
+    DeleteMembership: async ({ membership, deletedAt }) =>
+      (await writes.deleteMembership(membership, deletedAt)) ? "applied" : "absent",
+    DeleteUser: async ({ accountId, deletedAt }) =>
+      (await writes.deleteUser(accountId, deletedAt)) ? "applied" : "absent",
+    RenameOrganization: ({ organizationId, name, updatedAt }) =>
+      writes.renameOrganization(organizationId, name, updatedAt),
+    MarkOrganizationDeleted: async ({ organizationId, name, deletedAt }) =>
+      (await writes.markOrganizationDeleted(organizationId, name, deletedAt))
+        ? "applied"
+        : "absent",
+  });
+
+// Compare-and-set the events cursor. Run inside a transaction this also
+// LOCKS the cursor row until commit: a concurrent run's CAS waits here, then
+// re-reads the moved cursor and matches nothing.
+const advanceCursor = async (db: DrizzleDb, prev: string | null, next: string) => {
+  const now = new Date();
+  if (prev === null) {
+    // First advance: mint the row, or claim an existing row that still has
+    // no cursor. A row that already carries one belongs to another run and
+    // is left alone.
+    const written = await db
+      .insert(workosSync)
+      .values({ id: WORKOS_EVENTS_STREAM_ID, cursor: next, updatedAt: now })
+      .onConflictDoUpdate({
+        target: workosSync.id,
+        set: { cursor: next, updatedAt: now },
+        setWhere: isNull(workosSync.cursor),
+      })
+      .returning({ id: workosSync.id });
+    return written.length > 0;
+  }
+  const written = await db
+    .update(workosSync)
+    .set({ cursor: next, updatedAt: now })
+    .where(and(eq(workosSync.id, WORKOS_EVENTS_STREAM_ID), eq(workosSync.cursor, prev)))
+    .returning({ id: workosSync.id });
+  return written.length > 0;
 };
 
 // Claim the organization for a scan listed at `listedAt`: move its
@@ -875,31 +1094,21 @@ export const makeWorkOsMirrorStore = (db: DrizzleDb): WorkOsMirrorShape => {
         return rows[0]?.cursor ?? null;
       }),
 
-    setCursor: (prev, next) =>
-      run("setCursor", async () => {
-        const now = new Date();
-        if (prev === null) {
-          // First advance: mint the row, or claim an existing row that still
-          // has no cursor. A row that already carries one belongs to another
-          // run and is left alone.
-          const written = await db
-            .insert(workosSync)
-            .values({ id: WORKOS_EVENTS_STREAM_ID, cursor: next, updatedAt: now })
-            .onConflictDoUpdate({
-              target: workosSync.id,
-              set: { cursor: next, updatedAt: now },
-              setWhere: isNull(workosSync.cursor),
-            })
-            .returning({ id: workosSync.id });
-          return written.length > 0;
-        }
-        const written = await db
-          .update(workosSync)
-          .set({ cursor: next, updatedAt: now })
-          .where(and(eq(workosSync.id, WORKOS_EVENTS_STREAM_ID), eq(workosSync.cursor, prev)))
-          .returning({ id: workosSync.id });
-        return written.length > 0;
-      }),
+    applyPage: (prev, next, pageWrites) =>
+      run("applyPage", () =>
+        db.transaction(async (tx) => {
+          // The CAS comes FIRST so the lock is held for every write below;
+          // a run that lost the stream commits an empty transaction.
+          const owned = await advanceCursor(tx, prev, next);
+          if (!owned) return Option.none();
+          const txWrites = makeWrites(tx);
+          const outcomes: WorkOsMirrorWriteOutcome[] = [];
+          for (const write of pageWrites) {
+            outcomes.push(await applyWrite(txWrites, write));
+          }
+          return Option.some<readonly WorkOsMirrorWriteOutcome[]>(outcomes);
+        }),
+      ),
 
     applyOrganizationScan: (scan) =>
       run("applyOrganizationScan", () =>
@@ -985,6 +1194,30 @@ export const makeWorkOsMirrorStore = (db: DrizzleDb): WorkOsMirrorShape => {
           })
           .returning({ id: workosSync.id });
         return recorded.length > 0;
+      }),
+
+    drainedAt: () =>
+      run("drainedAt", async () => {
+        const rows = await db
+          .select({ drainedAt: workosSync.drainedAt })
+          .from(workosSync)
+          .where(eq(workosSync.id, WORKOS_EVENTS_STREAM_ID));
+        return rows[0]?.drainedAt ?? null;
+      }),
+
+    markDrained: (at) =>
+      run("markDrained", async () => {
+        const moved = await db
+          .update(workosSync)
+          .set({ drainedAt: at })
+          .where(
+            and(
+              eq(workosSync.id, WORKOS_EVENTS_STREAM_ID),
+              or(isNull(workosSync.drainedAt), lt(workosSync.drainedAt, at)),
+            ),
+          )
+          .returning({ id: workosSync.id });
+        return moved.length > 0;
       }),
 
     organizationBackfilledAt: (organizationId) =>

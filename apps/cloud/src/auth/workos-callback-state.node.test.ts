@@ -116,12 +116,14 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
   deleteMembership: () => Effect.die("the callback does not delete memberships"),
   deleteUser: () => Effect.die("the callback does not delete users"),
   getCursor: () => Effect.die("the callback does not read the events cursor"),
-  setCursor: () => Effect.die("the callback does not move the events cursor"),
+  applyPage: () => Effect.die("the callback does not move the events cursor"),
   applyOrganizationScan: () => Effect.die("the callback does not run the backfill"),
   replayBoundary: () => Effect.die("the callback does not run the reconciler"),
   setReplayBoundary: () => Effect.die("the callback does not run the backfill"),
   backfillCompletedAt: () => Effect.die("the callback does not check mirror readiness"),
   markBackfillCompleted: () => Effect.die("the callback does not run the backfill"),
+  drainedAt: () => Effect.die("the callback does not check mirror readiness"),
+  markDrained: () => Effect.die("the callback does not run the reconciler"),
   organizationBackfilledAt: () => Effect.die("the callback does not report seats"),
 });
 

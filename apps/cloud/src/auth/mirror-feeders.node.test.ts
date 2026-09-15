@@ -21,11 +21,12 @@
 //     writes nothing on a dry run, converges on a re-run, tombstones a
 //     membership WorkOS no longer lists — but never one written after its
 //     listing was taken — marks each org backfilled as of its listing, and
-//     records the events replay boundary only when it completes and only
+//     records the events replay boundary BEFORE its first listing and only
 //     ONCE: a run that fails part-way keeps the marks of the orgs it
-//     finished and records no boundary, and a later completed run keeps the
-//     first boundary (the org renames and user deletions between two runs
-//     are the events stream's to replay)
+//     finished and the boundary it recorded, and its retry (like any later
+//     run) keeps that first boundary — so a user deleted between the failed
+//     attempt and the retry is still inside the events replay, and the
+//     reconciler clears their profile
 //   - two scans of one org that overlap cannot resurrect a membership: a scan
 //     that listed it, stalled, and resumed after a later listing (which no
 //     longer had it) was applied is refused whole
@@ -736,7 +737,7 @@ describe("backfill", () => {
   const backfilledAt = (org: string) =>
     withMirror((mirror) => mirror.organizationBackfilledAt(org));
 
-  it("records the replay boundary on first completion, marks and mirrors every organization's members, counts the writes, converges and repairs on a re-run", async () => {
+  it("records the replay boundary at its start, marks and mirrors every organization's members, counts the writes, converges and repairs on a re-run", async () => {
     const orgA = freshId("org");
     const orgB = freshId("org");
     await seedOrganization(orgA);
@@ -785,6 +786,10 @@ describe("backfill", () => {
     expect(firstCompletion, "and that every organization is now covered").not.toBeNull();
     expect(firstCompletion!.getTime()).toBeGreaterThanOrEqual(after!.getTime());
     expect(after!.getTime()).toBeGreaterThanOrEqual(startedAt);
+    expect(
+      after!.getTime(),
+      "the boundary is the instant the run began reading, before any listing",
+    ).toBeLessThanOrEqual(startedAt + 60 * 1000);
     for (const org of [orgA, orgB]) {
       const marked = await backfilledAt(org);
       expect(marked, "each scanned organization is marked as of its listing").not.toBeNull();
@@ -918,31 +923,26 @@ describe("backfill", () => {
     );
   });
 
-  it("keeps the marks of the organizations it finished but records no replay boundary when a run fails part-way", async () => {
+  it("keeps the boundary a run that fails part-way recorded, so a user deleted before the retry is still the reconciler's to clear", async () => {
     const orgA = freshId("org");
     const orgB = freshId("org");
     await seedOrganization(orgA);
     await seedOrganization(orgB);
-    const member = freshId("user");
-    const orgs = new Map([
-      [orgA, [workosMembership(member, orgA)]],
-      [orgB, [workosMembership(member, orgB)]],
-    ]);
-    // A completed run first, so there IS a boundary to protect.
-    await runBackfill(orgs, false);
-    const completed = await syncState();
-    expect(completed).not.toBeNull();
-    const markedA = await backfilledAt(orgA);
+    const staying = freshId("user");
+    const deletedMeanwhile = freshId("user");
+    await clearEventsRow();
 
-    // A re-run whose second organization fails on a WorkOS read: the first
-    // org was written, but the run as a whole did not complete — and even a
-    // completed one would keep the first boundary.
+    // Attempt A mirrors both users of orgA, then fails on orgB's listing.
+    const attemptA = new Map([
+      [orgA, [workosMembership(staying, orgA), workosMembership(deletedMeanwhile, orgA)]],
+      [orgB, [workosMembership(staying, orgB)]],
+    ]);
     const failing = {
-      ...source(orgs, []),
+      ...source(attemptA, []),
       listOrgMembers: (organizationId: string) =>
         organizationId === orgB
           ? Effect.fail(new WorkOSError({ status: 503 }))
-          : Effect.succeed(orgs.get(organizationId) ?? []),
+          : Effect.succeed(attemptA.get(organizationId) ?? []),
     };
     const exit = await withMirror((mirror) =>
       Effect.exit(
@@ -953,12 +953,58 @@ describe("backfill", () => {
       ),
     );
     expect(Exit.isFailure(exit), "the run fails rather than skipping the org").toBe(true);
-    expect(await syncState(), "the completed run's boundary stands").toEqual(completed);
-    expect(await completedAt(), "and so does its completion mark").not.toBeNull();
+    const boundary = await syncState();
+    expect(boundary, "the failed attempt already fixed the replay boundary").not.toBeNull();
+    expect(await backfilledAt(orgA), "the org it finished is marked").not.toBeNull();
+    expect(await backfilledAt(orgB), "the org it did not reach is not").toBeNull();
     expect(
-      (await backfilledAt(orgA))!.getTime(),
-      "the org the failed run did finish is marked as of its new listing",
-    ).toBeGreaterThanOrEqual(markedA!.getTime());
+      await completedAt(),
+      "no completion mark: the failed attempt did not cover every organization",
+    ).toBeNull();
+    expect(
+      (await readMembers(orgA)).find((m) => m.accountId === deletedMeanwhile)?.email,
+      "the user's profile is mirrored",
+    ).toBe(`${deletedMeanwhile}@placeholder.test`);
+
+    // WorkOS deletes `deletedMeanwhile` between the attempts. Its
+    // `user.deleted` event is stamped AFTER the boundary attempt A recorded.
+    const deletedAt = new Date(boundary!.getTime() + 1);
+
+    // Retry B lists WorkOS without the deleted user and succeeds.
+    const attemptB = new Map([
+      [orgA, [workosMembership(staying, orgA)]],
+      [orgB, [workosMembership(staying, orgB)]],
+    ]);
+    const retried = await runBackfill(attemptB, false);
+    expect(retried).toMatchObject({ organizations: 2, membershipsTombstoned: 1 });
+    expect(
+      await syncState(),
+      "the retry keeps the first attempt's boundary instead of taking a later one",
+    ).toEqual(boundary);
+    expect(
+      await backfilledAt(orgB),
+      "and finishes the org the first attempt did not",
+    ).not.toBeNull();
+    expect(
+      await completedAt(),
+      "the retry is the first run to cover every organization, so it records the completion",
+    ).not.toBeNull();
+    // The scan tombstoned the membership, but the account profile is not
+    // the scan's to clear: that is the `user.deleted` event's job, which is
+    // exactly why the boundary must not move past it.
+    const tombstoned = (await readMembers(orgA)).find((m) => m.accountId === deletedMeanwhile);
+    expect(tombstoned?.status).toBe("inactive");
+    expect(tombstoned?.email, "the profile is still there for the event to clear").not.toBeNull();
+
+    // The reconciler's first run reads from the kept boundary, so the
+    // deletion (stamped after it) is inside the replay and clears the row.
+    expect(deletedAt.getTime()).toBeGreaterThan(boundary!.getTime());
+    const cleared = await withMirror((mirror) => mirror.deleteUser(deletedMeanwhile, deletedAt));
+    expect(cleared).toBe(true);
+    expect(
+      (await readMembers(orgA)).find((m) => m.accountId === deletedMeanwhile)?.email,
+      "the deleted user's profile is gone from the directory",
+    ).toBeNull();
   });
 
   it("scans one organization on demand and marks only that one", async () => {

@@ -24,13 +24,13 @@
 //
 // DEPLOY ORDER: run this against production BEFORE deploying the builds that
 // reconcile from the Events API and read seat counts from the mirror, so no
-// request pays for an on-demand scan. The FIRST completed run records the
-// events replay boundary (the reconciler's first run reads from it; without
-// one it waits); later runs keep it, since only the events stream covers the
-// org renames and user deletions between two runs. A run that fails part-way
-// keeps the marks of the orgs it finished, records no boundary, and is safe
-// to repeat. Verify the printed membership count against the WorkOS
-// dashboard.
+// request pays for an on-demand scan. The FIRST run records the events
+// replay boundary BEFORE it lists anything (the reconciler's first run reads
+// from it; without one it waits); later runs — a retry included — keep it,
+// since only the events stream covers the org renames and user deletions
+// after that instant. A run that fails part-way keeps the marks of the orgs
+// it finished and the boundary it recorded, and is safe to repeat. Verify
+// the printed membership count against the WorkOS dashboard.
 // ---------------------------------------------------------------------------
 
 import { asc, isNull } from "drizzle-orm";

@@ -42,17 +42,18 @@
 // caller's own membership) starts unmarked and is scanned before any count
 // read from the mirror is trusted. A run over every organization
 // (`backfillWorkOsMirror`) additionally records the Events API replay
-// boundary — the instant it began reading WorkOS, taken BEFORE anything is
-// listed so no change can fall between the boundary and a listing — once
-// every organization was written, and only if no boundary is recorded yet.
-// A run that fails part-way records nothing, and a later completed run
-// keeps the first boundary: a scan refreshes memberships and tombstones,
-// not organization names or deleted users' profiles, so an
-// `organization.updated` or `user.deleted` between two runs is covered only
-// by the events stream — advancing the boundary past it would skip it for
-// good. The reconciler's own cursor takes over from the boundary after its
-// first page, so the boundary's only job is to name where that first page
-// starts.
+// boundary — the instant it began reading WorkOS — BEFORE anything is
+// listed, and only if no boundary is recorded yet. Recording it first, not
+// on completion, is what makes a failed run safe to retry: a run that
+// fails part-way has already fixed the boundary at its start, and its
+// retry reads that boundary back instead of taking a fresh, later one. A
+// scan refreshes memberships and tombstones, not organization names or
+// deleted users' profiles, so an `organization.updated` or `user.deleted`
+// that lands between the attempts (or between two runs) is covered only by
+// the events stream — a boundary taken by the retry would fall after it and
+// skip it for good, leaving the deleted user's profile in the mirror. The
+// reconciler's own cursor takes over from the boundary after its first
+// page, so the boundary's only job is to name where that first page starts.
 //
 // The mark also orders every OTHER membership write against the scan: the
 // mirror refuses a membership payload stamped before the organization's
@@ -196,11 +197,12 @@ export const backfillOrganization = <E>(
   );
 
 /**
- * Run the full backfill: scan every organization the mirror knows, then
- * record the Events API replay boundary if none is recorded yet. Fails on
- * the first source or mirror failure — the organizations scanned so far stay
- * marked (each was covered in full), the boundary is not recorded, and the
- * run is safe to repeat.
+ * Run the full backfill: record the Events API replay boundary if none is
+ * recorded yet, then scan every organization the mirror knows. Fails on the
+ * first source or mirror failure — the organizations scanned so far stay
+ * marked (each was covered in full), the boundary recorded at the start
+ * stands, and the run is safe to repeat: the retry keeps that boundary, so
+ * every change since the first attempt began is the reconciler's to replay.
  */
 export const backfillWorkOsMirror = <E>(
   source: WorkOsMirrorBackfillSource<E>,
@@ -208,8 +210,21 @@ export const backfillWorkOsMirror = <E>(
   options: WorkOsMirrorBackfillOptions,
 ) =>
   Effect.gen(function* () {
-    // Taken before the first listing; recorded only once the run completes.
+    // The replay boundary: taken AND recorded before anything is listed, so
+    // every change from this instant on is the events stream's to apply —
+    // one that lands while this run is still listing, or between this run
+    // failing part-way and its retry. Kept only when none is recorded yet
+    // (`setReplayBoundary`): a retry or a later run reads the first one
+    // back instead of moving it. A dry run records nothing.
     const boundary = yield* now();
+    if (!options.dryRun) {
+      const recorded = yield* mirror.setReplayBoundary(boundary);
+      options.log(
+        recorded
+          ? `events replay boundary set to ${boundary.toISOString()}`
+          : "events replay boundary already recorded by an earlier run; kept (the events reconciler replays every change since it)",
+      );
+    }
 
     const organizationIds = yield* source.listOrganizationIds();
     let memberships = 0;
@@ -246,22 +261,11 @@ export const backfillWorkOsMirror = <E>(
         : `${counts.organizations} organization(s), ${counts.memberships} membership(s): wrote ${counts.usersWritten} user(s), ${counts.membershipsWritten} membership(s), tombstoned ${counts.membershipsTombstoned}`,
     );
     if (!options.dryRun) {
-      // Every organization was read and written without failure (a failure
-      // above fails the whole run) — or refused in favour of a listing taken
-      // later still — so everything before `boundary` is now covered: record
-      // it for the reconciler — unless an earlier run already did, in which
-      // case the events between the two runs are the reconciler's to replay
-      // and the earlier boundary stands.
-      const recorded = yield* mirror.setReplayBoundary(boundary);
-      options.log(
-        recorded
-          ? `events replay boundary set to ${boundary.toISOString()}`
-          : "events replay boundary already recorded by an earlier run; kept (the events reconciler replays every change since it)",
-      );
-      // And every live organization is now covered: the mirror is complete
-      // enough to authorize from (once the reconciler has caught up too),
-      // which the authorization path reads as the first half of readiness.
-      // Once: a re-run keeps the first completion.
+      // Every live organization is now covered (a failure above fails the
+      // whole run): the mirror is complete enough to authorize from, once
+      // the reconciler has caught up too — the first half of the readiness
+      // the authorization path checks. Once: a re-run keeps the first
+      // completion.
       const completedAt = yield* now();
       const marked = yield* mirror.markBackfillCompleted(completedAt);
       options.log(

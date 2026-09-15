@@ -23,6 +23,7 @@ import { makeWorkOsMirrorStore, type WorkOsMirrorShape } from "./workos-mirror-s
 
 export { WorkOsMirrorError } from "./errors";
 export {
+  WorkOsMirrorWrite,
   mirrorMembershipFromWorkOs,
   mirrorUserFromWorkOs,
   type WorkOsMembershipPayload,
@@ -30,6 +31,7 @@ export {
   type WorkOsMirrorMembershipRef,
   type WorkOsMirrorShape,
   type WorkOsMirrorUser,
+  type WorkOsMirrorWriteOutcome,
   type WorkOsOrganizationScan,
   type WorkOsOrganizationScanWrites,
   type WorkOsScannedMember,

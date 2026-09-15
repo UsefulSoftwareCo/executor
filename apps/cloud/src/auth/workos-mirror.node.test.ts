@@ -26,7 +26,8 @@
 //   - a delete with no WorkOS instant keeps the row's own WorkOS stamp, so
 //     a replacement membership WorkOS created meanwhile is not refused,
 //     while the removed membership's own payload still is
-//   - the cursor advances only by compare-and-set (one owner per stream)
+//   - the cursor advances only by compare-and-set (one owner per stream),
+//     and a page that loses the CAS writes nothing
 //   - a backfill scan is applied only if its listing is newer than the one
 //     already applied to the organization (one owner per listing instant),
 //     so an older listing cannot insert a membership the newer one lacked;
@@ -52,7 +53,12 @@ import { DbService, makeDbLayer } from "../db/db";
 import { accounts, organizations } from "../db/schema";
 import { cloudMemberDirectoryLayer } from "./member-directory";
 import { UserStoreService } from "./context";
-import { WorkOsMirror, type WorkOsMirrorMembership, type WorkOsMirrorUser } from "./workos-mirror";
+import {
+  WorkOsMirror,
+  WorkOsMirrorWrite,
+  type WorkOsMirrorMembership,
+  type WorkOsMirrorUser,
+} from "./workos-mirror";
 import { makeWorkOsMirrorStore } from "./workos-mirror-store";
 
 const DbLive = DbService.Live;
@@ -776,31 +782,67 @@ describe("WorkOsMirror upserts", () => {
 });
 
 describe("WorkOsMirror cursor", () => {
-  it("advances only by compare-and-set", async () => {
+  it("advances only by compare-and-set, and a page that loses the CAS writes nothing", async () => {
     const result = await run(
       Effect.gen(function* () {
         const mirror = yield* WorkOsMirror;
+        const directory = yield* MemberDirectory;
+        const org = yield* freshOrg();
+        const id = `user_${crypto.randomUUID()}`;
         // The cursor is instance-wide; read whatever a previous test left so
         // this test's expectations are relative, not absolute.
         const before = yield* mirror.getCursor();
-        const first = yield* mirror.setCursor(before, "event_1");
-        const wrongPrev = yield* mirror.setCursor(before === null ? "event_0" : null, "event_x");
+        const first = yield* mirror.applyPage(before, "event_1", []);
+        const wrongPrev = yield* mirror.applyPage(before === null ? "event_0" : null, "event_x", [
+          WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
+          WorkOsMirrorWrite.UpsertMembership({
+            membership: membership(org, id),
+          }),
+        ]);
         const afterWrong = yield* mirror.getCursor();
-        const right = yield* mirror.setCursor("event_1", "event_2");
+        const notWritten = yield* directory.membership(id, org);
+        const right = yield* mirror.applyPage("event_1", "event_2", [
+          WorkOsMirrorWrite.UpsertUser({ user: user(id) }),
+          WorkOsMirrorWrite.UpsertMembership({
+            membership: membership(org, id),
+          }),
+          // A rename of an org the mirror has never seen: nothing to write.
+          WorkOsMirrorWrite.RenameOrganization({
+            organizationId: "org_nobody",
+            name: "Nobody",
+            updatedAt: T1,
+          }),
+        ]);
         const after = yield* mirror.getCursor();
-        return { first, wrongPrev, afterWrong, right, after };
+        const written = yield* directory.membership(id, org);
+        return {
+          id,
+          org,
+          first,
+          wrongPrev,
+          afterWrong,
+          notWritten,
+          right,
+          after,
+          written,
+        };
       }),
     );
-    expect(result.first).toBe(true);
-    expect(result.wrongPrev, "a run holding a stale prev cannot move the cursor").toBe(false);
+    expect(Option.isSome(result.first)).toBe(true);
+    expect(
+      Option.isNone(result.wrongPrev),
+      "a run holding a stale prev cannot move the cursor",
+    ).toBe(true);
     expect(result.afterWrong).toBe("event_1");
-    expect(result.right).toBe(true);
+    expect(result.notWritten, "and none of its page's writes land").toBeNull();
+    expect(result.right).toEqual(Option.some(["applied", "applied", "absent"]));
     expect(result.after).toBe("event_2");
+    expect(result.written?.membershipId).toBe(`om_${result.id}_${result.org}`);
   });
 });
 
 describe("WorkOsMirror backfill sync state", () => {
-  it("records the replay boundary and the backfill completion once each, without touching the cursor", async () => {
+  it("records the replay boundary and the backfill completion once each, and the drained mark forward only, without touching the cursor", async () => {
     const result = await run(
       Effect.gen(function* () {
         const mirror = yield* WorkOsMirror;
@@ -808,6 +850,8 @@ describe("WorkOsMirror backfill sync state", () => {
         // empty test database, other tests may have written it): start from
         // no row, as a database that has never been backfilled has.
         yield* clearEventsRow;
+        // No events row yet: nothing has been drained, and nothing is minted.
+        const drainedWithoutRow = yield* mirror.markDrained(T1);
         const first = yield* mirror.setReplayBoundary(T2);
         const boundary = yield* mirror.replayBoundary();
         const cursorAfterBoundary = yield* mirror.getCursor();
@@ -816,7 +860,7 @@ describe("WorkOsMirror backfill sync state", () => {
         const afterAgain = yield* mirror.replayBoundary();
         // Nor once the stream is being followed.
         const cursorBefore = yield* mirror.getCursor();
-        yield* mirror.setCursor(cursorBefore, "event_boundary");
+        yield* mirror.applyPage(cursorBefore, "event_boundary", []);
         const afterCursor = yield* mirror.setReplayBoundary(T1);
         const boundaryWithCursor = yield* mirror.replayBoundary();
         const cursor = yield* mirror.getCursor();
@@ -828,7 +872,19 @@ describe("WorkOsMirror backfill sync state", () => {
         const completedAt = yield* mirror.backfillCompletedAt();
         const boundaryAfterCompletion = yield* mirror.replayBoundary();
         const cursorAfterCompletion = yield* mirror.getCursor();
+        // The drained mark moves forward only, on the row the stream owns.
+        const notDrained = yield* mirror.drainedAt();
+        const drainedFirst = yield* mirror.markDrained(T3);
+        const drainedBackwards = yield* mirror.markDrained(T2);
+        const drainedForward = yield* mirror.markDrained(T4);
+        const drainedAt = yield* mirror.drainedAt();
         return {
+          drainedWithoutRow,
+          notDrained,
+          drainedFirst,
+          drainedBackwards,
+          drainedForward,
+          drainedAt,
           first,
           boundary,
           cursorAfterBoundary,
@@ -860,6 +916,14 @@ describe("WorkOsMirror backfill sync state", () => {
     expect(result.completedAt, "the first stands").toEqual(T3);
     expect(result.boundaryAfterCompletion, "the boundary is untouched").toEqual(T2);
     expect(result.cursorAfterCompletion, "and so is the cursor").toBe("event_boundary");
+    expect(result.drainedWithoutRow, "no row, nothing drained: nothing written").toBe(false);
+    expect(result.notDrained, "no drain recorded until a run drains").toBeNull();
+    expect(result.drainedFirst).toBe(true);
+    expect(result.drainedBackwards, "an earlier run finishing later cannot move it back").toBe(
+      false,
+    );
+    expect(result.drainedForward).toBe(true);
+    expect(result.drainedAt).toEqual(T4);
   });
 
   it("refuses a membership payload stamped before the organization's last scan, and accepts one stamped at or after it", async () => {
