@@ -80,6 +80,27 @@ test("does not admit an unverified UserInfo email", async () => {
   );
 });
 
+test("does not let a UserInfo camel-case claim override email_verified", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  await withFetch(
+    [
+      { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } },
+      {
+        ok: true,
+        body: { sub: "alice", email: "alice@example.com", email_verified: false, emailVerified: true },
+      },
+    ],
+    async () => {
+      await expect(
+        getUserInfo({
+          idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+          accessToken: "access-token",
+        }),
+      ).resolves.toMatchObject({ emailVerified: false });
+    },
+  );
+});
+
 test("keeps the existing provider discovery and scopes (control)", () => {
   const config = ssoProviderConfig(sso);
   expect(config).toMatchObject({

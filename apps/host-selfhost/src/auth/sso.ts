@@ -33,12 +33,12 @@ export const ssoUserInfo = async (discoveryUrl: string, tokens: OAuthTokens) => 
   const idTokenClaims = decodeIdTokenClaims(tokens.idToken);
   if (idTokenClaims?.sub && idTokenClaims.email && idTokenClaims.email_verified !== undefined) {
     return {
+      ...idTokenClaims,
       id: idTokenClaims.sub,
       email: idTokenClaims.email,
       emailVerified: idTokenClaims.email_verified,
       name: idTokenClaims.name,
       image: idTokenClaims.picture,
-      ...idTokenClaims,
     };
   }
 
@@ -54,12 +54,12 @@ export const ssoUserInfo = async (discoveryUrl: string, tokens: OAuthTokens) => 
   if (!profile?.sub || !profile.email) return null;
 
   return {
+    ...profile,
     id: profile.sub,
     email: profile.email,
     emailVerified: profile.email_verified ?? false,
     name: profile.name,
     image: profile.picture,
-    ...profile,
   };
 };
 
