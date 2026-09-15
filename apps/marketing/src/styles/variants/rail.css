@@ -216,27 +216,61 @@
   opacity: 1;
 }
 .rail--b .rail__cta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
+  display: grid;
+  gap: 8px;
   margin-top: 16px;
+  --rail-box-h: 36px;
 }
+/* One stack: every item the same width and height, one border language. */
 .rail--b .rail__box {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  border: 1px solid var(--color-ink);
-  border-radius: 4px;
-  padding: 4px 10px;
+  justify-content: center;
+  gap: 7px;
+  height: var(--rail-box-h);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
   font-size: 13px;
   color: var(--color-ink);
+  overflow: hidden;
   transition:
     background 0.15s ease,
-    color 0.15s ease;
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
-.rail--b .rail__box:hover {
+.rail--b .rail__box--primary {
+  border-color: var(--color-ink);
+  font-weight: 500;
+}
+.rail--b .rail__box--primary:hover {
   background: var(--color-ink);
   color: var(--color-surface);
+}
+.rail--b .rail__box.gh-star {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-2);
+}
+.rail--b .rail__box.gh-star:hover {
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+}
+/* The YC badge is a rounded cream card at 350x125; letting it fill the box
+   edge to edge keeps the badge's own corners hidden behind ours. */
+.rail--b .rail__box--yc {
+  padding: 0;
+  background: #f6f6ef;
+}
+.rail--b .rail__box--yc img {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+.rail--b .rail__box--yc:hover {
+  border-color: var(--color-rule-strong);
 }
 .rail--b .rail__toc {
   gap: 8px;
@@ -256,10 +290,6 @@
 .rail--b .rail__toc a[aria-current="true"],
 .rail--b .rail__toc a[aria-current="true"] .rail__num {
   color: var(--color-ink);
-}
-.rail--b .rail__foot {
-  align-self: flex-start;
-  margin-top: auto;
 }
 
 /* ═══ C: Minimal rail ═════════════════════════════════════════ */
