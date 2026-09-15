@@ -169,7 +169,7 @@ export const faqs: ReadonlyArray<Faq> = [
   {
     question: "Is it open source? Can I self-host?",
     answer:
-      "Yes. Executor is MIT licensed and built on the SDK we publish to npm. Run the desktop app locally, self-host the server, or use the hosted cloud. Same code paths, different deployment.",
+      "Yes. Executor is open source and built on the SDK we publish to npm. Run the desktop app locally, self-host the server, or use the hosted cloud. Same code paths, different deployment.",
   },
 ];
 

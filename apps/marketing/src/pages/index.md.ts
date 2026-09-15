@@ -101,8 +101,7 @@ minutes. Free tier to start: https://executor.sh/cloud
 ### Desktop
 
 A desktop app for Mac, Windows, and Linux that runs entirely on your machine.
-Your integrations, credentials, and sessions never leave the device. MIT
-licensed.
+Your integrations, credentials, and sessions never leave the device.
 
 Downloads follow the latest GitHub release:
 
@@ -116,7 +115,7 @@ Downloads follow the latest GitHub release:
 ### CLI
 
 Run Executor as a background service and drive it from your terminal. Best for
-headless and server environments. MIT licensed.
+headless and server environments.
 
 \`\`\`sh
 npm i -g executor
@@ -138,7 +137,7 @@ ${faqLines.join("\n\n")}
 
 ## Source
 
-Executor is MIT licensed: ${GITHUB_URL}
+Executor is open source: ${GITHUB_URL}
 `;
 
 export const GET: APIRoute = () => markdownResponse(body);
