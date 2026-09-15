@@ -12,11 +12,20 @@
 //   - the callback picks the landing org from that same list: a returnTo
 //     slug or last-org cookie lands only in an ACTIVE membership, an unknown
 //     or pending one falls through
+//   - `inviteMember` mirrors the PENDING membership WorkOS created for the
+//     invitee (found by email among the org's pending memberships), so the
+//     member list shows the invite and can revoke it
 //   - `removeMember` tombstones the mirror row after the WorkOS delete,
 //     stamped with the membership's last WorkOS state (never a local clock),
 //     so a replay of the membership as it was before the delete cannot
 //     restore it while a replacement WorkOS created meanwhile is accepted
 //   - `updateMemberRole` writes the role WorkOS returned
+//   - the seat gate trusts the mirror's count only for an organization whose
+//     membership list was scanned from WorkOS in full: an unmarked one is
+//     scanned first (once), so a partial mirror never admits an invite past
+//     the plan limit
+//   - the seat reporter scans an unmarked organization before counting and
+//     never re-scans a marked one
 //   - the backfill mirrors every org's members and counts what it wrote,
 //     writes nothing on a dry run, converges on a re-run, tombstones a
 //     membership WorkOS no longer lists — but never one written after its
@@ -39,10 +48,11 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
-import { Effect, Exit, Fiber, Latch, Layer } from "effect";
+import { Effect, Exit, Fiber, Latch, Layer, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { AccountForbidden } from "@executor-js/api";
 import {
   AccountProvider,
   MemberDirectory,
@@ -53,6 +63,7 @@ import {
 import { AccountCaller, workosAccountProvider } from "../account/workos-account-service";
 import { RequestScopedServicesLive } from "../api/layers";
 import { DbService } from "../db/db";
+import { forkReportMemberSeats } from "../extensions/billing/member-seats";
 import { AutumnService } from "../extensions/billing/service";
 import { ApiKeyService } from "./api-keys";
 import { UserStoreService } from "./context";
@@ -210,13 +221,21 @@ describe("login callback", () => {
             listMetadata: { before: null, after: null },
           });
         },
-        // The forked seat recount after login.
-        listOrgMembers: () =>
-          Effect.succeed({
+        // The landing org's seat recount scans the org from WorkOS the first
+        // time it is counted (its per-org backfill mark is missing); the
+        // scan lists the org's members and fetches each user.
+        listOrgMembers: (organizationId) => {
+          calls.push(`listOrgMembers:${organizationId}`);
+          return Effect.succeed({
             object: "list" as const,
-            data: [] as never[],
+            data: listed.filter((m) => m.organizationId === organizationId) as never[],
             listMetadata: { before: null, after: null },
-          }),
+          });
+        },
+        getUser: (id) => {
+          calls.push(`getUser:${id}`);
+          return Effect.succeed(workosUser(id) as never);
+        },
         refreshSession: (_sealed, organizationId) => {
           refreshedInto.push(organizationId);
           return Effect.succeed("sealed-refreshed");
@@ -268,7 +287,17 @@ describe("login callback", () => {
     const response = await handler(callbackRequest({}));
 
     expect(response.status).toBe(302);
-    expect(calls, "one membership list for the whole callback").toEqual([
+    expect(
+      calls,
+      "one membership list for the callback itself; the landing org, never scanned, is scanned once for its seat count",
+    ).toEqual([
+      `listUserMemberships:${userId}`,
+      `listOrgMembers:${activeOrg}`,
+      `getUser:${userId}`,
+    ]);
+    calls.length = 0;
+    expect((await handler(callbackRequest({}))).status).toBe(302);
+    expect(calls, "a second sign-in lists memberships only: the org is now marked").toEqual([
       `listUserMemberships:${userId}`,
     ]);
 
@@ -542,7 +571,14 @@ describe("account service writes through to the mirror", () => {
    * Provided around the WHOLE test body so the postgres socket outlives the
    * provider call under test.
    */
-  const providerLayer = (org: string, deleted: string[]) => {
+  const providerLayer = (
+    org: string,
+    deleted: string[],
+    options: {
+      readonly workos?: Partial<WorkOSClientService>;
+      readonly autumn?: Layer.Layer<AutumnService>;
+    } = {},
+  ) => {
     const list = (data: readonly unknown[]) =>
       Effect.succeed({
         object: "list" as const,
@@ -550,6 +586,7 @@ describe("account service writes through to the mirror", () => {
         listMetadata: { before: null, after: null },
       });
     const workos = stubWorkOS({
+      ...options.workos,
       listUserMemberships: (userId) => list([workosMembership(userId, org)]),
       getUserOrgMembership: (organizationId, userId) =>
         Effect.succeed(
@@ -571,7 +608,6 @@ describe("account service writes through to the mirror", () => {
             updatedAt: T2,
           }) as never,
         ),
-      listOrgMembers: () => list([]),
     });
     // The test database serves ONE connection at a time, so the seed, the
     // provider, and the directory read all share this layer's socket.
@@ -585,7 +621,7 @@ describe("account service writes through to the mirror", () => {
         Layer.mergeAll(
           workos,
           stubApiKeys,
-          stubAutumn,
+          options.autumn ?? stubAutumn,
           Layer.succeed(AccountCaller)({ session: session(ADMIN) }),
         ),
       ),
@@ -595,7 +631,13 @@ describe("account service writes through to the mirror", () => {
   };
 
   // TARGET as an existing member of `org`, seeded through the live mirror.
-  const seedTarget = (org: string) =>
+  // The org is marked backfilled (as the one-off backfill leaves every org)
+  // unless a test wants the unscanned state, so a seat count reads the mirror
+  // rather than scanning WorkOS.
+  const seedTarget = (
+    org: string,
+    options: { readonly backfilled: boolean } = { backfilled: true },
+  ) =>
     Effect.gen(function* () {
       const users = yield* UserStoreService;
       const mirror = yield* WorkOsMirror;
@@ -614,10 +656,174 @@ describe("account service writes through to the mirror", () => {
         status: "active",
         updatedAt: new Date(T1),
       });
+      if (options.backfilled) {
+        // An empty listing at T1 (nothing to tombstone: TARGET's row is
+        // stamped T1, not before it) marks the org scanned as of T1.
+        yield* mirror.applyOrganizationScan({
+          organizationId: org,
+          listedAt: new Date(T1),
+          members: [],
+        });
+      }
     });
 
   const membersOf = (org: string) =>
     Effect.flatMap(MemberDirectory.asEffect(), (directory) => directory.members(org));
+
+  it.effect("inviteMember mirrors the pending membership WorkOS created for the invitee", () => {
+    const org = freshId("org");
+    // Two people are already invited; the new invitee is a third pending
+    // membership, and only their user carries the invited address — with
+    // different casing than the admin typed, as WorkOS may store it.
+    const earlier = [freshId("user"), freshId("user")];
+    const invitee = freshId("user");
+    const invitedEmail = `${invitee}@placeholder.test`;
+    const userCalls: string[] = [];
+    // The plan gate reads the customer's plan before inviting: an unlimited
+    // plan so the seat cap never interferes with what is under test.
+    const teamAutumn = Layer.succeed(AutumnService)({
+      use: () =>
+        Effect.succeed({
+          subscriptions: [{ planId: "team", status: "active" }],
+        } as never),
+      ensureCustomer: () => Effect.void,
+      checkExecutionBalance: () => Effect.die("invite does not check balances"),
+      trackExecution: () => Effect.void,
+      setMemberSeats: () => Effect.void,
+    });
+    const layer = providerLayer(org, [], {
+      autumn: teamAutumn,
+      workos: {
+        listPendingInvitations: () =>
+          Effect.succeed({
+            object: "list" as const,
+            data: [] as never[],
+            listMetadata: { before: null, after: null },
+          }),
+        sendInvitation: ({ email }) =>
+          Effect.succeed({
+            id: `invitation_${invitee}`,
+            email: email.toUpperCase(),
+          } as never),
+        listOrgMembers: (organizationId, statuses) => {
+          expect(organizationId).toBe(org);
+          expect(statuses, "only the pending set is listed").toEqual(["pending"]);
+          return Effect.succeed({
+            object: "list" as const,
+            data: [...earlier, invitee].map((userId) =>
+              workosMembership(userId, org, { status: "pending" }),
+            ) as never[],
+            listMetadata: { before: null, after: null },
+          });
+        },
+        getUser: (userId) =>
+          Effect.sync(() => {
+            userCalls.push(userId);
+            return workosUser(userId, {
+              firstName: "Invited",
+              lastName: "Person",
+            }) as never;
+          }),
+      },
+    });
+    return Effect.gen(function* () {
+      yield* seedTarget(org);
+      const account = yield* AccountProvider;
+
+      const result = yield* account.inviteMember(
+        { [ORG_SELECTOR_HEADER]: org },
+        { email: invitedEmail },
+      );
+
+      expect(result.id).toBe(`invitation_${invitee}`);
+      const members = yield* membersOf(org);
+      const pending = members.find((m) => m.status === "pending");
+      expect(pending, "the invitee appears as a pending member").toMatchObject({
+        accountId: invitee,
+        membershipId: `om_${invitee}_${org}`,
+        email: invitedEmail,
+        name: "Invited Person",
+        role: "member",
+      });
+      expect(
+        members.filter((m) => m.status === "pending"),
+        "only the invitee's pending membership is mirrored, not the other pending ones",
+      ).toHaveLength(1);
+      expect(
+        userCalls.sort(),
+        "one getUser per pending membership, bounded to the pending set",
+      ).toEqual([...earlier, invitee].sort());
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "inviteMember scans an organization the backfill never covered before counting its seats, once",
+    () => {
+      const org = freshId("org");
+      const listed: string[] = [];
+      // A free plan (limit 3). The mirror holds ONE member of the org (TARGET)
+      // and the org is unmarked; WorkOS lists three. Only a count taken after
+      // the scan refuses the invite.
+      const freeAutumn = Layer.succeed(AutumnService)({
+        use: () => Effect.succeed({ subscriptions: [] } as never),
+        ensureCustomer: () => Effect.void,
+        checkExecutionBalance: () => Effect.die("invite does not check balances"),
+        trackExecution: () => Effect.void,
+        setMemberSeats: () => Effect.void,
+      });
+      const others = [freshId("user"), freshId("user")];
+      const layer = providerLayer(org, [], {
+        autumn: freeAutumn,
+        workos: {
+          listPendingInvitations: () =>
+            Effect.succeed({
+              object: "list" as const,
+              data: [] as never[],
+              listMetadata: { before: null, after: null },
+            }),
+          listOrgMembers: (organizationId, statuses) => {
+            listed.push(organizationId);
+            expect(statuses, "the scan lists every status, inactive included").toEqual([
+              "active",
+              "pending",
+              "inactive",
+            ]);
+            return Effect.succeed({
+              object: "list" as const,
+              data: [TARGET, ...others].map((userId) => workosMembership(userId, org)) as never[],
+              listMetadata: { before: null, after: null },
+            });
+          },
+          getUser: (userId) => Effect.succeed(workosUser(userId) as never),
+          sendInvitation: () =>
+            Effect.die("the plan gate refuses before WorkOS is asked to invite"),
+        },
+      });
+      return Effect.gen(function* () {
+        yield* seedTarget(org, { backfilled: false });
+        const account = yield* AccountProvider;
+        const invite = () =>
+          Effect.flip(
+            account.inviteMember({ [ORG_SELECTOR_HEADER]: org }, { email: "new@placeholder.test" }),
+          );
+
+        const error = yield* invite();
+        expect(error).toBeInstanceOf(AccountForbidden);
+        expect(error).toMatchObject({
+          message: expect.stringContaining("Your plan includes 3 members"),
+        });
+        expect(listed, "the org was scanned from WorkOS before it was counted").toEqual([org]);
+        expect(
+          (yield* membersOf(org)).map((m) => m.accountId).sort(),
+          "and the scan filled the mirror",
+        ).toEqual([TARGET, ...others].sort());
+
+        const again = yield* invite();
+        expect(again).toBeInstanceOf(AccountForbidden);
+        expect(listed, "a marked org is never scanned again").toEqual([org]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("removeMember tombstones the mirror row after the WorkOS delete", () => {
     const org = freshId("org");
@@ -685,6 +891,149 @@ describe("account service writes through to the mirror", () => {
       const members = yield* membersOf(org);
       expect(members.find((m) => m.accountId === TARGET)?.role).toBe("admin");
     }).pipe(Effect.provide(providerLayer(org, [])));
+  });
+});
+
+describe("seat reporter", () => {
+  /**
+   * A `WorkOsMirror` answering the per-org backfill mark and recording the
+   * scan a reporter applies; every other operation is out of its reach.
+   */
+  const recordingMirror = (backfilledAt: Date | null, writes: string[]) =>
+    Layer.succeed(WorkOsMirror)({
+      upsertUser: () => Effect.die("the seat reporter scans, it does not upsert one by one"),
+      upsertMembership: () => Effect.die("the seat reporter scans, it does not upsert one by one"),
+      deleteMembership: () => Effect.die("the seat reporter does not delete"),
+      deleteUser: () => Effect.die("the seat reporter does not delete"),
+      getCursor: () => Effect.die("the seat reporter does not read the cursor"),
+      applyPage: () => Effect.die("the seat reporter does not move the cursor"),
+      applyOrganizationScan: (scan) =>
+        Effect.sync(() => {
+          writes.push(
+            `applyOrganizationScan:${scan.organizationId}:${scan.members
+              .map((member) => member.membership.id)
+              .join(",")}`,
+          );
+          return Option.some({
+            usersWritten: scan.members.length,
+            membershipsWritten: scan.members.length,
+            membershipsTombstoned: 0,
+          });
+        }),
+      replayBoundary: () => Effect.die("the seat reporter does not run the reconciler"),
+      setReplayBoundary: () => Effect.die("the seat reporter does not record the boundary"),
+      backfillCompletedAt: () => Effect.die("the seat reporter does not check mirror readiness"),
+      markBackfillCompleted: () => Effect.die("the seat reporter does not record the completion"),
+      drainedAt: () => Effect.die("the seat reporter does not check mirror readiness"),
+      markDrained: () => Effect.die("the seat reporter does not run the reconciler"),
+      organizationBackfilledAt: () => Effect.succeed(backfilledAt),
+    } satisfies WorkOsMirrorShape);
+
+  /** A directory holding `active` active members and one pending one. */
+  const directoryWith = (org: string, active: number) =>
+    Layer.succeed(MemberDirectory)({
+      membership: () => Effect.die("the seat reporter lists, it does not look up"),
+      membersById: () => Effect.die("the seat reporter lists, it does not look up"),
+      findByEmail: () => Effect.die("the seat reporter lists, it does not look up"),
+      members: (organizationId, query) => {
+        expect(organizationId).toBe(org);
+        expect(query?.statuses, "billed seats are active members only").toEqual(["active"]);
+        return Effect.succeed(
+          Array.from({ length: active }, (_, i) => ({
+            accountId: `user_${i}`,
+            membershipId: `om_${i}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          })),
+        );
+      },
+    });
+
+  const report = (
+    org: string,
+    backfilledAt: Date | null,
+    active: number,
+    workos: Partial<WorkOSClientService> = {},
+  ) =>
+    Effect.gen(function* () {
+      const reported: { organizationId: string; seats: number }[] = [];
+      const writes: string[] = [];
+      const recording = Layer.succeed(AutumnService)({
+        use: () => Effect.die("the seat reporter sets seats, it does not read"),
+        ensureCustomer: () => Effect.void,
+        checkExecutionBalance: () => Effect.die("the seat reporter does not check balances"),
+        trackExecution: () => Effect.void,
+        setMemberSeats: (organizationId, seats) =>
+          Effect.sync(() => {
+            reported.push({ organizationId, seats });
+          }),
+      });
+      yield* forkReportMemberSeats(org).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            recordingMirror(backfilledAt, writes),
+            directoryWith(org, active),
+            recording,
+            stubWorkOS(workos),
+          ),
+        ),
+      );
+      // The Autumn call is forked; it is synchronous here, so it has landed.
+      return { reported, writes };
+    });
+
+  it.effect(
+    "sets the active member count of a scanned organization without touching WorkOS",
+    () => {
+      const org = freshId("org");
+      return Effect.gen(function* () {
+        const { reported, writes } = yield* report(org, new Date(T1), 3);
+        expect(reported).toEqual([{ organizationId: org, seats: 3 }]);
+        expect(writes, "a marked organization is not scanned").toEqual([]);
+      });
+    },
+  );
+
+  it.effect("scans an organization the backfill never covered before counting it", () => {
+    const org = freshId("org");
+    const member = freshId("user");
+    return Effect.gen(function* () {
+      const { reported, writes } = yield* report(org, null, 2, {
+        listOrgMembers: (organizationId, statuses) => {
+          expect(organizationId).toBe(org);
+          // Inactive memberships included: a scan that skipped them would
+          // tombstone them under their ids and refuse their reactivation.
+          expect(statuses).toEqual(["active", "pending", "inactive"]);
+          return Effect.succeed({
+            object: "list" as const,
+            data: [workosMembership(member, org)] as never[],
+            listMetadata: { before: null, after: null },
+          });
+        },
+        getUser: (userId) => Effect.succeed(workosUser(userId) as never),
+      });
+      expect(
+        writes,
+        "the scan fills the mirror and marks the organization, then the count is read",
+      ).toEqual([`applyOrganizationScan:${org}:om_${member}_${org}`]);
+      expect(reported).toEqual([{ organizationId: org, seats: 2 }]);
+    });
+  });
+
+  it.effect("pushes no count when the scan fails: a partial count is never billed", () => {
+    const org = freshId("org");
+    return Effect.gen(function* () {
+      const { reported, writes } = yield* report(org, null, 2, {
+        listOrgMembers: () => Effect.fail(new WorkOSError({ status: 503 })),
+      });
+      expect(reported).toEqual([]);
+      expect(writes, "nothing is marked").toEqual([]);
+    });
   });
 });
 

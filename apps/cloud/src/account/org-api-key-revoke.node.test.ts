@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { AccountProvider } from "@executor-js/api/server";
+import { AccountProvider, MemberDirectory } from "@executor-js/api/server";
 import { AccountError, AccountForbidden } from "@executor-js/api";
 
 import { ApiKeyService, OrgApiKeyNotFound } from "../auth/api-keys";
@@ -147,6 +147,14 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
   organizationBackfilledAt: () => Effect.die("revoke does not report seats"),
 });
 
+// Revoke lists no members either.
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: () => Effect.die("revoke does not read the member directory"),
+  members: () => Effect.die("revoke does not read the member directory"),
+  membersById: () => Effect.die("revoke does not read the member directory"),
+  findByEmail: () => Effect.die("revoke does not read the member directory"),
+});
+
 const stubAutumn = Layer.succeed(AutumnService)({
   use: () => Effect.die("revoke does not touch billing"),
   ensureCustomer: () => Effect.die("revoke does not touch billing"),
@@ -185,6 +193,7 @@ const providerWith = (accountId: string) => {
             stubWorkOS,
             stubUsers,
             stubMirror,
+            stubDirectory,
             stubApiKeys,
             stubAutumn,
             Layer.succeed(AccountCaller)({ session: session(accountId) }),

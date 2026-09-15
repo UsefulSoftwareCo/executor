@@ -31,12 +31,15 @@ import {
 export type AdminUsersHeaders = Record<string, string>;
 
 /** Paging and filtering, mirroring the SDK's `AdminListSubjectsOptions` plus
- *  the contract's `?email=`. The email arrives already trimmed and lower-cased
- *  by the contract schema, so a provider never re-normalizes it. */
+ *  the contract's `?email=` and `?search=`. Both filters arrive already
+ *  trimmed and lower-cased by the handler seam (a blank search is omitted
+ *  entirely), so a provider never re-normalizes them. `email` names ONE
+ *  principal and wins when both are present. */
 export interface AdminUsersListOptions {
   readonly limit?: number;
   readonly offset?: number;
   readonly email?: string;
+  readonly search?: string;
 }
 
 type User = typeof AdminUserResponse.Type;

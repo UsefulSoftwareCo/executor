@@ -9,6 +9,7 @@ import {
   WorkOS,
   type Event as WorkOSEvent,
   type EventName as WorkOSEventName,
+  type OrganizationMembershipStatus,
 } from "@workos-inc/node/worker";
 import { defaults as ironDefaults, unseal as unsealIron } from "iron-webcrypto";
 import { decodeJwt, jwtVerify } from "jose";
@@ -665,13 +666,21 @@ const make = Effect.gen(function* () {
     deleteApiKey: (id: string) =>
       use("apiKeys.deleteApiKey", (wos) => wos.apiKeys.deleteApiKey(id)),
 
-    /** List organization memberships with user details. */
-    listOrgMembers: (organizationId: string) =>
+    /**
+     * An organization's memberships, all pages. Defaults to active + pending
+     * (the seat-occupying set); pass `statuses` to narrow — the invite
+     * write-through lists only `pending` to find the membership WorkOS
+     * created for the invitee.
+     */
+    listOrgMembers: (
+      organizationId: string,
+      statuses: readonly OrganizationMembershipStatus[] = ["active", "pending"],
+    ) =>
       use("userManagement.listOrganizationMemberships", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listOrganizationMemberships({
             organizationId,
-            statuses: ["active", "pending"],
+            statuses: [...statuses],
           }),
         ),
       ),
@@ -690,17 +699,6 @@ const make = Effect.gen(function* () {
     /** Get a user by ID. */
     getUser: (userId: string) =>
       use("userManagement.getUser", (wos) => wos.userManagement.getUser(userId)),
-
-    /** List users matching an email within one organization. */
-    listUsers: (params: { email: string; organizationId: string }) =>
-      use("userManagement.listUsers", async (wos) =>
-        collectWorkOSList(
-          await wos.userManagement.listUsers({
-            email: params.email,
-            organizationId: params.organizationId,
-          }),
-        ),
-      ),
 
     /** Send an organization invitation. */
     sendInvitation: (params: { email: string; organizationId: string; roleSlug?: string }) =>

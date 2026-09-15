@@ -28,7 +28,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
 import { AccountApi, AdminUsersApi } from "@executor-js/api";
-import { requestScopedMiddleware } from "@executor-js/api/server";
+import { requestScopedMiddleware, type MemberDirectory } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import { WorkOsMirror } from "../auth/workos-mirror";
@@ -79,7 +79,7 @@ const spec = OpenApi.fromApi(CloudOpenApi);
  * core.
  */
 export const makeCloudExtensionRoutes = (
-  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror>,
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
 ) => {
   // Session routes (login / callback / me / switch-org / …). Handlers yield
   // `UserStoreService` directly; the per-request DB combine keeps the postgres

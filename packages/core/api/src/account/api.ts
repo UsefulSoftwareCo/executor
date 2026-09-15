@@ -109,10 +109,17 @@ export const OrgApiKeysResponse = Schema.Struct({
   apiKeys: Schema.Array(ApiKeySummary),
 });
 
+/**
+ * One member of the caller's organization, as the host's member directory
+ * reports them. `email` is nullable: a host can hold a membership whose
+ * profile it has not yet learned (cloud mirrors the membership before the
+ * user record lands), and reporting `""` for that would let the UI render an
+ * empty address as if it were one.
+ */
 export const OrgMember = Schema.Struct({
   id: Schema.String,
   userId: Schema.String,
-  email: Schema.String,
+  email: Schema.NullOr(Schema.String),
   name: Schema.NullOr(Schema.String),
   avatarUrl: Schema.NullOr(Schema.String),
   role: Schema.String,

@@ -16,6 +16,8 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApi } from "effect/unstable/httpapi";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { CloudAuthPublicHandlers } from "./handlers";
 import { CloudAuthPublicApi } from "./api";
 import { UserStoreService } from "./context";
@@ -49,9 +51,6 @@ const stubWorkOS = Layer.succeed(
       }
       if (prop === "listUserMemberships") {
         return () => Effect.succeed({ data: [] });
-      }
-      if (prop === "listOrgMembers") {
-        return () => Effect.succeed({ data: [{ status: "active" }] });
       }
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
@@ -109,7 +108,9 @@ const stubUsers = Layer.succeed(UserStoreService)({
 });
 
 // The callback records the sign-in (user + memberships) in the membership
-// mirror; every other mirror operation is out of this route's reach.
+// mirror, and its forked seat recount reads the backfill marker and the
+// landed org's active members from it; every other operation is out of this
+// route's reach.
 const stubMirror = Layer.succeed(WorkOsMirror)({
   upsertUser: () => Effect.succeed(true),
   upsertMembership: () => Effect.succeed(true),
@@ -124,7 +125,27 @@ const stubMirror = Layer.succeed(WorkOsMirror)({
   markBackfillCompleted: () => Effect.die("the callback does not run the backfill"),
   drainedAt: () => Effect.die("the callback does not check mirror readiness"),
   markDrained: () => Effect.die("the callback does not run the reconciler"),
-  organizationBackfilledAt: () => Effect.die("the callback does not report seats"),
+  organizationBackfilledAt: () => Effect.succeed(new Date()),
+});
+
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: () => Effect.die("the callback does not look up one membership"),
+  membersById: () => Effect.die("the callback does not batch members"),
+  findByEmail: () => Effect.die("the callback does not resolve emails"),
+  members: (organizationId) =>
+    Effect.succeed([
+      {
+        accountId: STUB_USER_ID,
+        membershipId: `om_${STUB_USER_ID}`,
+        organizationId,
+        email: null,
+        name: null,
+        avatarUrl: null,
+        role: "member",
+        status: "active" as const,
+        lastActiveAt: null,
+      },
+    ]),
 });
 
 // Only the public group is under test; the session group (and its SessionAuth
@@ -137,6 +158,7 @@ const App = HttpApiBuilder.layer(PublicApi).pipe(
   Layer.provide(stubWorkOS),
   Layer.provide(stubUsers),
   Layer.provide(stubMirror),
+  Layer.provide(stubDirectory),
   Layer.provide(AutumnService.Default),
   Layer.provide(HttpServer.layerServices),
 );

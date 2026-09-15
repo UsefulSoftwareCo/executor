@@ -5,14 +5,21 @@
 // Each feeder takes the WorkOS payload the caller ALREADY holds (the
 // authenticated user, the membership list the callback fetches to pick a
 // landing org, the membership a write returned) so feeding the mirror never
-// adds a WorkOS read. Mirror failures fail the request: the mirror is the
-// membership read path, so a login that could not record its memberships is
-// not a login that finished.
+// adds a WorkOS read — except the two writes whose WorkOS response is not the
+// membership they changed: invitation acceptance (`auth/handlers.ts` reads
+// the activated membership back) and sending an invitation
+// (`mirrorInvitedMember` below reads the pending one WorkOS created). Both
+// are rare, admin-driven paths. Mirror failures fail the request: the mirror
+// is the membership read path, so a login that could not record its
+// memberships is not a login that finished.
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
 
+import { normalizeAdminUserEmail } from "@executor-js/api/server";
+
 import { UserStoreService } from "./context";
+import { WorkOSClient } from "./workos";
 import {
   WorkOsMirror,
   mirrorMembershipFromWorkOs,
@@ -20,6 +27,7 @@ import {
   type WorkOsMembershipPayload,
   type WorkOsUserPayload,
 } from "./workos-mirror";
+import { backfillOrganization } from "./workos-mirror-backfill";
 
 /**
  * A membership as WorkOS lists it for a user: carries the organization's name,
@@ -78,3 +86,101 @@ export const mirrorMembership = (membership: WorkOsMembershipPayload) =>
   Effect.flatMap(WorkOsMirror.asEffect(), (mirror) =>
     mirror.upsertMembership(mirrorMembershipFromWorkOs(membership)),
   );
+
+// Bounded fan-out for the per-invitee `getUser` calls, matching the backfill:
+// enough to overlap WorkOS round-trips, low enough to stay clear of its rate
+// limit.
+const USER_FETCH_CONCURRENCY = 5;
+
+/**
+ * Record the PENDING membership WorkOS creates for an invitee the moment an
+ * organization invites them — the row the member list shows as "Invited" and
+ * the admin revokes an outstanding invite through. `sendInvitation` returns
+ * the invitation, not that membership, so this reads it back: it lists the
+ * organization's pending memberships (WorkOS has no lookup by email that the
+ * emulator serves) and fetches their users, five at a time, until one carries
+ * the invited email. Bounded by the pending set, so an organization with
+ * many active members pays nothing per member.
+ *
+ * `false` when no pending membership carried the email — WorkOS created none
+ * (the address may already hold a membership) or has not yet — which the
+ * caller treats as a warning, not a failure: the Events reconciler lands
+ * whatever WorkOS did create.
+ */
+export const mirrorInvitedMember = Effect.fn("workos_mirror.invitedMember")(function* (
+  organizationId: string,
+  invitedEmail: string,
+) {
+  const workos = yield* WorkOSClient;
+  const mirror = yield* WorkOsMirror;
+  const wanted = normalizeAdminUserEmail(invitedEmail);
+  const pending = yield* workos.listOrgMembers(organizationId, ["pending"]);
+  for (let start = 0; start < pending.data.length; start += USER_FETCH_CONCURRENCY) {
+    const batch = pending.data.slice(start, start + USER_FETCH_CONCURRENCY);
+    const candidates = yield* Effect.forEach(
+      batch,
+      (membership) =>
+        Effect.map(workos.getUser(membership.userId), (user) => ({
+          membership,
+          user,
+        })),
+      { concurrency: USER_FETCH_CONCURRENCY },
+    );
+    const match = candidates.find(
+      (candidate) => normalizeAdminUserEmail(candidate.user.email) === wanted,
+    );
+    if (match === undefined) continue;
+    yield* mirror.upsertUser(mirrorUserFromWorkOs(match.user));
+    yield* mirror.upsertMembership(mirrorMembershipFromWorkOs(match.membership));
+    return true;
+  }
+  return false;
+});
+
+/**
+ * Make sure the organization's membership list has been scanned from WorkOS
+ * in full before a COUNT read from the mirror is trusted. Login records only
+ * the caller's own memberships and write-through only the one it changed,
+ * so an organization the one-off backfill did not cover — mirrored lazily
+ * by a request, or created after the backfill ran — holds a partial list
+ * until it is scanned. The per-organization mark
+ * (`organizations.backfilled_at`) says whether that scan has happened; when
+ * it is missing, this runs the scan now (`backfillOrganization`: one
+ * membership listing plus one `getUser` per member, then the mark), so the
+ * caller's count is complete. Returns `true` when a scan ran. A scan that
+ * fails marks nothing, so the next count tries again.
+ */
+export const ensureOrganizationBackfilled = Effect.fn("workos_mirror.ensureOrganizationBackfilled")(
+  function* (organizationId: string) {
+    const mirror = yield* WorkOsMirror;
+    const backfilledAt = yield* mirror.organizationBackfilledAt(organizationId);
+    if (backfilledAt !== null) return false;
+    const workos = yield* WorkOSClient;
+    yield* Effect.logInfo(
+      "workos_mirror: organization not yet backfilled; scanning it from WorkOS",
+      {
+        organizationId,
+      },
+    );
+    yield* backfillOrganization(
+      {
+        // EVERY status, as the scan source requires: the scan tombstones
+        // whatever its listing lacks, and a tombstone is keyed to the
+        // membership id for good — so a listing that skipped the inactive
+        // ones (the wrapper's active + pending default, the seat-occupying
+        // set) would tombstone a membership WorkOS merely deactivated and
+        // refuse its reactivation under the same id forever.
+        listOrgMembers: (id) =>
+          Effect.map(
+            workos.listOrgMembers(id, ["active", "pending", "inactive"]),
+            (list) => list.data,
+          ),
+        getUser: (id) => workos.getUser(id),
+      },
+      mirror,
+      organizationId,
+      { dryRun: false },
+    );
+    return true;
+  },
+);
