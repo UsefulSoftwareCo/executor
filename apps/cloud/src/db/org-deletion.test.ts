@@ -38,6 +38,7 @@ import {
   plugin_storage,
   subject,
   tool,
+  tool_call_log,
   tool_policy,
 } from "./executor-schema";
 
@@ -158,6 +159,17 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     subject: "s",
   });
 
+  await db.insert(tool_call_log).values({
+    id: `tcl-${tag}`,
+    address: `tools.int-${tag}.org.main.repos.get`,
+    outcome: "ok",
+    duration_ms: 1n,
+    created_at: now,
+    tenant,
+    owner: "o",
+    subject: "s",
+  });
+
   const orgNs = `o:${tenant}/plugin`;
   const userNs = `u:${tenant}:subject/plugin`;
   await db.insert(blob).values({
@@ -185,6 +197,7 @@ const TENANT_TABLES = [
   plugin_storage,
   subject,
   artifact,
+  tool_call_log,
 ] as const;
 
 // Tables that are NOT purged by org id, each with the reason it is exempt. Any

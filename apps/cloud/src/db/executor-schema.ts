@@ -229,6 +229,35 @@ export const tool_policy = pgTable(
   ],
 );
 
+export const tool_call_log = pgTable(
+  "tool_call_log",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    address: text("address").notNull(),
+    integration: varchar("integration", { length: 255 }),
+    connection: varchar("connection", { length: 255 }),
+    tool: text("tool"),
+    outcome: varchar("outcome", { length: 255 }).notNull(),
+    error_code: text("error_code"),
+    error_message: text("error_message"),
+    policy_action: text("policy_action"),
+    policy_pattern: text("policy_pattern"),
+    duration_ms: bigint("duration_ms", { mode: "bigint" }).notNull(),
+    arg_keys: json("arg_keys"),
+    created_at: timestamp("created_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("tool_call_log_uidx").on(table.tenant, table.owner, table.subject, table.id),
+  ],
+);
+
 export const artifact = pgTable(
   "artifact",
   {

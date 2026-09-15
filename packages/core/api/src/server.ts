@@ -13,6 +13,7 @@ export {
   OAuthHandlers,
   PoliciesHandlers,
   ArtifactsHandlers,
+  ToolCallsHandlers,
   ExecutionsHandlers,
 } from "./handlers";
 export {
