@@ -13,13 +13,13 @@
   display: flex;
   gap: 12px;
   overflow: hidden;
-  --testi-duration: 140s;
+  --testi-duration: 260s;
 }
 .testi__row[data-row="1"] {
-  --testi-duration: 165s;
+  --testi-duration: 300s;
 }
 .testi__row[data-row="2"] {
-  --testi-duration: 150s;
+  --testi-duration: 280s;
 }
 .testi__track {
   display: flex;
