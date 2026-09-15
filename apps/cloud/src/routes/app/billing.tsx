@@ -18,9 +18,13 @@ const PLAN_TAGLINES: Record<string, string> = {
   enterprise: "Custom enterprise agreement",
 };
 
-// Marker appended to the setup success URL so the page knows, on return, that
-// it just came back from the hosted card form and should wait for the new card.
+// Marker appended to the return URL so the page knows, on return, where it just
+// came back from. `added`: the hosted card form (setup session) — the card only
+// lands once the provider's webhook is processed, so wait for it. `managed`:
+// the billing portal — the provider reads the default card live, so one
+// refetch reflects whatever the user did there.
 const CARD_RETURN_PARAM = "card";
+type CardReturn = "added" | "managed";
 
 /** The card Autumn reports as the customer's default payment method (the
  *  Stripe PaymentMethod object, expanded via `payment_method`). */
@@ -71,14 +75,15 @@ const cardBrandLabel = (brand: string): string =>
   CARD_BRANDS[brand] ?? (brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : "Card");
 
 /**
- * Refresh the customer after returning from the hosted card form.
+ * Refresh the customer after returning from the hosted card form or the portal.
  *
- * Like checkout (see billing_.plans.tsx), the browser is redirected back before
- * Stripe's webhook reaches Autumn, so the first fetch on return still shows the
- * previous card. On detecting the return marker, poll until the default payment
- * method differs from the one we came back with (or a timeout). Returns true
- * while that reconciliation is in flight so the page can show the card as
- * updating rather than the stale one.
+ * Like checkout (see billing_.plans.tsx), the browser is redirected back from
+ * the card form before Stripe's webhook reaches Autumn, so the first fetch on
+ * return still shows no card. On detecting the `added` marker, poll until the
+ * default payment method differs from the one we came back with (or a
+ * timeout). Returns true while that reconciliation is in flight so the page can
+ * show the card as updating rather than the stale one. The `managed` marker
+ * (portal) has no race: a single refetch is enough.
  */
 function useRefreshAfterCardUpdate(card: CardOnFile | null, refetch: () => void): boolean {
   const [previousCardId, setPreviousCardId] = useState<string | null | undefined>(undefined);
@@ -92,10 +97,15 @@ function useRefreshAfterCardUpdate(card: CardOnFile | null, refetch: () => void)
   // poll keys off state rather than living in this effect).
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get(CARD_RETURN_PARAM) !== "updated") return;
+    const returned = params.get(CARD_RETURN_PARAM) as CardReturn | null;
+    if (returned !== "added" && returned !== "managed") return;
     params.delete(CARD_RETURN_PARAM);
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    if (returned === "managed") {
+      refetchRef.current();
+      return;
+    }
     armedAtRef.current = Date.now();
     setPreviousCardId(cardRef.current?.id ?? null);
   }, []);
@@ -254,11 +264,20 @@ function BillingPage() {
           onClick={async () => {
             trackEvent("billing_payment_method_update_clicked", { has_card: card != null });
             setOpeningCardForm(true);
-            // Tag the return URL so the page waits for the new card when the
-            // hosted form redirects back (the webhook that swaps the default
-            // payment method lands moments after the redirect).
-            const successUrl = `${window.location.origin}${window.location.pathname}?${CARD_RETURN_PARAM}=updated`;
-            await setupPayment({ successUrl });
+            const returnTo = (marker: CardReturn) =>
+              `${window.location.origin}${window.location.pathname}?${CARD_RETURN_PARAM}=${marker}`;
+            if (card) {
+              // A setup session never REPLACES an existing default card at the
+              // provider (it only sets one when none is on file), so changing
+              // the card goes through the billing portal, where the user adds
+              // a card and makes it the default.
+              await openCustomerPortal({ returnUrl: returnTo("managed") });
+            } else {
+              // No card yet: the hosted card form sets it as the default. Tag
+              // the return URL so the page waits for the card when the form
+              // redirects back (the webhook lands moments after the redirect).
+              await setupPayment({ successUrl: returnTo("added") });
+            }
             setOpeningCardForm(false);
           }}
           className="text-xs"
