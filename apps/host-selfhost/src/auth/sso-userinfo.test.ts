@@ -99,7 +99,12 @@ test("does not let camel-case claims override email_verified", async () => {
       { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } },
       {
         ok: true,
-        body: { sub: "alice", email: "alice@example.com", email_verified: false, emailVerified: true },
+        body: {
+          sub: "alice",
+          email: "alice@example.com",
+          email_verified: false,
+          emailVerified: true,
+        },
       },
     ],
     async () => {
