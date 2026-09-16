@@ -191,16 +191,16 @@
   padding-left: 8px;
   margin-left: 1px;
 }
-/* YC badge: keep the same frame; scale the artwork to sit inside it. */
+/* The YC badge is a rounded cream card at 350x125; letting it fill the box
+   edge to edge keeps the badge's own corners hidden behind ours. */
 .rail--b .rail__box--yc {
-  padding: 0 12px;
-  background: var(--color-surface);
+  padding: 0;
+  background: #f6f6ef;
 }
 .rail--b .rail__box--yc img {
-  height: 26px;
+  height: 100%;
   width: auto;
   display: block;
-  border-radius: 4px;
 }
 .rail--b .rail__toc {
   gap: 8px;
