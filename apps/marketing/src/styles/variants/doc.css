@@ -318,7 +318,9 @@
 .doc__tabs button[aria-selected="true"] {
   background: var(--color-surface);
   color: var(--color-ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--color-rule);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 0 0 1px var(--color-rule);
 }
 .doc__tabpanes p {
   font-size: 15.5px;
@@ -809,4 +811,10 @@ a.doc__term-v:hover {
 }
 .doc__section a.btn-primary {
   color: var(--color-surface);
+}
+
+/* A list at the end of a section: no bottom hairline, the next section's top
+   rule closes it. Avoids two rules a few pixels apart. */
+.doc__list--open li:last-child {
+  border-bottom: 0;
 }

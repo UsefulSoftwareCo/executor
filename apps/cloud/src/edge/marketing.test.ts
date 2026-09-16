@@ -20,6 +20,9 @@ describe("isMarketingPath", () => {
     "/blog/",
     "/blog/some-post",
     "/llms.txt",
+    "/index.md",
+    "/setup-prompt.md",
+    "/pricing.md",
     "/og-image.png",
     "/_astro/app.css",
     // The blog author card loads its avatar from marketing's public/authors;

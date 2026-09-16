@@ -13,7 +13,7 @@ import "../../styles/variants/doc.css";
 // are not picked up by the deploy pipeline.
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
 // Brand marks for the hover reveals in the intro steps.
-const logos = import.meta.glob<{ default: string }>("../../assets/logos/*.svg", {
+const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
   eager: true,
   query: "?url",
   import: "default",
@@ -21,7 +21,7 @@ const logos = import.meta.glob<{ default: string }>("../../assets/logos/*.svg", 
 const logo = (name: string): string => {
   const hit = Object.entries(logos).find(([k]) => k.endsWith(`/${name}.svg`));
   if (!hit) throw new Error(`missing logo ${name}`);
-  return hit[1] as unknown as string;
+  return hit[1];
 };
 const toolLogos = ["github", "linear", "sentry", "stripe", "notion", "slack", "jira", "gmail"];
 const agentLogos = ["claude", "codex", "cursor", "chatgpt", "gemini", "copilot", "windsurf", "opencode", "zed", "grok"];
@@ -278,7 +278,7 @@ const { gh } = Astro.props;
   {/* ── 06 Writing ── */}
   <section id="writing" class="doc__section">
     <h2 class="doc__h">Writing</h2>
-    <ul class="doc__list">
+    <ul class="doc__list doc__list--open">
       <li><a href="/blog/why-mcp-had-growing-pains">Why MCP had growing pains ↗</a></li>
       <li><a href="/blog">All posts ↗</a></li>
     </ul>
@@ -288,10 +288,9 @@ const { gh } = Astro.props;
   <section id="about" class="doc__section">
     <h2 class="doc__h">About</h2>
     <p>
-      Executor is built by one person, backed by Y Combinator, with a lot of help from
-      the people above. It started because I wanted my own agents to reach my accounts in
-      a way that was not scary. Most setups make you choose between locked down and
-      useless, or wide open and risky. I wanted a third option.
+      Executor is backed by Y Combinator. It started because I wanted my own agents to
+      reach my accounts in a way that was not scary. Most setups make you choose between
+      locked down and useless, or wide open and risky. I wanted a third option.
     </p>
     <a href={X_URL} class="doc__sig" rel="me noopener" target="_blank">
       <img src={rhysAvatar.src} alt="" width="40" height="40" />
