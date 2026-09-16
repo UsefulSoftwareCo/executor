@@ -217,49 +217,39 @@ const { gh } = Astro.props;
   <section id="install" class="doc__section">
     <h2 class="doc__h">Run it where you want</h2>
     <p>
-      All forms expose the same tools, packaged differently. Cloud is the one we keep
-      updated for you. The rest you run and update yourself.
+      Same tools, same policies, four ways to run them.
     </p>
-    <ol class="doc__ways">
-      <li>
-        <span class="doc__num">01</span>
-        <div>
-          <strong>Cloud.</strong> Hosted, free to start, nothing to install.
-          <a href="/cloud">executor.sh/cloud ↗</a>
-        </div>
-      </li>
-      <li>
-        <span class="doc__num">02</span>
-        <div>
-          <strong>Desktop.</strong> A desktop app for Mac, Windows, and Linux. Everything
-          stays on your machine.
-          <span class="doc__dl" data-download>
-              <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="doc__dl-link">Download for Mac</a>
-              <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="doc__dl-link">Download for Mac (Intel)</a>
-              <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="doc__dl-link">Download for Windows</a>
-              <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="doc__dl-link">Download for Linux</a>
-              <details class="download-other doc__dl-other hidden" data-download-other>
-                <summary>Other platforms ▾</summary>
-                <div class="download-other-list" data-download-other-list></div>
-              </details>
-            </span>
-        </div>
-      </li>
-      <li>
-        <span class="doc__num">03</span>
-        <div>
-          <strong>CLI.</strong> A background service for headless and server environments.
-          <code>npm i -g executor</code>
-        </div>
-      </li>
-      <li>
-        <span class="doc__num">04</span>
-        <div>
-          <strong>Self-hosted.</strong> A Docker image.
-          <a href="https://executor.sh/docs/hosted/docker">Docs ↗</a>
-        </div>
-      </li>
-    </ol>
+    <div class="doc__ways">
+      <div class="doc__way doc__way--rec">
+        <span class="doc__way-k">Cloud</span>
+        <span class="doc__way-d">Hosted, free to start, nothing to install. We keep it updated.</span>
+        <span class="doc__way-a"><a href="/cloud" class="btn-primary">Start on Cloud</a></span>
+      </div>
+      <div class="doc__way">
+        <span class="doc__way-k">Desktop</span>
+        <span class="doc__way-d">An app for Mac, Windows, and Linux. Everything stays on your machine.</span>
+        <span class="doc__way-a"><span class="doc__dl" data-download>
+            <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-secondary">Download for Mac</a>
+            <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="btn-secondary">Download for Mac (Intel)</a>
+            <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="btn-secondary">Download for Windows</a>
+            <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="btn-secondary">Download for Linux</a>
+            <details class="download-other doc__dl-other hidden" data-download-other>
+              <summary>Other platforms ▾</summary>
+              <div class="download-other-list" data-download-other-list></div>
+            </details>
+          </span></span>
+      </div>
+      <div class="doc__way">
+        <span class="doc__way-k">CLI</span>
+        <span class="doc__way-d">A background service for headless machines and servers.</span>
+        <span class="doc__way-a"><code class="doc__cmd">npm i -g executor</code></span>
+      </div>
+      <div class="doc__way">
+        <span class="doc__way-k">Self-hosted</span>
+        <span class="doc__way-d">One Docker image on your own box. Same code Cloud runs.</span>
+        <span class="doc__way-a"><a href="https://executor.sh/docs/hosted/docker" class="btn-secondary">Self-hosting docs</a></span>
+      </div>
+    </div>
     <p class="doc__quiet-p">
       Not an agent? Cloud also has an HTTP API with user and workspace keys, so a script
       or a service can call the same tools with the same policies.

@@ -747,3 +747,58 @@ a.doc__term-v:hover {
   color: var(--color-ink-2);
   margin-bottom: 1.5rem;
 }
+
+/* ── Run it: four cells ── */
+.doc__ways {
+  display: grid;
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 1.25rem;
+}
+@media (min-width: 720px) {
+  .doc__ways {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.doc__way {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1.25rem 1.3rem 1.35rem;
+  background: var(--color-surface);
+}
+.doc__way--rec::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--color-ink);
+}
+.doc__way-k {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.doc__way-d {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+  flex: 1;
+}
+.doc__way-a {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.6rem;
+}
+.doc__way-a .btn-primary,
+.doc__way-a .btn-secondary,
+.doc__way-a .doc__cmd {
+  font-size: 13.5px;
+  padding: 0.55rem 0.95rem;
+}
