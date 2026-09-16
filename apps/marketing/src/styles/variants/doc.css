@@ -544,3 +544,144 @@ a.doc__term-v:hover {
 .doc__sig:hover .doc__sig-b span {
   color: var(--color-ink);
 }
+
+/* ── Intro steps with hover reveals ── */
+.doc__steps {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.25rem 0 1.5rem;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+.doc__steps li {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.25rem;
+  align-items: baseline;
+}
+.doc__steps a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__steps a:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__pop {
+  position: relative;
+  display: inline-block;
+  outline: none;
+}
+.doc__pop-word {
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--color-ink-3);
+  cursor: default;
+}
+.doc__pop:hover .doc__pop-word,
+.doc__pop:focus-visible .doc__pop-word {
+  text-decoration-style: solid;
+  text-decoration-color: var(--color-ink);
+}
+.doc__pop-panel {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: max-content;
+  max-width: 420px;
+  padding: 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.04),
+    0 12px 32px -12px rgba(13, 13, 16, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+.doc__pop:hover .doc__pop-panel,
+.doc__pop:focus-within .doc__pop-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.doc__pop-tile,
+.doc__pop-pill {
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 0.2s ease,
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: calc(var(--i, 0) * 28ms);
+}
+.doc__pop:hover .doc__pop-tile,
+.doc__pop:hover .doc__pop-pill,
+.doc__pop:focus-within .doc__pop-tile,
+.doc__pop:focus-within .doc__pop-pill {
+  opacity: 1;
+  transform: scale(1);
+}
+.doc__pop-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.doc__pop-tile img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+.doc__pop-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .doc__pop-panel,
+  .doc__pop-tile,
+  .doc__pop-pill {
+    transition: none;
+  }
+}
+
+/* Agent marks on the copy button, so it reads as "for your agent". */
+.doc__copy-logos {
+  display: inline-flex;
+  margin-right: 0.35rem;
+}
+.doc__copy-logos img {
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-rule);
+  object-fit: contain;
+}
+.doc__copy-logos img + img {
+  margin-left: -5px;
+}

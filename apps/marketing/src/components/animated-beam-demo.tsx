@@ -332,7 +332,7 @@ function Row({
   return (
     <div className={cn("flex items-center gap-3", reverse && "flex-row-reverse text-right")}>
       {children}
-      <div className="flex flex-col leading-tight">
+      <div className="relative z-10 flex flex-col leading-tight rounded bg-white px-1 -mx-1">
         <span className="text-[12px] font-medium" style={labelStyle}>
           {label}
         </span>
