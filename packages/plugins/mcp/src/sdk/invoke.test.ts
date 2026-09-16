@@ -124,13 +124,23 @@ const invocationRejectionCases = [
       status: 401,
     }),
     expectedStatus: 401 as number | undefined,
+    expectedProtocolError: undefined as { code: number; message: string } | undefined,
+    expectedSdkFailure: { name: "SdkHttpError", code: SdkErrorCode.ClientHttpAuthentication } as {
+      name: string;
+      code?: string | number;
+    },
   },
   {
+    // The JSON-RPC error is the server's own answer to the call: its code is
+    // not an HTTP status, and its message is kept (structurally, beside the
+    // sanitized invocation message) so the plugin can hand it to the caller.
     name: "does not treat MCP protocol error codes as HTTP statuses",
     toolId: "protocol_error",
     transport: "streamable-http",
     cause: new ProtocolError(401, "application-level do-not-leak"),
     expectedStatus: undefined,
+    expectedProtocolError: { code: 401, message: "application-level do-not-leak" },
+    expectedSdkFailure: { name: "ProtocolError", code: 401 },
   },
   {
     name: "does not invent a status from non-HTTP rejection shapes",
@@ -138,6 +148,8 @@ const invocationRejectionCases = [
     transport: "streamable-http",
     cause: { code: -1, message: "socket said do-not-leak" },
     expectedStatus: undefined,
+    expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object", code: -1 },
   },
   {
     name: "extracts the status from the SDK SSE POST error prefix without leaking the body",
@@ -147,6 +159,8 @@ const invocationRejectionCases = [
       message: "Error POSTing to endpoint (HTTP 403): do-not-leak: upstream auth challenge",
     },
     expectedStatus: 403,
+    expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object" },
   },
 ];
 
@@ -305,14 +319,16 @@ describe("invokeMcpTool", () => {
         expect(Predicate.isTagged(error, "McpInvocationError")).toBe(true);
         const invocation = error as McpInvocationError;
         expect(invocation.toolName).toBe(testCase.toolId);
-        expect(invocation).toMatchObject({
-          message: `MCP tool call failed for ${testCase.toolId}`,
-        });
+        expect(invocation.message.startsWith(`MCP tool call failed for ${testCase.toolId} (`)).toBe(
+          true,
+        );
+        expect(invocation.sdkFailure).toEqual(testCase.expectedSdkFailure);
         expect(invocation).toMatchObject({
           message: expect.not.stringContaining("do-not-leak"),
         });
         expect(invocation.status).toBe(testCase.expectedStatus);
         expect("cause" in invocation).toBe(false);
+        expect(invocation.protocolError).toEqual(testCase.expectedProtocolError);
       }),
     );
   }

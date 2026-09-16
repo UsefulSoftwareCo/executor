@@ -40,6 +40,7 @@ export {
   normalizeEmail as normalizeAdminUserEmail,
   type AdminEmailResolver,
   type AdminIdentityDirectory,
+  type AdminMemberSearch,
   type AdminUserDirectory,
   type AdminUserIdentity,
 } from "./admin/reads";
@@ -106,6 +107,17 @@ export {
   type IdentityProviderShape,
   type IdentityFailure,
 } from "./server/identity";
+export {
+  MemberDirectory,
+  MemberDirectoryError,
+  MemberStatus,
+  DEFAULT_MEMBER_STATUSES,
+  normalizeMemberSearch,
+  type DirectoryMember,
+  type MemberQuery,
+  type MemberDirectoryShape,
+} from "./server/member-directory";
+export { adminUserDirectoryFromMembers } from "./admin/member-directory";
 export {
   makeExecutionStackMiddleware,
   textFailureStrategy,

@@ -79,6 +79,35 @@ export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
    *  grant cannot fix it, so the failure must not be labelled
    *  connection_rejected. */
   readonly insufficientScope?: boolean;
+  /** The server answered `tools/call` with a JSON-RPC error response (the
+   *  spec's protocol error: invalid params, internal error, ...). The call
+   *  reached the server and was refused on its merits, so the code and the
+   *  server's own message are the failure — not an infrastructure defect. */
+  readonly protocolError?: {
+    readonly code: number;
+    readonly message: string;
+  };
+  /** Operator-facing summary of the SDK rejection this error sanitized:
+   *  the error's class name and its stable `code` (an `SdkErrorCode`,
+   *  `ProtocolErrorCode`, or HTTP status). Never the message — a transport
+   *  message can embed an upstream body. Carried so the dispatch defect log
+   *  (`tool dispatch failed`, keyed by correlation id) names WHAT the SDK
+   *  refused instead of only the tool it refused. */
+  readonly sdkFailure?: {
+    readonly name: string;
+    readonly code?: string | number;
+  };
+  /** The server answered `tools/call` with a non-2xx HTTP response whose
+   *  body was a JSON object carrying a message (a validation refusal from a
+   *  server that answers at the HTTP layer instead of with a JSON-RPC error,
+   *  e.g. a 422 naming a missing field). Present only for 4xx statuses other
+   *  than the auth walls (401/403), and only when the body parsed as JSON
+   *  with a string `message`/`error`/`error.message` — a free-text body is
+   *  never copied out of the transport error. */
+  readonly httpRefusal?: {
+    readonly status: number;
+    readonly message: string;
+  };
 }> {}
 
 export class McpOAuthReauthorizationRequired extends Data.TaggedError(

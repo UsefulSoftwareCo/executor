@@ -1,0 +1,98 @@
+---
+// "What people say": every hand-picked post about Executor on X, as small
+// cards that drift sideways in rows. Each card links to the original post.
+// The rows pause on hover and stop entirely for reduced-motion readers, who
+// see a wrapped grid instead.
+import { testimonials } from "../../content/testimonials";
+import "../../styles/variants/testimonials.css";
+
+// Avatars ship as hashed assets. Both extensions exist because one handle's
+// picture is a PNG on X.
+const avatars = import.meta.glob<{ default: ImageMetadata }>(
+  "../../assets/pfps/*.{jpg,png}",
+  { eager: true },
+);
+const avatarFor = (handle: string): string | null => {
+  for (const [path, mod] of Object.entries(avatars)) {
+    if (path.endsWith(`/${handle}.jpg`) || path.endsWith(`/${handle}.png`)) return mod.default.src;
+  }
+  return null;
+};
+
+// Deal the list into rows in turn so long and short posts mix.
+const ROWS = 3;
+const rows: (typeof testimonials)[number][][] = Array.from({ length: ROWS }, () => []);
+testimonials.forEach((t, i) => rows[i % ROWS]!.push(t));
+
+// "Add yours" opens X's composer with a draft the reader can edit or delete.
+const composeUrl = `https://x.com/intent/post?text=${encodeURIComponent(
+  "I've been using @executorsh to ",
+)}`;
+---
+
+<div class="testi" data-testimonials>
+  {
+    rows.map((row, r) => (
+      <div class="testi__row" data-row={r}>
+        {/* Two copies of the row make the marquee loop seamless. */}
+        {[0, 1].map((copy) => (
+          <div class="testi__track" aria-hidden={copy === 1 ? "true" : undefined} inert={copy === 1 ? true : undefined}>
+            {r === 1 ? (
+              <a
+                class="testi__card testi__card--add"
+                href={composeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                tabindex={copy === 1 ? -1 : undefined}
+              >
+                <span class="testi__who">
+                  <span class="testi__add-mark" aria-hidden="true">+</span>
+                  <span class="testi__name">Add yours</span>
+                  <span class="testi__handle">on X</span>
+                </span>
+                <span class="testi__text">
+                  Using Executor? Post about it and tag @executorsh. We read every one.
+                </span>
+              </a>
+            ) : null}
+            {row.map((t) => {
+              const src = avatarFor(t.handle);
+              return (
+                <a
+                  class="testi__card"
+                  href={`https://x.com/${t.handle}/status/${t.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Read ${t.name}'s post on X`}
+                  tabindex={copy === 1 ? -1 : undefined}
+                >
+                  <span class="testi__who">
+                    {src ? <img src={src} alt="" width="24" height="24" loading="lazy" decoding="async" /> : null}
+                    <span class="testi__name">{t.name}</span>
+                    <span class="testi__handle">@{t.handle}</span>
+                  </span>
+                  <span class="testi__text">{t.text}</span>
+                </a>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    ))
+  }
+</div>
+
+<script>
+  // Start the drift only once the section has entered the viewport.
+  for (const el of document.querySelectorAll<HTMLElement>("[data-testimonials]")) {
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        el.dataset.seen = "1";
+        io.disconnect();
+      },
+      { threshold: 0.2 },
+    );
+    io.observe(el);
+  }
+</script>

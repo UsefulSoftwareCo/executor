@@ -37,6 +37,7 @@ import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
 import { usePolicyActions } from "../hooks/use-policy-actions";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
@@ -84,9 +85,13 @@ export function IntegrationDetailPage(props: {
   const connectionsResult = useAtomValue(connectionsAllAtom);
   const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
   const refreshTools = useAtomRefresh(integrationToolsAllAtom(slug));
-  const doRemove = useAtomSet(removeIntegrationOptimistic, { mode: "promiseExit" });
+  const doRemove = useAtomSet(removeIntegrationOptimistic, {
+    mode: "promiseExit",
+  });
   const doRefresh = useAtomSet(refreshConnection, { mode: "promiseExit" });
-  const doCheckHealth = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
+  const doCheckHealth = useAtomSet(checkConnectionHealth, {
+    mode: "promiseExit",
+  });
   // Policies are owner-partitioned on write; the integration policy menu writes
   // Workspace (org) rules, preserving the prior default behavior.
   const policyActions = usePolicyActions("org");
@@ -133,8 +138,12 @@ export function IntegrationDetailPage(props: {
   useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
+  // Integrations are workspace-owned; the server refuses catalog mutations
+  // (update/remove) from non-admin members, so hide the controls for them.
+  const canMutateIntegration = useCanCreateWorkspaceConnections();
+  const canEdit = canMutateIntegration && !isBuiltInIntegration && integrationData !== null;
   const canRefresh = integrationData?.canRefresh ?? false;
-  const canRemove = integrationData?.canRemove ?? false;
+  const canRemove = canMutateIntegration && (integrationData?.canRemove ?? false);
   const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
     const search = new URLSearchParams(locationSearch);
     // The route-validated flag and the raw `addAccount=1` are the same request;
@@ -389,7 +398,11 @@ export function IntegrationDetailPage(props: {
       if (connection.integration !== slug) continue;
       connectionCount++;
       const refreshExit = await doRefresh({
-        params: { owner: connection.owner, integration: slug, name: connection.name },
+        params: {
+          owner: connection.owner,
+          integration: slug,
+          name: connection.name,
+        },
         reactivityKeys: connectionWriteKeys,
       });
       refreshExits.push(Exit.isSuccess(refreshExit));
@@ -485,7 +498,7 @@ export function IntegrationDetailPage(props: {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {!confirmDelete && !isBuiltInIntegration && integrationData && (
+          {!confirmDelete && canEdit && (
             <Button variant="outline" size="sm" onClick={() => setEditSheetOpen(true)}>
               Edit
             </Button>

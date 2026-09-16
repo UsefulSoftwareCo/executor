@@ -51,6 +51,7 @@ import {
 } from "@executor-js/sdk/host-internal";
 
 import { DbProvider } from "./executor-fuma-db";
+import { RequestBackgroundTasks } from "./request-scoped";
 
 // ---------------------------------------------------------------------------
 // HostConfig seam — the two host scalars that vary the `createExecutor` options.
@@ -131,12 +132,14 @@ export interface HostConfigShape {
    */
   readonly toolsSyncTtlMs?: number | null;
   /**
-   * Forwarded verbatim to `ExecutorConfig.waitUntil`: the host's keep-alive
+   * Forwarded to `ExecutorConfig.waitUntil`: the host's keep-alive
    * for background work that outlives a request (stale tool-catalog rebuilds
    * that keep running after a read stops waiting). Cloud supplies the
    * platform `waitUntil` from `cloudflare:workers`, which binds to the
    * in-flight invocation ambiently; long-lived hosts (self-host, local,
    * tests) omit it and detached fibers simply run to completion in-process.
+   * Under requestScopedMiddleware, the promise also covers releasing that
+   * request's database after background work finishes.
    */
   readonly waitUntil?: (promise: Promise<unknown>) => void;
 }
@@ -272,6 +275,14 @@ export const makeScopedExecutor = <
     const { db, blobs } = yield* DbProvider.asEffect();
     const { plugins: pluginsFactory } = yield* PluginsProvider.asEffect();
     const config = yield* HostConfig.asEffect();
+    const background = yield* Effect.serviceOption(RequestBackgroundTasks);
+    const waitUntil = Option.match(background, {
+      onNone: () => config.waitUntil,
+      onSome: (tasks) => (task: Promise<unknown>) => {
+        const released = tasks.retain(task);
+        config.waitUntil?.(released);
+      },
+    });
     // Explicit config wins; otherwise fall back to the request origin if a host
     // provided one (HTTP middleware / MCP session DO). Stays `undefined` for
     // non-request callers — `coreTools.webBaseUrl` is optional and only the
@@ -328,7 +339,7 @@ export const makeScopedExecutor = <
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
-      ...(config.waitUntil !== undefined ? { waitUntil: config.waitUntil } : {}),
+      ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
       ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
       redirectUri,

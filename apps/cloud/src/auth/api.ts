@@ -1,7 +1,7 @@
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { UserStoreError, WorkOSError } from "./errors";
-import { NoOrganization } from "@executor-js/api/server";
+import { UserStoreError, WorkOSError, WorkOsMirrorError } from "./errors";
+import { MemberDirectoryError, NoOrganization } from "@executor-js/api/server";
 import { SessionAuth } from "./middleware";
 
 const AuthUser = Schema.Struct({
@@ -166,13 +166,27 @@ export class OrganizationDeletionForbidden extends Schema.TaggedErrorClass<Organ
   { httpApiStatus: 403 },
 ) {}
 
+// An org deletion that started but did not finish: the org is marked deleted
+// (every session is refused) and a later step — `step` — failed before the
+// local purge ran. The admin's own membership row is still there, so the
+// same request sent again resumes at the failed step.
+export class OrganizationDeletionIncomplete extends Schema.TaggedErrorClass<OrganizationDeletionIncomplete>()(
+  "OrganizationDeletionIncomplete",
+  { step: Schema.Literals(["billing"]) },
+  { httpApiStatus: 500 },
+) {}
+
 export const AUTH_PATHS = {
   login: "/api/auth/login",
   logout: "/api/auth/logout",
   callback: "/api/auth/callback",
 } as const;
 
-const AuthErrors = [UserStoreError, WorkOSError] as const;
+// The login callback and the org handlers feed the membership mirror, so a
+// mirror write failure is one of their wire errors (same 500 as a store
+// failure); the session handlers READ it (membership, the org list, the admin
+// gate), so a directory read failure is one too.
+const AuthErrors = [UserStoreError, WorkOSError, WorkOsMirrorError, MemberDirectoryError] as const;
 const McpApprovalErrors = [
   NoOrganization,
   McpExecutionNotFoundError,
@@ -214,7 +228,7 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
   .add(
     HttpApiEndpoint.get("organizations", "/auth/organizations", {
       success: AuthOrganizationsResponse,
-      error: WorkOSError,
+      error: [WorkOSError, UserStoreError, MemberDirectoryError],
     }),
   )
   .add(
@@ -228,7 +242,12 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
     HttpApiEndpoint.post("deleteOrganization", "/auth/delete-organization", {
       payload: DeleteOrganizationBody,
       success: DeleteOrganizationResponse,
-      error: [...AuthErrors, NoOrganization, OrganizationDeletionForbidden],
+      error: [
+        ...AuthErrors,
+        NoOrganization,
+        OrganizationDeletionForbidden,
+        OrganizationDeletionIncomplete,
+      ],
     }),
   )
   .add(

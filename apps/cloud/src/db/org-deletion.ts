@@ -10,11 +10,21 @@
 //
 // External side effects (the WorkOS org, the Autumn customer) are NOT touched
 // here — the caller (auth handler) sequences those around this purge.
+//
+// The `organizations` row itself is NOT deleted: it stays as a TOMBSTONE,
+// marked `deleted_at`, with its memberships removed. The membership mirror's
+// feeders write whatever WorkOS payload they hold — a login that fetched its
+// membership list before the deletion can write it after this purge — and
+// the tombstone is what makes those writes refuse: `upsertOrganization`
+// never re-mints or renames a marked organization, and the mirror never
+// inserts a membership of one. Without it the login would insert a fresh,
+// live organization row plus an active membership, and the deleted
+// organization would authorize again.
 
 import { eq, or, sql } from "drizzle-orm";
 
 import type { DrizzleDb } from "./db";
-import { organizations } from "./schema";
+import { memberships, organizations } from "./schema";
 import {
   artifact,
   blob,
@@ -36,10 +46,16 @@ const escapeLike = (value: string): string => value.replace(/[\\%_]/g, "\\$&");
 
 /**
  * Delete all rows owned by `organizationId`: every executor tenant table, the
- * org's secret blobs (org- and user-scoped), and the identity mirror row (which
- * cascades to local `memberships`). Idempotent — a second run deletes nothing.
+ * org's secret blobs (org- and user-scoped), and its local `memberships` —
+ * and mark the identity row deleted as of `deletedAt` (an earlier mark
+ * stands), keeping it as a tombstone. Idempotent — a second run deletes
+ * nothing and keeps the first mark.
  */
-export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Promise<void> =>
+export const purgeOrganizationData = (
+  db: DrizzleDb,
+  organizationId: string,
+  deletedAt: Date,
+): Promise<void> =>
   db.transaction(async (tx) => {
     // Executor tenant tables — every row is scoped by `tenant = organizationId`.
     await tx.delete(tool).where(eq(tool.tenant, organizationId));
@@ -66,7 +82,14 @@ export const purgeOrganizationData = (db: DrizzleDb, organizationId: string): Pr
         ),
       );
 
-    // Identity mirror — FK `ON DELETE CASCADE` removes local memberships too.
-    // `accounts` are intentionally left: a user may belong to other orgs.
-    await tx.delete(organizations).where(eq(organizations.id, organizationId));
+    // Identity mirror: the memberships go, the organization row stays as a
+    // tombstone (see the header). `accounts` are intentionally left: a user
+    // may belong to other orgs.
+    await tx.delete(memberships).where(eq(memberships.organizationId, organizationId));
+    await tx
+      .update(organizations)
+      .set({
+        deletedAt: sql`coalesce(${organizations.deletedAt}, ${deletedAt.toISOString()}::timestamptz)`,
+      })
+      .where(eq(organizations.id, organizationId));
   });

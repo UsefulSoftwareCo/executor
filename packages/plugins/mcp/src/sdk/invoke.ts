@@ -33,7 +33,11 @@ import {
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
 import type { McpConnectionPool } from "./connection-pool";
-import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
+import {
+  httpRefusalMessageFromCause,
+  httpStatusFromCause,
+  insufficientScopeFromCause,
+} from "./http-status";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,6 +154,30 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
     `(?:unknown tool:?\\s*"?${name}"?|tool\\s+"?${name}"?\\s+(?:not found|is not available|does not exist))`,
     "i",
   ).test(message);
+};
+
+/** The class name and stable code of an SDK rejection, for the defect log.
+ *  Structural only: the message is deliberately not read here. */
+const summarizeSdkFailure = (cause: unknown): { name: string; code?: string | number } => {
+  // oxlint-disable-next-line executor/no-instanceof-error -- boundary: the MCP SDK rejects with Error subclasses whose constructor name is the only class discriminator for non-branded errors
+  const name = cause instanceof Error ? cause.constructor.name : typeof cause;
+  const code = Predicate.hasProperty(cause, "code") ? cause.code : undefined;
+  return typeof code === "string" || typeof code === "number" ? { name, code } : { name };
+};
+
+/** A 4xx other than the auth walls, with a JSON body that names the problem,
+ *  is the server refusing THIS call (a validation failure at the HTTP layer)
+ *  — not a dead transport. 401/403 keep their auth classification; 5xx and
+ *  bodyless 4xx stay opaque, since there is nothing the caller can act on. */
+const httpRefusal = (
+  status: number | undefined,
+  cause: unknown,
+): { readonly httpRefusal: { readonly status: number; readonly message: string } } | {} => {
+  if (status === undefined || status < 400 || status >= 500 || status === 401 || status === 403) {
+    return {};
+  }
+  const message = httpRefusalMessageFromCause(cause);
+  return message === undefined ? {} : { httpRefusal: { status, message } };
 };
 
 const asProtocolError = (cause: unknown): ProtocolError | undefined => {
@@ -366,16 +394,34 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        const protocolFailure = asProtocolError(cause) !== undefined;
+        const protocolError = asProtocolError(cause);
+        const sdkFailure = summarizeSdkFailure(cause);
         return new McpInvocationError({
           toolName,
-          message: `MCP tool call failed for ${toolName}`,
+          // The class and code ride in the message because the dispatch
+          // defect log renders only `Error#toString()`: without them the
+          // trace says which tool failed and nothing about how.
+          message: `MCP tool call failed for ${toolName} (${[
+            sdkFailure.name,
+            ...(sdkFailure.code === undefined ? [] : [String(sdkFailure.code)]),
+            ...(status === undefined ? [] : [`HTTP ${status}`]),
+          ].join(" ")})`,
+          sdkFailure,
           ...(status === undefined ? {} : { status }),
-          ...(!protocolFailure ? { transportFailure: true } : {}),
+          ...(protocolError === undefined
+            ? { transportFailure: true }
+            : {
+                // A JSON-RPC error is the server's answer to this call, written
+                // for the caller (the same trust level as an `isError` result
+                // envelope), so its message may travel back to the sandbox.
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message is the server's JSON-RPC error text
+                protocolError: { code: protocolError.code, message: protocolError.message },
+              }),
           ...(isUnknownToolCause(cause, toolName) ? { unknownTool: true } : {}),
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }
             : {}),
+          ...httpRefusal(status, cause),
         });
       },
     }).pipe(

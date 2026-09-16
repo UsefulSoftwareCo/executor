@@ -11,7 +11,7 @@ How it works:
 - Set policies: decide whether each tool is always allowed, needs approval, or is blocked.
 - Use it from any MCP-compatible agent: one catalog of tools, shared across every client.
 
-Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted on Docker or Cloudflare.
+Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted on Docker.
 
 ## Docs
 
@@ -20,8 +20,16 @@ Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted
 ## Product
 
 - [Website](https://executor.sh): product overview and getting started.
-- [Pricing](https://executor.sh/#pricing): plans for Executor Cloud.
+- [Pricing](https://executor.sh/pricing): plans for Executor Cloud.
 - [Install](https://executor.sh/#install): install the CLI and connect your first agent.
+
+## For agents
+
+Markdown representations of the pages above, for machines rather than browsers.
+
+- [/index.md](https://executor.sh/index.md): the homepage as Markdown — what Executor is, how it works, what you get, ways to run it, pricing, and FAQ.
+- [/setup-prompt.md](https://executor.sh/setup-prompt.md): a prompt to paste into a coding agent. It picks the right form of Executor, installs it, connects over MCP, and gets a first connection working.
+- [/pricing.md](https://executor.sh/pricing.md): the Executor Cloud plans as Markdown.
 
 ## Source
 

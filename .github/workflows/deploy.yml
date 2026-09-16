@@ -54,6 +54,19 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # The build below authorizes every request from the local membership
+      # mirror. This runs the mirror backfill if it has not completed, drains
+      # the WorkOS events stream itself if the reconciler has not recently
+      # (it does not wait on the cron, which this same deploy may be the one
+      # to ship), and FAILS the deploy if the mirror is still not ready — see
+      # scripts/ensure-workos-mirror-ready.ts.
+      - name: Backfill and verify the membership mirror
+        run: bun run scripts/ensure-workos-mirror-ready.ts
+        working-directory: apps/cloud
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
+
   deploy-cloud:
     name: Deploy cloud
     runs-on: blacksmith-4vcpu-ubuntu-2404

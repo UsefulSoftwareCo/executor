@@ -38,6 +38,27 @@ export class UserStoreError extends Schema.TaggedErrorClass<UserStoreError>()(
   }
 }
 
+/**
+ * The public failure of every cloud membership-mirror write (`WorkOsMirror`).
+ * Same two diagnosable fields as `UserStoreError` — which mirror call failed,
+ * and how — classified from the driver cause the same way. Declared here,
+ * beside `UserStoreError`, because the auth API (`auth/api.ts`, in the SPA
+ * bundle) names it on the wire for the login and org handlers that feed the
+ * mirror; the service itself lives in `workos-mirror.ts`.
+ */
+export class WorkOsMirrorError extends Schema.TaggedErrorClass<WorkOsMirrorError>()(
+  "WorkOsMirrorError",
+  {
+    operation: Schema.String,
+    reason: Schema.Literals(USER_STORE_FAILURE_REASONS),
+  },
+  { httpApiStatus: 500 },
+) {
+  override get message(): string {
+    return `workos mirror ${this.operation} failed: ${this.reason}`;
+  }
+}
+
 /** Reasons a retry can plausibly clear: the query never reached a healthy
  *  server. A `query` failure is deterministic and must not be retried. */
 export const isTransientUserStoreReason = (reason: UserStoreFailureReason): boolean =>

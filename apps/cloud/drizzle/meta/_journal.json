@@ -127,6 +127,27 @@
       "when": 1788287088210,
       "tag": "0017_lush_thunderbolts",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789570778982,
+      "tag": "0018_member_directory_mirror",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789571259533,
+      "tag": "0019_workos_mirror_sync_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789575639971,
+      "tag": "0020_workos_sync_drained_at",
+      "breakpoints": true
     }
   ]
 }

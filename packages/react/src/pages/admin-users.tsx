@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useParams } from "@tanstack/react-router";
+import { SearchIcon, XIcon } from "lucide-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -18,6 +19,7 @@ import { ownerLabel } from "../api/owner-display";
 import { Button } from "../components/button";
 import { CopyButton } from "../components/copy-button";
 import { ErrorState } from "../components/error-state";
+import { Input } from "../components/input";
 import {
   IntegrationFavicon,
   integrationInferredUrl,
@@ -521,14 +523,94 @@ function UserDetail(props: {
   });
 }
 
+// ── Search ──────────────────────────────────────────────────────────────────
+
+/** How long the typed term settles before it becomes a request. Long enough
+ *  that a typed name is one query rather than one per keystroke, short enough
+ *  to read as immediate. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * The search box: what is typed, and the settled term the list actually asks
+ * for. Two values because the request is debounced, and the input must keep
+ * echoing keystrokes while the term catches up. Clearing bypasses the debounce
+ * — an emptied box should show everyone at once, not after a pause.
+ */
+const useDebouncedSearch = (): {
+  readonly typed: string;
+  readonly term: string;
+  readonly setTyped: (value: string) => void;
+  readonly clear: () => void;
+} => {
+  const [typed, setTypedState] = useState("");
+  const [term, setTerm] = useState("");
+
+  useEffect(() => {
+    if (typed === term) return;
+    const handle = setTimeout(() => setTerm(typed), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [typed, term]);
+
+  return {
+    typed,
+    term,
+    setTyped: setTypedState,
+    clear: () => {
+      setTypedState("");
+      setTerm("");
+    },
+  };
+};
+
+function UserSearch(props: {
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly onClear: () => void;
+}) {
+  return (
+    <div className="relative mb-4 min-w-0" data-slot="admin-users-search">
+      <SearchIcon
+        className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+        aria-hidden
+      />
+      <Input
+        type="search"
+        value={props.value}
+        onChange={(event) => props.onChange((event.target as HTMLInputElement).value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && props.value !== "") props.onClear();
+        }}
+        placeholder="Search by name or email"
+        aria-label="Search users by name or email"
+        className="h-9 pl-9 pr-9 text-sm [&::-webkit-search-cancel-button]:hidden"
+      />
+      {props.value !== "" && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Clear search"
+          onClick={props.onClear}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+        >
+          <XIcon />
+        </Button>
+      )}
+    </div>
+  );
+}
+
 // ── Page ────────────────────────────────────────────────────────────────────
 
 export function AdminUsersPage() {
   useExecutorDocumentTitle("Users");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<AdminUserRow | null>(null);
+  const search = useDebouncedSearch();
 
-  const page = { limit: ADMIN_USERS_PAGE_SIZE, offset };
+  // A new term is a new list, so it starts on its first page: an offset kept
+  // from a broader list would land past the end of a narrower one.
+  const page = { limit: ADMIN_USERS_PAGE_SIZE, offset, search: search.term };
   const result = useAtomValue(adminUsersWithConnectionsAtom(page));
   const refresh = useAtomRefresh(adminUsersWithConnectionsAtom(page));
   const catalog = useCatalogRows();
@@ -555,9 +637,23 @@ export function AdminUsersPage() {
     </div>
   );
 
+  const searching = search.term !== "";
+
   return (
     <PageContainer>
       {header}
+
+      <UserSearch
+        value={search.typed}
+        onChange={(value) => {
+          search.setTyped(value);
+          setOffset(0);
+        }}
+        onClear={() => {
+          search.clear();
+          setOffset(0);
+        }}
+      />
 
       {isAsyncResultLoading(result)
         ? loading
@@ -571,6 +667,25 @@ export function AdminUsersPage() {
               ),
             onSuccess: ({ value }) => {
               const { rows, hasNext } = splitPage(value.users, ADMIN_USERS_PAGE_SIZE);
+
+              if (rows.length === 0 && searching && offset === 0) {
+                return (
+                  <div
+                    className="rounded-lg border border-dashed border-border bg-card p-8"
+                    data-slot="admin-users-no-match"
+                  >
+                    <h2 className="text-base font-semibold text-foreground">No users match</h2>
+                    <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                      Nobody in this workspace has a name or email containing &ldquo;
+                      {search.term}&rdquo;. Only people who have reached the workspace or connected
+                      an account are listed.
+                    </p>
+                    <Button variant="outline" size="sm" className="mt-4" onClick={search.clear}>
+                      Clear search
+                    </Button>
+                  </div>
+                );
+              }
 
               if (rows.length === 0) {
                 return (

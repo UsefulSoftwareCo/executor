@@ -18,6 +18,13 @@
   "limits": {
     "cpu_ms": 30000,
   },
+  // Every minute: replay the WorkOS Events API into the membership mirror
+  // (`scheduled` in src/server.ts → auth/workos-events-sync.ts). Changes made
+  // in the WorkOS dashboard reach the mirror within this interval; the
+  // signed webhook at /api/webhooks/workos shortens it to seconds.
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
   "observability": {
     "enabled": true,
   },

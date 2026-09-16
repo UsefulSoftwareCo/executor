@@ -1,9 +1,8 @@
 // ---------------------------------------------------------------------------
 // Focused tests — the WorkOS login callback's CSRF gate.
 //
-// The callback's CSRF check must be unconditional: no state ⇒ 400 before any
-// WorkOS call; a replayed (already consumed) state ⇒ 400; a fresh state
-// matching the cookie ⇒ 302 + session.
+// Codes without state restart login without a WorkOS exchange; a replayed
+// state still fails with 400; a fresh state matching the cookie issues a session.
 //
 // Test seams follow repo conventions: @effect/vitest, Layer.succeed stubs
 // (see org-selector-auth.node.test.ts), and HttpRouter.toWebHandler for the
@@ -17,10 +16,13 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApi } from "effect/unstable/httpapi";
 
+import { MemberDirectory } from "@executor-js/api/server";
+
 import { CloudAuthPublicHandlers } from "./handlers";
 import { CloudAuthPublicApi } from "./api";
 import { UserStoreService } from "./context";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
+import { WorkOsMirror } from "./workos-mirror";
 import { encodeLoginState } from "./login-state";
 import { AutumnService } from "../extensions/billing/service";
 
@@ -38,50 +40,115 @@ const stubWorkOS = Layer.succeed(
   new Proxy({} as WorkOSClientService, {
     get: (_t, prop) => {
       if (prop === "authenticateWithCode") {
-        return () =>
-          Effect.succeed({
-            user: { id: STUB_USER_ID, email: "u@test" },
-            organizationId: STUB_ORG_ID,
-            sealedSession: STUB_SESSION,
-          });
+        return (code: string) =>
+          code === "unbound-code"
+            ? Effect.die("An unbound authorization code must never be exchanged")
+            : Effect.succeed({
+                user: { id: STUB_USER_ID, email: "u@test" },
+                organizationId: STUB_ORG_ID,
+                sealedSession: STUB_SESSION,
+              });
       }
       if (prop === "listUserMemberships") {
         return () => Effect.succeed({ data: [] });
-      }
-      if (prop === "listOrgMembers") {
-        return () => Effect.succeed({ data: [{ status: "active" }] });
       }
       return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
     },
   }),
 );
 
+// A bare account row, as `ensureAccount` mints it before any WorkOS profile
+// has been mirrored onto it.
+const bareAccount = (id: string) => ({
+  id,
+  email: null,
+  firstName: null,
+  lastName: null,
+  avatarUrl: null,
+  workosUpdatedAt: null,
+  lastSignInAt: null,
+  createdAt: new Date(),
+});
+
 const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
     Effect.promise(() =>
       fn({
-        ensureAccount: async (id: string) => ({ id, createdAt: new Date() }),
-        getAccount: async (id: string) => ({ id, createdAt: new Date() }),
+        ensureAccount: async (id: string) => bareAccount(id),
+        getAccount: async (id: string) => bareAccount(id),
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
         getOrganization: async (id: string) => ({
           id,
           name: "Org " + id,
           slug: id,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug,
           name: slug,
           slug,
+          backfilledAt: null,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt: new Date(),
         }),
+        markOrganizationDeleted: async () => null,
         deleteOrganizationCascade: async () => {},
       }),
     ),
+});
+
+// The callback records the sign-in (user + memberships) in the membership
+// mirror, and its forked seat recount reads the backfill marker and the
+// landed org's active members from it; every other operation is out of this
+// route's reach.
+const stubMirror = Layer.succeed(WorkOsMirror)({
+  upsertUser: () => Effect.succeed(true),
+  upsertMembership: () => Effect.succeed(true),
+  deleteMembership: () => Effect.die("the callback does not delete memberships"),
+  deleteUser: () => Effect.die("the callback does not delete users"),
+  getCursor: () => Effect.die("the callback does not read the events cursor"),
+  applyPage: () => Effect.die("the callback does not move the events cursor"),
+  applyOrganizationScan: () => Effect.die("the callback does not run the backfill"),
+  replayBoundary: () => Effect.die("the callback does not run the reconciler"),
+  setReplayBoundary: () => Effect.die("the callback does not run the backfill"),
+  backfillCompletedAt: () => Effect.die("the callback does not check mirror readiness"),
+  markBackfillCompleted: () => Effect.die("the callback does not run the backfill"),
+  drainedAt: () => Effect.die("the callback does not check mirror readiness"),
+  markDrained: () => Effect.die("the callback does not run the reconciler"),
+  organizationBackfilledAt: () => Effect.succeed(new Date()),
+});
+
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: () => Effect.die("the callback does not look up one membership"),
+  membershipById: () => Effect.die("the callback does not look up by membership id"),
+  membershipsOf: () => Effect.die("the callback reads the WorkOS list, not the mirror's"),
+  membersById: () => Effect.die("the callback does not batch members"),
+  findByEmail: () => Effect.die("the callback does not resolve emails"),
+  members: (organizationId) =>
+    Effect.succeed([
+      {
+        accountId: STUB_USER_ID,
+        membershipId: `om_${STUB_USER_ID}`,
+        organizationId,
+        email: null,
+        name: null,
+        avatarUrl: null,
+        role: "member",
+        status: "active" as const,
+        lastActiveAt: null,
+      },
+    ]),
 });
 
 // Only the public group is under test; the session group (and its SessionAuth
@@ -93,6 +160,8 @@ const App = HttpApiBuilder.layer(PublicApi).pipe(
   Layer.provide(CloudAuthPublicHandlers),
   Layer.provide(stubWorkOS),
   Layer.provide(stubUsers),
+  Layer.provide(stubMirror),
+  Layer.provide(stubDirectory),
   Layer.provide(AutumnService.Default),
   Layer.provide(HttpServer.layerServices),
 );
@@ -128,20 +197,30 @@ describe("workos callback · CSRF state hardening", () => {
     });
   }
 
-  it("rejects a callback with NO state (the former bypass) before any WorkOS call", async () => {
-    const res = await run(new Request(callbackUrl(undefined), { redirect: "manual" }));
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain("Invalid login state");
+  it("restarts login without exchanging a code that has no state", async () => {
+    const res = await run(
+      new Request(callbackUrl(undefined, "unbound-code"), { redirect: "manual" }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/api/auth/login");
     expect(res.headers.get("set-cookie") ?? "").not.toContain(SESSION_COOKIE);
   });
 
-  it("rejects missing state even when the browser has a login cookie", async () => {
+  it("discards an existing login cookie when restarting a callback without state", async () => {
     const res = await run(
-      new Request(callbackUrl(undefined), {
+      new Request(callbackUrl(undefined, "unbound-code"), {
         headers: { cookie: `${STATE_COOKIE}=victim-login-state` },
         redirect: "manual",
       }),
     );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/api/auth/login");
+    expect(res.headers.get("set-cookie")).toContain(`${STATE_COOKIE}=; Max-Age=0`);
+    expect(res.headers.get("set-cookie") ?? "").not.toContain(SESSION_COOKIE);
+  });
+
+  it("rejects empty state instead of treating it as a provider-initiated login", async () => {
+    const res = await run(new Request(`${callbackUrl(undefined, "unbound-code")}&state=`));
     expect(res.status).toBe(400);
     expect(await res.text()).toBe("Invalid login state");
     expect(res.headers.get("set-cookie") ?? "").not.toContain(SESSION_COOKIE);

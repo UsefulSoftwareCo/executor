@@ -8,8 +8,9 @@
 //      validated it and reported which org owns it, and there is no member
 //      behind it to check membership for. This is the machine credential
 //      (a customer's backend calling us).
-//   2. an admin SESSION member -> the console. Requires a live `getUserOrgMembership`
-//      whose role slug is `admin` AND whose status is `active`, matching the
+//   2. an admin SESSION member -> the console. Requires the caller's mirrored
+//      membership (the shared `MemberDirectory` over the local membership
+//      mirror) to carry the `admin` role AND `active` status, matching the
 //      strictest existing cloud guard (`auth/handlers.ts`'s org-delete check) —
 //      a pending admin invite is not an admin.
 // A plain member session, or a USER-scoped api key, is refused: both name one
@@ -25,28 +26,24 @@
 // every query by that tenant.
 // ---------------------------------------------------------------------------
 
-import { env } from "cloudflare:workers";
 import { HttpRouter } from "effect/unstable/http";
-import { Context, Effect, Layer, Option } from "effect";
+import { Effect, Layer } from "effect";
 
 import {
   AdminUsersProvider,
   DbProvider,
   HostConfig,
+  MemberDirectory,
   PluginsProvider,
+  adminUserDirectoryFromMembers,
   getAdminUser,
   listAdminUserConnections,
   listAdminUsers,
   listAdminUsersWithConnections,
   makeAdminUsersApiLayer,
   makePlatformExecutor,
-  normalizeAdminUserEmail,
   platformViewOf,
   requestScopedMiddleware,
-  type AdminEmailResolver,
-  type AdminIdentityDirectory,
-  type AdminUserDirectory,
-  type AdminUserIdentity,
   type AdminUsersHeaders,
 } from "@executor-js/api/server";
 import {
@@ -59,6 +56,7 @@ import type { Executor } from "@executor-js/sdk";
 
 import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { isPlatformAuth, resolveBearerAuth } from "../auth/workos-auth-provider";
 import { orgSelectorFromRequest, authorizeOrganizationSelector } from "../auth/organization";
 import { WorkOSClient } from "../auth/workos";
@@ -71,13 +69,14 @@ import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
  * Returns only the organization id: nothing downstream needs to know WHICH of
  * the two credentials got the caller here, and keeping the acting member out of
  * the return value means no admin read can accidentally become subject-scoped.
+ * Exported for its test only.
  */
-const authorizeTenant = (
+export const authorizeTenant = (
   request: Request,
 ): Effect.Effect<
   string,
   AdminUsersUnauthorized | AdminUsersForbidden,
-  WorkOSClient | ApiKeyService | UserStoreService
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
 > =>
   Effect.gen(function* () {
     // (1) The bearer path. `resolveBearerAuth` (not `resolveApiKeyPrincipal`,
@@ -96,7 +95,8 @@ const authorizeTenant = (
       return yield* new AdminUsersForbidden();
     }
 
-    // (2) The session path: a live admin membership in the selected org.
+    // (2) The session path: an active admin membership in the selected org,
+    // read from the mirror.
     const workos = yield* WorkOSClient;
     const session = yield* workos
       .authenticateRequest(request)
@@ -105,140 +105,18 @@ const authorizeTenant = (
 
     const selector = orgSelectorFromRequest(request) ?? session.organizationId;
     if (!selector) return yield* new AdminUsersForbidden();
-    // Re-checks live membership, so the org selector header can only ever name
-    // an org the caller already belongs to.
+    // Re-checks membership against the mirror, so the org selector header can
+    // only ever name an org the caller already belongs to. That read requires
+    // an ACTIVE membership and reports its role as `memberRole`, so a pending
+    // admin invite never resolves and the admin gate is that one value — not
+    // a second read of the same row.
     const org = yield* authorizeOrganizationSelector(session.userId, selector).pipe(
       Effect.catchCause(() => Effect.succeed(null)),
     );
     if (!org) return yield* new AdminUsersForbidden();
-
-    const membership = yield* workos
-      .getUserOrgMembership(org.id, session.userId)
-      .pipe(Effect.catchCause(() => Effect.succeed(null)));
-    // A pending admin invite is not an active admin — require both.
-    if (!membership || membership.status !== "active" || membership.role?.slug !== "admin") {
-      return yield* new AdminUsersForbidden();
-    }
+    if (org.memberRole !== "admin") return yield* new AdminUsersForbidden();
     return org.id;
   });
-
-/**
- * How many user-detail reads run at once. Matches the account plane's own
- * member listing (`workos-account-service.ts`), which fans out the same way for
- * the same reason.
- */
-const IDENTITY_CONCURRENCY = 5;
-
-/**
- * Cloud's member directory: `externalId` → email/name.
- *
- * THE JOIN KEY is the membership's `userId` — the WorkOS `user_...` that
- * `workos-auth-provider.ts` binds as `accountId` on every credential path, and
- * therefore what the subject table records in `external_id`. The membership's
- * own `id` is an `om_...` row id and joins to nothing.
- *
- * WHY THIS IS TWO CALLS AND NOT ONE. The membership list is read once per
- * request and is the authority on who belongs to the org, but WorkOS's
- * `listOrganizationMemberships` carries no user detail and offers no
- * include/expand — email and name only exist on the user resource. The SDK does
- * expose a batched `listUsers({ organizationId })`, but the pinned
- * `@executor-js/emulate` WorkOS emulator serves only `GET
- * /user_management/users/:id`, so taking that path would leave every cloud e2e
- * user unnamed. So: ONE membership read per request, then user detail fetched
- * only for the ids ON THIS PAGE — never for the whole org, and never once per
- * row of some larger list. An id that is not an active/pending member is not
- * fetched at all and reports absent identity, which is the honest answer for a
- * member who left while their connections remain.
- */
-const identityDirectory =
-  (organizationId: string, context: Context.Context<WorkOSClient>): AdminIdentityDirectory =>
-  (externalIds) =>
-    Effect.gen(function* () {
-      const workos = yield* WorkOSClient;
-      const memberships = yield* workos.listOrgMembers(organizationId);
-      const wanted = new Set(externalIds);
-      const memberIds = memberships.data
-        .map((membership) => membership.userId)
-        .filter((userId) => wanted.has(userId));
-
-      const resolved = yield* Effect.all(
-        memberIds.map((userId) =>
-          workos.getUser(userId).pipe(
-            Effect.map(
-              (user) =>
-                [
-                  userId,
-                  {
-                    email: user.email,
-                    displayName: [user.firstName, user.lastName].filter(Boolean).join(" ") || null,
-                  },
-                ] as const,
-            ),
-            // One unreadable user must not cost the whole page its names.
-            Effect.catchCause(() => Effect.succeed(null)),
-          ),
-        ),
-        { concurrency: IDENTITY_CONCURRENCY },
-      );
-
-      const identities = new Map<string, AdminUserIdentity>();
-      for (const entry of resolved) if (entry) identities.set(entry[0], entry[1]);
-      return identities;
-    }).pipe(Effect.provideContext(context));
-
-/**
- * Cloud's REVERSE directory lookup: email → the WorkOS `user_...` id.
- *
- * Production asks WorkOS for the email AND organization in one request. Both
- * filters matter: email makes the lookup indexed rather than one `getUser`
- * request per member, while organization keeps the reverse lookup bound to the
- * same tenant as the platform view.
- *
- * The pinned `@executor-js/emulate` WorkOS emulator has no list-users route.
- * `WORKOS_API_URL` is the explicit test/dev emulator override, so that path
- * retains the membership scan until the emulator supports the production
- * query. The fallback still starts from the tenant's membership list and can
- * never return a user from another organization.
- *
- * CASING: WorkOS preserves whatever casing an email was created with (and the
- * emulator compares byte-exact), so the directory value is normalized here
- * before comparison, against an argument the seam already normalized.
- */
-export const emailResolver =
-  (organizationId: string, context: Context.Context<WorkOSClient>): AdminEmailResolver =>
-  (email) =>
-    Effect.gen(function* () {
-      const workos = yield* WorkOSClient;
-
-      if (!env.WORKOS_API_URL) {
-        const users = yield* workos.listUsers({ email, organizationId });
-        return users.data[0]?.id ?? null;
-      }
-
-      const memberships = yield* workos.listOrgMembers(organizationId);
-      const userIds = memberships.data.map((membership) => membership.userId);
-
-      // Emulator compatibility only. Short-circuit once the normalized email
-      // matches so the fallback makes as few unsupported-detail reads as it can.
-      const match = yield* Effect.findFirst(userIds, (userId) =>
-        workos.getUser(userId).pipe(
-          Effect.map((user) => normalizeAdminUserEmail(user.email ?? "") === email),
-          // One unreadable user must not fail the whole lookup — it simply
-          // cannot be the match.
-          Effect.catchCause(() => Effect.succeed(false)),
-        ),
-      );
-      return Option.getOrNull(match);
-    }).pipe(Effect.provideContext(context));
-
-/** Both directions of cloud's directory, built once per authorized request. */
-const userDirectory = (
-  organizationId: string,
-  context: Context.Context<WorkOSClient>,
-): AdminUserDirectory => ({
-  identities: identityDirectory(organizationId, context),
-  resolveEmail: emailResolver(organizationId, context),
-});
 
 /**
  * Authorize, then run `body` against the tenant's platform view.
@@ -255,7 +133,14 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
   // `AdminUsersError` unconditionally: opening the platform view can fail that
   // way regardless of what `body` itself raises.
   E | AdminUsersError | AdminUsersUnauthorized | AdminUsersForbidden,
-  WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
+  | WorkOSClient
+  | ApiKeyService
+  | UserStoreService
+  | MemberDirectory
+  | WorkOsMirror
+  | DbProvider
+  | PluginsProvider
+  | HostConfig
 > =>
   Effect.gen(function* () {
     const organizationId = yield* authorizeTenant(
@@ -264,8 +149,9 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
     const executor = yield* makePlatformExecutor(organizationId).pipe(
       Effect.mapError(() => new AdminUsersError({ message: "Failed to open the platform view" })),
     );
-    // The authorized tenant is handed to the body so an identity join reads the
-    // SAME org the reads are scoped to — never one named by client input.
+    // The authorized tenant is handed to the body so the directory reads the
+    // SAME org the storage reads are scoped to — never one named by client
+    // input.
     return yield* Effect.ensuring(
       body(executor, organizationId),
       executor.close().pipe(Effect.ignore),
@@ -275,22 +161,48 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
 /**
  * Cloud's `AdminUsersProvider`, built per request so the platform executor
  * closes over the per-request postgres socket.
+ *
+ * Identity (email/name per row), the `?email=` resolver and the `?search=`
+ * match all come from the shared `MemberDirectory` — cloud's is the LOCAL
+ * membership mirror (`auth/member-directory.ts`), so an admin page costs one
+ * indexed query per direction and never a WorkOS read per member. The
+ * directory is per-request too (it reads the same postgres socket), which is
+ * why it is captured from the request context rather than at boot.
  */
 export const workosAdminUsersProvider: Layer.Layer<
   AdminUsersProvider,
   never,
-  WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
+  | WorkOSClient
+  | ApiKeyService
+  | UserStoreService
+  | MemberDirectory
+  | WorkOsMirror
+  | DbProvider
+  | PluginsProvider
+  | HostConfig
 > = Layer.effect(AdminUsersProvider)(
   Effect.gen(function* () {
     const context = yield* Effect.context<
-      WorkOSClient | ApiKeyService | UserStoreService | DbProvider | PluginsProvider | HostConfig
+      | WorkOSClient
+      | ApiKeyService
+      | UserStoreService
+      | MemberDirectory
+      | WorkOsMirror
+      | DbProvider
+      | PluginsProvider
+      | HostConfig
     >();
+    const directory = yield* MemberDirectory;
+    // The authorized tenant is what scopes the directory, so every read below
+    // asks the same org the platform view was opened for.
+    const userDirectory = (organizationId: string) =>
+      adminUserDirectoryFromMembers(directory, organizationId);
     return AdminUsersProvider.of({
       listUsers: (headers, options) =>
         withPlatformView(headers, (executor, organizationId) =>
           platformViewOf(executor).pipe(
             Effect.flatMap((admin) =>
-              listAdminUsers(admin, options, userDirectory(organizationId, context)),
+              listAdminUsers(admin, options, userDirectory(organizationId)),
             ),
           ),
         ).pipe(Effect.provideContext(context)),
@@ -298,7 +210,7 @@ export const workosAdminUsersProvider: Layer.Layer<
         withPlatformView(headers, (executor, organizationId) =>
           platformViewOf(executor).pipe(
             Effect.flatMap((admin) =>
-              listAdminUsersWithConnections(admin, options, userDirectory(organizationId, context)),
+              listAdminUsersWithConnections(admin, options, userDirectory(organizationId)),
             ),
           ),
         ).pipe(Effect.provideContext(context)),
@@ -312,7 +224,7 @@ export const workosAdminUsersProvider: Layer.Layer<
         withPlatformView(headers, (executor, organizationId) =>
           platformViewOf(executor).pipe(
             Effect.flatMap((admin) =>
-              getAdminUser(admin, identifier, userDirectory(organizationId, context)),
+              getAdminUser(admin, identifier, userDirectory(organizationId)),
             ),
           ),
         ).pipe(Effect.provideContext(context)),
@@ -322,9 +234,12 @@ export const workosAdminUsersProvider: Layer.Layer<
 
 // Builds the provider per request, providing it to the handlers. Long-lived
 // `WorkOSClient | ApiKeyService` come from the surrounding boot context; the
-// per-request `DbService`/`UserStoreService` (and the execution seams built
-// over them) are supplied by the combined `requestScopedMiddleware`.
-const AdminUsersProviderMiddleware = HttpRouter.middleware<{ provides: AdminUsersProvider }>()(
+// per-request `DbService`/`UserStoreService`/`MemberDirectory` (and the
+// execution seams built over them) are supplied by the combined
+// `requestScopedMiddleware`.
+const AdminUsersProviderMiddleware = HttpRouter.middleware<{
+  provides: AdminUsersProvider;
+}>()(
   Effect.gen(function* () {
     const longLived = yield* Effect.context<WorkOSClient | ApiKeyService>();
     return (httpEffect) =>
@@ -348,7 +263,7 @@ const AdminUsersProviderMiddleware = HttpRouter.middleware<{ provides: AdminUser
  * `/api` prefix as the rest of the cloud router.
  */
 export const makeCloudAdminUsersRoutes = (
-  rsLive: Layer.Layer<DbService | UserStoreService>,
+  rsLive: Layer.Layer<DbService | UserStoreService | MemberDirectory | WorkOsMirror>,
   options: Parameters<typeof makeAdminUsersApiLayer>[1] = {},
 ) =>
   makeAdminUsersApiLayer(
