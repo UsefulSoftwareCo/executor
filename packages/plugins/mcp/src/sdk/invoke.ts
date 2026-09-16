@@ -382,7 +382,11 @@ const useConnection = (
           // The class and code ride in the message because the dispatch
           // defect log renders only `Error#toString()`: without them the
           // trace says which tool failed and nothing about how.
-          message: `MCP tool call failed for ${toolName} (${sdkFailure.name}${sdkFailure.code === undefined ? "" : ` ${sdkFailure.code}`})`,
+          message: `MCP tool call failed for ${toolName} (${[
+            sdkFailure.name,
+            ...(sdkFailure.code === undefined ? [] : [String(sdkFailure.code)]),
+            ...(status === undefined ? [] : [`HTTP ${status}`]),
+          ].join(" ")})`,
           sdkFailure,
           ...(status === undefined ? {} : { status }),
           ...(protocolError === undefined

@@ -1143,7 +1143,8 @@ describe("mcpPlugin", () => {
         // The defect log renders only the message, so it names the SDK
         // rejection (class + code) without carrying the upstream body.
         expect(error).toMatchObject({
-          message: "MCP tool call failed for explode (SdkHttpError CLIENT_HTTP_NOT_IMPLEMENTED)",
+          message:
+            "MCP tool call failed for explode (SdkHttpError CLIENT_HTTP_NOT_IMPLEMENTED HTTP 500)",
         });
         expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
         expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
