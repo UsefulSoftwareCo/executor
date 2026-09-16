@@ -922,3 +922,30 @@ a.doc__term-v:hover {
     padding: 1rem;
   }
 }
+
+/* Below the rail breakpoint the intro is centred, not left-ragged. */
+@media (max-width: 1023.98px) {
+  .doc__intro {
+    text-align: center;
+  }
+  .doc__steps {
+    justify-content: center;
+  }
+  .doc__steps li {
+    display: flex;
+    justify-content: center;
+    gap: 0.6rem;
+  }
+  .doc__tabs {
+    margin-inline: auto;
+  }
+  .doc__tabpanes p {
+    margin-inline: auto;
+  }
+  .doc__actions {
+    justify-content: center;
+  }
+  .doc__pop-panel {
+    text-align: left;
+  }
+}
