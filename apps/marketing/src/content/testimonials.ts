@@ -86,6 +86,12 @@ export const testimonials: readonly Testimonial[] = [
     text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
   },
   {
+    handle: "thesherlocker",
+    name: "Sherlock",
+    id: "2100071527811354813",
+    text: "Okay, this is really cool, I don't know why I've delayed my adoption so much. Executor is now my default",
+  },
+  {
     handle: "BenceRedmond",
     name: "Bence Redmond",
     id: "2084739965972529153",
