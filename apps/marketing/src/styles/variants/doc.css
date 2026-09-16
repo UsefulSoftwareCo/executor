@@ -685,3 +685,39 @@ a.doc__term-v:hover {
 .doc__copy-logos img + img {
   margin-left: -5px;
 }
+
+/* ── Platform download ── */
+.doc__dl {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.doc__dl-link {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__dl-link:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__dl-other > summary {
+  font-size: 13px;
+}
+.doc__dl .download-other-list {
+  left: 0;
+  transform: none;
+}
+.doc__ways .doc__dl {
+  margin-left: 0.4rem;
+}
+.doc__ways .doc__dl a {
+  margin-left: 0;
+}
+/* Explicit, since utility classes added at runtime are not guaranteed to be
+   in the build. */
+.doc__dl > .hidden,
+.doc__dl-other.hidden {
+  display: none;
+}

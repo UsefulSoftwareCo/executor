@@ -98,7 +98,16 @@ const { gh } = Astro.props;
         </div>
         <div role="tabpanel" data-doc-pane="local" hidden>
           <p>Nothing leaves your machine. A desktop app for Mac, Windows, and Linux, or a CLI that runs in the background. Same local endpoint either way.</p>
-          <div class="doc__actions"><a href={`${gh}/releases/latest`} class="btn-primary">Download desktop</a><code class="doc__cmd">npm i -g executor</code><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
+          <div class="doc__actions"><span class="doc__dl" data-download>
+              <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-primary">Download for Mac</a>
+              <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="btn-primary">Download for Mac (Intel)</a>
+              <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="btn-primary">Download for Windows</a>
+              <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="btn-primary">Download for Linux</a>
+              <details class="download-other doc__dl-other hidden" data-download-other>
+                <summary>Other platforms ▾</summary>
+                <div class="download-other-list" data-download-other-list></div>
+              </details>
+            </span><code class="doc__cmd">npm i -g executor</code><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
           <span class="doc__copy-logos" aria-hidden="true">
             {agentLogos.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
           </span>
@@ -223,7 +232,16 @@ const { gh } = Astro.props;
         <div>
           <strong>Desktop.</strong> A desktop app for Mac, Windows, and Linux. Everything
           stays on your machine.
-          <a href={`${gh}/releases/latest`}>Latest release ↗</a>
+          <span class="doc__dl" data-download>
+              <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="doc__dl-link">Download for Mac</a>
+              <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="doc__dl-link">Download for Mac (Intel)</a>
+              <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="doc__dl-link">Download for Windows</a>
+              <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="doc__dl-link">Download for Linux</a>
+              <details class="download-other doc__dl-other hidden" data-download-other>
+                <summary>Other platforms ▾</summary>
+                <div class="download-other-list" data-download-other-list></div>
+              </details>
+            </span>
         </div>
       </li>
       <li>
@@ -258,7 +276,7 @@ const { gh } = Astro.props;
   <section id="pricing" class="doc__section">
     <h2 class="doc__h">Pricing</h2>
     <p>Cloud is free for up to three members and 100,000 executions a month. Team is $15 per member per month with unlimited executions. Enterprise adds self-hosted support, SSO and SCIM, and audit logs.</p>
-    <p class="doc__quiet-p"><a href="/pricing">Full pricing ↗</a> · <a href="mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry">Talk to us</a></p>
+    <p class="doc__quiet-p"><a href="mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry">Talk to us about Enterprise</a></p>
   </section>
 
   {/* ── 06 Writing ── */}
@@ -287,7 +305,7 @@ const { gh } = Astro.props;
       </span>
     </a>
     <p class="doc__quiet-p">
-      <a href="/about-executor">More about Executor ↗</a> · <a href="https://discord.gg/eF29HBHwM6">Discord ↗</a>
+      <a href="https://discord.gg/eF29HBHwM6">Discord ↗</a>
     </p>
   </section>
 </article>
@@ -307,4 +325,50 @@ const { gh } = Astro.props;
       }
     });
   }
+</script>
+
+<script>
+  // Show one download button for the visitor's OS and tuck the rest behind
+  // "Other platforms". Without JS or on an unknown OS, all four stay visible.
+  type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64";
+  type UserAgentData = {
+    readonly platform: string;
+    readonly getHighEntropyValues?: (
+      hints: ReadonlyArray<string>,
+    ) => Promise<{ readonly architecture?: string }>;
+  };
+  const detectOs = async (): Promise<DownloadOs | null> => {
+    const uad = (navigator as Navigator & { readonly userAgentData?: UserAgentData }).userAgentData;
+    const platform = (uad?.platform ?? navigator.platform ?? "").toLowerCase();
+    const ua = navigator.userAgent.toLowerCase();
+    if (platform.includes("win") || ua.includes("windows")) return "win-x64";
+    if (platform.includes("linux") || ua.includes("linux")) return "linux-x64";
+    if (platform.includes("mac") || ua.includes("mac")) {
+      if (uad?.getHighEntropyValues) {
+        try {
+          const h = await uad.getHighEntropyValues(["architecture"]);
+          if (h.architecture === "x86") return "mac-x64";
+        } catch {}
+      }
+      return "mac-arm64";
+    }
+    return null;
+  };
+  void (async () => {
+    const detected = await detectOs();
+    if (!detected) return;
+    for (const root of document.querySelectorAll<HTMLElement>("[data-download]")) {
+      const other = root.querySelector<HTMLElement>("[data-download-other]");
+      const list = root.querySelector<HTMLElement>("[data-download-other-list]");
+      if (!other || !list) continue;
+      for (const btn of root.querySelectorAll<HTMLAnchorElement>("a[data-os]")) {
+        if (btn.dataset.os === detected) continue;
+        btn.classList.add("hidden");
+        const clone = btn.cloneNode(true) as HTMLAnchorElement;
+        clone.className = "";
+        list.appendChild(clone);
+      }
+      other.classList.remove("hidden");
+    }
+  })();
 </script>
