@@ -326,6 +326,11 @@
   color: var(--color-ink-2);
   margin-bottom: 1rem;
   max-width: 60ch;
+  /* Always two lines tall, so the buttons sit at the same height on every tab. */
+  min-height: calc(2 * 1.6em);
+}
+.doc__tabpanes .doc__actions {
+  min-height: 46px;
 }
 .doc__tabpanes .doc__actions {
   margin-bottom: 1.1rem;
