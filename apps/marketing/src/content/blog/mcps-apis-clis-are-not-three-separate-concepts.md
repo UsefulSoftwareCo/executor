@@ -24,8 +24,8 @@ So, with it established that they're all the same underlying concept, why do the
 MCP seems to be the right protocol to use for any interactions that are with agents. Some examples of this:
 
 - [Claude Channels](https://code.claude.com/docs/en/channels-reference) is built on MCP and allows you to push data back into a running session via an MCP.
-- MCP Apps allows for embedding UI directly inside of chats, i.e. "show me a chart of my PostHog data."
-- MCP Elicitation enables getting actual input from humans. This is really useful when you need them to confirm something like "are you okay with analytics" or going to a URL to perform an action.
+- [MCP Apps](https://x.com/WorkOS/status/2059718408590245900) allows for embedding UI directly inside of chats, i.e. "show me a chart of my PostHog data."
+- [MCP Elicitation](https://x.com/RhysSullivan/status/2021043465119989916) enables getting actual input from humans. This is really useful when you need them to confirm something like "are you okay with analytics" or going to a URL to perform an action.
 - [MCP Triggers](https://modelcontextprotocol.io/community/working-groups/triggers-events) to notify clients of state changes.
 
 Now the trouble with these is there's a chicken and egg problem. Most clients only implement support for MCP tools and that's it. What's cool though is you can actually work around partial client support by doing the same functionality over tool calls only as a fallback, which I'll have a longer post coming on.
@@ -46,7 +46,7 @@ That's not to say that they're bad though. I would easily argue the CLIs produce
 
 Today CLIs provide the best debuggability, interfacing, data access, etc. to agents because of the beautiful composability of bash and everything running them locally on your computer enables.
 
-Back in March we saw a lot of writing around "building CLIs for agents," and fundamentally it just comes down to bash being the wrong primitive for agents to be using. There's too many footguns for them to get trapped in, i.e. when they run a command that prompts for human input.
+[Back in March](https://x.com/RhysSullivan/status/2030903539871154193) we saw a lot of writing around "building CLIs for agents," and fundamentally it just comes down to bash being the wrong primitive for agents to be using. There's too many footguns for them to get trapped in, i.e. when they run a command that prompts for human input.
 
 ## Closing
 
