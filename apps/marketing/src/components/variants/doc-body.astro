@@ -24,7 +24,9 @@ const logo = (name: string): string => {
   return hit[1] as unknown as string;
 };
 const toolLogos = ["github", "linear", "sentry", "stripe", "notion", "slack", "jira", "gmail"];
-const agentLogos = ["claude", "codex", "cursor"];
+const agentLogos = ["claude", "codex", "cursor", "chatgpt", "gemini", "copilot", "windsurf", "opencode", "zed", "grok"];
+// The three marks on the copy button; the full list would crowd it.
+const agentLogosShort = ["claude", "codex", "cursor"];
 const X_URL = "https://x.com/RhysSullivan";
 
 interface Props {
@@ -64,9 +66,7 @@ const { gh } = Astro.props;
                 {agentLogos.map((n, i) => (
                   <span class="doc__pop-tile" style={`--i:${i}`}><img src={logo(n)} alt="" width="18" height="18" /></span>
                 ))}
-                {["ChatGPT", "Hermes", "Grok", "any MCP client"].map((n, i) => (
-                  <span class="doc__pop-pill" style={`--i:${agentLogos.length + i}`}>{n}</span>
-                ))}
+                <span class="doc__pop-pill" style={`--i:${agentLogos.length}`}>any MCP client</span>
               </span>
             </span>
             the Executor tool.
@@ -88,7 +88,7 @@ const { gh } = Astro.props;
           <p>Sign in, point your agent at one URL, done. Free for up to three people and 100,000 executions a month.</p>
           <div class="doc__actions"><a href="/cloud" class="btn-primary">Start on Cloud</a><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
           <span class="doc__copy-logos" aria-hidden="true">
-            {agentLogos.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
+            {agentLogosShort.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
           </span>
           <span>Copy setup prompt</span>
           <span class="copy-icons" aria-hidden="true">
@@ -110,7 +110,7 @@ const { gh } = Astro.props;
               </details>
             </span><code class="doc__cmd">npm i -g executor</code><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
           <span class="doc__copy-logos" aria-hidden="true">
-            {agentLogos.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
+            {agentLogosShort.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
           </span>
           <span>Copy setup prompt</span>
           <span class="copy-icons" aria-hidden="true">
