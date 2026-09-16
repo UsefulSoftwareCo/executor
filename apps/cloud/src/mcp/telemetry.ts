@@ -134,7 +134,6 @@ const readJsonRpcEnvelope = (request: Request): Effect.Effect<Option.Option<Json
   }).pipe(
     Effect.map((text) => (text ? decodeJsonRpcEnvelopeString(text) : Option.none())),
     Effect.catchCause(() => Effect.succeed(Option.none())),
-    Effect.withSpan("mcp.request.read_json_rpc"),
   );
 
 // Managed-cloud capture of the executed script, on the `mcp.request` span

@@ -29,6 +29,8 @@ import {
   resetInFlightColdBuildCountForTest,
   resetResidentRuntimeCountForTest,
   resetResidentSessionRegistryForTest,
+  residencyAttributes,
+  residencyCounts,
   residentSessionIdsForTest,
   touchResidentSession,
 } from "./session-runtime-residency";
@@ -1831,6 +1833,89 @@ describe("McpAgentSessionDOBase residency cap eviction", () => {
 
     it("marking an eviction request on an entry that no longer exists is a no-op", () => {
       expect(() => markEvictionRequested("never-registered")).not.toThrow();
+    });
+  });
+
+  // These exist because "nothing was evictable" (`mcp.isolate.cap_overflow`)
+  // does not, on its own, say why: an isolate full of legitimately-streaming
+  // sessions and one full of sessions that are merely mid-request both trip
+  // it identically. `residencyCounts`/`residencyAttributes` are the synchronous
+  // breakdown that tells the two apart from the registry alone.
+  describe("residencyCounts / residencyAttributes", () => {
+    it("counts evictable, pinned, eviction-pending, and streaming entries from a mixed registry", () => {
+      const now = Date.now();
+      // Evictable and currently streaming: `canEvict()` only reflects paused/
+      // running execution state, not streams, so a registrant can legitimately
+      // report both.
+      registerResidentSession({
+        sessionId: "evictable-streaming",
+        lastActivityMs: now,
+        canEvict: () => true,
+        dispose: async () => undefined,
+        isStreaming: () => true,
+      });
+      // Evictable, no stream.
+      registerResidentSession({
+        sessionId: "evictable-idle",
+        lastActivityMs: now,
+        canEvict: () => true,
+        dispose: async () => undefined,
+        isStreaming: () => false,
+      });
+      // Pinned (not evictable), no stream.
+      registerResidentSession({
+        sessionId: "pinned",
+        lastActivityMs: now,
+        canEvict: () => false,
+        dispose: async () => undefined,
+        isStreaming: () => false,
+      });
+      // Evictable per `canEvict()`, but inside the post-request grace window —
+      // this is the case `pickEvictionCandidate` also skips, and exactly the
+      // gap `evictionPending` exists to surface.
+      registerResidentSession({
+        sessionId: "eviction-pending",
+        lastActivityMs: now,
+        canEvict: () => true,
+        dispose: async () => undefined,
+        isStreaming: () => false,
+      });
+      markEvictionRequested("eviction-pending", now);
+
+      const counts = residencyCounts(now);
+      expect(counts.evictable, "3 of 4 entries report canEvict() === true").toBe(3);
+      expect(counts.pinned, "1 of 4 entries report canEvict() === false").toBe(1);
+      expect(
+        counts.evictionPending,
+        "1 entry has an eviction request still inside the grace window",
+      ).toBe(1);
+      expect(counts.streaming, "1 of 4 entries is currently streaming").toBe(1);
+
+      const attributes = residencyAttributes();
+      expect(attributes["mcp.isolate.resident_evictable"]).toBe(3);
+      expect(attributes["mcp.isolate.resident_pinned"]).toBe(1);
+      expect(attributes["mcp.isolate.resident_eviction_pending"]).toBe(1);
+      expect(attributes["mcp.isolate.resident_streaming"]).toBe(1);
+      expect(attributes["mcp.isolate.in_flight_cold_builds"]).toBe(currentInFlightColdBuildCount());
+    });
+
+    it("omits the streaming attribute entirely when no registered entry can answer it", () => {
+      registerResidentSession({
+        sessionId: "no-streaming-signal",
+        lastActivityMs: Date.now(),
+        canEvict: () => true,
+        dispose: async () => undefined,
+      });
+
+      const counts = residencyCounts();
+      expect(counts.streaming, "no entry supplies isStreaming, so it is left undefined").toBe(
+        undefined,
+      );
+      expect(residencyAttributes()).not.toHaveProperty("mcp.isolate.resident_streaming");
+    });
+
+    it("reports all-zero counts for an empty registry", () => {
+      expect(residencyCounts()).toEqual({ evictable: 0, pinned: 0, evictionPending: 0 });
     });
   });
 });

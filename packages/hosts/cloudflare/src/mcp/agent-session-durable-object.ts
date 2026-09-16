@@ -50,6 +50,7 @@ import {
   reserveColdBuildSlot,
   type ResidentSessionEntry,
   residencyAttributes,
+  residencyCounts,
   RESIDENT_RUNTIME_SOFT_CAP,
   touchResidentSession,
 } from "./session-runtime-residency";
@@ -1025,6 +1026,26 @@ export abstract class McpAgentSessionDOBase<
       const candidate = pickEvictionCandidate();
       if (!candidate) {
         yield* Effect.annotateCurrentSpan({ "mcp.isolate.cap_overflow": true });
+        // Span attributes are sampled, so this condition can be invisible in
+        // traces even though it happens on every affected init. A structured
+        // log line is unsampled (Cloudflare logpush -> Axiom), so this is
+        // the count-independent-of-sampling signal for the same event, and it
+        // carries the WHY (evictable/pinned/streaming/eviction_pending) that
+        // `mcp.isolate.cap_overflow: true` alone cannot.
+        const counts = residencyCounts();
+        console.warn(
+          JSON.stringify({
+            event: "mcp_isolate_cap_overflow",
+            sessionId: self.sessionIdForTelemetry(),
+            residentRuntimes: currentResidentRuntimeCount(),
+            inFlightColdBuilds: currentInFlightColdBuildCount(),
+            evictable: counts.evictable,
+            pinned: counts.pinned,
+            streaming: counts.streaming ?? 0,
+            evictionPending: counts.evictionPending,
+            softCap: self.residentRuntimeSoftCap(),
+          }),
+        );
         return;
       }
       yield* Effect.sync(() => self.queueCapEvictionRequest(candidate));
@@ -1481,6 +1502,7 @@ export abstract class McpAgentSessionDOBase<
             lastActivityMs: Date.now(),
             canEvict: () => self.canEvictResidentRuntime(),
             dispose: () => self.requestSelfEviction(),
+            isStreaming: () => self.activeStreamCount() > 0,
           });
         }
       }

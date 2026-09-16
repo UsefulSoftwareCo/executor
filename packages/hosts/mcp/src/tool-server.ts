@@ -1513,7 +1513,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
           ),
       );
     });
-  }).pipe(Effect.withSpan("mcp.host.register_search_invoke"));
+  });
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -2062,10 +2062,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
           ({ code }, extra) => runToolEffect(executeCode(code, extra), extra),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "execute" },
-        }),
       );
 
     yield* Effect.sync(() =>
@@ -2093,10 +2089,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         ({ name }, extra) =>
           runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog)), extra),
       ),
-    ).pipe(
-      Effect.withSpan("mcp.host.register_tool", {
-        attributes: { "mcp.tool.name": "skills" },
-      }),
     );
 
     if (!passthrough)
@@ -2161,11 +2153,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           ({ executionId }, extra) =>
             runToolEffect(resumeAfterBrowserApproval(executionId, extra), extra),
         );
-      }).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "resume" },
-        }),
-      );
+      });
 
     // --- per-integration search tools (opt-in, `?search_tools=true`) ---
     //
@@ -2191,6 +2179,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       const namespaces = parseIntegrationInventory(description).filter((slug) =>
         TOOL_NAME_SAFE_SLUG.test(slug),
       );
+      yield* Effect.annotateCurrentSpan({ "mcp.namespace_search.count": namespaces.length });
       yield* Effect.sync(() => {
         for (const integration of namespaces) {
           server.registerTool(
@@ -2214,14 +2203,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ),
           );
         }
-      }).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: {
-            "mcp.tool.name": "search_<integration>",
-            "mcp.namespace_search.count": namespaces.length,
-          },
-        }),
-      );
+      });
     }
 
     // --- artifacts / MCP Apps ---
@@ -2607,11 +2589,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             ],
           }),
         );
-      }).pipe(
-        Effect.withSpan("mcp.host.register_resource", {
-          attributes: { "mcp.resource.uri": MCP_APPS_SHELL_RESOURCE_URI },
-        }),
-      );
+      });
 
       yield* Effect.sync(() =>
         registerAppTool(
@@ -2671,10 +2649,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               extra,
             ),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "create-artifact" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2740,10 +2714,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               extra,
             ),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "edit-artifact" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2758,10 +2728,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
           (_args, extra) => runToolEffect(listArtifacts(), extra),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "list-artifacts" },
-        }),
       );
 
       yield* Effect.sync(() =>
@@ -2783,10 +2749,6 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
           ({ id }, extra) => runToolEffect(showArtifact(id), extra),
         ),
-      ).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "show-artifact" },
-        }),
       );
 
       yield* Effect.sync(() => {
@@ -2844,11 +2806,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               extra,
             ),
         );
-      }).pipe(
-        Effect.withSpan("mcp.host.register_tool", {
-          attributes: { "mcp.tool.name": "execute-action" },
-        }),
-      );
+      });
     }
 
     // Client capabilities only exist after `initialize`, and `tools/list` is

@@ -132,6 +132,16 @@ export type ResidentSessionEntry = {
   evictionRequestedAt?: number;
   readonly canEvict: () => boolean;
   readonly dispose: (reason: "cap") => Promise<void>;
+  /**
+   * Cheap, synchronous "does this session currently have an active stream"
+   * check, so the registry can explain WHY residency will not budge — a
+   * cap-overflow isolate full of streaming sessions looks identical to one
+   * full of paused-but-not-evictable sessions unless this is broken out
+   * separately. Optional because not every registrant can answer it for
+   * free; when absent, `residencyCounts` simply omits the streaming count
+   * rather than reporting a misleading zero.
+   */
+  readonly isStreaming?: () => boolean;
 };
 
 /**
@@ -231,6 +241,58 @@ export const resetResidentSessionRegistryForTest = (): void => {
 export const residentSessionIdsForTest = (): ReadonlyArray<string> =>
   Array.from(residentSessions.keys());
 
+/**
+ * Breaks the registry down by WHY a resident session is or is not eligible
+ * for eviction right now, computed in one synchronous pass over the same
+ * entries `pickEvictionCandidate` walks. This exists because "nothing was
+ * evictable" (`mcp.isolate.cap_overflow`) is not, on its own, actionable: an
+ * isolate full of legitimately-streaming sessions and one full of sessions
+ * that are merely mid-request look identical from the outside without this
+ * breakdown.
+ *
+ * `evictable` and `pinned` are computed from `canEvict()` alone and always
+ * sum to the registry's size. `evictionPending` is a separate, possibly
+ * overlapping count — an entry can report `canEvict() === true` and still be
+ * sitting out the post-request grace window that `pickEvictionCandidate`
+ * also honors, which is exactly the case that makes a healthy-looking
+ * registry still fail to yield a candidate. `streaming` is omitted entirely
+ * (rather than reported as zero) unless at least one registered entry
+ * supplies {@link ResidentSessionEntry.isStreaming}, since a registrant that
+ * cannot answer it cheaply should not be silently counted as non-streaming.
+ */
+export const residencyCounts = (
+  nowMs = Date.now(),
+): {
+  readonly evictable: number;
+  readonly pinned: number;
+  readonly evictionPending: number;
+  readonly streaming?: number;
+} => {
+  let evictable = 0;
+  let pinned = 0;
+  let evictionPending = 0;
+  let streaming = 0;
+  let sawStreamingSignal = false;
+  for (const entry of residentSessions.values()) {
+    if (entry.canEvict()) {
+      evictable += 1;
+    } else {
+      pinned += 1;
+    }
+    if (
+      entry.evictionRequestedAt !== undefined &&
+      nowMs - entry.evictionRequestedAt < EVICTION_REQUEST_GRACE_MS
+    ) {
+      evictionPending += 1;
+    }
+    if (entry.isStreaming) {
+      sawStreamingSignal = true;
+      if (entry.isStreaming()) streaming += 1;
+    }
+  }
+  return { evictable, pinned, evictionPending, ...(sawStreamingSignal ? { streaming } : {}) };
+};
+
 type MemoryCapablePerformance = {
   readonly memory?: {
     readonly usedJSHeapSize?: unknown;
@@ -271,9 +333,26 @@ export const isolateMemoryAttributes = (): Record<string, number> => {
  * every idle disposal, so production can confirm the mechanism directly:
  * residency should now fall back toward zero as sessions go idle instead of
  * climbing with the number of connected-but-quiet clients.
+ *
+ * The `resident_evictable`/`resident_pinned`/`resident_eviction_pending`
+ * (and, when available, `resident_streaming`) attributes exist so a sampled
+ * span can answer WHY residency is or is not shrinking, without needing a
+ * heap snapshot Workers cannot provide: a cap-overflow isolate full of
+ * `resident_pinned` looks nothing like one full of `resident_streaming`, and
+ * only one of those is the eviction policy's own doing.
  */
-export const residencyAttributes = (): Record<string, number> => ({
-  "mcp.isolate.resident_runtimes": currentResidentRuntimeCount(),
-  "mcp.isolate.peak_resident_runtimes": peakResidentRuntimeCountInIsolate(),
-  ...isolateMemoryAttributes(),
-});
+export const residencyAttributes = (): Record<string, number> => {
+  const counts = residencyCounts();
+  return {
+    "mcp.isolate.resident_runtimes": currentResidentRuntimeCount(),
+    "mcp.isolate.peak_resident_runtimes": peakResidentRuntimeCountInIsolate(),
+    "mcp.isolate.resident_evictable": counts.evictable,
+    "mcp.isolate.resident_pinned": counts.pinned,
+    ...(counts.streaming === undefined
+      ? {}
+      : { "mcp.isolate.resident_streaming": counts.streaming }),
+    "mcp.isolate.resident_eviction_pending": counts.evictionPending,
+    "mcp.isolate.in_flight_cold_builds": currentInFlightColdBuildCount(),
+    ...isolateMemoryAttributes(),
+  };
+};

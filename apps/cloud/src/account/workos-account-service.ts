@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Result } from "effect";
 
 import { AccountProvider, type AccountHeaders } from "@executor-js/api/server";
 import {
@@ -19,6 +19,8 @@ import {
   countSeatsUsed,
   getMemberLimitForPlan,
   selectActiveMemberLimitPlan,
+  type AutumnSubscriptionSummary,
+  type SeatMembership,
 } from "../extensions/billing/plans";
 
 // The per-request resolved caller, injected by the cookie-only session
@@ -139,27 +141,47 @@ export const workosAccountProvider: Layer.Layer<
         }
       });
 
+    // Pure seat math, shared by `getMemberSeats` (reserveMemberSlot's
+    // fail-closed lookup) and `listMembers` (which fetches the same three
+    // inputs concurrently and combines them inline further below).
+    // `listOrgMembers` returns active members AND pending memberships (an
+    // invited user shows up as status "pending"); `listPendingInvitations`
+    // returns the same invited users again. `countSeatsUsed` dedupes them so
+    // an outstanding invite is not counted twice.
+    const seatsFrom = (
+      memberships: { readonly data: ReadonlyArray<SeatMembership> },
+      pendingInvitationCount: number,
+      subscriptions: ReadonlyArray<AutumnSubscriptionSummary>,
+    ) => {
+      const planId = selectActiveMemberLimitPlan(subscriptions);
+      const limit = getMemberLimitForPlan(planId);
+      return {
+        used: countSeatsUsed(memberships.data, pendingInvitationCount),
+        granted: limit ?? 0,
+        unlimited: limit === null,
+      };
+    };
+
     // Mirror of org/handlers `getMemberSeats` — live seat usage from WorkOS.
-    const getMemberSeats = (organizationId: string) =>
+    // Accepts an already-fetched `memberships` list so a caller that has one
+    // on hand (`listMembers`) does not pay for a second `listOrgMembers`
+    // round trip. `reserveMemberSlot` has no list on hand, so it fetches its
+    // own — either way, the remaining lookups run concurrently.
+    const getMemberSeats = (
+      organizationId: string,
+      memberships?: Effect.Success<ReturnType<typeof workos.listOrgMembers>>,
+    ) =>
       Effect.gen(function* () {
-        const customer = yield* autumn.use((client) =>
-          client.customers.getOrCreate({ customerId: organizationId }),
+        const [customer, resolvedMemberships, invitations] = yield* Effect.all(
+          [
+            autumn.use((client) => client.customers.getOrCreate({ customerId: organizationId })),
+            memberships ? Effect.succeed(memberships) : workos.listOrgMembers(organizationId),
+            workos.listPendingInvitations(organizationId),
+          ],
+          { concurrency: "unbounded" },
         );
-        const planId = selectActiveMemberLimitPlan(customer.subscriptions);
-        const limit = getMemberLimitForPlan(planId);
 
-        // `listOrgMembers` returns active members AND pending memberships (an
-        // invited user shows up as status "pending"); `listPendingInvitations`
-        // returns the same invited users again. `countSeatsUsed` dedupes them
-        // so an outstanding invite is not counted twice.
-        const memberships = yield* workos.listOrgMembers(organizationId);
-        const invitations = yield* workos.listPendingInvitations(organizationId);
-
-        return {
-          used: countSeatsUsed(memberships.data, invitations.data.length),
-          granted: limit ?? 0,
-          unlimited: limit === null,
-        };
+        return seatsFrom(resolvedMemberships, invitations.data.length, customer.subscriptions);
       });
 
     // Mirror of org/handlers `reserveMemberSlot` — fail closed on lookup error.
@@ -297,19 +319,53 @@ export const workosAccountProvider: Layer.Layer<
         Effect.gen(function* () {
           const { session, org } = yield* requireOrganization(headers);
 
-          // Seats fall back to safe display defaults on lookup error — never
-          // blank the page over a transient Autumn/WorkOS hiccup. The real cap
-          // gate lives in `reserveMemberSlot`, which fails closed.
-          const seats = yield* getMemberSeats(org.id).pipe(
-            Effect.catchCause(() => Effect.succeed({ used: 0, granted: 0, unlimited: false })),
+          // The three remote lookups below are independent, so they run
+          // concurrently instead of the old serial chain (getMemberSeats'
+          // Autumn/listOrgMembers/listPendingInvitations, THEN a second,
+          // separate listOrgMembers for the rows). `listOrgMembers` is needed
+          // by both the seat count and the member rows, so it is fetched
+          // ONCE here and shared instead of twice.
+          //
+          // Failure semantics differ per branch, so each branch is captured
+          // with `Effect.either` rather than left to fail the whole
+          // `Effect.all`: a `listOrgMembers` failure must still surface as an
+          // AccountError for the members list (unchanged from before); an
+          // Autumn or `listPendingInvitations` failure must only degrade
+          // seats to their safe defaults — never blank the page over a
+          // transient hiccup, exactly as `getMemberSeats`'s own `catchCause`
+          // fallback did before. The real cap gate lives in
+          // `reserveMemberSlot`, which fails closed.
+          const [membershipsResult, seatInputsResult] = yield* Effect.all(
+            [
+              Effect.result(workos.listOrgMembers(org.id)),
+              Effect.result(
+                Effect.all(
+                  [
+                    autumn.use((client) => client.customers.getOrCreate({ customerId: org.id })),
+                    workos.listPendingInvitations(org.id),
+                  ],
+                  { concurrency: "unbounded" },
+                ),
+              ),
+            ],
+            { concurrency: "unbounded" },
           );
 
-          const memberships = yield* workos
-            .listOrgMembers(org.id)
-            .pipe(Effect.catchTag("WorkOSError", toAccountError));
+          if (Result.isFailure(membershipsResult)) {
+            return yield* toAccountError();
+          }
+          const memberships = membershipsResult.success;
+
+          const seats = Result.isSuccess(seatInputsResult)
+            ? seatsFrom(
+                memberships,
+                seatInputsResult.success[1].data.length,
+                seatInputsResult.success[0].subscriptions,
+              )
+            : { used: 0, granted: 0, unlimited: false };
 
           const members = yield* Effect.all(
-            memberships.data.map((m) =>
+            memberships.data.map((m: (typeof memberships.data)[number]) =>
               Effect.gen(function* () {
                 const user = yield* workos.getUser(m.userId);
                 return {
@@ -325,7 +381,7 @@ export const workosAccountProvider: Layer.Layer<
                 };
               }),
             ),
-            { concurrency: 5 },
+            { concurrency: 20 },
           ).pipe(Effect.catchTag("WorkOSError", toAccountError));
 
           return { members, seats };

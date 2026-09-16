@@ -47,3 +47,18 @@ export const unauthorized = (auth: UnauthorizedAuth, protectedResourceMetadataUr
       },
     },
   );
+
+/** CORS preflight for `/mcp` and the OAuth discovery documents: browsers
+ *  preflight the metadata docs during RFC 9728 discovery. Shared by the
+ *  Worker entry (discovery docs) and the Agents bridge (`/mcp`). */
+export const corsPreflightResponse = (): Response =>
+  new Response(null, {
+    status: 204,
+    headers: {
+      ...CORS_ALLOW_ORIGIN,
+      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+      "access-control-allow-headers":
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
+    },
+  });

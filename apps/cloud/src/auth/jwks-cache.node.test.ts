@@ -228,6 +228,46 @@ describe("createCachedRemoteJWKSet", () => {
     expect(store.reads()).toBeGreaterThan(0);
   });
 
+  it("a cold isolate does not wait on a slow store when the upstream answers first", async () => {
+    const kp = await generateRotatableKeypair("k1");
+    const store = makeStoreHarness();
+    const warm = makeFetchHarness([kp.publicJwk]);
+    const first = createCachedRemoteJWKSet(jwksUrl, { fetch: warm.fetch, store });
+    const token = await sign(kp);
+    await jwtVerify(token, first, { issuer, audience });
+
+    // The production shape: the Workers Cache API read takes seconds on a
+    // cold isolate while the key server answers in tens of ms. A cold
+    // resolver must take the upstream answer instead of waiting on the store.
+    const slowStore: JwksStore = {
+      get: (url) => new Promise((resolve) => setTimeout(() => resolve(store.get(url)), 2_000)),
+      put: store.put,
+    };
+    const second = createCachedRemoteJWKSet(jwksUrl, { fetch: warm.fetch, store: slowStore });
+    const startedAt = Date.now();
+    const { payload } = await jwtVerify(token, second, { issuer, audience });
+    expect(payload.sub).toBe("user_test");
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(second.inspect().blockingFetchCount).toBe(1);
+  });
+
+  it("a cold isolate still answers from the store when the upstream is down", async () => {
+    const kp = await generateRotatableKeypair("k1");
+    const store = makeStoreHarness();
+    const warm = makeFetchHarness([kp.publicJwk]);
+    const first = createCachedRemoteJWKSet(jwksUrl, { fetch: warm.fetch, store });
+    const token = await sign(kp);
+    await jwtVerify(token, first, { issuer, audience });
+
+    // Upstream rejects immediately (loses the race with nothing); the store
+    // answer must still win rather than the fetch failure propagating.
+    const second = createCachedRemoteJWKSet(jwksUrl, { fetch: failingFetch, store });
+    const { payload } = await jwtVerify(token, second, { issuer, audience });
+    expect(payload.sub).toBe("user_test");
+    expect(second.inspect().storeHitCount).toBe(1);
+    expect(second.inspect().blockingFetchCount).toBe(0);
+  });
+
   it("keeps serving the last good keys when the key server is down", async () => {
     const kp = await generateRotatableKeypair("k1");
     const harness = makeFetchHarness([kp.publicJwk]);

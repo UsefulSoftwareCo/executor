@@ -26,13 +26,18 @@ const connectionParams = (connection: Connection) => ({
   name: connection.name,
 });
 
+const probeKey = (connection: Connection): string =>
+  `${connection.owner}:${connection.integration}:${connection.name}`;
+
 /** Whether a persisted verdict may render as-is without a background probe.
  *  Healthy-and-fresh renders untouched. Everything else revalidates: stale or
  *  never-checked for obvious reasons, and NON-healthy always; an expired dot
  *  is exactly the verdict the user is waiting to see change, so recovery must
  *  show on the next load, not after the freshness window. */
-const healthyAndFresh = (last: HealthCheckResult | null | undefined): boolean =>
-  last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
+const healthyAndFresh = (
+  last: HealthCheckResult | null | undefined,
+  now: number = Date.now(),
+): boolean => last?.status === "healthy" && now - last.checkedAt < HEALTH_REVALIDATE_MS;
 
 /** The revalidation query: a healthy (but stale) verdict defers to the
  *  server-enforced window so N open tabs can't stampede the upstream; a
@@ -81,6 +86,76 @@ const freshestVerdict = (
   return persisted.checkedAt > live.checkedAt ? persisted : live;
 };
 
+/** Module-scope memory of automatic probes, keyed by `probeKey`. Unlike the
+ *  per-hook `useRef` guards below (which reset whenever a row remounts), this
+ *  map survives remounts: it is what stops an org-wide reactivity bump from
+ *  remounting a row and re-arming its probe every time. `at` is recorded from
+ *  the LOCAL wall clock, never `result.checkedAt` — the server may answer
+ *  from its 5-minute cache with an old `checkedAt`, which would under-count
+ *  elapsed time and defeat the floor below. */
+const automaticProbeMemory = new Map<
+  string,
+  { readonly at: number; readonly result: HealthCheckResult }
+>();
+
+/** How long a remembered automatic probe blocks another automatic probe for
+ *  the same connection, regardless of verdict. A non-healthy verdict must
+ *  still eventually re-probe so recovery can show (see `revalidateQuery`),
+ *  but "eventually" must not mean "every remount": this floor is what turns a
+ *  per-second remount storm into at most one probe per floor, for healthy and
+ *  non-healthy verdicts alike. */
+export const AUTO_PROBE_FLOOR_MS = 30 * 1000;
+
+/**
+ * Whether an automatic probe should fire for `key` right now, given the
+ * persisted verdict. Consults the module memory together with `persisted`:
+ *  - if the freshest of the two (see `freshestVerdict`) is healthy-and-fresh,
+ *    never probe — the existing freshness contract.
+ *  - otherwise, a remembered probe younger than `AUTO_PROBE_FLOOR_MS` blocks
+ *    another probe no matter its verdict — the anti-storm floor.
+ *  - otherwise (no memory yet, or memory older than the floor) probe.
+ * Pure with respect to its arguments and `now`; the only state it reads is
+ * the shared module memory, which only `recordAutomaticProbe` and
+ * `clearAutomaticProbeMemory` mutate.
+ */
+export function shouldAutoProbe(
+  key: string,
+  persisted: HealthCheckResult | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  const remembered = automaticProbeMemory.get(key);
+  const freshest = freshestVerdict(remembered?.result ?? null, persisted);
+  if (healthyAndFresh(freshest, now)) return false;
+  if (remembered !== undefined && now - remembered.at < AUTO_PROBE_FLOOR_MS) return false;
+  return true;
+}
+
+/** Records a successful probe — automatic or manual — into the module
+ *  memory, so a later remount or automatic pass can see it. See
+ *  `automaticProbeMemory` for why `at` is the local clock, not the server's
+ *  `checkedAt`. Exported (not test-only) so `shouldAutoProbe`'s decision logic
+ *  can be exercised directly, without rendering the hooks that normally call
+ *  it. */
+export function recordAutomaticProbe(key: string, result: HealthCheckResult): void {
+  automaticProbeMemory.set(key, { at: Date.now(), result });
+}
+
+/** Deletes the remembered probe for `key`, forcing the next `shouldAutoProbe`
+ *  call to return `true` regardless of the floor. Called on the reconnect
+ *  ("cleared verdict") transition, which must always re-probe: an OAuth
+ *  re-mint is the one case where the anti-storm floor must not apply.
+ *  Exported for the same testability reason as `recordAutomaticProbe`. */
+export function clearAutomaticProbeMemory(key: string): void {
+  automaticProbeMemory.delete(key);
+}
+
+/** Test-only escape hatch: clears every remembered automatic probe. The
+ *  memory is module-scope, so without this, probes recorded by one test
+ *  would leak into the next. */
+export function resetAutomaticProbeMemoryForTest(): void {
+  automaticProbeMemory.clear();
+}
+
 /**
  * Imperative invalidation of the connections cache for one owner. The server
  * persists every verdict on `last_health`, so after a check we must re-read the
@@ -99,10 +174,12 @@ function useInvalidateConnections(): (owner: Owner) => void {
 
 /**
  * Health for ONE connection, stale-while-revalidate. The persisted verdict
- * renders instantly; a background probe on mount corrects it in place (once
- * per mount, quiet on failure: the persisted verdict is still the best known
- * state). `runCheck` is the manual path ("Check now"): it always forces a
- * fresh probe and folds the result into the same live state.
+ * renders instantly; a background probe corrects it in place, guarded by
+ * `shouldAutoProbe` so a row that remounts (e.g. from an org-wide reactivity
+ * bump) does not re-probe every time, quiet on failure: the persisted verdict
+ * is still the best known state. `runCheck` is the manual path ("Check
+ * now"): it always forces a fresh probe and folds the result into the same
+ * live state.
  */
 export function useConnectionHealth(connection: Connection): {
   readonly probe: HealthCheckResult | null;
@@ -111,7 +188,14 @@ export function useConnectionHealth(connection: Connection): {
 } {
   // A live probe result, once a check has run; merged with the persisted
   // verdict by freshness (see freshestVerdict for why not live-always-wins).
-  const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(null);
+  // Seeded from the module memory on mount, not `null`: without this, a
+  // remount (any connections-write in the org bumps the org-wide reactivity
+  // key and can remount this row) would render the OLDER persisted verdict
+  // until the background probe resolves, even though we already know the
+  // last automatic probe's result.
+  const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(
+    () => automaticProbeMemory.get(probeKey(connection))?.result ?? null,
+  );
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
@@ -121,13 +205,16 @@ export function useConnectionHealth(connection: Connection): {
   // Health checks are AUTOMATIC: loading the list revalidates any verdict
   // older than the freshness window (or never checked), stale-while-revalidate
   // style: the persisted verdict renders instantly, the probe corrects it in
-  // place. The guard is once per mount PLUS once per clearing: the ref holds
-  // the last epoch seen, and a verdict giving way to `null` (an OAuth re-mint
-  // cleared it) re-arms the probe — that is how a completed reconnect gets its
-  // recovery probe without a page reload. Only the clearing transition
-  // re-arms; every other epoch change (a probe's own verdict echoed back by
-  // the refetch, a concurrent surface's fresher verdict) stays quiet, keeping
-  // the no-probe-storm invariant of the original once-per-mount guard.
+  // place. The per-mount part of the guard is once per mount PLUS once per
+  // clearing (the ref holds the last epoch seen this mount, and a verdict
+  // giving way to `null` -- an OAuth re-mint -- re-arms it, which is how a
+  // completed reconnect gets its recovery probe without a page reload). But a
+  // fresh `useRef` starts at `undefined` on every remount, so that guard alone
+  // re-arms on every remount too. `shouldAutoProbe` is the guard that survives
+  // remounts: it consults the module-scope `automaticProbeMemory`, so a row
+  // remounted a second later -- before its own last probe even resolved, or
+  // resolved with a non-healthy verdict -- does not re-probe. Only the
+  // clearing transition bypasses that floor (see `clearAutomaticProbeMemory`).
   const seenEpoch = useRef<number | null | undefined>(undefined);
   useEffect(() => {
     const last = connection.lastHealth;
@@ -136,7 +223,9 @@ export function useConnectionHealth(connection: Connection): {
     const cleared = epoch === null && seenEpoch.current !== null && !firstSight;
     seenEpoch.current = epoch;
     if (!firstSight && !cleared) return;
-    if (healthyAndFresh(last)) return;
+    const key = probeKey(connection);
+    if (cleared) clearAutomaticProbeMemory(key);
+    if (!shouldAutoProbe(key, last)) return;
     void doCheck({
       params: connectionParams(connection),
       query: revalidateQuery(last),
@@ -148,6 +237,7 @@ export function useConnectionHealth(connection: Connection): {
       // churns the cache (which would refetch connections, re-run this
       // effect, and, but for the epoch guard, risk a probe loop).
       if (!Exit.isSuccess(exit)) return;
+      recordAutomaticProbe(key, exit.value);
       seenEpoch.current = exit.value.checkedAt;
       setLiveProbe(exit.value);
       if (exit.value.status !== (last?.status ?? "unknown")) {
@@ -159,13 +249,17 @@ export function useConnectionHealth(connection: Connection): {
   const runCheck = useCallback(async () => {
     // Manual "Check now": invalidate the connections cache unconditionally so
     // every surface picks up the freshly persisted verdict. Adopting the
-    // result's epoch keeps the resulting refetch from re-probing.
+    // result's epoch keeps the resulting refetch from re-probing. This path
+    // always bypasses `shouldAutoProbe` -- the user explicitly asked for a
+    // fresh check -- but still records into the module memory, so a remount
+    // right after a manual check doesn't immediately fire an automatic one.
     const exit = await doCheck({
       params: connectionParams(connection),
       query: {},
       reactivityKeys: connectionCheckKeys,
     });
     if (Exit.isSuccess(exit)) {
+      recordAutomaticProbe(probeKey(connection), exit.value);
       seenEpoch.current = exit.value.checkedAt;
       setLiveProbe(exit.value);
     }
@@ -174,9 +268,6 @@ export function useConnectionHealth(connection: Connection): {
 
   return { probe, status, runCheck };
 }
-
-const probeKey = (connection: Connection): string =>
-  `${connection.owner}:${connection.integration}:${connection.name}`;
 
 /**
  * Health for MANY connections at once (the integrations-list summary), where
@@ -189,32 +280,54 @@ const probeKey = (connection: Connection): string =>
 export function useConnectionsHealth(
   connections: readonly Connection[],
 ): (connection: Connection) => HealthCheckResult | null {
-  const [liveProbes, setLiveProbes] = useState<ReadonlyMap<string, HealthCheckResult>>(new Map());
+  // Seeded from the module memory for whichever connections are known at
+  // mount time, for the same reason as `useConnectionHealth`'s `liveProbe`:
+  // a remount must show the last automatic probe's verdict, not fall back to
+  // the older persisted one while a new probe is (or isn't, thanks to
+  // `shouldAutoProbe`) in flight.
+  const [liveProbes, setLiveProbes] = useState<ReadonlyMap<string, HealthCheckResult>>(() => {
+    const seeded = new Map<string, HealthCheckResult>();
+    for (const connection of connections) {
+      const remembered = automaticProbeMemory.get(probeKey(connection));
+      if (remembered) seeded.set(probeKey(connection), remembered.result);
+    }
+    return seeded;
+  });
   const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
   const invalidateConnections = useInvalidateConnections();
 
   // Once per VERDICT per connection (same epoch guard as the single-connection
   // hook): the list streams in asynchronously, so the effect re-runs as rows
-  // arrive; each row probes once per persisted-verdict epoch, and a re-minted
-  // connection (epoch cleared to null) probes again without a remount.
+  // arrive; each row is considered once per persisted-verdict epoch, and a
+  // re-minted connection (epoch cleared to null) is considered again without
+  // a remount. As with the single-connection hook, this `useRef` guard alone
+  // would re-arm on every remount of the owning component, so whether a
+  // considered row actually probes is decided by `shouldAutoProbe` against
+  // the module-scope `automaticProbeMemory`, which survives that remount.
   const revalidated = useRef(new Map<string, number | null>());
   useEffect(() => {
     for (const connection of connections) {
       const key = probeKey(connection);
       const last = connection.lastHealth;
       const epoch = verdictEpoch(last);
-      if (revalidated.current.has(key) && revalidated.current.get(key) === epoch) continue;
+      const firstSight = !revalidated.current.has(key);
+      const previousEpoch = revalidated.current.get(key) ?? null;
+      if (!firstSight && previousEpoch === epoch) continue;
+      const cleared = !firstSight && previousEpoch !== null && epoch === null;
       revalidated.current.set(key, epoch);
-      if (healthyAndFresh(last)) continue;
+      if (cleared) clearAutomaticProbeMemory(key);
+      if (!shouldAutoProbe(key, last)) continue;
       void doCheck({
         params: connectionParams(connection),
         query: revalidateQuery(last),
       }).then((exit) => {
         // Same automatic-path rule as the single-connection hook: reflect the
-        // verdict, adopt its epoch so the refetch doesn't re-probe, and
+        // verdict, adopt its epoch so the refetch doesn't re-probe, record it
+        // into the module memory so a remount respects the floor, and
         // invalidate the connections cache only when the verdict changed so an
         // unchanged reconfirm never churns the cache.
         if (!Exit.isSuccess(exit)) return;
+        recordAutomaticProbe(key, exit.value);
         revalidated.current.set(key, exit.value.checkedAt);
         setLiveProbes((current) => new Map(current).set(key, exit.value));
         if (exit.value.status !== (last?.status ?? "unknown")) {

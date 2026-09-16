@@ -19,14 +19,24 @@
 //
 //   1. Module-scope memory — free, but dies with the isolate.
 //   2. A cross-isolate store (the Workers Cache API by default) — colo-local,
-//      survives isolate recycling, so a cold isolate reads keys in ~1ms
-//      instead of paying an upstream round trip.
+//      survives isolate recycling, so a cold isolate still has keys when the
+//      upstream key server is slow or down.
 //   3. The upstream JWKS endpoint.
 //
 // On top of that it is stale-while-revalidate: once past `ttlMs` a usable key
 // set is served immediately and refreshed in the background, and if a refresh
-// fails we keep serving the last good keys until `staleMaxMs`. Only a fully
-// cold path (no memory, no store) ever blocks on the network.
+// fails we keep serving the last good keys until `staleMaxMs`.
+//
+// A cold isolate (no memory) RACES the store read against the upstream fetch
+// and takes whichever answers first. The store was added as the fast path,
+// but production measured the opposite: `caches.default.match()` on a cold
+// isolate takes p50 1.4s / p90 2.8s while the upstream fetch takes p50 26ms
+// (`jwks.store_read_ms` vs `jwks.last_fetch_ms` on `workos.session.local_verify`,
+// 2026-09). Waiting on the store first put 1.5s on every cold verify — the
+// single largest cost of a cold API request. Racing keeps the store's purpose
+// (keys survive a slow or dead key server) without its latency: the store
+// only decides the outcome when the upstream is slower than it, which is
+// exactly the incident it exists for.
 //
 // Serving stale keys is safe in a way that serving a stale *token* would not
 // be: key sets rotate on the order of days, tokens are still signature- and
@@ -316,6 +326,8 @@ export const createCachedRemoteJWKSet = (
     void ignoreFailure(refresh());
   };
 
+  /** Read the cross-isolate store. Pure: the caller decides whether the
+   *  candidate becomes the resolver's entry (see `loadCold`). */
   const loadFromStore = async (): Promise<CacheEntry | null> => {
     if (!store) return null;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the L2 store is an optimization; any failure degrades to an upstream fetch
@@ -325,10 +337,7 @@ export const createCachedRemoteJWKSet = (
       lastStoreReadMs = Date.now() - storeReadStartedAt;
       if (!stored) return null;
       const candidate = entryFrom(stored);
-      if (!isUsable(candidate)) return null;
-      entry = candidate;
-      storeHitCount += 1;
-      return candidate;
+      return isUsable(candidate) ? candidate : null;
     } catch {
       return null;
     }
@@ -338,6 +347,59 @@ export const createCachedRemoteJWKSet = (
   const refreshBlocking = (): Promise<CacheEntry> => {
     blockingFetchCount += 1;
     return refresh();
+  };
+
+  /** Adopt a store candidate unless a fresher entry landed in the meantime
+   *  (the racing upstream fetch may have finished first). */
+  const adoptFromStore = (candidate: CacheEntry): CacheEntry => {
+    storeHitCount += 1;
+    if (entry === null || entry.fetchedAt < candidate.fetchedAt) entry = candidate;
+    return entry;
+  };
+
+  type ColdWinner =
+    | { readonly source: "store"; readonly entry: CacheEntry }
+    | { readonly source: "upstream"; readonly entry: CacheEntry };
+
+  /**
+   * The fully cold path: nothing in memory. Race the store read against the
+   * upstream fetch (see the module header for why the store is not simply
+   * read first) and answer with whichever produces usable keys first. The
+   * loser keeps running: an upstream fetch that lands after a store hit still
+   * refreshes memory and the store, so the isolate converges on fresh keys.
+   *
+   * Latency attribution: `blockingFetchCount` moves only when the caller's
+   * answer actually came from upstream; a fetch that lost the race (or
+   * failed) is background work the verify did not pay for.
+   */
+  const loadCold = async (): Promise<CacheEntry> => {
+    const fromStore = loadFromStore();
+    const fromUpstream = refresh().then(
+      (next) => ({ ok: true as const, entry: next }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    const first = await Promise.race<ColdWinner | null>([
+      fromStore.then((candidate) => (candidate ? { source: "store", entry: candidate } : null)),
+      fromUpstream.then((result) =>
+        result.ok ? { source: "upstream", entry: result.entry } : null,
+      ),
+    ]);
+    if (first?.source === "upstream") {
+      blockingFetchCount += 1;
+      return first.entry;
+    }
+    if (first?.source === "store") {
+      return adoptFromStore(first.entry);
+    }
+    // The first to settle had nothing: wait for the other side.
+    const [stored, upstream] = await Promise.all([fromStore, fromUpstream]);
+    if (upstream.ok) {
+      blockingFetchCount += 1;
+      return upstream.entry;
+    }
+    if (stored) return adoptFromStore(stored);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: nothing usable anywhere, so the upstream failure is the real answer
+    throw upstream.error;
   };
 
   const ensureFresh = async (forceRefresh: boolean): Promise<CacheEntry> => {
@@ -350,22 +412,8 @@ export const createCachedRemoteJWKSet = (
       return entry;
     }
 
-    // Cold isolate — the L2 store saves us the upstream round trip.
-    const stored = await loadFromStore();
-    if (stored) {
-      if (!isFresh(stored)) refreshInBackground();
-      return stored;
-    }
-
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a failed refresh must fall back to stale keys rather than fail the verify
-    try {
-      return await refreshBlocking();
-    } catch (error) {
-      // Upstream is slow or down. Last good keys beat failing every request.
-      if (entry && isUsable(entry)) return entry;
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: nothing usable is cached, so the upstream failure is the real answer
-      throw error;
-    }
+    // Cold isolate — store and upstream race; see `loadCold`.
+    return loadCold();
   };
 
   const get: JWTVerifyGetKey = async (protectedHeader, token) => {

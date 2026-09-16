@@ -5513,116 +5513,156 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     //    is older than the freshness TTL.
     // Best-effort: a failed rebuild leaves the stale-but-working catalog in
     // place and retries on the next read.
-    const syncStaleConnectionTools = Effect.gen(function* () {
-      // The platform view can never persist a rebuilt catalog (writes are
-      // denied at the storage boundary), so attempting the sync would only
-      // fire upstream `resolveTools` calls whose results are thrown away —
-      // network side effects on a read-only credential. Skip it entirely:
-      // read-only-ness of the platform read path is a stated invariant here,
-      // not an accident of the best-effort catch below.
-      if (config.platformView === true) return;
-      const integrations = yield* core.findMany("integration", {});
-      if (integrations.length === 0) return;
-      const integrationBySlug = new Map(integrations.map((row) => [row.slug, row] as const));
-      // The TTL only matters when a loaded plugin actually lists a live remote
-      // catalog; otherwise skip it so age alone never widens the stale query.
-      const anyRemoteCatalog = Array.from(runtimes.values()).some(
-        (runtime) => runtime.plugin.remoteToolCatalog === true,
-      );
-      const cutoff =
-        toolsSyncTtlMs == null || !anyRemoteCatalog ? null : Date.now() - toolsSyncTtlMs;
-
-      // Bound the scan to potentially-stale rows: stale-marked (NULL stamp) or
-      // synced before the latest instant any trigger could fire at (the TTL
-      // cutoff / the newest config revision). Per-row trigger checks below
-      // re-verify against each row's own integration; in steady state this
-      // query returns nothing and the read pays one indexed lookup.
-      const latestRevision = integrations.reduce<number | null>(
-        (max, row) =>
-          row.config_revised_at == null
-            ? max
-            : Math.max(max ?? Number(row.config_revised_at), Number(row.config_revised_at)),
-        null,
-      );
-      const staleBefore =
-        cutoff === null && latestRevision === null
-          ? null
-          : Math.max(cutoff ?? Number.MIN_SAFE_INTEGER, latestRevision ?? Number.MIN_SAFE_INTEGER);
-
-      const connections = yield* core.findMany("connection", {
-        where: (b: AnyCb) =>
-          staleBefore === null
-            ? b.isNull("tools_synced_at")
-            : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
-      });
-      // Each rebuild is an independent upstream listing, so they run together
-      // rather than one after another: a host with many stale remote-catalog
-      // connections otherwise pays the sum of every server's latency on the
-      // read that trips the TTL. Only the listings overlap — `persistCatalog`
-      // keeps the catalog writes in a single-file queue, so this fan-out never
-      // opens two transactions on a one-connection database.
-      const rebuilds: Effect.Effect<readonly Tool[]>[] = [];
-      for (const connection of connections) {
-        const integrationRow = integrationBySlug.get(connection.integration);
-        if (!integrationRow) continue;
-        const runtime = runtimes.get(integrationRow.plugin_id);
-        // Only re-produce catalogs this executor can actually re-list —
-        // rebuilding under an unloaded plugin would clear a working catalog.
-        // (A loaded plugin without `resolveTools` still flows through:
-        // `produceConnectionTools` runs its clear-and-stamp cleanup path.)
-        if (!runtime) continue;
-
-        const syncedAt =
-          connection.tools_synced_at == null ? null : Number(connection.tools_synced_at);
-        const revisedTime =
-          integrationRow.config_revised_at == null
-            ? null
-            : Number(integrationRow.config_revised_at);
-
-        const staleMarked = syncedAt === null;
-        const configRevised = revisedTime !== null && (syncedAt ?? 0) < revisedTime;
-        const expired =
-          cutoff !== null &&
-          runtime.plugin.remoteToolCatalog === true &&
-          syncedAt !== null &&
-          syncedAt < cutoff;
-        if (!staleMarked && !configRevised && !expired) continue;
-
-        rebuilds.push(
-          produceConnectionTools(
-            integrationRow,
-            {
-              owner: connection.owner as Owner,
-              integration: IntegrationSlug.make(connection.integration),
-              name: ConnectionName.make(connection.name),
-            },
-            "background",
-          ).pipe(
-            // Best-effort, but never silent: the read still succeeds on the
-            // stale-but-working catalog and the peer rebuilds still finish,
-            // while the operator gets the connection that failed and why.
-            // Without this a connection whose upstream is permanently broken
-            // re-fails on every read and leaves no trace anywhere.
-            Effect.catch((error) =>
-              Effect.logWarning("executor stale tool sync failed", {
-                integration: connection.integration,
-                connection: connection.name,
-                error: describeSyncFailure(error),
-              }).pipe(Effect.as([] as readonly Tool[])),
-            ),
-            Effect.withSpan("executor.tools.sync_stale", {
-              attributes: {
-                "executor.integration": connection.integration,
-                "executor.connection": connection.name,
-              },
-            }),
-          ),
+    //
+    // Two of the triggers are SIGNALS that the persisted catalog is wrong
+    // (stale-marked, config-revised); the third is a GUESS that it might be
+    // (expired). A read waits for the signalled rebuilds (within its grace
+    // budget), but never for the guessed ones: an expired catalog is served
+    // as-is while its re-list runs behind the read, stale-while-revalidate.
+    // Every remote-catalog connection expires on the same 15-minute clock,
+    // so before this split a read that happened to trip the TTL paid one
+    // upstream `tools/list` handshake per connection at once — measured at
+    // p50 2.2s on the cloud `/api/tools` read, with nothing to show for it
+    // but a catalog identical to the one it already had. `awaitExpired` is
+    // the strict mode (`toolsSyncGraceMs: null`): block on everything.
+    const syncStaleConnectionTools = (options: { readonly awaitExpired: boolean }) =>
+      Effect.gen(function* () {
+        // The platform view can never persist a rebuilt catalog (writes are
+        // denied at the storage boundary), so attempting the sync would only
+        // fire upstream `resolveTools` calls whose results are thrown away —
+        // network side effects on a read-only credential. Skip it entirely:
+        // read-only-ness of the platform read path is a stated invariant here,
+        // not an accident of the best-effort catch below.
+        if (config.platformView === true) return;
+        const integrations = yield* core.findMany("integration", {});
+        if (integrations.length === 0) return;
+        const integrationBySlug = new Map(integrations.map((row) => [row.slug, row] as const));
+        // The TTL only matters when a loaded plugin actually lists a live remote
+        // catalog; otherwise skip it so age alone never widens the stale query.
+        const anyRemoteCatalog = Array.from(runtimes.values()).some(
+          (runtime) => runtime.plugin.remoteToolCatalog === true,
         );
-      }
-      yield* Effect.all(rebuilds, {
-        concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
+        const cutoff =
+          toolsSyncTtlMs == null || !anyRemoteCatalog ? null : Date.now() - toolsSyncTtlMs;
+
+        // Bound the scan to potentially-stale rows: stale-marked (NULL stamp) or
+        // synced before the latest instant any trigger could fire at (the TTL
+        // cutoff / the newest config revision). Per-row trigger checks below
+        // re-verify against each row's own integration; in steady state this
+        // query returns nothing and the read pays one indexed lookup.
+        const latestRevision = integrations.reduce<number | null>(
+          (max, row) =>
+            row.config_revised_at == null
+              ? max
+              : Math.max(max ?? Number(row.config_revised_at), Number(row.config_revised_at)),
+          null,
+        );
+        const staleBefore =
+          cutoff === null && latestRevision === null
+            ? null
+            : Math.max(
+                cutoff ?? Number.MIN_SAFE_INTEGER,
+                latestRevision ?? Number.MIN_SAFE_INTEGER,
+              );
+
+        const connections = yield* core.findMany("connection", {
+          where: (b: AnyCb) =>
+            staleBefore === null
+              ? b.isNull("tools_synced_at")
+              : b.or(b.isNull("tools_synced_at"), b("tools_synced_at", "<", staleBefore)),
+        });
+        // Each rebuild is an independent upstream listing, so they run together
+        // rather than one after another: a host with many stale remote-catalog
+        // connections otherwise pays the sum of every server's latency on the
+        // read that trips the TTL. Only the listings overlap — `persistCatalog`
+        // keeps the catalog writes in a single-file queue, so this fan-out never
+        // opens two transactions on a one-connection database. One semaphore
+        // bounds the awaited and the deferred rebuilds together, so a read
+        // still opens at most `STALE_TOOLS_SYNC_CONCURRENCY` listings.
+        const permits = Semaphore.makeUnsafe(STALE_TOOLS_SYNC_CONCURRENCY);
+        const awaited: Effect.Effect<readonly Tool[]>[] = [];
+        const deferred: Effect.Effect<readonly Tool[]>[] = [];
+        for (const connection of connections) {
+          const integrationRow = integrationBySlug.get(connection.integration);
+          if (!integrationRow) continue;
+          const runtime = runtimes.get(integrationRow.plugin_id);
+          // Only re-produce catalogs this executor can actually re-list —
+          // rebuilding under an unloaded plugin would clear a working catalog.
+          // (A loaded plugin without `resolveTools` still flows through:
+          // `produceConnectionTools` runs its clear-and-stamp cleanup path.)
+          if (!runtime) continue;
+
+          const syncedAt =
+            connection.tools_synced_at == null ? null : Number(connection.tools_synced_at);
+          const revisedTime =
+            integrationRow.config_revised_at == null
+              ? null
+              : Number(integrationRow.config_revised_at);
+
+          const staleMarked = syncedAt === null;
+          const configRevised = revisedTime !== null && (syncedAt ?? 0) < revisedTime;
+          const expired =
+            cutoff !== null &&
+            runtime.plugin.remoteToolCatalog === true &&
+            syncedAt !== null &&
+            syncedAt < cutoff;
+          if (!staleMarked && !configRevised && !expired) continue;
+
+          const target = staleMarked || configRevised || options.awaitExpired ? awaited : deferred;
+          target.push(
+            produceConnectionTools(
+              integrationRow,
+              {
+                owner: connection.owner as Owner,
+                integration: IntegrationSlug.make(connection.integration),
+                name: ConnectionName.make(connection.name),
+              },
+              "background",
+            ).pipe(
+              // Best-effort, but never silent: the read still succeeds on the
+              // stale-but-working catalog and the peer rebuilds still finish,
+              // while the operator gets the connection that failed and why.
+              // Without this a connection whose upstream is permanently broken
+              // re-fails on every read and leaves no trace anywhere.
+              Effect.catch((error) =>
+                Effect.logWarning("executor stale tool sync failed", {
+                  integration: connection.integration,
+                  connection: connection.name,
+                  error: describeSyncFailure(error),
+                }).pipe(Effect.as([] as readonly Tool[])),
+              ),
+              Effect.withSpan("executor.tools.sync_stale", {
+                attributes: {
+                  "executor.integration": connection.integration,
+                  "executor.connection": connection.name,
+                  "executor.tools.sync_trigger": staleMarked
+                    ? "stale_marked"
+                    : configRevised
+                      ? "config_revised"
+                      : "expired",
+                },
+              }),
+              permits.withPermits(1),
+            ),
+          );
+        }
+        if (deferred.length > 0) {
+          const fiber = yield* Effect.forkDetach(
+            Effect.all(deferred, { concurrency: "unbounded", discard: true }),
+          );
+          // Same keep-alive as the read-side fork: on hosts that cancel
+          // request-scoped I/O once the response settles, the deferred
+          // re-lists must outlive the read that tripped the TTL.
+          config.waitUntil?.(
+            new Promise<void>((resolve) => fiber.addObserver(() => resolve(undefined))),
+          );
+        }
+        yield* Effect.annotateCurrentSpan({
+          "executor.tools.sync_awaited": awaited.length,
+          "executor.tools.sync_deferred": deferred.length,
+        });
+        yield* Effect.all(awaited, { concurrency: "unbounded", discard: true });
       });
-    });
 
     // How long a tools read waits for the stale sync before answering from
     // the persisted rows (`ExecutorConfig.toolsSyncGraceMs`; `null` blocks
@@ -5643,7 +5683,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const awaitStaleSyncWithinGrace = (graceMs: number) =>
       Effect.gen(function* () {
         const fiber = yield* Effect.forkDetach(
-          syncStaleConnectionTools.pipe(
+          syncStaleConnectionTools({ awaitExpired: false }).pipe(
             Effect.catch((error) =>
               Effect.logWarning("executor stale tool sync scan failed", {
                 error: describeSyncFailure(error),
@@ -5663,7 +5703,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
       Effect.gen(function* () {
         if (toolsSyncGraceMs === null) {
-          yield* syncStaleConnectionTools;
+          yield* syncStaleConnectionTools({ awaitExpired: true });
         } else {
           yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
         }

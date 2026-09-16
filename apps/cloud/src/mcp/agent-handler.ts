@@ -31,23 +31,12 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
 import { cloudMcpAuth } from "./auth-provider";
+import { corsPreflightResponse } from "./responses";
 import { isMcpSessionMetaUnavailable } from "./session-meta";
 import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
 
 const MCP_SESSION_UNAVAILABLE_MESSAGE = "Session storage temporarily unavailable - please retry";
-
-const corsPreflightResponse = (): Response =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
-      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
-    },
-  });
 
 const jsonRpcResponse = (
   status: number,

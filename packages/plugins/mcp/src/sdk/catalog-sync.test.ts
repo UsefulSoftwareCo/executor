@@ -133,16 +133,47 @@ describe("MCP tool-catalog sync (end-to-end)", () => {
       }),
   );
 
-  it.effect("expired catalogs re-list on read once older than the freshness TTL", () =>
+  // `it.live` (real clock): the re-list lands on a detached fiber behind the
+  // read, and the poll below must actually wait for a real HTTP round trip.
+  it.live("expired catalogs re-list behind the read once older than the freshness TTL", () =>
     Effect.gen(function* () {
       const mutable = makeMutableCatalogMcpServer();
       const server = yield* serveMcpServer(mutable.factory);
-      // Everything is instantly stale — every tools read re-lists.
+      // Everything is instantly stale — every tools read triggers a re-list.
       const executor = yield* makeCatalogTestExecutor(server.url, { toolsSyncTtlMs: 0 });
 
       expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
 
       // Server-side change with no notification and no executor signal at all.
+      mutable.renameTool();
+
+      // Expiry is a guess, not a signal: the read that trips the TTL serves
+      // the persisted catalog and the re-list lands behind it (a signalled
+      // stale-mark, by contrast, is awaited — see the two tests above). A
+      // later read reflects the change once the detached rebuild converges.
+      expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
+      const converged = yield* Effect.gen(function* () {
+        while (true) {
+          const names = toolNames(yield* executor.tools.list());
+          if (names.includes(mutable.renamedToolName)) return names;
+          yield* Effect.sleep("50 millis");
+        }
+      }).pipe(Effect.timeoutOption("10 seconds"));
+      expect(Option.isSome(converged)).toBe(true);
+      expect(Option.getOrThrow(converged)).not.toContain(mutable.initialToolName);
+    }),
+  );
+
+  it.effect("strict mode (toolsSyncGraceMs: null) awaits expired re-lists too", () =>
+    Effect.gen(function* () {
+      const mutable = makeMutableCatalogMcpServer();
+      const server = yield* serveMcpServer(mutable.factory);
+      const executor = yield* makeCatalogTestExecutor(server.url, {
+        toolsSyncTtlMs: 0,
+        toolsSyncGraceMs: null,
+      });
+
+      expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
       mutable.renameTool();
 
       const refreshed = toolNames(yield* executor.tools.list());

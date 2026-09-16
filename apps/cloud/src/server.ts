@@ -7,6 +7,7 @@ import {
   ATTR_URL_PATH,
   ATTR_URL_SCHEME,
 } from "@opentelemetry/semantic-conventions";
+import { Effect } from "effect";
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
@@ -15,6 +16,11 @@ import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
+import {
+  authorizationServerMetadataResponse,
+  protectedResourceMetadataResponse,
+} from "./mcp/oauth-metadata";
+import { corsPreflightResponse } from "./mcp/responses";
 import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
 import {
@@ -291,6 +297,26 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // this entry invokes it for non-MCP paths.
     const url = new URL(request.url);
     const mcpRoute = classifyMcpPath(url.pathname);
+    // The two OAuth discovery documents are static JSON (the protected-
+    // resource doc is pure; the authorization-server doc is one upstream
+    // fetch). They are the first thing every MCP client requests, and they
+    // were dispatched through the app plane, whose first evaluation in a cold
+    // isolate costs seconds: measured p95 5.0s on `/.well-known/*` from cold
+    // isolates against 0ms warm. Answer them here, before anything that
+    // would load the Effect app graph. The envelope still mounts the same
+    // routes for hosts that serve `/mcp` through it (and for tests).
+    if (mcpRoute !== null && mcpRoute.kind !== "mcp") {
+      if (request.method === "OPTIONS") return corsPreflightResponse();
+      if (request.method === "GET" || request.method === "HEAD") {
+        if (mcpRoute.kind === "oauth-protected-resource") {
+          return protectedResourceMetadataResponse(
+            mcpRoute.organizationId,
+            mcpRoute.toolkitSlug ?? null,
+          );
+        }
+        return Effect.runPromise(authorizationServerMetadataResponse);
+      }
+    }
     if (mcpRoute?.kind === "mcp") {
       // The Cloudflare Agents MCP bridge needs the platform ExecutionContext
       // to pass authenticated session props into the hibernatable DO.
