@@ -96,7 +96,7 @@ const { gh } = Astro.props;
           </span>
         </button></div>
         </div>
-        <div role="tabpanel" data-doc-pane="local" hidden>
+        <div role="tabpanel" data-doc-pane="local" data-inactive aria-hidden="true">
           <p>Nothing leaves your machine. A desktop app for Mac, Windows, and Linux, or a CLI that runs in the background. Same local endpoint either way.</p>
           <div class="doc__actions"><span class="doc__dl" data-download>
               <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-primary">Download for Mac</a>
@@ -118,7 +118,7 @@ const { gh } = Astro.props;
           </span>
         </button></div>
         </div>
-        <div role="tabpanel" data-doc-pane="self" hidden>
+        <div role="tabpanel" data-doc-pane="self" data-inactive aria-hidden="true">
           <p>One Docker image on your own box. It is the same code Cloud runs.</p>
           <div class="doc__actions"><a href="https://executor.sh/docs/hosted/docker" class="btn-primary">Self-hosting docs</a><a href={gh} class="btn-secondary">Source on GitHub</a></div>
         </div>
@@ -321,7 +321,12 @@ const { gh } = Astro.props;
         t.setAttribute("aria-selected", String(t === tab));
       }
       for (const p of root.querySelectorAll<HTMLElement>("[data-doc-pane]")) {
-        p.hidden = p.dataset.docPane !== key;
+        const off = p.dataset.docPane !== key;
+        p.toggleAttribute("data-inactive", off);
+        p.setAttribute("aria-hidden", String(off));
+        for (const el of p.querySelectorAll<HTMLElement>("a, button")) {
+          el.tabIndex = off ? -1 : 0;
+        }
       }
     });
   }

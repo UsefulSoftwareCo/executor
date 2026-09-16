@@ -721,3 +721,17 @@ a.doc__term-v:hover {
 .doc__dl-other.hidden {
   display: none;
 }
+
+/* Tab panes share one grid cell, so the tallest one sets the height and
+   switching tabs never shifts the content below. Hidden panes stay in the
+   layout but are invisible and inert. */
+.doc__tabpanes {
+  display: grid;
+}
+.doc__tabpanes > [role="tabpanel"] {
+  grid-area: 1 / 1;
+}
+.doc__tabpanes > [role="tabpanel"][data-inactive] {
+  visibility: hidden;
+  pointer-events: none;
+}
