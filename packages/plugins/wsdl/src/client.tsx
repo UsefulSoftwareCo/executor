@@ -6,9 +6,18 @@ import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Textarea } from "@executor-js/react/components/textarea";
 import { integrationWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import {
+  getExecutorApiBaseUrl,
+  getExecutorOrganizationHeaders,
+  getExecutorServerAuthorizationHeader,
+} from "@executor-js/react/api/server-connection";
 import { WsdlGroup } from "./group";
 
-const Client = createPluginAtomClient(WsdlGroup);
+const Client = createPluginAtomClient(WsdlGroup, {
+  baseUrl: getExecutorApiBaseUrl,
+  authorizationHeader: getExecutorServerAuthorizationHeader,
+  headers: getExecutorOrganizationHeaders,
+});
 const addAtom = Client.mutation("wsdl", "addIntegration");
 function AddWsdl(props: { onComplete: (slug?: string) => void; onCancel: () => void }) {
   const [name, setName] = useState("");

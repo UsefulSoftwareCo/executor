@@ -40,7 +40,14 @@ scenario(
             await page.getByLabel("Integration name").fill("Orders SOAP");
             await page.getByLabel("Namespace", { exact: true }).fill(slug);
             await page.getByLabel("WSDL contract").fill(ordersWsdl);
+            const submitted = page.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname === "/api/wsdl/integrations" &&
+                response.request().method() === "POST",
+            );
             await page.getByRole("button", { name: "Add WSDL integration" }).click();
+            const response = await submitted;
+            expect(response.status(), await response.text()).toBe(200);
             await page.waitForURL(`**/integrations/${slug}`, { timeout: 30_000 });
             await page.getByText("Orders SOAP", { exact: true }).first().waitFor();
             await page.getByText("No connections yet", { exact: true }).waitFor();
