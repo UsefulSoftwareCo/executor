@@ -1,6 +1,8 @@
 /* Document-style homepage body. Measured prose, hairline sections. */
 .doc {
   max-width: 720px;
+  /* Without the rail there is nothing to align to, so the column centres. */
+  margin-inline: auto;
   padding: 4rem 1.5rem 6rem;
   overflow-x: clip;
 }
@@ -13,6 +15,7 @@
   /* Fill the content column; the frame around rail + content is centred. */
   .doc {
     max-width: none;
+    margin-inline: 0;
     padding-inline: 0;
   }
   .doc__intro,
