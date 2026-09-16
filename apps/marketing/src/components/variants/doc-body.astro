@@ -46,7 +46,7 @@ const { gh } = Astro.props;
             Connect{" "}
             <span class="doc__pop" tabindex="0">
               <span class="doc__pop-word">everything</span>
-              <span class="doc__pop-panel" aria-hidden="true">
+              <span class="doc__pop-panel" aria-hidden="true" inert>
                 {toolLogos.map((n, i) => (
                   <span class="doc__pop-tile" style={`--i:${i}`}><img src={logo(n)} alt="" width="18" height="18" /></span>
                 ))}
@@ -62,7 +62,7 @@ const { gh } = Astro.props;
             Give{" "}
             <span class="doc__pop" tabindex="0">
               <span class="doc__pop-word">your agent</span>
-              <span class="doc__pop-panel" aria-hidden="true">
+              <span class="doc__pop-panel" aria-hidden="true" inert>
                 {agentLogos.map((n, i) => (
                   <span class="doc__pop-tile" style={`--i:${i}`}><img src={logo(n)} alt="" width="18" height="18" /></span>
                 ))}
@@ -97,7 +97,7 @@ const { gh } = Astro.props;
           </span>
         </button></div>
         </div>
-        <div role="tabpanel" data-doc-pane="local" data-inactive aria-hidden="true">
+        <div role="tabpanel" data-doc-pane="local" data-inactive aria-hidden="true" inert>
           <p>Nothing leaves your machine. A desktop app for Mac, Windows, and Linux, or a CLI that runs in the background. Same local endpoint either way.</p>
           <div class="doc__actions"><span class="doc__dl" data-download>
               <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-primary">Download for Mac</a>
@@ -119,7 +119,7 @@ const { gh } = Astro.props;
           </span>
         </button></div>
         </div>
-        <div role="tabpanel" data-doc-pane="self" data-inactive aria-hidden="true">
+        <div role="tabpanel" data-doc-pane="self" data-inactive aria-hidden="true" inert>
           <p>One Docker image on your own box. It is the same code Cloud runs.</p>
           <div class="doc__actions"><a href="https://executor.sh/docs/hosted/docker" class="btn-primary">Self-hosting docs</a><a href={gh} class="btn-secondary">Source on GitHub</a></div>
         </div>
@@ -318,6 +318,7 @@ const { gh } = Astro.props;
       for (const p of root.querySelectorAll<HTMLElement>("[data-doc-pane]")) {
         const off = p.dataset.docPane !== key;
         p.toggleAttribute("data-inactive", off);
+        p.toggleAttribute("inert", off);
         p.setAttribute("aria-hidden", String(off));
         for (const el of p.querySelectorAll<HTMLElement>("a, button")) {
           el.tabIndex = off ? -1 : 0;
@@ -364,7 +365,9 @@ const { gh } = Astro.props;
       for (const btn of root.querySelectorAll<HTMLAnchorElement>("a[data-os]")) {
         if (btn.dataset.os === detected) continue;
         btn.classList.add("hidden");
+        btn.toggleAttribute("inert", true);
         const clone = btn.cloneNode(true) as HTMLAnchorElement;
+        clone.removeAttribute("inert");
         clone.className = "";
         list.appendChild(clone);
       }

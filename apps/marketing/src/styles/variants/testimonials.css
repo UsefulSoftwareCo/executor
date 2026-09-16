@@ -37,6 +37,11 @@
 .testi__row[data-row="1"] .testi__track {
   animation-direction: reverse;
 }
+/* The second copy exists only so the loop is seamless. Keep it out of
+   find-in-page, selection, and the accessibility tree. */
+.testi__track[inert] {
+  user-select: none;
+}
 .testi[data-seen]:hover .testi__track {
   animation-play-state: paused;
 }

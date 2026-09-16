@@ -36,7 +36,7 @@ const composeUrl = `https://x.com/intent/post?text=${encodeURIComponent(
       <div class="testi__row" data-row={r}>
         {/* Two copies of the row make the marquee loop seamless. */}
         {[0, 1].map((copy) => (
-          <div class="testi__track" aria-hidden={copy === 1 ? "true" : undefined}>
+          <div class="testi__track" aria-hidden={copy === 1 ? "true" : undefined} inert={copy === 1 ? true : undefined}>
             {r === 1 ? (
               <a
                 class="testi__card testi__card--add"
