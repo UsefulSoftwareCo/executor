@@ -1266,7 +1266,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     readonly slug: OAuthClientSlug;
     readonly resource: string | null;
     /** Redirect URI the candidate registered with the AS; null for rows
-     *  predating the column (treated as matching any flow callback). */
+     *  predating the column. */
     readonly redirectUri: string | null;
   };
 
@@ -1357,20 +1357,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     Effect.gen(function* () {
       const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
       const resource = input.resource ?? null;
-      // A candidate is reusable only when the callback it registered with the
-      // AS still matches the current flow's callback — strict servers reject an
-      // authorize request whose redirect_uri differs from the registration
-      // (e.g. the callback origin changed after a sandbox was recreated while
-      // the persisted client survived). A null stored redirect is a legacy row
-      // predating the column: treated as matching so an upgrade doesn't
-      // re-register every client whose callback never changed. A null FLOW
-      // redirect has nothing to compare against, so it also reuses — the only
-      // alternative is a fresh registration, which the missing-redirectUri
-      // guard would fail.
-      const redirectMatches = (candidate: DcrReuseCandidate): boolean =>
-        candidate.redirectUri === null ||
-        flowRedirectUri === null ||
-        candidate.redirectUri === flowRedirectUri;
+      // A caller-supplied redirect is authoritative: only a client registered
+      // with that exact callback can be reused. In particular, a legacy row
+      // with no recorded redirect is not proof of a match. When the caller
+      // relies on the executor's configured default, retain the legacy-null
+      // compatibility behavior so upgrades do not re-register every client.
+      const hasExplicitRedirectUri = input.redirectUri != null;
+      const redirectMatches = (candidate: DcrReuseCandidate): boolean => {
+        if (candidate.redirectUri === flowRedirectUri) return true;
+        if (hasExplicitRedirectUri) return false;
+        return candidate.redirectUri === null || flowRedirectUri === null;
+      };
       // A fresh registration must never take a slug an existing candidate
       // holds: `createClient` deletes any colliding (owner, slug) row first,
       // which would clobber a client that live connections still refresh
@@ -1384,11 +1381,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // resource row is the STRANDED one — but the first drift recovery
         // already minted a client bound to the CURRENT callback, and later
         // reconnects must reuse that instead of registering another duplicate
-        // each time. Known limitation: the legacy null-redirect rule in
-        // `redirectMatches` (a legacy row with no stored redirect matches any
-        // flow redirect) still lets such a row win over a later, exactly-
-        // matching one; kept deliberately so upgrades don't re-register every
-        // client whose callback never changed.
+        // each time.
         const reusable = candidates.find(
           (client) => client.resource === resource && redirectMatches(client),
         );
