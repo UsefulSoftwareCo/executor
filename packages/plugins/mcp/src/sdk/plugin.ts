@@ -1820,6 +1820,20 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               }),
             );
           }
+          // Same refusal, delivered at the HTTP layer: a 4xx with a JSON
+          // body naming the problem (Stripe answers a missing account context
+          // with a 422). The message is the server's answer to the caller.
+          if (error.httpRefusal !== undefined) {
+            return Effect.succeed(
+              ToolResult.fail({
+                code: "mcp_tool_error",
+                message: error.httpRefusal.message,
+                status: error.httpRefusal.status,
+                retryable: false,
+                details: { upstream: { status: error.httpRefusal.status } },
+              }),
+            );
+          }
           return Effect.fail(error);
         }),
         Effect.withSpan("mcp.plugin.invoke_tool", {

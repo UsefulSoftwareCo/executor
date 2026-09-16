@@ -1156,6 +1156,64 @@ describe("mcpPlugin", () => {
     ),
   );
 
+  // Stripe's MCP validates the OAuth account context at the HTTP layer: a
+  // call without `stripe_context` gets a 422 whose JSON body names the missing
+  // field. That is the server refusing THIS call, so it must reach the caller
+  // as a typed failure carrying the server's message — the same treatment as
+  // a JSON-RPC invalid-params refusal — not scrub into an opaque defect.
+  it.effect("surfaces a 4xx JSON refusal from tools/call as a typed tool failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_http_422",
+          callTool: () =>
+            HttpServerResponse.jsonUnsafe(
+              { message: "stripe_context is required for this tool" },
+              { status: 422 },
+            ),
+        });
+
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "mcp_tool_error",
+            message: "stripe_context is required for this tool",
+            status: 422,
+            retryable: false,
+            details: { upstream: { status: 422 } },
+          },
+        });
+        expect(result).not.toMatchObject({ error: { details: { category: "authentication" } } });
+      }),
+    ),
+  );
+
+  // A bodyless 4xx (or a body that is not a JSON object) has no message the
+  // caller can act on, so it keeps the opaque-defect path: nothing from the
+  // transport error text is copied out.
+  it.effect("keeps a 4xx without a JSON message opaque", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_http_422_text",
+          callTool: httpStatusCallTool(422),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBe(422);
+        expect(cause.httpRefusal).toBeUndefined();
+      }),
+    ),
+  );
+
   it.effect("does not classify JSON-RPC error codes as auth failures", () =>
     Effect.scoped(
       Effect.gen(function* () {

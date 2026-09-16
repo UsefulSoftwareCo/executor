@@ -97,6 +97,17 @@ export class McpInvocationError extends Data.TaggedError("McpInvocationError")<{
     readonly name: string;
     readonly code?: string | number;
   };
+  /** The server answered `tools/call` with a non-2xx HTTP response whose
+   *  body was a JSON object carrying a message (a validation refusal from a
+   *  server that answers at the HTTP layer instead of with a JSON-RPC error,
+   *  e.g. a 422 naming a missing field). Present only for 4xx statuses other
+   *  than the auth walls (401/403), and only when the body parsed as JSON
+   *  with a string `message`/`error`/`error.message` — a free-text body is
+   *  never copied out of the transport error. */
+  readonly httpRefusal?: {
+    readonly status: number;
+    readonly message: string;
+  };
 }> {}
 
 export class McpOAuthReauthorizationRequired extends Data.TaggedError(

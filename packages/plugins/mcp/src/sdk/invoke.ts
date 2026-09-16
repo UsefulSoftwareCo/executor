@@ -33,7 +33,11 @@ import {
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
 import type { McpConnectionPool } from "./connection-pool";
-import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
+import {
+  httpRefusalMessageFromCause,
+  httpStatusFromCause,
+  insufficientScopeFromCause,
+} from "./http-status";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,6 +163,21 @@ const summarizeSdkFailure = (cause: unknown): { name: string; code?: string | nu
   const name = cause instanceof Error ? cause.constructor.name : typeof cause;
   const code = Predicate.hasProperty(cause, "code") ? cause.code : undefined;
   return typeof code === "string" || typeof code === "number" ? { name, code } : { name };
+};
+
+/** A 4xx other than the auth walls, with a JSON body that names the problem,
+ *  is the server refusing THIS call (a validation failure at the HTTP layer)
+ *  — not a dead transport. 401/403 keep their auth classification; 5xx and
+ *  bodyless 4xx stay opaque, since there is nothing the caller can act on. */
+const httpRefusal = (
+  status: number | undefined,
+  cause: unknown,
+): { readonly httpRefusal: { readonly status: number; readonly message: string } } | {} => {
+  if (status === undefined || status < 400 || status >= 500 || status === 401 || status === 403) {
+    return {};
+  }
+  const message = httpRefusalMessageFromCause(cause);
+  return message === undefined ? {} : { httpRefusal: { status, message } };
 };
 
 const asProtocolError = (cause: unknown): ProtocolError | undefined => {
@@ -402,6 +421,7 @@ const useConnection = (
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }
             : {}),
+          ...httpRefusal(status, cause),
         });
       },
     }).pipe(
