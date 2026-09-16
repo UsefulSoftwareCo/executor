@@ -5,7 +5,7 @@ import { markdownResponse, pricingTiers } from "../content/site-copy";
 // ---------------------------------------------------------------------------
 // `/pricing.md` — Executor Cloud pricing as Markdown.
 //
-// `/pricing` redirects to the `#pricing` section of the homepage, so the tier
+// `/pricing` is the pricing page, so the tier
 // data lives in src/content/site-copy.ts and both surfaces read it.
 // ---------------------------------------------------------------------------
 

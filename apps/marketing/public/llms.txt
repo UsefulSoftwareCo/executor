@@ -20,7 +20,7 @@ Run it your way: local CLI, a desktop app, hosted Executor Cloud, or self-hosted
 ## Product
 
 - [Website](https://executor.sh): product overview and getting started.
-- [Pricing](https://executor.sh/#pricing): plans for Executor Cloud.
+- [Pricing](https://executor.sh/pricing): plans for Executor Cloud.
 - [Install](https://executor.sh/#install): install the CLI and connect your first agent.
 
 ## For agents

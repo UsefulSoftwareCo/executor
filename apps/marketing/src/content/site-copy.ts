@@ -69,8 +69,8 @@ export type PricingTier = {
 };
 
 /**
- * Pricing tiers, mirroring the `#pricing` section of the homepage. `/pricing`
- * redirects to that anchor, so the homepage is the human source of truth.
+ * Pricing tiers. The `/pricing` page and `/pricing.md` both read this list,
+ * so it is the single source of truth.
  */
 export const pricingTiers: ReadonlyArray<PricingTier> = [
   {

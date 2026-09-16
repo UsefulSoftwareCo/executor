@@ -11,8 +11,11 @@ const EMAIL = "rhys@executor.sh";
 
 interface Props {
   stars: string | null;
+  /** Which primary link is the current page. Defaults to home. */
+  current?: "home" | "pricing" | "blog";
 }
-const { stars } = Astro.props;
+const { stars, current = "home" } = Astro.props;
+const cur = (k: string) => (k === current ? "page" : undefined);
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 const SIGN_IN = "/api/auth/login";
@@ -37,10 +40,10 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
 
   <div class="rail__stack">
     <nav class="rail__nav" aria-label="Main">
-      <a href="/" class="rail__link rail__link--keep" aria-current="page">Home</a>
+      <a href="/" class="rail__link rail__link--keep" aria-current={cur("home")}>Home</a>
       <a href="https://executor.sh/docs" class="rail__link rail__link--keep">Docs</a>
-      <a href="/blog" class="rail__link">Blog</a>
-      <a href="/pricing" class="rail__link">Pricing</a>
+      <a href="/blog" class="rail__link" aria-current={cur("blog")}>Blog</a>
+      <a href="/pricing" class="rail__link" aria-current={cur("pricing")}>Pricing</a>
       <a href={SIGN_IN} class="rail__link rail__link--keep">Sign in</a>
     </nav>
 
@@ -79,6 +82,7 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
       </a>
     </div>
 
+    {current === "home" ? (
     <nav class="rail__toc" aria-label="On this page">
       {
         sections.map((section, index) => (
@@ -91,6 +95,7 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
         ))
       }
     </nav>
+    ) : null}
 
     <div class="rail__contact">
       <div class="rail__contact-head">
