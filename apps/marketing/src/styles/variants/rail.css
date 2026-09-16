@@ -290,60 +290,69 @@
   color: var(--color-ink-2);
 }
 
-/* ═══ Mobile: every rail collapses to one horizontal top bar ═══ */
+/* ═══ Mobile: the rail becomes a slim top bar ═══
+   Brand on the left, three links and the Get started button on the right.
+   Everything else in the rail (index, star pill, YC badge, contact) is hidden;
+   the page body carries it. */
 @media (max-width: 1023.98px) {
   .rail {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
     height: 56px;
-    padding: 0 24px;
+    padding: 0 16px;
     border-right: 0;
     border-bottom: 1px solid var(--color-rule);
+  }
+  .rail .rail__brand {
+    margin: 0;
   }
   .rail .rail__toc,
   .rail .rail__toc-label,
   .rail .rail__divider,
   .rail .rail__foot,
   .rail .rail__contact,
-  .rail .rail__secondary {
+  .rail .rail__secondary,
+  .rail .gh-star,
+  .rail .rail__box--yc {
     display: none;
-  }
-  .rail .rail__nav {
-    flex-direction: row;
-    align-items: center;
-    gap: 20px;
-  }
-  .rail .rail__cta {
-    flex-direction: row;
-    align-items: center;
-    gap: 12px;
-    margin-top: 0;
   }
   .rail .rail__stack {
     flex: 0 1 auto;
     flex-direction: row;
     align-items: center;
-    justify-content: flex-end;
-    gap: 20px;
+    gap: 16px;
+  }
+  .rail .rail__nav {
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
   }
   .rail .rail__link {
-    padding: 0 0 0 0;
+    padding: 0;
     font-size: 14px;
+    white-space: nowrap;
   }
   .rail .rail__link::before {
     display: none;
   }
-  /* The star pill and the mono count are the first things to go when the bar
-     gets tight; the links themselves survive longest. */
-  .rail .gh-star {
-    display: none;
+  .rail .rail__cta {
+    display: block;
+    margin-top: 0;
+  }
+  .rail--b .rail__box--primary {
+    width: auto;
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
   }
 }
-
-@media (max-width: 719.98px) {
+@media (max-width: 479.98px) {
   .rail .rail__nav .rail__link:not(.rail__link--keep) {
     display: none;
+  }
+  .rail .rail__nav {
+    gap: 12px;
   }
 }

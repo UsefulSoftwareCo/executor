@@ -155,3 +155,17 @@
     width: calc(50% - 6px);
   }
 }
+
+@media (max-width: 719.98px) {
+  .testi {
+    /* No edge fade on phones: it eats the first card's left edge. */
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .testi__card {
+    width: 240px;
+  }
+  .testi__text {
+    -webkit-line-clamp: 5;
+  }
+}

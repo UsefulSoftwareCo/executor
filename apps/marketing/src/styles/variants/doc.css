@@ -2,6 +2,7 @@
 .doc {
   max-width: 720px;
   padding: 4rem 1.5rem 6rem;
+  overflow-x: clip;
 }
 @media (min-width: 640px) {
   .doc {
@@ -613,16 +614,20 @@ a.doc__term-v:hover {
     0 12px 32px -12px rgba(13, 13, 16, 0.18);
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
   transform: translateY(-4px);
   transition:
     opacity 0.15s ease,
-    transform 0.15s ease;
+    transform 0.15s ease,
+    visibility 0s linear 0.15s;
 }
 .doc__pop:hover .doc__pop-panel,
 .doc__pop:focus-within .doc__pop-panel {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
   transform: translateY(0);
+  transition-delay: 0s;
 }
 .doc__pop-tile,
 .doc__pop-pill {
@@ -817,4 +822,100 @@ a.doc__term-v:hover {
    rule closes it. Avoids two rules a few pixels apart. */
 .doc__list--open li:last-child {
   border-bottom: 0;
+}
+
+/* ── Phones ── */
+@media (max-width: 719.98px) {
+  .doc {
+    padding: 2.25rem 1.25rem 4rem;
+  }
+  .doc__title {
+    font-size: 1.75rem;
+  }
+  .doc__steps {
+    font-size: 16px;
+  }
+  .doc__steps li {
+    grid-template-columns: 1.75rem 1fr;
+  }
+  .doc__subhead {
+    font-size: 16px;
+  }
+  /* Hover reveals become tap reveals. The word can sit anywhere on the line,
+     so the panel is not anchored to it; it is fixed across the viewport width
+     just under the top bar. */
+  .doc__pop {
+    position: static;
+  }
+  .doc__pop-panel {
+    position: fixed;
+    left: 1rem;
+    right: 1rem;
+    top: 64px;
+    width: auto;
+    max-width: none;
+  }
+  .doc__tabs {
+    display: flex;
+    width: 100%;
+  }
+  .doc__tabs button {
+    flex: 1;
+    padding: 0.45rem 0.4rem;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .doc__tabpanes p {
+    min-height: 0;
+  }
+  .doc__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .doc__actions > .btn-primary,
+  .doc__actions > .btn-secondary,
+  .doc__actions > .doc__cmd,
+  .doc__actions > .doc__dl {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .doc__dl {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .doc__dl > a {
+    width: 100%;
+    justify-content: center;
+  }
+  .doc__dl-other {
+    align-self: center;
+  }
+  .doc__dl .download-other-list {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .doc__section {
+    margin-top: 2.5rem;
+    padding-top: 1.75rem;
+  }
+  .doc__h {
+    font-size: 20px;
+  }
+  .doc__ways {
+    grid-template-columns: 1fr;
+  }
+  .doc__way-a .btn-primary,
+  .doc__way-a .btn-secondary {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .doc__way-a .doc__dl {
+    width: 100%;
+  }
+  .doc__fig--hero .surface-card {
+    padding: 1rem;
+  }
 }

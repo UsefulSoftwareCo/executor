@@ -1742,3 +1742,13 @@ main:has(.page > .page__rail) > .pattern-bg,
 main:has(.page > .page__rail) > .pattern-bg + div {
   display: none;
 }
+
+/* Below the desktop breakpoint the rail is a top bar; keep it in view. */
+@media (max-width: 1023.98px) {
+  .page__rail {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--color-surface);
+  }
+}
