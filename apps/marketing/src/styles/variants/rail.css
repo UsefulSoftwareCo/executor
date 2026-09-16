@@ -139,7 +139,8 @@
   margin-top: 16px;
   --rail-box-h: 36px;
 }
-/* One stack: every item the same width and height, one border language. */
+/* One stack, one button language: same height, width, radius, hairline
+   border, and sans label. The primary is filled ink; the others are quiet. */
 .rail--b .rail__box {
   display: flex;
   align-items: center;
@@ -149,9 +150,12 @@
   width: 100%;
   box-sizing: border-box;
   padding: 0 12px;
-  border: 1px solid var(--color-rule);
+  border: 1px solid var(--color-rule-strong);
   border-radius: 6px;
+  background: var(--color-surface);
+  font-family: var(--font-sans);
   font-size: 13px;
+  font-weight: 500;
   color: var(--color-ink);
   overflow: hidden;
   transition:
@@ -159,36 +163,44 @@
     color 0.15s ease,
     border-color 0.15s ease;
 }
-.rail--b .rail__box--primary {
+.rail--b .rail__box:hover {
   border-color: var(--color-ink);
-  font-weight: 500;
 }
-.rail--b .rail__box--primary:hover {
+.rail--b .rail__box--primary {
   background: var(--color-ink);
+  border-color: var(--color-ink);
   color: var(--color-surface);
 }
+.rail--b .rail__box--primary:hover {
+  background: #1f1f24;
+}
+/* Star pill: same box, sans label, count in mono like the app's metadata. */
 .rail--b .rail__box.gh-star {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--color-ink-2);
-}
-.rail--b .rail__box.gh-star:hover {
   color: var(--color-ink);
-  border-color: var(--color-rule-strong);
 }
-/* The YC badge is a rounded cream card at 350x125; letting it fill the box
-   edge to edge keeps the badge's own corners hidden behind ours. */
+.rail--b .rail__box.gh-star .gh-star__ico {
+  width: 12px;
+  height: 12px;
+}
+.rail--b .rail__box.gh-star .gh-star__n {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--color-ink-3);
+  border-left: 1px solid var(--color-rule);
+  padding-left: 8px;
+  margin-left: 1px;
+}
+/* YC badge: keep the same frame; scale the artwork to sit inside it. */
 .rail--b .rail__box--yc {
-  padding: 0;
-  background: #f6f6ef;
+  padding: 0 12px;
+  background: var(--color-surface);
 }
 .rail--b .rail__box--yc img {
-  height: 100%;
+  height: 26px;
   width: auto;
   display: block;
-}
-.rail--b .rail__box--yc:hover {
-  border-color: var(--color-rule-strong);
+  border-radius: 4px;
 }
 .rail--b .rail__toc {
   gap: 8px;

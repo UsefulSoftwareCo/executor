@@ -90,6 +90,13 @@ every client.
 
 ${capabilityLines.join("\n\n")}
 
+## Safe by default
+
+- Policies come from the source: GET versus DELETE for OpenAPI, destructiveHint for MCP, mutations for GraphQL. Agents run the safe calls on their own and ask before the rest.
+- Secrets never reach the model: calls run in an isolated JavaScript sandbox and credentials are attached host-side at call time.
+- Set up once, whole team has it: admins add workspace connections everyone shares, individuals add their own, and a tool can be blocked for the whole workspace.
+- Open source, so you can check: Cloud stores credentials in WorkOS Vault; local and self-hosted keep them on your machine or in 1Password. Source: ${GITHUB_URL}
+
 ## Ways to run it
 
 All forms expose the same functionality, packaged differently.

@@ -112,13 +112,6 @@ const { gh } = Astro.props;
     </figure>
   </section>
 
-  {/* ── What people say ── */}
-  <section id="people" class="doc__section doc__section--people">
-    <h2 class="doc__h">What people say</h2>
-    <p>Mostly that they stopped copying API keys into five different agents.</p>
-    <Testimonials />
-  </section>
-
   {/* ── 03 Safety ── */}
   <section id="safety" class="doc__section">
     <h2 class="doc__h">Safe by default</h2>
@@ -141,8 +134,18 @@ const { gh } = Astro.props;
       <div>
         <dt>Set up once, whole team has it.</dt>
         <dd>
-          Per-user credentials and shared ones. New teammates get the catalog on day one,
-          with the same policies.
+          Admins add workspace connections everyone shares. Individuals add their own.
+          New teammates get the catalog on day one, with the same policies, and you can
+          block a tool for the whole workspace in one click.
+        </dd>
+      </div>
+      <div>
+        <dt>Open source, so you can check.</dt>
+        <dd>
+          Cloud stores credentials in WorkOS Vault. Local and self-hosted keep them on
+          your machine, or in 1Password. The whole thing is on GitHub if you would
+          rather read the code than take our word for it.
+          <a href={gh}>Source ↗</a>
         </dd>
       </div>
     </dl>
@@ -152,7 +155,8 @@ const { gh } = Astro.props;
   <section id="install" class="doc__section">
     <h2 class="doc__h">Run it where you want</h2>
     <p>
-      All forms expose the same tools, packaged differently.
+      All forms expose the same tools, packaged differently. Cloud is the one we keep
+      updated for you. The rest you run and update yourself.
     </p>
     <ol class="doc__ways">
       <li>
@@ -185,6 +189,17 @@ const { gh } = Astro.props;
         </div>
       </li>
     </ol>
+    <p class="doc__quiet-p">
+      Not an agent? Cloud also has an HTTP API with user and workspace keys, so a script
+      or a service can call the same tools with the same policies.
+    </p>
+  </section>
+
+  {/* ── What people say ── */}
+  <section id="people" class="doc__section doc__section--people">
+    <h2 class="doc__h">What people say</h2>
+    <p>Mostly that they stopped copying API keys into five different agents.</p>
+    <Testimonials />
   </section>
 
   {/* ── 05 Pricing ── */}
@@ -207,10 +222,10 @@ const { gh } = Astro.props;
   <section id="about" class="doc__section">
     <h2 class="doc__h">About</h2>
     <p>
-      We are a small team backed by Y Combinator. We built Executor because we wanted our
-      own agents to reach our company's resources in a way that was not scary. Most setups
-      make you choose between locked down and useless, or wide open and risky. We wanted a
-      third option.
+      Executor is built by one person, backed by Y Combinator, with a lot of help from
+      the people above. It started because I wanted my own agents to reach my accounts in
+      a way that was not scary. Most setups make you choose between locked down and
+      useless, or wide open and risky. I wanted a third option.
     </p>
     <a href={X_URL} class="doc__sig" rel="me noopener" target="_blank">
       <img src={rhysAvatar.src} alt="" width="40" height="40" />
