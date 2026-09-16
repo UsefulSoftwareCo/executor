@@ -802,3 +802,11 @@ a.doc__term-v:hover {
   font-size: 13.5px;
   padding: 0.55rem 0.95rem;
 }
+/* The section-wide link rule must not restyle real buttons. */
+.doc__section a.btn-primary,
+.doc__section a.btn-secondary {
+  text-decoration: none;
+}
+.doc__section a.btn-primary {
+  color: var(--color-surface);
+}
