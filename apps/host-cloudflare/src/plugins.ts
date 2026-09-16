@@ -1,3 +1,4 @@
+import { wsdlHttpPlugin } from "@executor-js/plugin-wsdl/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   googleCatalog,
@@ -34,6 +35,7 @@ export const makeCloudflarePlugins = (
     }),
     mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
     graphqlHttpPlugin(),
+    wsdlHttpPlugin(),
     toolkitsPlugin({ activeToolkitSlug: options.activeToolkitSlug }),
     encryptedSecretsPlugin({ key: secretKey }),
   ] as const;

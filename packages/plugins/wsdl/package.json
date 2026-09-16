@@ -1,0 +1,84 @@
+{
+  "name": "@executor-js/plugin-wsdl",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./src/api.ts",
+    "./client": "./src/client.tsx",
+    "./testing": "./src/fixture.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        }
+      },
+      "./api": {
+        "import": {
+          "types": "./dist/api.d.ts",
+          "default": "./dist/api.js"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        }
+      },
+      "./testing": {
+        "import": {
+          "types": "./dist/fixture.d.ts",
+          "default": "./dist/testing.js"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run",
+    "build": "tsup && tsc --declaration --emitDeclarationOnly --outDir dist --rootDir src"
+  },
+  "dependencies": {
+    "@executor-js/api": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "saxes": "^6.0.0"
+  },
+  "devDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@executor-js/react": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "bun-types": "catalog:",
+    "effect": "catalog:",
+    "react": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@executor-js/react": "workspace:*",
+    "effect": "catalog:",
+    "react": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@executor-js/react": {
+      "optional": true
+    },
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { wsdlHttpPlugin } from "@executor-js/plugin-wsdl/api";
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -61,6 +62,7 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: false,
       }),
       graphqlHttpPlugin(),
+      wsdlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({
         credentials: workosCredentials ?? { apiKey: "", clientId: "" },

@@ -22,6 +22,7 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/plugin-wsdl": "workspace:*",
     "@sentry/bun": "^10.57.0",
     "@sentry/electron": "7.19.0",
     "electron-log": "^5",
