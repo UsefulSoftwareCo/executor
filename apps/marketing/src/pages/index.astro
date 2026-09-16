@@ -1,10 +1,8 @@
 ---
-import Layout from "../layouts/Layout.astro";
+import RailLayout from "../layouts/RailLayout.astro";
 // Imported so Vite emits it as a hashed build asset (served from /_astro/...);
 // the deploy pipeline does not pick up newly added /public files.
-import { getStars, formatStars } from "../lib/github";
 import { setupPrompt } from "../content/site-copy";
-import RailB from "../components/variants/rail-b.astro";
 import DocBody from "../components/variants/doc-body.astro";
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
@@ -12,57 +10,16 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
 // /api/* is app-owned (apps/cloud/src/app-paths.ts), so this hits the WorkOS
 // login flow directly. Returning users land here; new users use Get started.
 const SIGN_IN = "/api/auth/login";
-const stars = await getStars();
 
 ---
 
-<Layout>
-  <main class="bg-soft min-h-dvh relative antialiased">
-    {/* Graph-paper hero texture: grayscale (ink-masked), faded into the surface
-        at the bottom. Part of the registry-grade language, not a colored effect. */}
-    <div
-      class="pattern-bg pattern-graph"
-      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 1; pointer-events: none;"
-    >
-    </div>
-    <div
-      style="position: absolute; top: 0; left: 0; right: 0; height: 100vh; z-index: 2; pointer-events: none; background: linear-gradient(180deg, transparent 0%, transparent 65%, var(--color-surface) 100%);"
-    >
-    </div>
+<RailLayout
+  title="Executor — The gateway to connect your agent to everything"
+  description="One place every agent plugs into every tool you already use. Wire it up once, bring the whole team."
+>
+  <DocBody gh={GH} />
+</RailLayout>
 
-    <div class="relative z-10 page">
-      <div class="page__rail page__rail--b"><RailB stars={stars != null ? formatStars(stars) : null} /></div>
-      <div class="page__body">
-
-      <DocBody gh={GH} />
-
-      {/* ─── FOOTER ─── */}
-      <footer class="border-t border-rule py-10">
-        <div
-          class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6"
-        >
-          <div class="flex items-center gap-2.5">
-            <img src="/favicon-192.png" alt="" class="w-4 h-4 opacity-80" />
-            <span class="text-[13px] font-medium text-ink-2">executor</span>
-            <span class="text-[12px] text-ink-3 ml-2"
-              >© {new Date().getFullYear()}</span
-            >
-          </div>
-          <div class="flex items-center gap-6 text-[13px] text-ink-2">
-            <a href="https://executor.sh/docs" class="hover:text-ink transition-colors"
-              >Docs</a
-            >
-            <a href="/blog" class="hover:text-ink transition-colors">Blog</a>
-            <a href={GH} class="hover:text-ink transition-colors">GitHub</a>
-            <a href="/privacy" class="hover:text-ink transition-colors">Privacy</a>
-            <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
-          </div>
-        </div>
-      </footer>
-      </div>
-    </div>
-  </main>
-</Layout>
 
 <script>
   // Copy buttons. Use the async Clipboard API in secure contexts and fall back

@@ -1,0 +1,49 @@
+---
+// The site shell: sticky rail on the left, one centred frame, footer at the
+// bottom of the body column. The homepage, pricing, and blog all use it.
+// Prerendered pages resolve the star count once at build time.
+import Layout from "./Layout.astro";
+import RailB from "../components/variants/rail-b.astro";
+import { getStars, formatStars } from "../lib/github";
+import "../styles/variants/doc.css";
+
+interface Props {
+  title: string;
+  description: string;
+  current?: "home" | "pricing" | "blog";
+}
+const { title, description, current = "home" } = Astro.props;
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const stars = await getStars();
+---
+
+<Layout title={title} description={description}>
+  <main class="bg-soft min-h-dvh relative antialiased">
+    <div class="relative z-10 page">
+      <div class="page__rail page__rail--b">
+        <RailB stars={stars != null ? formatStars(stars) : null} current={current} />
+      </div>
+      <div class="page__body">
+        <slot />
+
+        <footer class="border-t border-rule py-10">
+          <div class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+            <div class="flex items-center gap-2.5">
+              <img src="/favicon-192.png" alt="" class="w-4 h-4 opacity-80" />
+              <span class="text-[13px] font-medium text-ink-2">executor</span>
+              <span class="text-[12px] text-ink-3 ml-2">© {new Date().getFullYear()}</span>
+            </div>
+            <div class="flex items-center gap-6 text-[13px] text-ink-2">
+              <a href="https://executor.sh/docs" class="hover:text-ink transition-colors">Docs</a>
+              <a href="/blog" class="hover:text-ink transition-colors">Blog</a>
+              <a href={GH} class="hover:text-ink transition-colors">GitHub</a>
+              <a href="/privacy" class="hover:text-ink transition-colors">Privacy</a>
+              <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
+            </div>
+          </div>
+        </footer>
+      </div>
+    </div>
+  </main>
+</Layout>
