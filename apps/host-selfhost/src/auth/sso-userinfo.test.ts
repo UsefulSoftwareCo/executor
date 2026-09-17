@@ -376,3 +376,60 @@ test("never admits a null email_verified from either claim source", async () => 
     },
   );
 });
+
+// Both guards on the ID-token shortcut are truthiness checks, so a claim that
+// is present but empty must not be mistaken for a supplied one: `sub: ""` has
+// to reach UserInfo, and an empty access token is no token to spend.
+test("treats empty-string sub and access token as absent, not supplied", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
+  const profile = {
+    ok: true,
+    body: { sub: "alice", email: "alice@example.com", email_verified: true },
+  };
+
+  const resolved = await withFetch([discovery, profile], async () => {
+    await expect(
+      getUserInfo({
+        idToken: jwt({ sub: "", email: "alice@example.com", email_verified: true }),
+        accessToken: "access-token",
+      }),
+    ).resolves.toMatchObject({ id: "alice", emailVerified: true });
+  });
+  expect(resolved).toHaveLength(2);
+
+  const skipped = await withFetch([], async () => {
+    await expect(
+      getUserInfo({
+        idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+        accessToken: "",
+      }),
+    ).resolves.toBeNull();
+  });
+  expect(skipped).toEqual([]);
+});
+
+// The same falsy-but-present case on the responses: an empty endpoint must not
+// be fetched, and an empty `sub` or `email` from UserInfo is not an identity.
+test("rejects empty-string userinfo_endpoint, sub and email from the IdP", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  const tokens = {
+    idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+    accessToken: "access-token",
+  };
+  const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
+
+  const stopped = await withFetch([{ ok: true, body: { userinfo_endpoint: "" } }], async () => {
+    await expect(getUserInfo(tokens)).resolves.toBeNull();
+  });
+  expect(stopped).toHaveLength(1);
+
+  for (const body of [
+    { sub: "", email: "alice@example.com", email_verified: true },
+    { sub: "alice", email: "", email_verified: true },
+  ]) {
+    await withFetch([discovery, { ok: true, body }], async () => {
+      await expect(getUserInfo(tokens)).resolves.toBeNull();
+    });
+  }
+});
