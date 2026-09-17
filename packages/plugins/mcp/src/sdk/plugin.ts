@@ -1984,16 +1984,12 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         );
 
         // Take the invocation pool's lease when this connection is poolable, so
-        // the probe REUSES the session or child process that tool calls already
-        // hold. Dialling a second connection made the probe the author of its
-        // own failure on a single-instance local server: Chrome DevTools MCP
-        // owns a browser and a debug port, Playwright MCP the same, `docker run
-        // -i` a container, so the second child could not start and the liveness
-        // check reported a connection broken while the server was up and
-        // serving. The UI re-probes every non-healthy verdict on every mount,
-        // so each page load started one more child. The key is built exactly as
-        // the invoke path builds it, which is what makes the lease hit the same
-        // entry.
+        // the probe reuses the session or child process tool calls already hold.
+        // A fresh dial starts a second child on a stdio server, and the common
+        // local servers permit one instance only (Chrome DevTools MCP,
+        // Playwright MCP, `docker run -i`) — the probe then failed a live,
+        // serving server, once per page mount. The key matches the invoke
+        // path's, which is what makes the lease hit the same entry.
         const poolKey = isPoolableConnectorInput(connectorInput)
           ? yield* connectionPoolKey(
               connectorInput,
@@ -2008,10 +2004,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         const discovery: Effect.Effect<void, McpToolDiscoveryError> =
           poolKey === undefined
             ? Effect.asVoid(discoverToolsFromInput(connectorInput))
-            : // The whole LEASE is bounded: the pool dials through its own
-              // acquire with no deadline, and a server that never completes its
-              // handshake would otherwise hang this probe where a dialling one
-              // timed out at fifteen seconds.
+            : // The whole lease is bounded: the pool's own dial has no
+              // deadline.
               withDiscoveryTimeout(
                 connectionPool.withConnection(
                   poolKey,
@@ -2022,9 +2016,8 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               ).pipe(
                 Effect.asVoid,
                 // The pool dials, so the raw connector failures surface here
-                // instead of inside `discoverTools`. Map them through the same
-                // function that path uses, so a pooled probe classifies a 401,
-                // a 403, and a connect timeout exactly as a dialling one does.
+                // instead of inside `discoverTools`; map them through the same
+                // classification that path uses.
                 Effect.mapError((error) =>
                   Predicate.isTagged(error, "McpToolDiscoveryError")
                     ? error

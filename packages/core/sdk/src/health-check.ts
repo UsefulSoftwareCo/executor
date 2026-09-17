@@ -243,21 +243,13 @@ const errorReasonMarkers = (body: unknown): string[] => {
   return markers;
 };
 
-/** Classify a probe response from its status AND body. Everything is
- *  `classifyHttpStatus` except two carve-outs on a 403:
- *
- *  - A known configuration reason (Google `accessNotConfigured` /
- *    `SERVICE_DISABLED`) is `misconfigured`: the credential authenticated, the
- *    upstream API is disabled in the OAuth client's project, and only enabling
- *    it there (not reconnecting) fixes it.
- *  - A scope shortfall (RFC 6750 `insufficient_scope` in `WWW-Authenticate`,
- *    `error: insufficient_scope` in the body, Google's
- *    `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) is `degraded`: the credential
- *    authenticated too, and the remedy is a NEW CONSENT with wider scope —
- *    which the connection's `missingOAuthScopes` already offers — not a
- *    reconnect. Reporting it as `expired` told the user the connection was dead
- *    and sent them through a flow that could not fix it. `headers` is optional
- *    so a caller that only kept the body still gets the body-based detection. */
+/** Classify a probe response from its status, body, and (optionally) headers.
+ *  Everything is `classifyHttpStatus` except two 403 carve-outs, both of which
+ *  authenticated: a known configuration reason (Google `accessNotConfigured` /
+ *  `SERVICE_DISABLED`) is `misconfigured`, and a scope shortfall (RFC 6750
+ *  `insufficient_scope`) is `degraded` — the remedy is a new consent, not a
+ *  reconnect, so `expired` would send the user through a flow that cannot fix
+ *  it. */
 export const classifyProbeResponse = (
   status: number,
   body: unknown,

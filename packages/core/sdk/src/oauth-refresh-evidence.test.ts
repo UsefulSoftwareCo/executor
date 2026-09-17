@@ -1,25 +1,14 @@
-// Regression coverage for the three causes of a wrong **Expired** status that
-// plans/oauth-refresh-and-expired-status.md ranks R1, R2, and R3. This file
-// started as the reproduction harness for that analysis: each cause had a test
-// that pinned the behavior on `main` and a skipped test that gave the required
-// behavior. The fix landed, so each cause now has one test, and it asserts the
-// required behavior.
+// Regression coverage for the connection status and OAuth refresh defects that
+// produced a permanent, wrong **Expired**: a refresher that loses a rotation
+// race, a rate-limited token endpoint, a probe that answered without
+// refreshing, and a refresh response that omits `expires_in`.
 //
-// R1: a refresher that loses a rotation race adopts the peer's token. It does
-// not write the permanent rejection record.
-// R2: one temporary 4xx response (a 429) does not end the grant.
-// R3: the health probe refreshes before it answers `expired`.
-//
-// Deployment shape under test: ONE database, ONE credential store, TWO executor
-// instances, and one root database handle for each instance. That is the cloud
-// app (a per-request `DbService` rebuild plus per-session Durable Objects) and
-// any multi-process self-hosting. It is the shape that the `refreshGateFor`
-// documentation declares out of scope for the in-process gate.
-//
-// `oauth-flow.test.ts` already builds this shape in "a refresher paused after
-// reading the stored token never writes it back over a peer's rotated one".
-// That test examines the credential store. These tests examine the connection
-// row, which is where the wrong status was written.
+// One database, one credential store, two executor instances, one root database
+// handle each. The in-flight refresh gate is keyed on the handle, so two
+// instances do not share a gate — the cloud app's per-request `DbService`
+// rebuild and any multi-process self-host both have this shape. The tests
+// assert on the connection ROW, which is where the wrong status was written:
+// `oauth-flow.test.ts` already covers this shape for the credential store.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
@@ -291,7 +280,7 @@ const deadGrantStamp = (row: unknown): number | undefined => {
 };
 
 // ---------------------------------------------------------------------------
-// R1 — a refresher that loses the rotation race adopts the peer's token.
+// A refresher that loses the rotation race adopts the peer's token.
 // ---------------------------------------------------------------------------
 
 /** Run the race: A reads the stored refresh token and stalls, B wins and
@@ -330,7 +319,7 @@ const runRotationRace = (race: Race) =>
     };
   });
 
-describe("R1 — a lost rotation race is not a dead grant", () => {
+describe("a lost rotation race is not a dead grant", () => {
   it.effect("the loser adopts the peer's token and the connection keeps refreshing", () =>
     withRace({}, (race) =>
       Effect.gen(function* () {
@@ -362,7 +351,7 @@ describe("R1 — a lost rotation race is not a dead grant", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R2 — one temporary 4xx does not end a grant.
+// One temporary 4xx response does not end a grant.
 // ---------------------------------------------------------------------------
 
 interface FlakyEndpoint {
@@ -461,7 +450,7 @@ const withRateLimitedRefresh = <A, E>(
     }),
   );
 
-describe("R2 — a rate-limited refresh stays retryable", () => {
+describe("a rate-limited refresh stays retryable", () => {
   it.effect("a 429 from the token endpoint does not end the grant", () =>
     withRateLimitedRefresh(({ race, flaky }) =>
       Effect.gen(function* () {
@@ -484,7 +473,7 @@ describe("R2 — a rate-limited refresh stays retryable", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R5 — a refresh response without `expires_in` keeps the advertised lifetime.
+// A refresh response without `expires_in` keeps the advertised lifetime.
 // ---------------------------------------------------------------------------
 
 interface StrippingEndpoint {
@@ -548,7 +537,7 @@ const rowExpiresAt = (row: unknown): number | null => {
 };
 
 // ---------------------------------------------------------------------------
-// R3 — the probe refreshes before it answers expired.
+// The probe refreshes before it answers expired.
 // ---------------------------------------------------------------------------
 
 /** Connect with a declared health check, then revoke the live access token
@@ -562,7 +551,7 @@ const withRevokedToken = <A, E>(use: (race: Race) => Effect.Effect<A, E>) =>
     }),
   );
 
-describe("R3 — the probe refreshes before it answers expired", () => {
+describe("the probe refreshes before it answers expired", () => {
   it.effect("a revoked token that the refresh can replace probes healthy", () =>
     withRevokedToken((race) =>
       Effect.gen(function* () {
@@ -601,10 +590,10 @@ describe("R3 — the probe refreshes before it answers expired", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R5 — a refresh response without `expires_in` must not erase the expiry.
+// A refresh response without `expires_in` must not erase the expiry.
 // ---------------------------------------------------------------------------
 
-describe("R5 — a refresh response that omits expires_in", () => {
+describe("a refresh response that omits expires_in", () => {
   it.effect("keeps the advertised lifetime, so proactive refresh survives", () =>
     Effect.scoped(
       Effect.gen(function* () {

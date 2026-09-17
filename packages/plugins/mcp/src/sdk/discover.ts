@@ -166,16 +166,10 @@ export const discoverToolsFromInput = (
   );
 
 /** Turn a connection failure into the discovery failure every caller of this
- *  module handles. Exported because a caller that takes its connection from the
- *  invocation pool meets the raw connector errors itself: the pool dials, this
- *  module only lists. Keeping the mapping here is what makes a pooled liveness
- *  probe classify a 401, a 403, and a connect timeout exactly as a dialling one
- *  does.
- *
- *  Preserves the handshake HTTP status (401/403 = auth wall) and a
- *  connect-level timeout so the liveness health check can classify
- *  structurally — dropping `failureKind: "timeout"` here is what made a timed-out
- *  handshake read as a generic probe failure. */
+ *  module handles. A caller that takes its connection from the invocation pool
+ *  meets the raw connector errors itself (the pool dials, this module only
+ *  lists), so the mapping is shared. Preserves the handshake HTTP status and a
+ *  connect-level timeout, which the liveness health check classifies on. */
 export const connectionFailureToDiscoveryError = (
   failure: McpConnectionError | McpOAuthReauthorizationRequired,
 ): McpToolDiscoveryError => {
@@ -194,15 +188,11 @@ export const connectionFailureToDiscoveryError = (
   });
 };
 
-/** Bound a discovery step with the shared deadline and the shared timeout error.
- *
- *  One definition so every path answers a wedged server identically — and every
- *  path is bounded. The pool's `withConnection` dials through its own acquire
- *  with no deadline of its own, so a caller that takes its connection from the
- *  pool must wrap the WHOLE lease in this deadline: without it, a server that
- *  never completes its handshake hangs the health check that used to time out
- *  at fifteen seconds. On timeout the lease releases (the pool closes a
- *  connection its lease failed on), so no child or session is left behind. */
+/** Bound a discovery step with the shared deadline and the shared timeout
+ *  error, so every path answers a wedged server identically — and every path is
+ *  bounded: the pool's own dial has no deadline, so a pooled caller must wrap
+ *  the whole lease. On timeout the lease releases and the pool closes the
+ *  connection, so nothing is left behind. */
 export const withDiscoveryTimeout = <A, E>(
   effect: Effect.Effect<A, E>,
   timeoutMs: number,
@@ -221,13 +211,9 @@ export const withDiscoveryTimeout = <A, E>(
     }),
   );
 
-/** The listing half of discovery, over a connection the CALLER owns.
- *
- *  `discoverTools` dials, lists, and closes. A caller that already holds an
- *  open connection must not close it: the liveness health check takes a lease
- *  from the invocation pool, and tool calls still need that session afterwards.
- *  This is the same listing work — same deadline, same elicitation refusal —
- *  with no teardown. */
+/** The listing half of discovery, over a connection the caller owns.
+ *  `discoverTools` dials, lists, and closes; a caller holding a pool lease must
+ *  not close it. Same listing work and deadline, no teardown. */
 export const discoverToolsFromConnection = (
   connection: McpConnection,
   timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),

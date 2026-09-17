@@ -1027,12 +1027,9 @@ const decodeTokenLifetimeState = Schema.decodeUnknownOption(
 );
 
 /** The access-token lifetime this grant advertised, in ms, when it ever
- *  advertised one. RFC 6749 makes `expires_in` OPTIONAL: an authorization
- *  server that sends it on the code exchange may omit it on refresh, and
- *  writing a null `expires_at` from such a response erased the only input the
- *  proactive refresh has — permanently, for the rest of the connection's life.
- *  Remembering the lifetime lets the next refresh derive an expiry from the
- *  grant it already knows. */
+ *  advertised one. RFC 6749 makes `expires_in` optional: writing a null
+ *  `expires_at` from a refresh that omits it erased the only input the
+ *  proactive refresh has, permanently. */
 const rememberedTokenLifetimeMs = (value: unknown): number | null => {
   const decoded = Option.getOrNull(decodeTokenLifetimeState(decodeJsonColumn(value)));
   return decoded === null || !Number.isFinite(decoded.oauthTokenLifetimeMs)
@@ -2311,12 +2308,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
      *  upstream 401 on a token we believed was still valid (`reactive`). */
     type RefreshTrigger = "proactive" | "reactive";
 
-    /** A refresh can also end with a token this instance never minted: a peer
-     *  rotated the grant while ours was in flight, and the peer's access token
-     *  is already stored. Adoption hands that value back directly, and the
-     *  caller must NOT persist it — the peer's mint is persisted already, and
-     *  re-persisting from a token response we never received would erase the
-     *  expiry the peer wrote. */
+    /** A refresh outcome that minted nothing here: a peer rotated the grant
+     *  while ours was in flight. The caller must not persist it — the peer
+     *  persisted its mint already. */
     type AdoptedAccessToken = string;
 
     /** Record the AS's invalid_grant verdict on the row so later refreshes
@@ -2372,20 +2366,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           },
         });
       };
-      // This rejection is evidence about the grant AS WE READ IT. A peer
-      // instance can refresh the same connection while our grant is in flight —
-      // the in-flight gate is keyed per database handle, so it cannot see one —
-      // and that peer's SUCCESS is stronger evidence than our refusal: the
-      // grant is alive and our refresh token was simply already consumed.
-      // `expires_at` moving forward is that success, and only a mint or a
-      // refresh writes it. Skip the record in that case. Without this, the
-      // loser of a rotation race stamped a permanent dead grant onto a row that
-      // held a valid rotated refresh token, and every later read derived
-      // `expired` from it.
-      //
-      // The write targets the FRESH row when there is one, so the merge base is
-      // the `provider_state` that exists now rather than the one this grant
-      // read before it went to the network.
+      // A peer instance can refresh this grant while ours is in flight (the
+      // gate is keyed per handle), and that peer's success is stronger evidence
+      // than our refusal. Only a mint or a refresh writes `expires_at`, so a
+      // value that moved forward means the grant is alive: skip the record.
+      // Writing against the fresh row also keeps the `provider_state` merge
+      // base current.
       return findConnectionRow(ref).pipe(
         Effect.flatMap((fresh) => {
           if (fresh === null) return record(row);
@@ -2448,13 +2434,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* provider.set(ProviderItemId.make(tokenItemId), token.access_token);
         }
 
-        // RFC 6749 makes `expires_in` OPTIONAL. An authorization server that
-        // advertised a lifetime on the code exchange may omit it on refresh, and
-        // writing null from such a response erased the only input the proactive
-        // refresh has — for the rest of the connection's life, so every later
-        // call went out on a dead token and recovered only through the reactive
-        // 401 path. Fall back to the lifetime this grant already knows: the one
-        // the mint recorded, or the one an earlier refresh reported.
+        // RFC 6749 makes `expires_in` optional. A refresh that omits it falls
+        // back to the lifetime this grant already knows: the one the mint
+        // recorded, or the one an earlier refresh reported.
         const advertisedLifetimeMs =
           typeof token.expires_in === "number" ? token.expires_in * 1000 : null;
         const rememberedLifetimeMs = rememberedTokenLifetimeMs(row.provider_state);
@@ -2465,9 +2447,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         };
         if (token.scope !== undefined) set.oauth_scope = token.scope;
         if (advertisedLifetimeMs !== null && advertisedLifetimeMs !== rememberedLifetimeMs) {
-          // Merge into the CURRENT `provider_state`, read fresh: this write must
-          // not bury a concurrent one — a dead-grant record, a missing-scope
-          // set — under the copy this refresh started from.
+          // Merge into a freshly read `provider_state`, so a concurrent write
+          // (a dead-grant record, a missing-scope set) survives.
           const ref: ConnectionRef = {
             owner: row.owner as Owner,
             integration: IntegrationSlug.make(row.integration),
@@ -2828,23 +2809,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Only the authorization_code path has one; client_credentials and
         // id_jag carry no refresh token at all.
         let storedRefreshToken: string | undefined;
-        /** A rejection is this grant's death certificate ONLY while the stored
-         *  refresh token is still the one this grant sent. The in-flight gate
-         *  is keyed per database handle, so two instances — cloud's per-request
-         *  HTTP plane and a per-session Durable Object, or two self-host
-         *  processes — can redeem the same single-use token. One wins and
-         *  stores the rotated successor; the loser is answered `invalid_grant`
-         *  for a grant that is alive. Re-reading the stored item tells the two
-         *  apart: a value that CHANGED while our request was in flight is a
-         *  peer's rotation, and that peer already persisted the access token
-         *  belonging to it. Adopt that token instead of failing, and let the
-         *  caller skip its own persist (re-persisting from a token response we
-         *  never received would erase the expiry the peer wrote).
-         *
-         *  Every other refusal — an unchanged token, a token we cannot read, a
-         *  reauth we inferred rather than received — keeps the original error,
-         *  so a genuinely dead grant still records and still asks for a
-         *  reconnect. */
+        /** A rejection is only this grant's death certificate while the stored
+         *  refresh token is still the one this grant sent. Two instances can
+         *  redeem one single-use token; the loser is answered `invalid_grant`
+         *  for a grant that is alive. A stored value that CHANGED during the
+         *  request is a peer's rotation, and that peer persisted the access
+         *  token that goes with it — adopt it instead of failing. Every other
+         *  refusal keeps the original error, so a genuinely dead grant still
+         *  records and still asks for a reconnect. */
         const adoptPeerRotatedToken = (
           error: CredentialResolutionError,
         ): Effect.Effect<
@@ -3001,10 +2973,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                       cause,
                     });
                   }),
-                  // Adoption first, recording second: a peer's rotation is not
-                  // this grant's death, and writing the record before asking
-                  // would leave a permanently `expired` row behind even when
-                  // this call went on to succeed with the peer's token.
+                  // Adoption before recording: a peer's rotation is not this
+                  // grant's death.
                   Effect.catchTag("CredentialResolutionError", (error) =>
                     adoptPeerRotatedToken(error),
                   ),
@@ -3022,8 +2992,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               });
 
         if (typeof token === "string") {
-          // Adopted from a peer's rotation, not minted here: already persisted
-          // by the instance that minted it, so persist nothing and hand it back.
+          // Adopted, not minted: already persisted by the peer that minted it.
           yield* Effect.annotateCurrentSpan({
             "executor.oauth.refresh.peer_rotation_adopted": true,
           });
@@ -4568,9 +4537,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ...(input.missingOAuthScopes === undefined || input.missingOAuthScopes.length === 0
             ? {}
             : { missingOAuthScopes: input.missingOAuthScopes }),
-          // The lifetime this grant advertised, when it advertised one, so a
-          // later refresh whose response omits `expires_in` can still derive an
-          // expiry (see `rememberedTokenLifetimeMs`).
+          // Recorded so a later refresh that omits `expires_in` can still
+          // derive an expiry (`rememberedTokenLifetimeMs`).
           ...(input.expiresAt === null
             ? {}
             : { oauthTokenLifetimeMs: Math.max(0, input.expiresAt - now.getTime()) }),
@@ -5190,14 +5158,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         ),
       );
 
-    /** The verdict for an OAuth connection whose integration declares no probe
-     *  operation and whose plugin cannot invent one: "the credential resolved
-     *  (refreshing if due)" is the only signal this path can produce, and a
-     *  refresh failure reaches the caller as a folded
-     *  CredentialResolutionError instead of through here. A null value means the
-     *  stored credential is GONE — the same case the plugins and heal-on-use
-     *  refuse to call healthy, because rendering omits that placement and an
-     *  upstream that answers unauthenticated would otherwise look alive. */
+    /** The verdict when nothing can probe: "the credential resolved" is the only
+     *  signal this path produces. A refresh failure reaches the caller as a
+     *  folded CredentialResolutionError instead. A null value means the stored
+     *  credential is gone — rendering omits that placement, and an upstream
+     *  that answers unauthenticated would otherwise look alive. */
     const credentialOnlyVerdict = (values: Record<string, string | null>): HealthCheckResult =>
       Object.values(values).some((value) => value == null)
         ? {
@@ -5432,21 +5397,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 const values = yield* resolveConnectionValues(connectionRow);
                 resolvedValues = values;
                 const first = yield* probe(values);
-                // A probe answers from the credential it was handed, so its
-                // `expired` is only as good as that credential. The invoke
-                // path knows this and re-mints once on a 401
-                // (`forceRefreshConnectionValues`); the probe did not, which
-                // persisted `expired` for exactly the connections the
-                // reactive refresh exists for — a server-side revocation, an
-                // idle timeout shorter than the advertised lifetime, a null
-                // `expires_at` the proactive check can never fire on. The
-                // badge then said "reconnect" for a connection that worked
-                // on its next call, and only heal-on-use corrected it.
-                //
-                // One forced refresh and one re-probe, for an OAuth
-                // connection only. A refusal keeps the probe's own verdict:
-                // it is the more informative of the two, and the refresh
-                // path has already recorded a dead grant if there is one.
+                // A probe's `expired` is only as good as the credential it was
+                // handed. The invoke path re-mints once on a 401; the probe did
+                // not, so a revoked token, an idle timeout, or a null
+                // `expires_at` showed a working connection as dead until a tool
+                // call healed it. One forced refresh and one re-probe, OAuth
+                // connections only; a refusal keeps the probe's own verdict.
                 if (first.status !== "expired" || connectionRow.oauth_client == null) {
                   return first;
                 }
@@ -5460,14 +5416,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 return yield* probe(refreshed);
               }),
             ).pipe(
-              // Ask the plugin FIRST, even with no declared spec: a plugin
-              // whose `checkHealth` ignores the spec (MCP lists tools) now
-              // gives a real verdict for its OAuth connections, which the
-              // old credential-only branch never reached. Only when the
-              // plugin itself answers `unknown` — it cannot invent a probe
-              // operation — does the credential-only verdict replace it,
-              // computed from the values the probe already resolved so
-              // nothing refreshes twice.
+              // Ask the plugin first, even with no declared spec: a plugin
+              // whose checkHealth needs no spec (MCP lists tools) gives a real
+              // verdict. Only a plugin that answers `unknown` falls back to the
+              // credential-only verdict, computed from the values the probe
+              // already resolved so nothing refreshes twice.
               Effect.map((result) =>
                 spec === undefined &&
                 connectionRow.oauth_client != null &&

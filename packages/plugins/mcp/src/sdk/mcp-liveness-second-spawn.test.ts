@@ -1,24 +1,14 @@
-// ---------------------------------------------------------------------------
-// A liveness probe must not dial a second connection when the invocation pool
-// already holds one.
+// A liveness probe must reuse the invocation pool's connection instead of
+// dialling a second one. For a stdio server a fresh dial starts a second child
+// process, and the common local servers permit one instance only (Chrome
+// DevTools MCP, Playwright MCP, `docker run -i`): the second child cannot
+// start, so the probe reported a live, serving server as broken — once per page
+// mount, because the UI re-probes every non-healthy verdict.
 //
-// `checkHealth` used to call `discoverToolsFromInput`, which builds a FRESH
-// connector (`discover.ts` → `createMcpConnector`) instead of taking the pooled
-// connection that tool calls use (`connection-pool.ts`, one idle session per
-// identity, five-minute TTL). For a remote server that costs a handshake. For a
-// local stdio server it starts a SECOND CHILD PROCESS — and the common local
-// servers permit one instance only: Chrome DevTools MCP owns a browser and a
-// debug port, Playwright MCP the same, `docker run -i` a container. The second
-// child could not start, so the probe reported the connection broken while the
-// server was up and serving the pooled client. The UI re-probes every
-// non-healthy verdict on every mount, so each page load started one more child.
-//
-// The fixture makes that failure deterministic: it refuses to start while a
-// live process holds its lock. Two probes therefore pass only if the second one
-// reuses the first one's child.
+// The fixture refuses to start while a live process holds its lock, so two
+// probes pass only when the second reuses the first one's child.
 //
 // `it.live`: this measures real child processes, so it needs the wall clock.
-// ---------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
