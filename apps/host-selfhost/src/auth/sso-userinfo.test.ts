@@ -236,6 +236,36 @@ test("returns null when UserInfo fails or omits sub or email", async () => {
   }
 });
 
+// Network and decoding failures at either external boundary must decline the
+// profile like a non-OK response, rather than reject the OAuth callback.
+test("returns null when UserInfo fetch or JSON parsing rejects", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  const tokens = {
+    idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+    accessToken: "access-token",
+  };
+  const discovery = new Response(
+    JSON.stringify({ userinfo_endpoint: "https://idp.example/userinfo" }),
+  );
+  // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test-only mock of a third-party response JSON boundary
+  const invalidJson = { ok: true, json: () => Promise.reject(new Error("invalid JSON")) };
+  // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test-only mock of an unavailable third-party request boundary
+  const offline = () => Promise.reject(new Error("offline"));
+
+  for (const responses of [
+    [offline()],
+    [invalidJson],
+    [discovery, offline()],
+    [discovery, invalidJson],
+  ]) {
+    const fetch = vi.fn();
+    for (const response of responses) fetch.mockImplementationOnce(() => response);
+    vi.stubGlobal("fetch", fetch);
+    await expect(getUserInfo(tokens)).resolves.toBeNull();
+    vi.unstubAllGlobals();
+  }
+});
+
 // The claim is only worth resolving because the admission gate reads it: a thin
 // token that used to arrive without `email_verified` was refused at the door.
 test("resolves a thin ID token into an admitted user at the gate", async () => {

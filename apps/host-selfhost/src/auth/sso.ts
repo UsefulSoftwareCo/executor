@@ -43,24 +43,31 @@ export const ssoUserInfo = async (discoveryUrl: string, tokens: OAuthTokens) => 
   }
 
   if (!tokens.accessToken) return null;
-  const discovery = await fetch(discoveryUrl).then(async (response) =>
-    response.ok ? (response.json() as Promise<{ userinfo_endpoint?: string }>) : null,
-  );
-  if (!discovery?.userinfo_endpoint) return null;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: an unavailable IdP must decline the profile rather than reject the OAuth callback
+  try {
+    const discoveryResponse = await fetch(discoveryUrl);
+    if (!discoveryResponse.ok) return null;
+    const discovery = (await discoveryResponse.json()) as { userinfo_endpoint?: string };
+    if (!discovery.userinfo_endpoint) return null;
 
-  const profile = await fetch(discovery.userinfo_endpoint, {
-    headers: { authorization: `Bearer ${tokens.accessToken}` },
-  }).then(async (response) => (response.ok ? (response.json() as Promise<OidcClaims>) : null));
-  if (!profile?.sub || !profile.email) return null;
+    const profileResponse = await fetch(discovery.userinfo_endpoint, {
+      headers: { authorization: `Bearer ${tokens.accessToken}` },
+    });
+    if (!profileResponse.ok) return null;
+    const profile = (await profileResponse.json()) as OidcClaims;
+    if (!profile.sub || !profile.email) return null;
 
-  return {
-    ...profile,
-    id: profile.sub,
-    email: profile.email,
-    emailVerified: profile.email_verified ?? false,
-    name: profile.name,
-    image: profile.picture,
-  };
+    return {
+      ...profile,
+      id: profile.sub,
+      email: profile.email,
+      emailVerified: profile.email_verified ?? false,
+      name: profile.name,
+      image: profile.picture,
+    };
+  } catch {
+    return null;
+  }
 };
 
 // Better Auth serves OAuth sign-in callbacks at `/oauth2/callback/:providerId`
