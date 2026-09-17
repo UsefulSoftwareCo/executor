@@ -30,6 +30,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig } from "./test-config";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const STORE = ProviderKey.make("memory");
 const INTEG = IntegrationSlug.make("demo");
@@ -65,7 +66,9 @@ const POPULATED = pluginWith([
 
 const failInvoking = (plugin: ReturnType<typeof pluginWith>, tool: string) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor({ ...makeTestConfig({ plugins: [plugin] as const }) });
+    const executor = yield* createExecutor({
+      ...makeTestConfig({ access: testAccess.member(), plugins: [plugin] as const }),
+    });
     yield* executor.demo.seed();
     yield* executor.connections.create({
       owner: "org",

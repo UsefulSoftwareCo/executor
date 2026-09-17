@@ -20,6 +20,7 @@ import {
 import { definePlugin } from "./plugin";
 import { makeTestConfig, makeTestWorkspaceHarness } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // An in-flight authorization flow parks its PKCE verifier in `oauth_session` in
 // plaintext, which is fine while the flow can still spend it. What is not fine is
@@ -127,6 +128,7 @@ describe("a dead authorization flow does not keep its PKCE verifier", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({});
         const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin, acmePlugin] as const,
         });
         yield* executor.acme.seed();
@@ -205,6 +207,7 @@ describe("a dead authorization flow does not keep its PKCE verifier", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({});
         const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin, acmePlugin] as const,
         });
         yield* executor.acme.seed();
@@ -280,6 +283,7 @@ describe("a dead authorization flow does not keep its PKCE verifier", () => {
         const plugins = [memoryCredentialsPlugin, acmePlugin] as const;
 
         const a = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-a",
@@ -298,6 +302,7 @@ describe("a dead authorization flow does not keep its PKCE verifier", () => {
 
         // A second member of the same tenant, on the same database.
         const b = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-b",
@@ -363,6 +368,7 @@ describe("a dead authorization flow does not keep its PKCE verifier", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({});
         const base = makeTestConfig({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin, acmePlugin] as const,
         });
         const executor = yield* createExecutor({

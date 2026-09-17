@@ -14,6 +14,7 @@ import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
 
 import { createExecutionEngine, formatExecuteResult, formatPausedExecution } from "./engine";
 import { FormElicitation } from "@executor-js/sdk/core";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // Regression for the hang reported as the executor-MCP "180s timeout" against
 // Cowork (Claude web). Cowork goes down the `executeWithPause` branch because
@@ -42,7 +43,10 @@ const emptyPlugin = definePlugin(() => ({
   staticIntegrations: () => [],
 }));
 
-const makeExecutor = () => createExecutor(makeTestConfig({ plugins: [emptyPlugin()] as const }));
+const makeExecutor = () =>
+  createExecutor(
+    makeTestConfig({ access: testAccess.member(), plugins: [emptyPlugin()] as const }),
+  );
 
 describe("executeWithPause failure propagation", () => {
   it.effect("surfaces a fast codeExecutor failure as an Exit.Failure", () =>
@@ -98,7 +102,7 @@ describe("paused execution authorization", () => {
   it.effect("uses the resumer's current org-write access after approval", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ coreTools: {}, orgWrites: "request" }),
+        makeTestConfig({ coreTools: {}, access: testAccess.requestBound() }),
       );
       const engine = createExecutionEngine({
         executor,
@@ -170,7 +174,7 @@ describe("paused execution authorization", () => {
       const executor = yield* createExecutor(
         makeTestConfig({
           coreTools: {},
-          orgWrites: "request",
+          access: testAccess.requestBound(),
           plugins: [joinPlugin()] as const,
         }),
       );

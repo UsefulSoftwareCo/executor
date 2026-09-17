@@ -5,11 +5,13 @@ import { ToolAddress } from "@executor-js/sdk";
 import { makeTestExecutor } from "@executor-js/sdk/testing";
 
 import { desktopSettingsPlugin } from "./server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 describe("desktopSettingsPlugin", () => {
   it.effect("returns a browser handoff URL for Desktop-only settings", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [desktopSettingsPlugin({ webBaseUrl: "http://executor.test/base/" })] as const,
       });
 

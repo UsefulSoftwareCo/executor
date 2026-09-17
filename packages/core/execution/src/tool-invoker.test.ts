@@ -38,6 +38,7 @@ import {
   searchTools,
   type ToolDiscoveryProvider,
 } from "./tool-invoker";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // v2 port. The v1 suite modelled namespaces as `staticSources` whose tools
@@ -477,7 +478,7 @@ const provision = (
   });
 
 const makeExecutorWith = <const TPlugins extends readonly AnyPlugin[]>(plugins: TPlugins) =>
-  createExecutor(makeTestConfig({ plugins }));
+  createExecutor(makeTestConfig({ access: testAccess.member(), plugins }));
 
 const makeSearchExecutor = () =>
   Effect.gen(function* () {
@@ -1250,6 +1251,7 @@ describe("tool discovery", () => {
         });
         const executor = yield* createExecutor(
           makeTestConfig({
+            access: testAccess.member(),
             plugins: [memoryCredentialsPlugin()] as const,
             coreTools: {},
           }),
@@ -1303,6 +1305,7 @@ describe("tool discovery", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const config = makeTestConfig({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin(), oauthErrorPlugin] as const,
         });
         const executor = yield* createExecutor(config);
@@ -1386,6 +1389,7 @@ describe("tool discovery", () => {
           invalidRefreshTokenDescription: "Refresh token expired",
         });
         const config = makeTestConfig({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin(), oauthErrorPlugin] as const,
         });
         const executor = yield* createExecutor(config);

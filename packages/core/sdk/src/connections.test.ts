@@ -33,6 +33,7 @@ import { definePlugin, type ResolveToolsResult } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
 import { ToolResult } from "./tool-result";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: v1 connection-refresh lifecycle, ConnectionProvider.refresh,
 // SecretProvider, accessToken token-refresh + in-flight dedup tests — the v2
@@ -163,7 +164,7 @@ const demoPlugin = definePlugin(() => ({
 }))();
 
 const setup = () =>
-  makeTestExecutor({ plugins: [demoPlugin] as const }).pipe(
+  makeTestExecutor({ access: testAccess.member(), plugins: [demoPlugin] as const }).pipe(
     Effect.tap((executor) => executor.demo.seed()),
   );
 
@@ -338,7 +339,10 @@ describe("connections.create", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [gatedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [gatedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.gated.seed();
 
@@ -435,7 +439,7 @@ describe("connections.create", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [plugin] as const });
+        const config = makeTestConfig({ access: testAccess.member(), plugins: [plugin] as const });
         const first = yield* createExecutor(config);
         yield* first.recoverable.seed();
 
@@ -545,7 +549,10 @@ describe("connections.create", () => {
         return wrap(db);
       };
 
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: blindfoldConnectionReads(config.db),
@@ -1079,6 +1086,7 @@ describe("connections.create credential-write compensation", () => {
               : Effect.sync(() => void store.set(String(id), value)),
         });
         const executor = yield* makeTestExecutor({
+          access: testAccess.member(),
           plugins: [durabilityPlugin(provider)] as const,
         });
         yield* executor.durable.seed();
@@ -1116,7 +1124,10 @@ describe("connections.create credential-write compensation", () => {
             ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
             : Effect.sync(() => void store.set(String(id), value)),
       });
-      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       yield* executor.durable.seed();
 
       const result = yield* Effect.result(
@@ -1151,7 +1162,10 @@ describe("connections.create credential-write compensation", () => {
             : Effect.sync(() => void store.set(String(id), value)),
         delete: undefined,
       });
-      const executor = yield* makeTestExecutor({ plugins: [durabilityPlugin(provider)] as const });
+      const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       yield* executor.durable.seed();
 
       const warnings: string[] = [];
@@ -1202,7 +1216,10 @@ describe("connections.create credential-write compensation", () => {
             ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
             : Effect.sync(() => void store.set(String(id), value)),
       });
-      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: failableCompensationRowDelete(config.db, () => failRowDelete),
@@ -1276,6 +1293,7 @@ describe("connections.create credential-write compensation", () => {
           },
         });
         const executor = yield* makeTestExecutor({
+          access: testAccess.member(),
           plugins: [durabilityPlugin(provider)] as const,
         });
         yield* executor.durable.seed();
@@ -1355,7 +1373,10 @@ describe("connections.create credential-write compensation", () => {
           },
         });
         const raceState = { armed: false };
-        const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [durabilityPlugin(provider)] as const,
+        });
         const executor = yield* createExecutor({
           ...config,
           db: staleCompensationRead(config.db, raceState),
@@ -1435,7 +1456,10 @@ describe("connections.create credential-write compensation", () => {
             : Effect.sync(() => void store.set(String(id), value)),
       });
       const readState = { armed: false };
-      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: failableConfirmationRead(config.db, readState),
@@ -1510,7 +1534,10 @@ describe("connections.create credential-write compensation", () => {
             ? Effect.fail(new StorageError({ message: "provider write refused", cause: undefined }))
             : Effect.sync(() => void store.set(String(id), value)),
       });
-      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: failableConnectionDeletes(config.db, () => failRowDelete),
@@ -1586,7 +1613,10 @@ describe("connections.create credential-write compensation", () => {
             ? Effect.die("provider crashed")
             : Effect.sync(() => void store.set(String(id), value)),
       });
-      const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [durabilityPlugin(provider)] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: failableCompensationRowDelete(config.db, () => failRowDelete),
@@ -1646,7 +1676,10 @@ describe("connections.create credential-write compensation", () => {
               ? Deferred.succeed(secondWriteEntered, undefined).pipe(Effect.andThen(Effect.never))
               : Effect.sync(() => void store.set(String(id), value)),
         });
-        const config = makeTestConfig({ plugins: [durabilityPlugin(provider)] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [durabilityPlugin(provider)] as const,
+        });
         const executor = yield* createExecutor({
           ...config,
           db: failableCompensationRowDelete(config.db, () => failRowDelete),
@@ -1696,7 +1729,11 @@ describe("connections.create credential-write compensation", () => {
 describe("connections.list / get", () => {
   it.effect("only includes full health diagnostics in verbose core tool output", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [demoPlugin] as const, coreTools: {} });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+        coreTools: {},
+      });
       const executor = yield* createExecutor(config);
       yield* executor.demo.seed();
       yield* executor.connections.create({
@@ -1876,7 +1913,10 @@ describe("tool catalog sync safety", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.guarded.seed();
         yield* executor.connections.create({
@@ -1942,7 +1982,10 @@ describe("tool catalog sync safety", () => {
                 }),
             }),
           }))();
-          const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+          const config = makeTestConfig({
+            access: testAccess.member(),
+            plugins: [guardedPlugin] as const,
+          });
           const executor = yield* createExecutor(config);
           yield* executor.guarded.seed();
           yield* executor.connections.create({
@@ -2005,7 +2048,10 @@ describe("tool catalog sync safety", () => {
                 }),
             }),
           }))();
-          const config = makeTestConfig({ plugins: [storedStatePlugin] as const });
+          const config = makeTestConfig({
+            access: testAccess.member(),
+            plugins: [storedStatePlugin] as const,
+          });
           const executor = yield* createExecutor(config);
           yield* executor["stored-state"].seed();
           yield* executor.connections.create({
@@ -2064,7 +2110,7 @@ describe("tool catalog sync safety", () => {
           }),
         }))();
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: [guardedPlugin] as const }),
+          makeTestConfig({ access: testAccess.member(), plugins: [guardedPlugin] as const }),
         );
         yield* executor.guarded.seed();
         yield* executor.connections.create({
@@ -2122,7 +2168,10 @@ describe("tool catalog sync safety", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.guarded.seed();
         yield* executor.connections.create({
@@ -2201,7 +2250,10 @@ describe("tool catalog sync safety", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.guarded.seed();
         yield* executor.connections.create({
@@ -2282,7 +2334,10 @@ describe("tool catalog sync safety", () => {
               }),
           }),
         }))();
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.guarded.seed();
         yield* executor.connections.create({
@@ -2368,7 +2423,10 @@ describe("tool catalog sync safety", () => {
           }),
         }))();
 
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor({
           ...config,
           db: instrumentTransactions(config.db, {
@@ -2457,7 +2515,10 @@ describe("tool catalog sync safety", () => {
           }),
         }))();
 
-        const config = makeTestConfig({ plugins: [guardedPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [guardedPlugin] as const,
+        });
         const executor = yield* createExecutor(config);
         yield* executor.guarded.seed();
         for (const name of ["broken", "healthy"]) {
@@ -2676,6 +2737,7 @@ const makeHealthHarness = (options?: {
 
   return Effect.gen(function* () {
     const config = makeTestConfig({
+      access: testAccess.member(),
       plugins: [plugin] as const,
       coreTools: { webBaseUrl: "http://localhost:3000" },
     });
@@ -3421,6 +3483,7 @@ describe("health probe gate key integrity", () => {
       // Both executors share ONE root db handle — and therefore one gate map;
       // only the key separates their probes.
       const configA = makeTestConfig({
+        access: testAccess.member(),
         plugins: [probingPlugin()] as const,
         tenant: "a",
         subject: "user:b",

@@ -133,6 +133,9 @@ export const touchSubject = (db: FumaDb<any>, input: TouchSubjectInput): Effect.
       withQueryContext(db, {
         tenant: input.tenant,
         subject: externalId,
+        // This host-internal writer touches ONLY the tenant-scoped `subject`
+        // table; it holds no owner-scoped view at all, stated explicitly.
+        owners: [],
       } satisfies ExecutorOwnerPolicyContext),
     );
     // No `tenant` clause: the tenant policy adds it to every read/update.

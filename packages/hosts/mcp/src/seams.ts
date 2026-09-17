@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import type { Cause } from "effect";
 
+import { orgWriteAccessForRole } from "@executor-js/product-access";
 import type { OrgWriteAccess } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
@@ -72,9 +73,11 @@ export type Principal = Schema.Schema.Type<typeof Principal>;
 /** Internal header overwritten by a trusted session store before MCP dispatch. */
 export const MCP_ORG_WRITE_ACCESS_HEADER = "x-executor-org-write-access";
 
-/** Derive the effective workspace-write access for one authenticated request. */
+/** Derive the effective workspace-write access for one authenticated request
+ *  — the product's role rule (`@executor-js/product-access`), applied here at
+ *  the serving boundary that stamps the request-bound carrier. */
 export const orgWriteAccessForPrincipal = (principal: Principal): OrgWriteAccess =>
-  principal.orgRoleModel === "none" || principal.orgRole === "admin" ? "allowed" : "denied";
+  orgWriteAccessForRole(principal);
 
 /**
  * Stamp request-bound workspace-write access for the MCP SDK request handler.

@@ -35,6 +35,7 @@ import {
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
   [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
@@ -90,7 +91,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("adds a custom apiKey method and getConfig reflects it", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: specText() },
@@ -119,7 +122,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("appends to an existing spec-derived template without dropping entries", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const seedTemplate: AuthenticationInput = {
           slug: "seed",
@@ -145,7 +150,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("generates a custom_<id> slug for a method submitted without one", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: specText() },
@@ -167,7 +174,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("dedupes: a matching slug replaces in place; two slugless get distinct slugs", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: specText() },
@@ -208,7 +217,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("replace mode overwrites the auth template array", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const seedTemplate: AuthenticationInput = {
           slug: "seed",
@@ -236,7 +247,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
@@ -272,7 +285,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
@@ -320,7 +335,9 @@ describe("OpenAPI Plugin — configure (custom auth method)", () => {
   it.effect("getConfig returns null for an unknown integration", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         expect(yield* executor.openapi.getConfig("nope")).toBeNull();
       }),
     ),

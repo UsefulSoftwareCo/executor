@@ -11,6 +11,7 @@ import { makeScopedExecutor } from "@executor-js/api/server";
 import { createSelfHostDb, SelfHostDb } from "./db/self-host-db";
 import { SelfHostScopedExecutorSeams } from "./execution";
 import type { SelfHostPlugins } from "./plugins";
+import { memberAccess } from "@executor-js/product-access";
 
 // The `subject` table is populated at the request seam: `makeScopedExecutor` is
 // what every HTTP request and MCP session on every host passes through, so
@@ -19,9 +20,9 @@ import type { SelfHostPlugins } from "./plugins";
 // the point is that the production wiring reaches the writer at all.
 
 const createScopedExecutor = (accountId: string, organizationId: string) =>
-  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, "Default").pipe(
-    Effect.provide(SelfHostScopedExecutorSeams),
-  );
+  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, "Default", {
+    access: memberAccess("allowed"),
+  }).pipe(Effect.provide(SelfHostScopedExecutorSeams));
 
 const dataDir = mkdtempSync(join(tmpdir(), "eh-subj-"));
 process.env.EXECUTOR_DATA_DIR = dataDir;

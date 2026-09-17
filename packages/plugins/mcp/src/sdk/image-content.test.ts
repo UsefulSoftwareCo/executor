@@ -17,6 +17,7 @@ import {
   makeImageMcpServer,
   serveMcpServer,
 } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEGRATION = IntegrationSlug.make("image_mcp");
 const TEMPLATE = AuthTemplateSlug.make("none");
@@ -32,7 +33,10 @@ describe("MCP image content", () => {
     Effect.gen(function* () {
       const server = yield* serveMcpServer(makeImageMcpServer);
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       yield* executor.mcp.addServer({

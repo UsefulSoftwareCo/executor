@@ -14,6 +14,7 @@ import {
 import { makeTestWorkspaceHarness } from "@executor-js/sdk/testing";
 
 import { fileSecretsPlugin } from "./index";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEGRATION = IntegrationSlug.make("durable-secrets");
 const CONNECTION = ConnectionName.make("main");
@@ -69,7 +70,11 @@ describe("file secrets data directory", () => {
       vi.stubEnv("XDG_DATA_HOME", firstSandboxDataHome);
       const firstAuthPath = yield* Effect.scoped(
         Effect.gen(function* () {
-          const first = yield* makeTestWorkspaceHarness({ dataDir, plugins: plugins() });
+          const first = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            dataDir,
+            plugins: plugins(),
+          });
           yield* first.executor.connectionFixture.registerIntegration();
           const connection = yield* first.executor.connections.create({
             owner: "org",
@@ -96,7 +101,11 @@ describe("file secrets data directory", () => {
       vi.stubEnv("XDG_DATA_HOME", recreatedSandboxDataHome);
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const recreated = yield* makeTestWorkspaceHarness({ dataDir, plugins: plugins() });
+          const recreated = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            dataDir,
+            plugins: plugins(),
+          });
           const connections = yield* recreated.executor.connections.list({
             integration: INTEGRATION,
           });

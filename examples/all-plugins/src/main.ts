@@ -31,6 +31,7 @@ import {
   ToolAddress,
   type CredentialProvider,
 } from "@executor-js/sdk";
+import { workspaceServiceAccess } from "@executor-js/product-access";
 
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
 import {
@@ -192,6 +193,8 @@ const program = Effect.gen(function* () {
 
   const executor = yield* createExecutor({
     tenant: Tenant.make("example-tenant"),
+    // Subject-less single-workspace example: org partition, writes allowed.
+    access: workspaceServiceAccess(),
     plugins,
     providers: [memoryProvider],
     onElicitation: "accept-all" as const,

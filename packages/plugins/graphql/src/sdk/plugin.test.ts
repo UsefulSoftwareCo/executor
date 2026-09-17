@@ -35,6 +35,7 @@ import {
   serveGraphqlTestServer,
   waitForRecordedRequests,
 } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: v1 secret browser-handoff, credential-binding scopes, usagesForSecret/
 // usagesForConnection, multi-scope shadowing, and `executor.sources.*` /
@@ -118,7 +119,10 @@ const serveGreetingServer = serveGraphqlTestServer({ schema: makeGreetingGraphql
 
 const makeExecutor = () =>
   createExecutor(
-    makeTestConfig({ plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const }),
+    makeTestConfig({
+      access: testAccess.member(),
+      plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
+    }),
   );
 
 const recordingBlobStore = () => {
@@ -160,11 +164,14 @@ describe("graphqlPlugin real protocol server", () => {
   it.effect("denies member schema persistence before writing an org blob", () =>
     Effect.gen(function* () {
       const blobs = recordingBlobStore();
-      const config = makeTestConfig({ plugins: [graphqlPlugin()] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [graphqlPlugin()] as const,
+      });
       const member = yield* createExecutor({
         ...config,
         blobs: blobs.store,
-        orgWrites: "denied",
+        access: testAccess.member("denied"),
       });
 
       const error = yield* member.graphql
@@ -420,6 +427,7 @@ describe("graphqlPlugin real protocol server", () => {
         }),
       );
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
       });
       const executor = yield* createExecutor({ ...config, httpClientLayer });
@@ -1236,6 +1244,7 @@ describe("graphqlPlugin", () => {
   it.effect("static executor.graphql.addIntegration registers an unreachable endpoint", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
       });
       const executor = yield* createExecutor(config);

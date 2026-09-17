@@ -48,6 +48,7 @@ import {
 } from "../testing";
 
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 class AdapterDefect extends Data.TaggedError("AdapterDefect") {}
 
@@ -149,7 +150,7 @@ const FailureApi = HttpApi.make("failuresTest")
 const buildExecutor = (baseUrl: string, httpClientLayer = FetchHttpClient.layer) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(
-      makeTestConfig({ plugins: testPlugins(httpClientLayer) }),
+      makeTestConfig({ access: testAccess.member(), plugins: testPlugins(httpClientLayer) }),
     );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(FailureApi, { slug: "f", baseUrl }),
@@ -167,7 +168,9 @@ const buildExecutor = (baseUrl: string, httpClientLayer = FetchHttpClient.layer)
 
 const buildExecutorForOpenApiServer = (server: OpenApiTestServerShape) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+    );
     const conn = yield* addOpenApiTestConnection(executor, server, { slug: "f" });
     return { executor, address: conn.address(LIST_THINGS) };
   });
@@ -349,7 +352,9 @@ describe("OpenAPI upstream failure modes", () => {
         headers: { "content-type": "application/json" },
         body: '{"error":{"status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}',
       }));
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       // Declare the operation's scope in the spec blob before registering it,
       // so the extracted binding carries requiredScopes.
       const SpecJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));

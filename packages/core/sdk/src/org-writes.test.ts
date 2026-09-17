@@ -12,14 +12,15 @@ import {
   ToolName,
 } from "./ids";
 import { createExecutor } from "./executor";
-import { CurrentOrgWriteAccess, makeOrgWriteAccessState } from "./org-write-access";
+import { CurrentOrgWriteAccess, makeOrgWriteAccessState } from "./access";
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
-// `ExecutorConfig.orgWrites` — the workspace-settings gate.
+// `ExecutorAccess.workspaceWrites` — the workspace-settings gate.
 //
 // A `"denied"` binding (a plain member) may USE workspace resources — read
 // them, execute tools over org connections — but every user-intent
@@ -29,8 +30,8 @@ import { serveOAuthTestServer } from "./testing/oauth-test-server";
 // `"allowed"` (admins, and hosts with no role model) behaves exactly as before.
 //
 // The fixtures build TWO executors over ONE test database: an admin
-// (default `orgWrites`) that seeds the workspace, and a member
-// (`orgWrites: "denied"`) that the assertions run against.
+// (workspace writes allowed) that seeds the workspace, and a member
+// (workspace writes denied) that the assertions run against.
 // ---------------------------------------------------------------------------
 
 const memoryProvider = (): CredentialProvider => {
@@ -83,9 +84,9 @@ const demoPlugin = definePlugin(() => ({
 
 const setup = () =>
   Effect.gen(function* () {
-    const config = makeTestConfig({ plugins: [demoPlugin] as const });
+    const config = makeTestConfig({ access: testAccess.member(), plugins: [demoPlugin] as const });
     const admin = yield* createExecutor(config);
-    const member = yield* createExecutor({ ...config, orgWrites: "denied" });
+    const member = yield* createExecutor({ ...config, access: testAccess.member("denied") });
     yield* Effect.addFinalizer(() =>
       admin.close().pipe(Effect.andThen(member.close()), Effect.ignore),
     );
@@ -101,13 +102,16 @@ const expectOrgWriteDenied = <A, R>(effect: Effect.Effect<A, unknown, R>) =>
     }),
   );
 
-describe("orgWrites: denied", () => {
+describe("workspace writes denied", () => {
   it.effect("reads a live session binding at every workspace-write sink", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
-        orgWrites: "request",
+        access: testAccess.requestBound(),
       });
       yield* Effect.addFinalizer(() => executor.close().pipe(Effect.ignore));
       const policy = yield* executor.demo.seed().pipe(
@@ -249,12 +253,18 @@ describe("orgWrites: denied", () => {
 
   it.effect("allows subjectless system re-registration during boot convergence", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const admin = yield* createExecutor(config);
       const { subject: _subject, ...systemConfig } = config;
+      // Boot convergence is the PRODUCT's rule now: the workspace-service
+      // posture allows it. A subject-less binding whose product DENIES
+      // settings writes is refused instead — see settings-authority.test.ts.
       const system = yield* createExecutor({
         ...systemConfig,
-        orgWrites: "denied",
+        access: testAccess.org(),
       });
       yield* Effect.addFinalizer(() =>
         admin.close().pipe(Effect.andThen(system.close()), Effect.ignore),
@@ -357,7 +367,7 @@ describe("orgWrites: denied", () => {
   );
 });
 
-describe("orgWrites: default (allowed)", () => {
+describe("workspace writes allowed", () => {
   it.effect("admin bindings mutate workspace-level state as before", () =>
     Effect.gen(function* () {
       const { admin } = yield* setup();

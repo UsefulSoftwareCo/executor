@@ -25,6 +25,7 @@ import { variable } from "@executor-js/sdk/http-auth";
 
 import { openApiPlugin } from "./plugin";
 import { serveOpenApiHttpApiTestServer, unwrapInvocation } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
   [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
@@ -58,7 +59,9 @@ const setup = Effect.gen(function* () {
     api: TestApi,
     handlersLayer: EchoGroupLive,
   });
-  const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+  const executor = yield* createExecutor(
+    makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+  );
   yield* executor.openapi.addSpec({
     spec: { kind: "blob", value: server.specJson },
     slug: "proj_api",

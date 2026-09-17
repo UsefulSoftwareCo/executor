@@ -23,6 +23,7 @@ import {
 
 import { mcpPlugin } from "./plugin";
 import { makeElicitationMcpServer, serveMcpServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const isFormElicitation = Schema.is(FormElicitation);
 
@@ -60,7 +61,12 @@ const TEMPLATE = AuthTemplateSlug.make("none");
 
 const makeTestExecutor = (serverUrl: string) =>
   Effect.acquireRelease(
-    createExecutor(makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const })),
+    createExecutor(
+      makeTestConfig({
+        access: testAccess.member(),
+        plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+      }),
+    ),
     (executor) => executor.close().pipe(Effect.ignore),
   ).pipe(
     Effect.tap((executor) =>
@@ -373,7 +379,9 @@ describe("MCP elicitation (end-to-end)", () => {
   it.effect("addServer preserves the configured display name as the integration description", () =>
     Effect.gen(function* () {
       const server = yield* serveElicitationTestServer;
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
 
       yield* executor.mcp.addServer({
         name: "Gmail",

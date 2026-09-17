@@ -37,6 +37,7 @@ import {
 
 import { openApiPlugin } from "./plugin";
 import { type AuthenticationInput } from "./types";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // Test API — a single endpoint that echoes the Authorization header so the
@@ -86,7 +87,9 @@ describe("OpenAPI owner-isolated bearer", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveVercel();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         // Admin uploads the spec once; the integration declares a bearer
         // template but no token value.

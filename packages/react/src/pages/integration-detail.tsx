@@ -10,10 +10,10 @@ import {
   AuthTemplateSlug,
   IntegrationSlug,
   ToolAddress,
-  effectivePolicyFromSorted,
   type Connection,
   type Owner,
 } from "@executor-js/sdk/shared";
+import { effectivePolicyFromSorted } from "@executor-js/product-access/policy";
 import {
   checkConnectionHealth,
   connectionsAllAtom,

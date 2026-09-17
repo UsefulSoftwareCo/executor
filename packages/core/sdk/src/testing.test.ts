@@ -7,10 +7,14 @@ import {
   OAuthTestServer,
   TestWorkspace,
 } from "./testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const plugins = [memoryCredentialsPlugin()] as const;
 
-const TestLayer = Layer.mergeAll(makeTestWorkspaceLayer({ plugins }), OAuthTestServer.layer());
+const TestLayer = Layer.mergeAll(
+  makeTestWorkspaceLayer({ access: testAccess.member(), plugins }),
+  OAuthTestServer.layer(),
+);
 
 layer(TestLayer, { timeout: "15 seconds" })("testing fixtures", (it) => {
   it.effect("TestWorkspace exposes the real executor bound to tenant/subject", () =>

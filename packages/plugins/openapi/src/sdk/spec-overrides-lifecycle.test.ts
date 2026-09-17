@@ -9,6 +9,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 import { openApiPlugin } from "./plugin";
 import { applySpecOverrides, type SpecOverrides } from "./spec-overrides";
 import { serveMutableOpenApiSpecTestServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const testPlugins = () =>
   [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
@@ -60,7 +61,9 @@ describe("OpenAPI spec override lifecycle", () => {
   it.effect("applies scope overrides to preview and persists raw and patched hashes", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const sourceText = encodeJsonText(oauthSpec);
 
         const preview = yield* executor.openapi.previewSpec({
@@ -93,7 +96,9 @@ describe("OpenAPI spec override lifecycle", () => {
   it.effect("changes and clears overrides for an inline spec without repasting the source", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const sourceText = encodeJsonText(oauthSpec);
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: sourceText },
@@ -130,7 +135,9 @@ describe("OpenAPI spec override lifecycle", () => {
           .add(HttpApiEndpoint.post("create", "/items", { success: Schema.String }));
         const InitialApi = HttpApi.make("initial").add(Items);
         const server = yield* serveMutableOpenApiSpecTestServer({ initialApi: InitialApi });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const removeList: SpecOverrides = [{ op: "remove", path: "/paths/~1items/get" }];
 
         yield* executor.openapi.addSpec({

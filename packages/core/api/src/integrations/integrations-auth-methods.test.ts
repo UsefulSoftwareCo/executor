@@ -16,6 +16,7 @@ import { makeTestConfig } from "@executor-js/sdk/testing";
 import { ExecutorApi } from "../api";
 import { observabilityMiddleware } from "../observability";
 import { CoreHandlers, ExecutionEngineService, ExecutorService } from "../server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // The catalog response surfaces each plugin's DECLARED auth methods (projected
@@ -109,7 +110,9 @@ interface IntegrationResponseBody {
 describe("catalog surfaces declared auth methods", () => {
   it.effect("an OAuth integration with zero connections advertises an oauth method", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [declaringPlugin] }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [declaringPlugin] }),
+      );
       const slug = IntegrationSlug.make("oauth-server");
       yield* executor.declaring.seed(slug, [OAUTH_METHOD]);
 
@@ -133,7 +136,9 @@ describe("catalog surfaces declared auth methods", () => {
 
   it.effect("an apikey integration advertises an apikey method", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [declaringPlugin] }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [declaringPlugin] }),
+      );
       const slug = IntegrationSlug.make("apikey-server");
       yield* executor.declaring.seed(slug, [APIKEY_METHOD]);
 
@@ -156,7 +161,9 @@ describe("catalog surfaces declared auth methods", () => {
 
   it.effect("list surfaces authMethods and a plugin with no projector yields []", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [declaringPlugin] }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [declaringPlugin] }),
+      );
       yield* executor.declaring.seed(IntegrationSlug.make("oauth-server"), [OAUTH_METHOD]);
       yield* executor.declaring.seed(IntegrationSlug.make("bare-server"), []);
 
@@ -180,7 +187,9 @@ describe("catalog surfaces declared auth methods", () => {
 
   it.effect("surfaces plugin-derived display URLs without exposing config", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [declaringPlugin] }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [declaringPlugin] }),
+      );
       const slug = IntegrationSlug.make("autumn");
       yield* executor.declaring.seed(slug, [], "https://api.useautumn.com");
 

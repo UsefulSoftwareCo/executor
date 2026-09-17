@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "effect": "catalog:"
   },

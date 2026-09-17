@@ -139,10 +139,18 @@ Embed Executor with the TypeScript SDK (a Promise API; an Effect-native API is
 also available):
 
 ```ts
-import { createExecutor } from "@executor-js/sdk/promise";
-import { openApiPlugin } from "@executor-js/plugin-openapi/promise";
+import { workspaceServiceAccess } from "@executor-js/product-access";
+import { createExecutor } from "@executor-js/sdk";
+import { openApiPlugin } from "@executor-js/plugin-openapi";
 
-const executor = await createExecutor({ plugins: [openApiPlugin()] });
+const executor = await createExecutor({
+  plugins: [openApiPlugin()],
+  onElicitation: "accept-all",
+  // Product access decisions are REQUIRED and stated explicitly — the SDK
+  // ships no default posture. `@executor-js/product-access` has the standard
+  // ones (this is the subject-less single-workspace posture).
+  access: workspaceServiceAccess(),
+});
 
 // add an integration, create a connection, then list and call tools
 const tools = await executor.tools.list({ integration: "inventory" });

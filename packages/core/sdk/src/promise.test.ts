@@ -5,6 +5,7 @@ import { definePlugin, tool } from "./plugin";
 import type { ToolDef } from "./tool";
 import { IntegrationSlug, ToolName } from "./ids";
 import { Effect, Schema } from "effect";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // A minimal static-tool plugin built on the Effect surface, consumed
 // through the Promise façade. Exercises the proxy's ability to promisify
@@ -41,6 +42,7 @@ describe("promise/createExecutor", () => {
   it("returns Promise-shaped executor and invokes static tools", async () => {
     const plugins = [echoPlugin()] as const;
     const executor = await createExecutor({
+      access: testAccess.org(),
       plugins,
       onElicitation: "accept-all",
     });
@@ -54,6 +56,7 @@ describe("promise/createExecutor", () => {
   it("promisifies plugin extension methods", async () => {
     const plugins = [echoPlugin()] as const;
     const executor = await createExecutor({
+      access: testAccess.org(),
       plugins,
       onElicitation: "accept-all",
     });
@@ -94,6 +97,7 @@ describe("promise/createExecutor", () => {
 
     const plugins = [approvedPlugin()] as const;
     const executor = await createExecutor({
+      access: testAccess.org(),
       plugins,
       onElicitation: "accept-all", // default → auto-approve
     });
@@ -157,6 +161,7 @@ describe("promise/createExecutor", () => {
 
     const plugins = [inventoryPlugin()] as const;
     const executor = await createExecutor({
+      access: testAccess.org(),
       plugins,
       providers: [memoryProvider],
       onElicitation: "accept-all",

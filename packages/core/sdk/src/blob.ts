@@ -4,18 +4,21 @@
 // metadata and plugin-owned config rows.
 //
 // Plugins see a `PluginBlobStore` that's already namespaced to the
-// plugin id and bound to the executor's scope stack. Reads fall through
-// the stack in order (innermost first, first hit wins); writes and
-// deletes require an explicit scope id naming where the operation
-// should land. That mirrors the secrets API — shadowing by key on
-// read, explicit target on write.
+// plugin id and clamped to the product's `BlobAccess` view. Reads fall
+// through the view's owners in order (first listed wins); writes and
+// deletes require an explicit owner naming where the operation should
+// land, and are refused outside the view. That mirrors the secrets API —
+// shadowing by key on read, explicit target on write — and it is where
+// the executor's access decisions apply to blobs at all: the blob table
+// sits outside the storage owner policy (isolation is the namespace
+// string), so nothing downstream re-checks them.
 //
 // Error channel is `StorageError` — blobs only do read/write/delete, so
 // they never produce `UniqueViolationError`. The HTTP edge translates
 // `StorageError` to the opaque public `InternalError({ traceId })`.
 // ---------------------------------------------------------------------------
 
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import { StorageError, type IFumaClient } from "./fuma-runtime";
 import type { Owner } from "./ids";
@@ -41,53 +44,101 @@ export interface BlobStore {
 }
 
 export interface PluginBlobStore {
-  /** Read precedence: this subject's own (`user`) value first, then the
-   *  org-shared value. Returns the first non-null. */
+  /** Read precedence: the product view's owner order (`BlobAccess.owners`,
+   *  first entry wins). Returns the first non-null. */
   readonly get: (key: string) => Effect.Effect<string | null, StorageError>;
   /** Write `value` under `key` for the named owner (`"org"` shared, `"user"`
-   *  private). `"user"` requires the executor to be bound to a subject. */
+   *  private). The owner must be in the product view, and `"user"` requires
+   *  the executor to be bound to a subject. */
   readonly put: (
     key: string,
     value: string,
     options: { readonly owner: Owner },
   ) => Effect.Effect<void, StorageError>;
-  /** Delete `key` for the named owner. */
+  /** Delete `key` for the named owner. Bounded like `put`. */
   readonly delete: (
     key: string,
     options: { readonly owner: Owner },
   ) => Effect.Effect<void, StorageError>;
-  /** True if either the user or org partition has a value for `key`. */
+  /** True if any partition in the product view has a value for `key`. */
   readonly has: (key: string) => Effect.Effect<boolean, StorageError>;
 }
 
-/** The owner partition strings an executor binding resolves to: the org
+/** The owner partition strings an executor IDENTITY resolves to: the org
  *  partition (always present) and this subject's user partition (null for a
- *  pure-org executor). Reads walk `[user, org]`; writes target one. */
+ *  pure-org executor). Identity-shaped on purpose — identity-bound consumers
+ *  (the pending-approval store) keep using it directly; which partitions a
+ *  plugin blob store actually reads or writes is the separate, product-owned
+ *  `BlobAccess` decision. */
 export interface OwnerPartitions {
   readonly org: string;
   readonly user: string | null;
 }
 
+/**
+ * The slice of the product's access decisions the blob seam enforces: the
+ * blob table is exempt from the storage owner policy (isolation lives in the
+ * row namespace), so `ExecutorAccess.owners` and the read-only capability
+ * must be applied HERE, at namespace construction, or not at all.
+ *
+ * Structural and required — there is no default view: the caller states the
+ * product's decision explicitly, and core contributes only the clamps
+ * (tenant/subject are already baked into `OwnerPartitions`).
+ */
+export interface BlobAccess {
+  /** The owner partitions reads see and writes may target, in read-precedence
+   *  order — the first listed owner shadows later ones on `get`. */
+  readonly owners: readonly Owner[];
+  /** `"denied"` refuses every `put`/`delete` through this store (the
+   *  read-only posture, `ExecutorAccessCapabilities.storageWrites`). */
+  readonly storageWrites: "allowed" | "denied";
+}
+
 const nsFor = (partition: string, pluginId: string) => `${partition}/${pluginId}`;
 
 /**
- * Bind a `BlobStore` to an owner partitioning + plugin id. Reads fall through
- * `[user, org]` (user first); writes target an explicit owner. Used by the
- * executor to build the `blobs` field handed to each plugin's `storage` factory.
+ * Bind a `BlobStore` to an owner partitioning + plugin id, clamped to the
+ * product's `BlobAccess`. Reads fall through the access owners in their
+ * supplied order (first hit wins); writes target an explicit owner and are
+ * refused outside the access view. Used by the executor to build the `blobs`
+ * field handed to each plugin's `storage` factory.
  */
 export const pluginBlobStore = (
   store: BlobStore,
   partitions: OwnerPartitions,
   pluginId: string,
+  access: BlobAccess,
 ): PluginBlobStore => {
-  const readNamespaces = (): readonly string[] =>
-    (partitions.user == null ? [partitions.org] : [partitions.user, partitions.org]).map((p) =>
-      nsFor(p, pluginId),
-    );
+  const partitionOf = (owner: Owner): string | null =>
+    owner === "org" ? partitions.org : partitions.user;
+
+  // The product view's partitions, in ITS precedence order. An owner the
+  // identity cannot carry (`"user"` with no subject) maps to no namespace
+  // rather than failing a read — the partition simply has no rows to see.
+  const readNamespaces: readonly string[] = access.owners
+    .map(partitionOf)
+    .filter(Predicate.isNotNull)
+    .map((partition) => nsFor(partition, pluginId));
 
   const partitionFor = (owner: Owner): Effect.Effect<string, StorageError> => {
-    if (owner === "org") return Effect.succeed(partitions.org);
-    if (partitions.user == null) {
+    if (access.storageWrites === "denied") {
+      return Effect.fail(
+        new StorageError({
+          message: `Blob write on plugin "${pluginId}" is not allowed: this executor's storage is read-only.`,
+          cause: undefined,
+        }),
+      );
+    }
+    if (!access.owners.includes(owner)) {
+      return Effect.fail(
+        new StorageError({
+          message: `Blob write targets the "${owner}" partition, which this product view does not include.`,
+          cause: undefined,
+        }),
+      );
+    }
+    const partition = partitionOf(owner);
+    if (partition == null) {
       return Effect.fail(
         new StorageError({
           message: 'Blob write targets owner "user" but the executor has no subject.',
@@ -95,16 +146,15 @@ export const pluginBlobStore = (
         }),
       );
     }
-    return Effect.succeed(partitions.user);
+    return Effect.succeed(partition);
   };
 
   return {
     get: (key) =>
       Effect.gen(function* () {
-        const namespaces = readNamespaces();
-        const hits = yield* store.getMany(namespaces, key);
+        const hits = yield* store.getMany(readNamespaces, key);
         if (hits.size === 0) return null;
-        for (const ns of namespaces) {
+        for (const ns of readNamespaces) {
           const v = hits.get(ns);
           if (v !== undefined) return v;
         }
@@ -118,7 +168,7 @@ export const pluginBlobStore = (
       Effect.flatMap(partitionFor(options.owner), (partition) =>
         store.delete(nsFor(partition, pluginId), key),
       ),
-    has: (key) => store.getMany(readNamespaces(), key).pipe(Effect.map((hits) => hits.size > 0)),
+    has: (key) => store.getMany(readNamespaces, key).pipe(Effect.map((hits) => hits.size > 0)),
   };
 };
 

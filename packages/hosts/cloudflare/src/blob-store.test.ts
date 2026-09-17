@@ -93,7 +93,10 @@ describe("makeR2BlobStore", () => {
     Effect.gen(function* () {
       const { bucket } = makeFakeBucket();
       const store = makeR2BlobStore(bucket);
-      const plugin = pluginBlobStore(store, { org: "o:t1", user: "u:t1:s1" }, "openapi");
+      const plugin = pluginBlobStore(store, { org: "o:t1", user: "u:t1:s1" }, "openapi", {
+        owners: ["user", "org"],
+        storageWrites: "allowed",
+      });
 
       yield* plugin.put("spec/h1", "org-spec", { owner: "org" });
       expect(yield* plugin.get("spec/h1")).toBe("org-spec");

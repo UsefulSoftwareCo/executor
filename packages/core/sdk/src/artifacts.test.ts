@@ -4,6 +4,7 @@ import { Effect, Predicate, Result } from "effect";
 import { makeTestExecutor } from "./testing";
 import type { ArtifactBinding } from "./artifact";
 import { ConnectionName, IntegrationSlug } from "./ids";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const binding = (integration: string, owner: "user" | "org", name: string): ArtifactBinding => ({
   integration: IntegrationSlug.make(integration),
@@ -20,14 +21,14 @@ const CODE = "export default function App() { return <div>hi</div>; }";
 describe("executor.artifacts", () => {
   it.effect("list is empty when nothing is saved", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       expect(yield* executor.artifacts.list()).toEqual([]);
     }),
   );
 
   it.effect("save mints an id and stores the source", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({
         title: "Active users",
         description: "Daily active users over time",
@@ -46,7 +47,7 @@ describe("executor.artifacts", () => {
 
   it.effect("round-trips connection bindings through the json column", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const bindings = {
         vercel: binding("vercel", "user", "personalVercel"),
         prod: binding("linear", "org", "linearProd"),
@@ -59,7 +60,7 @@ describe("executor.artifacts", () => {
 
   it.effect("saves an artifact that binds nothing as bound-but-empty, not unbound", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({ title: "Static", code: CODE, bindings: {} });
       // `{}` and `null` are different facts: `{}` is an artifact that calls no
       // integration, `null` is one written before bindings existed and whose
@@ -71,7 +72,7 @@ describe("executor.artifacts", () => {
 
   it.effect("leaves bindings null when a save omits them", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({ title: "Legacy", code: CODE });
       expect(saved.bindings).toBe(null);
     }),
@@ -79,7 +80,7 @@ describe("executor.artifacts", () => {
 
   it.effect("overwrites bindings along with the source", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({
         title: "Domains",
         code: CODE,
@@ -100,7 +101,7 @@ describe("executor.artifacts", () => {
 
   it.effect("save defaults a missing description to null", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({ title: "Untitled", code: CODE });
       expect(saved.description).toBe(null);
     }),
@@ -108,7 +109,7 @@ describe("executor.artifacts", () => {
 
   it.effect("list omits the source", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({
         title: "Active users",
         description: "described",
@@ -141,7 +142,7 @@ describe("executor.artifacts", () => {
   // storage layer really has.
   it.live("list returns the most recently updated artifact first", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const first = yield* executor.artifacts.save({ title: "First", code: CODE });
       yield* Effect.sleep("1100 millis");
       const second = yield* executor.artifacts.save({ title: "Second", code: CODE });
@@ -159,7 +160,7 @@ describe("executor.artifacts", () => {
 
   it.effect("save with an id overwrites in place", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({ title: "Draft", code: CODE });
       const updated = yield* executor.artifacts.save({
         id: saved.id,
@@ -182,7 +183,7 @@ describe("executor.artifacts", () => {
 
   it.effect("save fails for an id that names no visible artifact", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const result = yield* Effect.result(
         executor.artifacts.save({ id: "art_missing", title: "Ghost", code: CODE }),
       );
@@ -194,7 +195,7 @@ describe("executor.artifacts", () => {
 
   it.effect("get fails for an unknown id", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const result = yield* Effect.result(executor.artifacts.get("art_missing"));
       expect(Result.isFailure(result)).toBe(true);
       if (!Result.isFailure(result)) return;
@@ -204,7 +205,7 @@ describe("executor.artifacts", () => {
 
   it.effect("rename changes only the title", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({
         title: "Old name",
         description: "kept",
@@ -219,7 +220,7 @@ describe("executor.artifacts", () => {
 
   it.effect("rename fails for an unknown id", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const result = yield* Effect.result(
         executor.artifacts.rename({ id: "art_missing", title: "Nope" }),
       );
@@ -231,7 +232,7 @@ describe("executor.artifacts", () => {
 
   it.effect("remove hard-deletes the artifact", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       const saved = yield* executor.artifacts.save({ title: "Temp", code: CODE });
       yield* executor.artifacts.remove({ id: saved.id });
 
@@ -245,7 +246,7 @@ describe("executor.artifacts", () => {
 
   it.effect("remove is idempotent", () =>
     Effect.gen(function* () {
-      const executor = yield* makeTestExecutor();
+      const executor = yield* makeTestExecutor({ access: testAccess.member() });
       yield* executor.artifacts.remove({ id: "art_missing" });
     }),
   );
@@ -254,7 +255,7 @@ describe("executor.artifacts", () => {
     Effect.gen(function* () {
       // Pure-org executors (host request paths with no member bound) have no
       // user partition to file a personal artifact into.
-      const executor = yield* makeTestExecutor({ subject: null });
+      const executor = yield* makeTestExecutor({ access: testAccess.org(), subject: null });
       const result = yield* Effect.result(executor.artifacts.save({ title: "Orphan", code: CODE }));
       expect(Result.isFailure(result)).toBe(true);
     }),
@@ -266,7 +267,7 @@ describe("executor.artifacts", () => {
 
     it.effect("round-trips layout markup, and reads it back as a layout preview", () =>
       Effect.gen(function* () {
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const saved = yield* executor.artifacts.save({
           title: "Revenue",
           code: CODE,
@@ -284,7 +285,7 @@ describe("executor.artifacts", () => {
 
     it.effect("leaves the preview null when a save omits one", () =>
       Effect.gen(function* () {
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const saved = yield* executor.artifacts.save({ title: "Plain", code: CODE });
         expect(saved.preview).toBe(null);
       }),
@@ -295,7 +296,7 @@ describe("executor.artifacts", () => {
         // The preview interprets `code`, so a save that replaces the source
         // must replace the picture — including back to null. Carrying it
         // forward would advertise a version of the artifact that is gone.
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const saved = yield* executor.artifacts.save({
           title: "Revenue",
           code: CODE,
@@ -313,7 +314,7 @@ describe("executor.artifacts", () => {
 
     it.effect("setPreview upgrades the preview to the settled render", () =>
       Effect.gen(function* () {
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const saved = yield* executor.artifacts.save({
           title: "Revenue",
           code: CODE,
@@ -331,7 +332,7 @@ describe("executor.artifacts", () => {
       Effect.gen(function* () {
         // `updated_at` is the gallery's sort key. Opening an artifact must not
         // move it to the front — being looked at is not an edit.
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const saved = yield* executor.artifacts.save({ title: "Revenue", code: CODE });
         yield* executor.artifacts.setPreview({ id: saved.id, preview: SETTLED });
         expect((yield* executor.artifacts.get(saved.id)).updatedAt).toEqual(saved.updatedAt);
@@ -340,7 +341,7 @@ describe("executor.artifacts", () => {
 
     it.effect("setPreview fails for an artifact that is not visible", () =>
       Effect.gen(function* () {
-        const executor = yield* makeTestExecutor();
+        const executor = yield* makeTestExecutor({ access: testAccess.member() });
         const result = yield* Effect.result(
           executor.artifacts.setPreview({ id: "art_missing", preview: SETTLED }),
         );

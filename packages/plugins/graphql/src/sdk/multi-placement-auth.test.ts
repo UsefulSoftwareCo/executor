@@ -23,12 +23,16 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 import { graphqlPlugin } from "./plugin";
 import { variable } from "@executor-js/sdk/http-auth";
 import { makeGreetingGraphqlSchema, serveGraphqlTestServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const serveGreetingServer = serveGraphqlTestServer({ schema: makeGreetingGraphqlSchema() });
 
 const makeExecutor = () =>
   createExecutor(
-    makeTestConfig({ plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const }),
+    makeTestConfig({
+      access: testAccess.member(),
+      plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
+    }),
   );
 
 const toolAddr = (integration: string, connection: string, tool: string): ToolAddress =>

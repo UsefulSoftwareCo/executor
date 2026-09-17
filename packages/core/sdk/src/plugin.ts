@@ -168,9 +168,9 @@ export interface PluginCtx<TStore = unknown> {
        *  external work or writes to storage outside the catalog transaction. */
       readonly authorizeWrite: () => Effect.Effect<void, OrgWriteDeniedError>;
       /** Register / replace this plugin's integration in the catalog. Both
-       *  operations are workspace-level changes gated by the executor's
-       *  `orgWrites` binding for end-user principals. Subjectless system
-       *  executors may re-register an existing row during boot convergence. */
+       *  operations are workspace-level changes gated by the product's
+       *  `ExecutorAccess.settingsWrite` decision, including replacement by
+       *  subjectless system executors during boot convergence. */
       readonly register: (
         input: RegisterIntegrationInput,
       ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;

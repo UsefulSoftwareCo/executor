@@ -26,6 +26,7 @@ import {
 } from "@executor-js/host-mcp/tool-server";
 import { buildResumeApprovalUrl } from "@executor-js/host-mcp/browser-approval";
 import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
+import { requestBoundMemberAccess } from "@executor-js/product-access";
 import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
 import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
@@ -349,7 +350,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         sessionMeta.organizationName,
         {
           mcpResource: sessionMeta.resource,
-          orgWrites: "request",
+          access: requestBoundMemberAccess(),
         },
       ).pipe(
         // The metered stack tracks each execution to Autumn. It requires

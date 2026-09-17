@@ -232,9 +232,9 @@ export interface OAuthServiceDeps {
     readonly owner: Owner;
     readonly subject: string;
   };
-  /** Workspace-settings gate from the executor binding
-   *  (`ExecutorConfig.orgWrites`): refuses `owner: "org"` targets on the
-   *  user-intent client/connect surfaces. */
+  /** Settings gate from the executor binding (`ExecutorAccess.settingsWrite`):
+   *  enforces the product's decision for the owner targeted by a user-intent
+   *  client/connect operation. */
   readonly guardOrgWrite: (owner: Owner) => Effect.Effect<void, OrgWriteDeniedError>;
   readonly defaultWritableProvider: () => CredentialProvider | null;
   /** Write the connection row with OAuth lifecycle fields + produce its tools. */

@@ -2,6 +2,7 @@ import { type Condition, type ConditionBuilder } from "@executor-js/fumadb/query
 import type { AnyColumn, AnyTable } from "@executor-js/fumadb/schema";
 
 import { StorageError } from "./fuma-runtime";
+import type { Owner } from "./ids";
 
 /* The v2 owner policy — successor to v1's `executor.scope` policy. Every owned
  * row carries `tenant` + `owner`('org'|'user') + `subject`; org rows use the
@@ -53,6 +54,19 @@ export interface ExecutorOwnerPolicyContext {
   /** The acting member, or null for a pure-org executor (no `owner:"user"`
    *  reads/writes are allowed when null). */
   readonly subject: string | null;
+  /**
+   * The row-visibility/write decision (`ExecutorAccess.owners` for
+   * principal contexts): which owner partitions this context sees, and may
+   * create/patch rows in. REQUIRED — there is no full-view default; a
+   * context that reaches the policy without it fails closed (reads match
+   * nothing, writes are refused). Host-internal contexts that only touch
+   * tenant-scoped tables state `[]` explicitly.
+   *
+   * This NARROWS, never widens: whatever it lists, the tenant clause and the
+   * bound-subject clause on user rows still apply, and `reach: "tenant"`
+   * contexts remain read-only (or delete-only) by construction.
+   */
+  readonly owners: readonly Owner[];
   /** Read reach; defaults to `"bound"`. A `"tenant"`-reach context is the
    *  platform view: it sees the whole tenant but writes exactly as a bound
    *  context does, so it can never mutate another subject's rows. */
@@ -106,17 +120,29 @@ export const ownerVisibilityCondition = (
   // The platform view: partition by tenant alone. Still never cross-tenant —
   // `tenant` is the one clause that is NEVER relaxed, at any reach.
   if (context.reach === "tenant") return builder("tenant", "=", context.tenant);
-  const orgClause = builder.and(
-    builder("tenant", "=", context.tenant),
-    builder("owner", "=", "org"),
-  );
-  if (context.subject == null) return orgClause;
-  const userClause = builder.and(
-    builder("tenant", "=", context.tenant),
-    builder("owner", "=", "user"),
-    builder("subject", "=", context.subject),
-  );
-  return builder.or(orgClause, userClause);
+  // The product's visible partitions. A malformed context that reaches the
+  // policy without them (only possible past the type system) fails CLOSED:
+  // no partitions means no rows. Core contributes only the clamps inside
+  // each clause — never a partition of its own.
+  const owners: readonly Owner[] = Array.isArray(context.owners) ? context.owners : [];
+  const clauses: (Condition | boolean)[] = [];
+  if (owners.includes("org")) {
+    clauses.push(builder.and(builder("tenant", "=", context.tenant), builder("owner", "=", "org")));
+  }
+  if (owners.includes("user") && context.subject != null) {
+    clauses.push(
+      builder.and(
+        builder("tenant", "=", context.tenant),
+        builder("owner", "=", "user"),
+        builder("subject", "=", context.subject),
+      ),
+    );
+  }
+  // A context whose product view lists no partition this binding can carry
+  // (personal-only with no subject) sees nothing — fail closed, not open.
+  if (clauses.length === 0) return false;
+  if (clauses.length === 1) return clauses[0]!;
+  return builder.or(...clauses);
 };
 
 /**
@@ -172,6 +198,21 @@ export const assertOwnerWritable = (
   if (values.tenant !== ctx.tenant) {
     policyViolation(`Storage write on table "${tableName}" is outside the executor tenant.`);
   }
+  // The product's write partitions: a row may only be created in a partition
+  // the product view lists (update/delete are already filtered by
+  // `ownerVisibilityCondition`). A context missing the decision fails
+  // closed. Purely narrowing — the per-owner clamps below still apply to
+  // whatever the product allows.
+  if (!Array.isArray(ctx.owners)) {
+    policyViolation(
+      `Storage write on table "${tableName}" is missing the context's owner partitions.`,
+    );
+  }
+  if ((values.owner === "org" || values.owner === "user") && !ctx.owners.includes(values.owner)) {
+    policyViolation(
+      `Storage write on table "${tableName}" targets the "${values.owner}" partition, which this product view does not include.`,
+    );
+  }
   if (values.owner === "org") {
     if (values.subject !== ORG_SUBJECT) {
       policyViolation(`Storage write on table "${tableName}" set a subject on an org row.`);
@@ -203,6 +244,14 @@ export const assertOwnerPatch = (
   if (!patch) return;
   if (patch.tenant !== undefined && patch.tenant !== ctx.tenant) {
     policyViolation(`Storage write on table "${tableName}" cannot move a row across tenants.`);
+  }
+  if (
+    (patch.owner === "org" || patch.owner === "user") &&
+    !(Array.isArray(ctx.owners) && ctx.owners.includes(patch.owner))
+  ) {
+    policyViolation(
+      `Storage write on table "${tableName}" cannot move a row into the "${patch.owner}" partition, which this product view does not include.`,
+    );
   }
   if (patch.owner === "user" && (ctx.subject == null || patch.subject !== ctx.subject)) {
     policyViolation(

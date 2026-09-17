@@ -119,11 +119,19 @@ describe("artifact table", () => {
           title: "Theirs",
         });
 
-        const scoped = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT });
+        const scoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT,
+          owners: ["user", "org"],
+        });
         const visible = await scoped.findMany("artifact", {});
         expect(visible.map((row) => row.id)).toEqual(["art_mine"]);
 
-        const otherScoped = withQueryContext(db.db, { tenant: TENANT, subject: OTHER_SUBJECT });
+        const otherScoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: OTHER_SUBJECT,
+          owners: ["user", "org"],
+        });
         const otherVisible = await otherScoped.findMany("artifact", {});
         expect(otherVisible.map((row) => row.id)).toEqual(["art_theirs"]);
       }),

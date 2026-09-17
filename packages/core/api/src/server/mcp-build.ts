@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { McpErrorReporter, type Principal } from "@executor-js/host-mcp";
+import { requestBoundMemberAccess } from "@executor-js/product-access";
 import {
   McpEngineBuildError,
   type McpBuildServer,
@@ -50,7 +51,10 @@ export const makeMcpBuildServer =
         principal.organizationName,
         {
           mcpResource: options?.resource,
-          orgWrites: "request",
+          // Session-lifetime stack: the workspace-settings decision is read
+          // from the request-stamped fiber-local at every guarded sink, so a
+          // session never caches a positive authorization.
+          access: requestBoundMemberAccess(),
         },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));
       // Read inside the provided boundary: `webBaseUrl` is a host seam, and

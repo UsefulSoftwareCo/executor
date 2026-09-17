@@ -35,6 +35,7 @@ import { mcpPlugin } from "./plugin";
 import { createMcpConnector } from "./connection";
 import { discoverTools } from "./discover";
 import { makeMutableCatalogMcpServer, serveMcpServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEG = IntegrationSlug.make("catalog_mcp");
 const CONNECTION = ConnectionName.make("main");
@@ -48,7 +49,10 @@ const makeCatalogTestExecutor = (
   },
 ) =>
   createExecutor({
-    ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+    ...makeTestConfig({
+      access: testAccess.member(),
+      plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+    }),
     ...(options?.toolsSyncTtlMs === undefined ? {} : { toolsSyncTtlMs: options.toolsSyncTtlMs }),
     ...(options?.toolsSyncGraceMs === undefined
       ? {}
@@ -357,7 +361,10 @@ describe("MCP stale-catalog refresh", () => {
     Effect.gen(function* () {
       const fixture = yield* serveLatchedListServer();
       const executor = yield* createExecutor({
-        ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        ...makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
         // Everything is expired on every read, so a single tools read has the
         // whole set to rebuild.
         toolsSyncTtlMs: 0,

@@ -61,6 +61,7 @@ import {
   createExecutor,
 } from "@executor-js/sdk";
 import { memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 import { ErrorCaptureLive } from "./observability";
 import { createSqliteFumaDb } from "./db/sqlite-fumadb";
@@ -109,6 +110,7 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       db: sqlite.db,
       plugins,
       onElicitation: "accept-all",
+      access: testAccess.member(),
     }),
   );
 

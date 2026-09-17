@@ -12,6 +12,7 @@ import {
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const FILE_ID = "F012ABC3456";
 const IMAGE_BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -128,6 +129,7 @@ describe("Slack Connect file fallback", () => {
       Effect.gen(function* () {
         const config = {
           ...makeTestConfig({
+            access: testAccess.member(),
             plugins: [
               memoryCredentialsPlugin(),
               mcpPlugin({ httpClientLayer: slackFallbackHttpClientLayer }),

@@ -21,6 +21,7 @@ import {
   type InvokeOptions as EffectInvokeOptions,
   type OnElicitation,
 } from "./executor";
+import type { ExecutorAccess } from "./access";
 import type { ElicitationContext, ElicitationResponse } from "./elicitation";
 import type { FumaDb, FumaTables } from "./fuma-runtime";
 import { Subject, Tenant } from "./ids";
@@ -127,6 +128,15 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * an options arg.
    */
   readonly onElicitation: PromiseOnElicitation;
+  /**
+   * Product access decisions for the binding — REQUIRED, exactly as on the
+   * Effect SDK's `ExecutorConfig.access`. This façade is core SDK, not a
+   * product: it supplies no posture of its own. Embedders state theirs
+   * explicitly — `@executor-js/product-access` ships the standard ones
+   * (`singleUserAccess()` for a subject-bound single owner,
+   * `workspaceServiceAccess()` for a subject-less workspace binding).
+   */
+  readonly access: ExecutorAccess;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +223,7 @@ export const createExecutor = async <const TPlugins extends readonly AnyPlugin[]
     plugins,
     ...(config.providers ? { providers: config.providers } : {}),
     onElicitation: toEffectOnElicitation(config.onElicitation),
+    access: config.access,
     ...(db ? { db } : {}),
   };
 

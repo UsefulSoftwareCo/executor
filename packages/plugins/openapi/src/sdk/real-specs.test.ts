@@ -28,6 +28,7 @@ import { openApiPlugin } from "./plugin";
 import { deriveAuthenticationTemplateFromPreview } from "./derive-auth";
 import { previewSpec as previewSpecRaw } from "./preview";
 import type { ExtractionResult } from "./types";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const previewSpec = (input: string) =>
   previewSpecRaw(input).pipe(Effect.provide(FetchHttpClient.layer));
@@ -91,6 +92,7 @@ const getRegisteredToolSchema = (slug: string, specText: string, toolName: strin
 
     const executor = yield* createExecutor(
       makeTestConfig({
+        access: testAccess.member(),
         plugins: [openApiPlugin(), memoryCredentialsPlugin()] as const,
       }),
     );

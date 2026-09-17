@@ -13,6 +13,7 @@ import {
   type ExecutorAdmin,
 } from "@executor-js/sdk";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "@executor-js/sdk/testing";
+import { testAccess } from "@executor-js/product-access/testing";
 import { resetSubjectTouchCache, touchSubject } from "@executor-js/sdk/host-internal";
 
 import { AdminUsersHttpApi, AdminUsersForbidden, AdminUsersUnauthorized } from "./api";
@@ -204,7 +205,7 @@ const platformExecutorFor = (db: SqliteTestFumaDb, tenant: string): Effect.Effec
     tenant: Tenant.make(tenant),
     db: db.db,
     onElicitation: "accept-all",
-    platformView: true,
+    access: testAccess.platform({ subject: false }),
   }).pipe(Effect.orDie);
 
 /** A product-view executor: bound to one subject, no platform view at all. */
@@ -214,6 +215,7 @@ const productExecutorFor = (db: SqliteTestFumaDb, tenant: string): Effect.Effect
     subject: Subject.make(USER_A1),
     db: db.db,
     onElicitation: "accept-all",
+    access: testAccess.member(),
   }).pipe(Effect.orDie);
 
 /**
@@ -639,7 +641,7 @@ describe("admin users API", () => {
     withDb((db) =>
       Effect.gen(function* () {
         yield* seed(db);
-        // A host that forgot `platformView: true` must not silently report an
+        // A host that forgot the platform access posture must not silently report an
         // empty tenant — that would read as "this owner has no users".
         const web = yield* webHandlerFor(
           stubProvider((tenant) => productExecutorFor(db, tenant), headerAuthorize),

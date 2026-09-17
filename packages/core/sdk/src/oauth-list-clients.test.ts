@@ -7,6 +7,7 @@ import { Effect, Predicate } from "effect";
 
 import { OAuthClientSlug } from "./ids";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // listClients returns metadata-only summaries of the clients visible to the
 // caller — the tenant's org clients plus the caller's own user clients — and
@@ -21,7 +22,10 @@ describe("oauth.listClients", () => {
   it.effect("rejects metadata URLs persisted as authorization URLs", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         const error = yield* Effect.flip(
           executor.oauth.createClient({
@@ -50,7 +54,10 @@ describe("oauth.listClients", () => {
   it.effect("returns owner-visible clients as summaries without the secret", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         yield* executor.oauth.createClient({
           owner: "org",
@@ -113,7 +120,10 @@ describe("oauth.listClients", () => {
   it.effect("rejects HTTP Basic authentication without a client secret", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         const error = yield* Effect.flip(
           executor.oauth.createClient({
@@ -147,6 +157,7 @@ describe("oauth.listClients", () => {
         const tenant = "shared-tenant";
 
         const a = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-a",
@@ -172,6 +183,7 @@ describe("oauth.listClients", () => {
         });
 
         const b = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-b",
@@ -190,7 +202,10 @@ describe("oauth.listClients", () => {
   it.effect("classifies legacy MCP DCR-looking clients as dynamic registration", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { config, executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         yield* executor.oauth.createClient({
           owner: "org",

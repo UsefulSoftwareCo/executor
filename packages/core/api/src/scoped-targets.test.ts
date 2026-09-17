@@ -17,6 +17,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 import { ExecutorApi } from "./api";
 import { observabilityMiddleware } from "./observability";
 import { CoreHandlers, ExecutionEngineService, ExecutorService } from "./server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // v2 owner-scoped API behaviour.
@@ -88,7 +89,7 @@ const vercelPlugin = definePlugin(() => ({
 describe("core API owner-scoped writes (v2)", () => {
   it.effect("policy create + update target an explicit owner", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({}));
+      const executor = yield* createExecutor(makeTestConfig({ access: testAccess.member() }));
       const web = yield* webHandlerFor(executor);
       const context = handlerContextFor(executor);
 
@@ -135,6 +136,7 @@ describe("core API owner-scoped writes (v2)", () => {
   it.effect("connection remove deletes the named owner row, not the other owner", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
       });
       const executor = yield* createExecutor(config);
@@ -179,6 +181,7 @@ describe("core API owner-scoped writes (v2)", () => {
   it.effect("connection create accepts pasted values payloads", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
       });
       const executor = yield* createExecutor(config);
@@ -220,6 +223,7 @@ describe("core API owner-scoped writes (v2)", () => {
   it.effect("connection list returns both owners' rows under one integration", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), vercelPlugin] as const,
       });
       const executor = yield* createExecutor(config);

@@ -38,6 +38,7 @@ import {
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const testPlugins = (httpClientLayer = FetchHttpClient.layer) =>
   [openApiPlugin({ httpClientLayer }), memoryCredentialsPlugin()] as const;
@@ -113,7 +114,9 @@ describe("OpenAPI plugin — spec blob storage", () => {
   it.effect("addSpec stores a content pointer, not the inline spec text", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const text = specText();
 
         yield* executor.openapi.addSpec({
@@ -135,7 +138,9 @@ describe("OpenAPI plugin — spec blob storage", () => {
           api: TestApi,
           handlersLayer: EchoGroupLive,
         });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
@@ -168,7 +173,7 @@ describe("OpenAPI plugin — spec blob storage", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const config = makeTestConfig({ plugins: testPlugins() });
+          const config = makeTestConfig({ access: testAccess.member(), plugins: testPlugins() });
           const executor = yield* createExecutor(config);
           const text = specTextWithDefinition();
           const hash = yield* sha256Hex(text);
@@ -245,7 +250,7 @@ describe("OpenAPI plugin — spec blob storage", () => {
   it.effect("stale sync preserves tools and definitions when the spec blob is missing", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const config = makeTestConfig({ plugins: testPlugins() });
+        const config = makeTestConfig({ access: testAccess.member(), plugins: testPlugins() });
         const executor = yield* createExecutor(config);
         const text = specTextWithDefinition();
         const hash = yield* sha256Hex(text);
@@ -318,7 +323,9 @@ describe("OpenAPI plugin — spec blob storage", () => {
   it.effect("explicit spec refresh accepts a valid OpenAPI document with zero operations", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const emptySpec = JSON.stringify({
           openapi: "3.1.0",
           info: { title: "Empty", version: "1.0.0" },
@@ -409,7 +416,9 @@ describe("OpenAPI plugin — spec blob storage", () => {
   it.effect("remove + re-add of the same spec is idempotent over the shared blob", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const text = specText();
 
         yield* executor.openapi.addSpec({ spec: { kind: "blob", value: text }, slug: "re_add" });

@@ -16,6 +16,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig } from "./testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // Removing an integration must cascade to EVERY member's rows under it, not
@@ -62,7 +63,11 @@ const demoPlugin = definePlugin(() => ({
 
 const setup = () =>
   Effect.gen(function* () {
-    const config = makeTestConfig({ plugins: [demoPlugin] as const, subject: ALICE });
+    const config = makeTestConfig({
+      access: testAccess.member(),
+      plugins: [demoPlugin] as const,
+      subject: ALICE,
+    });
     const alice = yield* createExecutor(config);
     const bob = yield* createExecutor({
       ...config,
@@ -119,7 +124,7 @@ describe("integrations.remove cascade", () => {
   it.effect("a member (org writes denied) still cannot remove", () =>
     Effect.gen(function* () {
       const { config } = yield* setup();
-      const member = yield* createExecutor({ ...config, orgWrites: "denied" });
+      const member = yield* createExecutor({ ...config, access: testAccess.member("denied") });
       yield* Effect.addFinalizer(() => member.close().pipe(Effect.ignore));
       const error = yield* Effect.flip(member.integrations.remove(INTEG));
       expect(Predicate.isTagged("OrgWriteDeniedError")(error)).toBe(true);
@@ -129,7 +134,7 @@ describe("integrations.remove cascade", () => {
   it.effect("the platform view cannot remove (read-only holds ahead of the cascade)", () =>
     Effect.gen(function* () {
       const { config } = yield* setup();
-      const platform = yield* createExecutor({ ...config, platformView: true });
+      const platform = yield* createExecutor({ ...config, access: testAccess.platform() });
       yield* Effect.addFinalizer(() => platform.close().pipe(Effect.ignore));
       yield* platform.integrations.remove(INTEG).pipe(
         Effect.flatMap(() => Effect.die("expected the platform view to refuse the removal")),
@@ -170,6 +175,7 @@ describe("orphaned rows are not served", () => {
           withQueryContext(config.testDb.db, {
             tenant: String(config.tenant),
             subject: BOB,
+            owners: ["user", "org"],
           }).findMany("tool", {}),
         );
         expect(stored.map((row) => String(row.integration)).sort()).toEqual([

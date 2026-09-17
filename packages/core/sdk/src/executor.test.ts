@@ -20,6 +20,7 @@ import type { CredentialProvider } from "./provider";
 import { IntegrationDetectionResult } from "./types";
 import { makeTestConfig, makeTestExecutor, memoryCredentialsPlugin } from "./testing";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: v1 secret browser-handoff, source.configure, case-insensitive tool-id
 // resolution, secrets/sources/scope-stack. The integration coverage below is
@@ -215,6 +216,7 @@ describe("createExecutor", () => {
   it.effect("rolls back plugin and core writes from ctx.transaction failures", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
       });
       const result = yield* Effect.result(executor.demo.failAfterPluginAndCoreWrites());
@@ -237,6 +239,7 @@ describe("createExecutor", () => {
         close: () => Effect.sync(() => void (closed = true)),
       }))();
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [closingPlugin] as const,
       });
       yield* executor.close();
@@ -248,6 +251,7 @@ describe("createExecutor", () => {
     Effect.gen(function* () {
       const events: Array<{ kind: string; pluginKey: string; slug: string }> = [];
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         onIntegrationChange: (event) =>
           Effect.sync(() => {
@@ -281,6 +285,7 @@ describe("createExecutor", () => {
   it.effect("a failing onIntegrationChange observer never fails the operation", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         onIntegrationChange: () => Effect.die("observer exploded"),
       });
@@ -294,6 +299,7 @@ describe("createExecutor", () => {
     Effect.gen(function* () {
       const events: string[] = [];
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         onIntegrationChange: (event) => Effect.sync(() => void events.push(String(event.slug))),
       });
@@ -306,6 +312,7 @@ describe("createExecutor", () => {
   it.effect("projects core tools as the built-in Executor integration", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         coreTools: { webBaseUrl: "http://localhost:3000" },
       });
       const integrations = yield* executor.integrations.list();
@@ -351,6 +358,7 @@ describe("createExecutor", () => {
   it.effect("can omit provider tools from the built-in Executor integration", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         coreTools: {
           webBaseUrl: "http://localhost:3000",
           includeProviders: false,
@@ -372,6 +380,7 @@ describe("createExecutor", () => {
   it.effect("creates provider-backed connections through the built-in Executor tools", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         coreTools: { webBaseUrl: "http://localhost:3000" },
       });
@@ -414,6 +423,7 @@ describe("createExecutor", () => {
   it.effect("creates a provider-backed legacy slug-none connection through the core tool", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         coreTools: { webBaseUrl: "http://localhost:3000" },
       });
@@ -466,6 +476,7 @@ describe("createExecutor", () => {
   it.effect("removes catalog integrations through the built-in Executor tools", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
         coreTools: {},
       });
@@ -526,6 +537,7 @@ describe("createExecutor", () => {
   it.effect("omits invalid auth methods and surfaces plugin and tool sync diagnostics", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
         coreTools: {},
       });
@@ -604,6 +616,7 @@ describe("createExecutor", () => {
   it.effect("preserves actionable health from an incomplete tool catalog", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), diagnosticsPlugin] as const,
         coreTools: {},
       });
@@ -639,6 +652,7 @@ describe("createExecutor", () => {
   it.effect("hands pasted credential entry to the web UI", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         coreTools: { webBaseUrl: "http://localhost:3000" },
       });
 
@@ -672,6 +686,7 @@ describe("createExecutor", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const executor = yield* makeTestExecutor({
+          access: testAccess.member(),
           plugins: [demoPlugin] as const,
           coreTools: { webBaseUrl: "http://localhost:3000" },
           redirectUri: null,
@@ -739,7 +754,7 @@ describe("createExecutor", () => {
         detector("high-detector", "high"),
         detector("medium-detector", "medium"),
       ] as const;
-      const executor = yield* makeTestExecutor({ plugins });
+      const executor = yield* makeTestExecutor({ access: testAccess.member(), plugins });
       const results = yield* executor.integrations.detect("https://example.com/thing");
       // Every detector recognizes the URL; the list contains all three.
       expect(results.map((r) => r.kind).sort()).toEqual([
@@ -753,6 +768,7 @@ describe("createExecutor", () => {
   it.effect("tools.schema returns roots with shared reachable definitions", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
       });
       yield* executor.demo.seed();
@@ -778,6 +794,7 @@ describe("createExecutor", () => {
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
       });
       yield* executor.demo.seed();
@@ -800,6 +817,7 @@ describe("createExecutor", () => {
   it.effect("execute on a missing address fails with ToolNotFoundError", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [demoPlugin] as const,
       });
       yield* executor.demo.seed();
@@ -843,6 +861,7 @@ describe("createExecutor", () => {
 describe("muscle memory (observed output shapes)", () => {
   const provisioned = Effect.fn(function* () {
     const executor = yield* makeTestExecutor({
+      access: testAccess.member(),
       plugins: [demoPlugin] as const,
       coreTools: { webBaseUrl: "http://localhost:3000" },
     });
@@ -1049,7 +1068,7 @@ const seedRunConnection = <
 const recordToolRowLaunch = (maxOps?: number) =>
   Effect.gen(function* () {
     const recorder = makeReadOrderRecorder();
-    const config = makeTestConfig({ plugins: [demoPlugin] as const });
+    const config = makeTestConfig({ access: testAccess.member(), plugins: [demoPlugin] as const });
     const executor = yield* createExecutor({
       ...config,
       db: withRecordedReads(config.db, recorder.record),
@@ -1073,6 +1092,7 @@ const recordCredentialLaunch = (maxOps?: number) =>
     const calls = { count: 0 };
     const provider = countingProvider(calls, (run) => recorder.record("credential.get", run));
     const config = makeTestConfig({
+      access: testAccess.member(),
       plugins: [invokeConcurrencyPlugin(provider)] as const,
     });
     const executor = yield* createExecutor({
@@ -1199,6 +1219,7 @@ describe("execute read concurrency", () => {
     Effect.gen(function* () {
       const calls = { count: 0 };
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [invokeConcurrencyPlugin(countingProvider(calls))] as const,
       });
       yield* seedRunConnection(executor);
@@ -1227,7 +1248,10 @@ describe("execute read concurrency", () => {
 
   it.effect("fails with ConnectionNotFoundError when the tool row outlives its connection", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor(config);
       yield* seedRunConnection(executor);
 
@@ -1367,7 +1391,10 @@ describe("speculative read abandonment", () => {
   it.effect("unknown-tool error surfaces while the speculative reads hang forever", () =>
     Effect.gen(function* () {
       const faults = makeReadFaults();
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: withFaultedReads(config.db, faults.fault),
@@ -1393,7 +1420,10 @@ describe("speculative read abandonment", () => {
   it.effect("a blocked tool reports ToolBlockedError while the connection read hangs", () =>
     Effect.gen(function* () {
       const faults = makeReadFaults();
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: withFaultedReads(config.db, faults.fault),
@@ -1419,7 +1449,10 @@ describe("speculative read abandonment", () => {
   it.effect("failing speculative reads neither mask the branch error nor unhandled-reject", () =>
     Effect.gen(function* () {
       const faults = makeReadFaults();
-      const config = makeTestConfig({ plugins: [demoPlugin] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [demoPlugin] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: withFaultedReads(config.db, faults.fault),
@@ -1452,7 +1485,10 @@ describe("speculative read abandonment", () => {
     () =>
       Effect.gen(function* () {
         const faults = makeReadFaults();
-        const config = makeTestConfig({ plugins: [demoPlugin] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [demoPlugin] as const,
+        });
         const executor = yield* createExecutor({
           ...config,
           db: withFaultedReads(config.db, faults.fault),
@@ -1479,6 +1515,7 @@ describe("speculative read abandonment", () => {
       const faults = makeReadFaults();
       const armable = armableFailingProvider();
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [invokeConcurrencyPlugin(armable.provider)] as const,
       });
       const executor = yield* createExecutor({

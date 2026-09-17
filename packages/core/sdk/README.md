@@ -7,14 +7,17 @@ The default surface is `Promise`-based — plugins are built on [Effect](https:/
 ## Install
 
 ```sh
-bun add @executor-js/sdk
+bun add @executor-js/sdk @executor-js/product-access effect@4.0.0-beta.59
 # or
-npm install @executor-js/sdk
+npm install @executor-js/sdk @executor-js/product-access effect@4.0.0-beta.59
 ```
+
+`effect` is a required peer dependency (some package managers don't install peers automatically). `@executor-js/product-access` supplies the standard `access` postures `createExecutor` requires — every snippet below uses it.
 
 ## Quick start
 
 ```ts
+import { workspaceServiceAccess } from "@executor-js/product-access";
 import { createExecutor } from "@executor-js/sdk";
 
 const executor = await createExecutor({
@@ -22,6 +25,9 @@ const executor = await createExecutor({
   // `"accept-all"` auto-approves every prompt — fine for tests/automation.
   // For an interactive host, pass a handler `(ctx) => Promise<ElicitationResponse>`.
   onElicitation: "accept-all",
+  // Required: the product's access decisions for this binding. The SDK ships
+  // no default posture; `@executor-js/product-access` has the standard ones.
+  access: workspaceServiceAccess(),
 });
 
 const tools = await executor.tools.list();
@@ -35,9 +41,13 @@ await executor.close();
 To invoke a tool once one is registered:
 
 ```ts
+import { workspaceServiceAccess } from "@executor-js/product-access";
 import { createExecutor } from "@executor-js/sdk";
 
-const executor = await createExecutor({ onElicitation: "accept-all" });
+const executor = await createExecutor({
+  onElicitation: "accept-all",
+  access: workspaceServiceAccess(),
+});
 
 const tools = await executor.tools.list();
 const target = tools[0];
@@ -110,6 +120,7 @@ export const memorySecretsPlugin = definePlugin((options?: MemorySecretsConfig) 
 const executor = await createExecutor({
   plugins: [memorySecretsPlugin({ initial: { greeting: "hello" } })] as const,
   onElicitation: "accept-all",
+  access: workspaceServiceAccess(),
 });
 
 console.log(executor.memorySecrets.label); // "in-memory secrets"

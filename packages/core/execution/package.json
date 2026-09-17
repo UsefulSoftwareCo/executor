@@ -48,6 +48,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@types/node": "catalog:",
     "bun-types": "catalog:",

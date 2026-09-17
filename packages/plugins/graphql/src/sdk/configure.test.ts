@@ -21,10 +21,12 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { graphqlPlugin } from "./plugin";
 import type { GraphqlAuthMethod } from "./types";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const makeExecutor = () =>
   createExecutor(
     makeTestConfig({
+      access: testAccess.member(),
       plugins: [memoryCredentialsPlugin(), graphqlPlugin()] as const,
     }),
   );

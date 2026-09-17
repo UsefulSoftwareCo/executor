@@ -24,6 +24,7 @@ import type { OAuthService } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer, type OAuthTestServerShape } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEG = IntegrationSlug.make("acme");
 const TEMPLATE = AuthTemplateSlug.make("oauth");
@@ -157,7 +158,10 @@ describe("enterprise-managed connections", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const servers = yield* enterpriseServers({});
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
 
@@ -182,7 +186,10 @@ describe("enterprise-managed connections", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const servers = yield* enterpriseServers({ resourceTokenExpiresInSeconds: 1 });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
         yield* executor.oauth.start(startEnterpriseConnect(servers));
@@ -207,7 +214,10 @@ describe("enterprise-managed connections", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const servers = yield* enterpriseServers({ resourceTokenExpiresInSeconds: 1 });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
         yield* executor.oauth.start(startEnterpriseConnect(servers));
@@ -241,7 +251,10 @@ describe("enterprise-managed connections", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const servers = yield* enterpriseServers({ resourceTokenExpiresInSeconds: 1 });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
         yield* executor.oauth.start(startEnterpriseConnect(servers));
@@ -287,7 +300,10 @@ describe("enterprise-managed connections", () => {
             errorDescription: "This client is not approved for the requested MCP server.",
           },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
 
@@ -316,7 +332,10 @@ describe("enterprise-managed connections", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const servers = yield* enterpriseServers({ advertiseProfile: false });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* registerClients(executor.oauth.createClient, servers);
 

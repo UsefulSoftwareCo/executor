@@ -18,6 +18,7 @@ import { makeOpenApiHttpApiTestIntegrationConfig, unwrapInvocation } from "../te
 import { invokeWithLayer } from "./invoke";
 import { openApiPlugin } from "./plugin";
 import type { OperationBinding } from "./types";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const RESPONSE_HEADERS_TIMEOUT_MS = 100;
 const STREAM_TOOL = "logs.getLogs";
@@ -44,7 +45,9 @@ const testPlugins = () =>
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+    );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(TimeoutApi, { slug: "headers_timeout", baseUrl }),
     );

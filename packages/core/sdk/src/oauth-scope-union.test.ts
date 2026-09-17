@@ -16,6 +16,7 @@ import { definePlugin, type IntegrationRecord } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveTestHttpApp } from "./testing";
 import { scopesFromAuthorizeUrl, serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // Integration-driven scopes: at connect, `oauth.start` requests the integration's
 // scopes — its DECLARED oauth scopes when it has any, otherwise the scopes
@@ -187,7 +188,7 @@ const setupMcpScopeClient = (
 ) =>
   Effect.gen(function* () {
     const plugins = [memoryCredentialsPlugin(), makeMcpScopePlugin({ scopes: null })] as const;
-    const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+    const { executor } = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
     yield* executor.mcp.seed();
     yield* executor.oauth.createClient({
       owner: "org",
@@ -213,7 +214,10 @@ describe("oauth.start integration-driven scopes", () => {
             memoryCredentialsPlugin(),
             makeScopePlugin({ scopes: DECLARED_SCOPES }),
           ] as const;
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           // The app is pure identity — no scope set.
@@ -265,7 +269,10 @@ describe("oauth.start integration-driven scopes", () => {
             authorizationUrl: `${server.authorizationEndpoint}?optional_scope=${optional.join("+")}`,
           }),
         ] as const;
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* executor.oauth.createClient({
           owner: "org",
@@ -303,7 +310,10 @@ describe("oauth.start integration-driven scopes", () => {
           memoryCredentialsPlugin(),
           makeScopePlugin({ scopes: ["calendar", "stale_scope", "drive"] }),
         ] as const;
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -340,7 +350,10 @@ describe("oauth.start integration-driven scopes", () => {
         // `scopes: null` ⇒ the integration declares an oauth method with no
         // template scopes ⇒ declared scopes resolve to [] ⇒ no scope is requested.
         const plugins = [memoryCredentialsPlugin(), makeScopePlugin({ scopes: null })] as const;
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -411,7 +424,10 @@ describe("oauth.start integration-driven scopes", () => {
           memoryCredentialsPlugin(),
           makeScopePlugin({ scopes: ["file_content:read", "file_comments:write"] }),
         ] as const;
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -635,7 +651,10 @@ describe("oauth.start integration-driven scopes", () => {
               { discoversScopes: true, discoveryUrl: server.mcpResourceUrl },
             ),
           ] as const;
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.mcp.seed();
 
           // No `resource` on the client — the wire parameter is absent by
@@ -681,6 +700,7 @@ describe("oauth.start integration-driven scopes", () => {
             makeMcpScopePlugin({ scopes: null }),
           ] as const;
           const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
             plugins,
             firstPartyOAuthClients: [
               {
@@ -835,7 +855,10 @@ describe("oauth.start recorded scope fallback", () => {
             memoryCredentialsPlugin(),
             makeScopePlugin({ scopes: DECLARED_SCOPES }),
           ] as const;
-          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           // A client_credentials client so `start` mints inline (no redirect),
@@ -889,7 +912,10 @@ describe("oauth.start recorded scope fallback", () => {
             memoryCredentialsPlugin(),
             makeMcpScopePlugin({ scopes: null }),
           ] as const;
-          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.mcp.seed();
 
           yield* executor.oauth.createClient({

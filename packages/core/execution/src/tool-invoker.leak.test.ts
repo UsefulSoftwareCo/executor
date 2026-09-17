@@ -5,6 +5,7 @@ import { ElicitationResponse, createExecutor, definePlugin } from "@executor-js/
 import { makeTestConfig } from "@executor-js/sdk/testing";
 import { ExecutionToolError } from "./errors";
 import { makeExecutorToolInvoker } from "./tool-invoker";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const EmptyInputSchema = Schema.toStandardSchemaV1(
   Schema.toStandardJSONSchemaV1(Schema.Struct({})),
@@ -138,7 +139,9 @@ const leakyPlugin = definePlugin(() => ({
 describe("internal-error leak audit (opaque defects)", () => {
   it.effect("plugin tagged error: defect surfaces only as opaque generic + correlation id", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });
@@ -160,7 +163,9 @@ describe("internal-error leak audit (opaque defects)", () => {
 
   it.effect("plain Error with stack: stack and message do NOT escape", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });
@@ -179,7 +184,9 @@ describe("internal-error leak audit (opaque defects)", () => {
 describe("openapi pre-flight invocation errors (expected failures)", () => {
   it.effect("missing path parameter surfaces verbatim as invalid_tool_arguments", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });
@@ -197,7 +204,9 @@ describe("openapi pre-flight invocation errors (expected failures)", () => {
 
   it.effect("missing request body surfaces verbatim as invalid_tool_arguments", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });
@@ -215,7 +224,9 @@ describe("openapi pre-flight invocation errors (expected failures)", () => {
 
   it.effect("transport failure (statusCode None but cause present) stays opaque", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });
@@ -235,7 +246,9 @@ describe("openapi pre-flight invocation errors (expected failures)", () => {
 
   it.effect("post-response failure (statusCode Some) stays opaque", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [leakyPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [leakyPlugin()] as const }),
+      );
       const invoker = makeExecutorToolInvoker(executor, {
         invokeOptions: { onElicitation: acceptAll },
       });

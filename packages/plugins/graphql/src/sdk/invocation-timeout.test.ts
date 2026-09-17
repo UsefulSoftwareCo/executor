@@ -16,6 +16,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { makeGreetingGraphqlSchema } from "../testing";
 import { graphqlPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INVOCATION_TIMEOUT_MS = 100;
 
@@ -61,6 +62,7 @@ describe("GraphQL invocation timeout", () => {
       const server = yield* startHangingResponseServer(closed);
       const executor = yield* createExecutor(
         makeTestConfig({
+          access: testAccess.member(),
           plugins: [
             memoryCredentialsPlugin(),
             graphqlPlugin({

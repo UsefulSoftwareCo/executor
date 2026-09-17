@@ -35,7 +35,7 @@ import type { AdminUsersListOptions } from "./service";
 
 /**
  * Narrow an executor to its platform view. `admin` is present only when the
- * executor was built with `platformView: true`; a host that reaches these reads
+ * executor was built with the platform access posture; a host that reaches these reads
  * with a product-view executor is a wiring bug, so it fails loudly as a 500
  * rather than silently returning an empty tenant (which would read as "this
  * owner has no users").

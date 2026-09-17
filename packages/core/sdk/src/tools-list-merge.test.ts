@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug, ToolName } from "./ids";
 import { definePlugin } from "./plugin";
 import { makeTestExecutor, memoryCredentialsPlugin } from "./testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // Cross-owner merge regression (the "Axiom shows 0 tools" bug).
@@ -55,9 +56,10 @@ const demoPlugin = definePlugin(() => ({
 // Default test executor binds `subject: "test-subject"`, so user-owned
 // connections/tools can be created and merge with org rows.
 const setup = () =>
-  makeTestExecutor({ plugins: [memoryCredentialsPlugin(), demoPlugin] as const }).pipe(
-    Effect.tap((executor) => executor.demo.seed()),
-  );
+  makeTestExecutor({
+    access: testAccess.member(),
+    plugins: [memoryCredentialsPlugin(), demoPlugin] as const,
+  }).pipe(Effect.tap((executor) => executor.demo.seed()));
 
 describe("tools.list cross-owner merge", () => {
   it.effect("lists user-owned tools when owner is omitted (the fix)", () =>

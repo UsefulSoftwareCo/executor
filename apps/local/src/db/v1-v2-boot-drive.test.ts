@@ -36,6 +36,7 @@ import {
   runSqliteDataMigrations,
 } from "@executor-js/sdk";
 import { memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import { testAccess } from "@executor-js/product-access/testing";
 import { openApiPlugin } from "@executor-js/plugin-openapi";
 import { serveOpenApiHttpApiTestServer } from "@executor-js/plugin-openapi/testing";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
@@ -123,6 +124,7 @@ const bootRealStack = async (dbPath: string) => {
         memoryCredentialsPlugin(),
       ] as const,
       onElicitation: "accept-all",
+      access: testAccess.member(),
     }),
   );
   return {

@@ -5,6 +5,7 @@
   "fixed": [
     [
       "@executor-js/sdk",
+      "@executor-js/product-access",
       "@executor-js/codemode-core",
       "@executor-js/runtime-quickjs",
       "@executor-js/execution",

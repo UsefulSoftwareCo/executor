@@ -45,6 +45,7 @@ import {
   type FumaDb,
   type FumaTables,
 } from "@executor-js/sdk";
+import { testAccess } from "@executor-js/product-access/testing";
 import { makeExecutorToolInvoker } from "@executor-js/execution";
 import { openApiPlugin, variable, type AuthenticationInput } from "@executor-js/plugin-openapi";
 
@@ -231,6 +232,7 @@ const buildSandboxBridge = (spec: string, slug: string, baseUrl = "https://upstr
         providers: [memoryProvider()],
         plugins,
         onElicitation: "accept-all",
+        access: testAccess.member(),
       });
       // v2: addSpec registers the integration; tools are produced per-connection,
       // so an org `main` connection is required for the operation to be callable.

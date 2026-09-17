@@ -174,7 +174,7 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
  * `subject: null` + the read-only tenant reach rather than inventing a subject.
  *
  * The `/admin/*` mount turns this into an executor with `{ tenant:
- * organizationId, subject: undefined, platformView: true }`.
+ * organizationId, subject: undefined, access: platformObserverAccess() }`.
  */
 export interface PlatformAuth {
   readonly kind: "platform";

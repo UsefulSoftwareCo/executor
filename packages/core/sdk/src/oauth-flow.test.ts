@@ -24,6 +24,7 @@ import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { ToolResult } from "./tool-result";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // Milestone 2: prove the v2 `oauth.start` / `oauth.complete` token-minting flow
 // and OAuth access-token refresh end to end against the test authorization
@@ -197,7 +198,10 @@ describe("oauth.start / oauth.complete", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           yield* executor.oauth.createClient({
@@ -302,6 +306,7 @@ describe("oauth.start / oauth.complete", () => {
         }))();
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin(), slowOAuthPlugin] as const,
           waitUntil: (promise) => keptAlive.push(promise),
         });
@@ -363,7 +368,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["read"],
           defaultTokenEndpointAuthMethod: "client_secret_basic",
         });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -428,7 +436,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["read"],
           defaultTokenEndpointAuthMethod: "client_secret_basic",
         });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -486,6 +497,7 @@ describe("oauth.start / oauth.complete", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           oauthCallbackStateOrgSlug: "acme",
         });
@@ -546,7 +558,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["offline_access", "read"],
           omitTokenResponseScopes: ["offline_access"],
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["offline_access", "read"]);
 
         yield* executor.oauth.createClient({
@@ -590,7 +605,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["openid", "email", "profile", "read"],
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
         yield* executor.oauth.createClient({
@@ -634,7 +652,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["openid", "email", "profile", "read"],
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
         yield* executor.oauth.createClient({
@@ -679,7 +700,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["openid", "email", "profile", "read"],
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
         yield* executor.oauth.createClient({
@@ -739,7 +763,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["openid", "email", "profile", "read"],
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
         yield* executor.oauth.createClient({
@@ -797,7 +824,10 @@ describe("oauth.start / oauth.complete", () => {
           scopes: ["openid", "email", "profile", "read"],
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
         yield* executor.oauth.createClient({
@@ -852,7 +882,7 @@ describe("oauth.start / oauth.complete", () => {
           idTokenClaims: { email: "alice@example.com", sub: "user-1" },
           refreshIdTokenClaims: { email: "refreshed@example.com", sub: "user-2" },
         });
-        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const harness = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
         const { executor, config } = harness;
         yield* executor.acme.seed(["openid", "email", "profile", "read"]);
 
@@ -910,6 +940,7 @@ describe("oauth.start / oauth.complete", () => {
         // is no silent localhost default. The redirect flow must fail loudly
         // rather than handing the provider a wrong `http://127.0.0.1/callback`.
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           redirectUri: null,
         });
@@ -951,6 +982,7 @@ describe("oauth.start / oauth.complete", () => {
         // No redirectUri configured, but client_credentials never redirects —
         // it must still mint the connection inline.
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           redirectUri: null,
         });
@@ -983,7 +1015,10 @@ describe("oauth.start / oauth.complete", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer();
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         yield* executor.oauth.createClient({
           owner: "org",
@@ -1011,7 +1046,10 @@ describe("oauth.start / oauth.complete", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           // The app is registered under the WORKSPACE (org) — "shared with
@@ -1062,7 +1100,10 @@ describe("oauth.start / oauth.complete", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         // A PRIVATE app owned by the member.
@@ -1100,7 +1141,10 @@ describe("oauth.start / oauth.complete", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         // Deliberately NOT seeded: the slug names nothing in the catalog — the
         // shape of a reconnect against a connection whose integration was
         // removed, or an agent replaying a stale slug.
@@ -1141,7 +1185,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const harness = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
         const { executor, config } = harness;
         yield* executor.acme.seed();
 
@@ -1225,7 +1269,10 @@ describe("oauth token refresh in resolveConnectionValue", () => {
 
         // One database handle and one credential store under two execution
         // stacks — what a self-host holds while two MCP sessions are open.
-        const config = { ...makeTestConfig({ plugins }), fetch: park.fetch };
+        const config = {
+          ...makeTestConfig({ access: testAccess.member(), plugins }),
+          fetch: park.fetch,
+        };
         const sessionA = yield* createExecutor(config);
         const sessionB = yield* createExecutor(config);
         yield* Effect.addFinalizer(() => sessionA.close().pipe(Effect.ignore));
@@ -1322,7 +1369,12 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           // the store layer and mask the gate-key collision this test is about.
           const pluginsA = [memoryCredentialsPlugin(), oauthPlugin] as const;
           const pluginsB = [memoryCredentialsPlugin(), oauthPlugin] as const;
-          const shared = makeTestConfig({ plugins: pluginsA, tenant: "a", subject: "user:b" });
+          const shared = makeTestConfig({
+            access: testAccess.member(),
+            plugins: pluginsA,
+            tenant: "a",
+            subject: "user:b",
+          });
           const configA = { ...shared, fetch: parkA.fetch };
           const configB = {
             ...shared,
@@ -1379,7 +1431,11 @@ describe("oauth token refresh in resolveConnectionValue", () => {
 
           // Expire BOTH rows so both tenants must refresh. `shared.db` is bound
           // to tenant A; tenant B's partition needs its own scoped handle.
-          const dbB = withQueryContext(shared.testDb.db, { tenant: "a:user", subject: "b" });
+          const dbB = withQueryContext(shared.testDb.db, {
+            tenant: "a:user",
+            subject: "b",
+            owners: ["user", "org"],
+          });
           yield* Effect.promise(() =>
             shared.db.updateMany("connection", {
               where: (b) => b("name", "=", "mine"),
@@ -1452,7 +1508,10 @@ describe("oauth token refresh in resolveConnectionValue", () => {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const park = makeTokenRequestPark();
 
-        const config = { ...makeTestConfig({ plugins }), fetch: park.fetch };
+        const config = {
+          ...makeTestConfig({ access: testAccess.member(), plugins }),
+          fetch: park.fetch,
+        };
         const sessionA = yield* createExecutor(config);
         const sessionB = yield* createExecutor(config);
         yield* Effect.addFinalizer(() => sessionA.close().pipe(Effect.ignore));
@@ -1598,6 +1657,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           // handle, which is what the extra `withQueryContext` wrapper is.
           const config = {
             ...makeTestConfig({
+              access: testAccess.member(),
               plugins: [oauthPlugin] as const,
               tenant: SHARED_STORE_TENANT,
               subject: SHARED_STORE_SUBJECT,
@@ -1722,7 +1782,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const harness = yield* makeTestWorkspaceHarness({ plugins });
+          const harness = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
           const { executor, config } = harness;
           yield* executor.acme.seed();
 
@@ -1790,7 +1850,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           tokenExpiresInSeconds: 0,
           invalidRefreshTokenDescription: "Grant not found",
         });
-        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const harness = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
         const { executor, config } = harness;
         yield* executor.acme.seed();
 
@@ -1876,7 +1936,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           tokenExpiresInSeconds: 0,
           invalidRefreshTokenDescription: "Grant revoked",
         });
-        const harness = yield* makeTestWorkspaceHarness({ plugins });
+        const harness = yield* makeTestWorkspaceHarness({ access: testAccess.member(), plugins });
         const { executor, config } = harness;
         yield* executor.acme.seed();
 
@@ -1983,7 +2043,10 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           yield* executor.oauth.createClient({
@@ -2040,7 +2103,10 @@ describe("oauth token refresh in resolveConnectionValue", () => {
           scopes: ["openid", "email", "profile", "offline_access", "read", "write"],
           omitTokenResponseScopes: ["email", "profile", "write"],
         });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed([
           "openid",
           "email",
@@ -2098,7 +2164,10 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read", "write"] });
-          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed(["read", "write"]);
 
           yield* executor.oauth.createClient({
@@ -2159,7 +2228,10 @@ describe("oauth.complete regional token-endpoint rebind (Datadog multi-site)", (
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
 
           // Reroute the https regional/advertised hosts back to the loopback test
@@ -2248,7 +2320,10 @@ describe("oauth.complete regional token-endpoint rebind (Datadog multi-site)", (
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         const tokenCalls: TokenEndpointCall[] = [];
@@ -2423,6 +2498,7 @@ const connectRejecting = (options?: { readonly tokenExpiresInSeconds?: number })
       return issued.length > 0 ? issued[issued.length - 1]! : null;
     });
     const harness = yield* makeTestWorkspaceHarness({
+      access: testAccess.member(),
       plugins: [memoryCredentialsPlugin(), makeRejectingPlugin(state)] as const,
     });
     const { executor, config } = harness;
@@ -2612,6 +2688,7 @@ describe("reactive OAuth refresh on upstream 401", () => {
         }))();
 
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [memoryCredentialsPlugin(), forbiddenPlugin] as const,
         });
         yield* executor.acme.seed();
@@ -2692,7 +2769,10 @@ describe("resource-less client sends no resource parameter (#1789)", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         // `resource: null` — explicitly none, not merely unset.
@@ -2761,7 +2841,10 @@ describe("resource-less client sends no resource parameter (#1789)", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({
@@ -2799,7 +2882,10 @@ describe("resource-less client sends no resource parameter (#1789)", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.createClient({

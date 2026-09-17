@@ -62,7 +62,6 @@ import {
   type OAuthClientRow,
   type ToolInvocationRow,
   type ToolRow,
-  type ToolPolicyRow,
 } from "./core-schema";
 import {
   ElicitationDeclinedError,
@@ -73,7 +72,7 @@ import {
   type OnElicitation,
   type InvokeOptions,
 } from "./elicitation";
-import { currentOrgWriteAccess, type OrgWriteAccess } from "./org-write-access";
+import { executorAccessViolation, type ExecutorAccess, type ToolPolicyEvaluator } from "./access";
 import {
   restoreCredentialSnapshotsWithRecheck,
   snapshotCredentialWrites,
@@ -155,9 +154,7 @@ import type { FirstPartyOAuthClientConfig } from "./oauth-client";
 import {
   comparePolicyRow,
   isValidPattern,
-  matchPattern,
   positionForNewPattern,
-  resolveEffectivePolicy,
   rowToToolPolicy,
   type CreateToolPolicyInput,
   type EffectivePolicy,
@@ -181,7 +178,6 @@ import type {
   StaticToolDecl,
   StorageDeps,
   ToolPolicyProvider,
-  ToolPolicyProviderRule,
   ToolInvocationCredential,
 } from "./plugin";
 import {
@@ -493,10 +489,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 
   /**
    * The PLATFORM VIEW: read-only, tenant-wide reads across every subject.
-   * Present only when the executor was built with `platformView: true`
-   * (default off) — every other surface on this executor stays bound to the
-   * single `{ tenant, subject }` product view and is unaffected by this one.
-   * Internal admin surface; the public HTTP shape is a separate concern.
+   * Present only when the executor was built with a product access granting
+   * `capabilities.adminReads` — every other surface on this executor stays
+   * bound to the single `{ tenant, subject }` product view and is unaffected
+   * by this one. Internal admin surface; the public HTTP shape is a separate
+   * concern.
    */
   readonly admin?: ExecutorAdmin;
   /** Saved generative-UI artifacts, visible to the bound owner scope. */
@@ -810,47 +807,27 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly onIntegrationChange?: (event: IntegrationChangeEvent) => Effect.Effect<void>;
   /**
-   * Opt into the PLATFORM VIEW: a read-only, tenant-wide `executor.admin`
-   * surface that reads across every subject in the tenant (see
-   * {@link ExecutorAdmin}). Default OFF — `admin` is simply absent, so the
-   * escape hatch has to be asked for by a host that has authorized an
-   * org-level caller.
+   * The product's access decisions for this binding — REQUIRED, with no core
+   * default. The product (host composition root) states which owner
+   * partitions this binding reads and in what precedence, whether it may
+   * configure workspace-level state (consulted live at every guarded sink),
+   * and its view capabilities (`capabilities.adminReads` exposes the
+   * tenant-observing `admin` surface, whose reads span every subject;
+   * `capabilities.storageWrites` sets the storage posture).
+   * Core validates the shape against the binding, enforces the decisions at
+   * its sinks, and clamps everything with the storage owner policy — tenant
+   * isolation is never product-configurable. See {@link ExecutorAccess} and
+   * `@executor-js/product-access` for the product rule implementations.
    *
-   * Enabling it makes the WHOLE executor read-only, not just `admin`: the base
-   * owner context carries `writes: "denied"`, so `connections`, `policies`,
-   * `integrations` and `oauth` refuse every create/update/delete at the storage
-   * boundary. An executor built for an org-level caller is an observer, and
-   * `admin` being its only tenant-wide surface is not the same as it being its
-   * only guarded one.
-   *
-   * READS still differ by surface: only `admin` is tenant-wide. Every other
-   * surface stays bound to `{ tenant, subject }` — widening them would expose
-   * every subject's connection rows, credential item ids included.
+   * `capabilities.storageWrites: "denied"` makes the WHOLE executor
+   * read-only, not just `admin`: the base owner context carries
+   * `writes: "denied"`, so `connections`, `policies`, `integrations` and
+   * `oauth` refuse every create/update/delete at the storage boundary. READS
+   * still differ by surface: only `admin` is tenant-wide; every other
+   * surface stays bound to `{ tenant, subject }` — widening them would
+   * expose every subject's connection rows, credential item ids included.
    */
-  readonly platformView?: boolean;
-  /**
-   * Whether this binding may CONFIGURE workspace-level state: `owner: "org"`
-   * rows (shared connections, org tool policies, org OAuth clients) and the
-   * tenant-shared integration catalog. Hosts derive it from the acting
-   * member's role — admins bind `"allowed"`, plain members `"denied"`.
-   * `"request"` reads the fiber-local {@link CurrentOrgWriteAccess} at every
-   * guarded sink. Session hosts bind that reference from the freshly
-   * authenticated request without caching a positive authorization decision
-   * for the session lifetime.
-   * Defaults to `"allowed"` for non-session callers with no role model
-   * (local's single user, the CLI, tests).
-   *
-   * `"denied"` gates only the USER-INTENT settings surfaces (`policies`,
-   * `connections` create/update/remove in Workspace scope, `integrations`
-   * update/remove/healthCheck, OAuth client CRUD and connect flows in Workspace
-   * scope, new-integration registration). Members may still create and manage
-   * Personal connections and OAuth apps. They also USE workspace resources:
-   * reads, tool execution over org connections, and the operational writes
-   * those imply (token refresh, tool-catalog re-sync) are deliberately
-   * untouched — which is why this is a surface gate, not a storage-policy axis
-   * like `platformView`'s blanket `writes: "denied"`.
-   */
-  readonly orgWrites?: OrgWriteAccess | "request";
+  readonly access: ExecutorAccess;
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -1522,9 +1499,11 @@ const makePluginStorageFacade = (input: {
   readonly core: CoreDb;
   readonly pluginId: string;
   readonly owner: OwnerBinding;
+  /** Product-supplied owner precedence (`ExecutorAccess.owners`):
+   *  which partitions reads see, first entry shadowing later ones. */
+  readonly readOwners: readonly Owner[];
 }): PluginStorageFacade => {
-  // Owner partitions: org always, plus this subject's user partition.
-  const readOwners: readonly Owner[] = input.owner.subject == null ? ["org"] : ["user", "org"];
+  const readOwners = input.readOwners;
 
   const ownerSubject = (owner: Owner): { owner: Owner; subject: string } | null => {
     if (owner === "org") return { owner: "org", subject: ORG_SUBJECT };
@@ -1555,7 +1534,12 @@ const makePluginStorageFacade = (input: {
       );
   };
 
-  const ownerRank = (owner: Owner): number => readOwners.indexOf(owner);
+  // A row whose owner is outside the view (only reachable if this facade is
+  // ever handed a wider db handle) sorts LAST, never shadowing view rows.
+  const ownerRank = (owner: Owner): number => {
+    const rank = readOwners.indexOf(owner);
+    return rank === -1 ? readOwners.length : rank;
+  };
 
   const sortByOwnerPrecedence = (rows: readonly CoreRow<"plugin_storage">[]) =>
     [...rows].sort((left, right) => {
@@ -1919,6 +1903,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const tenant = String(config.tenant);
     const subject = config.subject != null ? String(config.subject) : null;
 
+    // The product's access decisions, validated against the binding before
+    // anything else is built: a composition root that hands a member-shaped
+    // access to a subject-less binding (or vice versa) is a programmer error
+    // that must fail the boot, not silently narrow.
+    const access = config.access;
+    const accessViolation = executorAccessViolation(access, subject);
+    if (accessViolation != null) {
+      return yield* new StorageError({ message: accessViolation, cause: undefined });
+    }
+    // The product's visible/writable partitions in precedence order — stamped
+    // onto every storage context and threaded to every owner-ordered read.
+    const accessOwners = access.owners;
+
     const ownerBinding: OwnerBinding = {
       tenant: config.tenant,
       subject: config.subject ?? null,
@@ -1946,17 +1943,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           )
         : Effect.void;
 
-    // Workspace-settings gate (`ExecutorConfig.orgWrites`). Called at the top
-    // of every user-intent workspace-level mutation: with an explicit owner it
-    // refuses only `"org"` targets; with no owner it guards a tenant-shared
-    // surface outright. Deliberately NOT wired into the storage owner policy —
-    // operational org-row writes (token refresh, tool-catalog re-sync) must
-    // keep working for a denied member.
+    // Settings gate (`ExecutorAccess.settingsWrite`). Called at the top of
+    // every user-intent settings mutation with the TARGET core is about to
+    // touch — an owner-scoped row, or (with no owner) a tenant-shared
+    // workspace surface. WHICH targets a given principal may configure is
+    // entirely the product's rule; core only describes the target, asks
+    // live on every call (a request-bound implementation is re-read after
+    // pauses and on resume; nothing is cached), and enforces a denial as
+    // `OrgWriteDeniedError`. Deliberately NOT wired into the storage owner
+    // policy — operational org-row writes (token refresh, tool-catalog
+    // re-sync) must keep working for a settings-denied member.
     const guardOrgWrite = (owner?: Owner): Effect.Effect<void, OrgWriteDeniedError> =>
       Effect.gen(function* () {
-        const access =
-          config.orgWrites === "request" ? yield* currentOrgWriteAccess : config.orgWrites;
-        if (access === "denied" && (owner === undefined || owner === "org")) {
+        const decision = yield* access.settingsWrite(
+          owner === undefined ? { kind: "workspace" } : { kind: "owner", owner },
+        );
+        if (decision === "denied") {
           return yield* new OrgWriteDeniedError();
         }
       });
@@ -2010,7 +2012,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const ownerContext: ExecutorOwnerPolicyContext = {
       tenant,
       subject,
-      ...(config.platformView === true ? { writes: "denied" as const } : {}),
+      // The product's row visibility/write partitions — enforced (never
+      // chosen) by the storage owner policy, which clamps them to the
+      // binding's tenant and subject.
+      owners: accessOwners,
+      ...(access.capabilities.storageWrites === "denied" ? { writes: "denied" as const } : {}),
     };
     const rootDb = withQueryContext(rootDbUntyped, ownerContext);
     // Shared across executors over one database, so the gate key must carry the
@@ -2035,7 +2041,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         } satisfies ExecutorOwnerPolicyContext,
       }),
     );
-    const blobs = config.blobs ?? makeFumaBlobStore(fuma);
+    // The blob table sits OUTSIDE the storage owner policy (isolation is the
+    // namespace string), and a host-supplied backend (`config.blobs`: R2, …)
+    // never sees the FumaDB table policies at all. So the read-only posture
+    // is applied HERE, once, on the base store — pending approvals and every
+    // plugin namespace inherit it. Per-partition visibility is the plugin
+    // blob store's own `BlobAccess` clamp below.
+    const rawBlobs = config.blobs ?? makeFumaBlobStore(fuma);
+    const readOnlyBlobStore = (store: BlobStore): BlobStore => {
+      const refuse = (operation: string) =>
+        Effect.fail(
+          new StorageError({
+            message: `Blob ${operation} is not allowed: this executor's storage is read-only.`,
+            cause: undefined,
+          }),
+        );
+      return {
+        get: (namespace, key) => store.get(namespace, key),
+        getMany: (namespaces, key) => store.getMany(namespaces, key),
+        has: (namespace, key) => store.has(namespace, key),
+        put: () => refuse("write"),
+        delete: () => refuse("delete"),
+      };
+    };
+    const blobs =
+      access.capabilities.storageWrites === "denied" ? readOnlyBlobStore(rawBlobs) : rawBlobs;
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
     // Runtime-observed output shapes ("muscle memory"): learned on the
@@ -2046,6 +2076,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         core,
         pluginId: SHAPE_MEMORY_PLUGIN_ID,
         owner: ownerBinding,
+        readOwners: accessOwners,
       }),
     );
 
@@ -2062,7 +2093,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // runtime can recognize and retry a row stranded before its write ran.
     const credentialWriteRuntimeId = crypto.randomUUID();
 
-    const staticToolOwner = (): Owner => (subject == null ? "org" : "user");
+    // The partition static tools present under: the product's first-ranked
+    // owner (a bound member's "user", a subject-less binding's "org").
+    const staticToolOwner = (): Owner => accessOwners[0]!;
     const staticToolConnection = (integration: StaticIntegrationDecl): ConnectionName =>
       ConnectionName.make(integration.id === EXECUTOR_INTEGRATION_ID ? "coreTools" : "static");
 
@@ -3276,11 +3309,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const existing = yield* findIntegrationRow(input.slug);
           const config = input.config === undefined ? null : input.config;
           if (existing) {
-            // Extension methods also run for subjectless boot/system executors,
-            // which must be able to converge existing catalog rows. A bound
-            // subject is an end-user principal, so its replacement is the same
-            // workspace mutation as creation and requires the live role guard.
-            if (subject !== null) yield* guardOrgWrite();
+            // Replacement of an existing catalog row is the same workspace
+            // mutation as creation. WHO may perform it — an end-user admin, or
+            // a subject-less boot-convergence service — is entirely the
+            // product's `settingsWrite` rule (workspaceServiceAccess allows
+            // it); core keeps no subject-less exemption of its own.
+            yield* guardOrgWrite();
             yield* core.updateMany("integration", {
               where: (b: AnyCb) => b("slug", "=", String(input.slug)),
               set: {
@@ -5387,103 +5421,22 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
-    // Active policy source.
+    // Effective tool policy — the PRODUCT's evaluation, core's enforcement.
+    //
+    // Core assembles the rule material (the stored rows as a lazy read, and
+    // the plugin-registered provider when a toolkit session bound one) and
+    // hands it to `ExecutorAccess.toolPolicy`, once per surface operation.
+    // Owner ranking, cross-owner merging, the plugin-default fallback and
+    // the capability-allowlist default all live in that product hook; core
+    // only enforces the returned `EffectivePolicy` (block refuses, approval
+    // gates).
     // ------------------------------------------------------------------
 
-    type ActivePolicyRuleSet =
-      | { readonly kind: "global"; readonly rows: readonly ToolPolicyRow[] }
-      | {
-          readonly kind: "provider";
-          readonly provider: ToolPolicyProvider;
-          readonly rules: readonly ToolPolicyProviderRule[] | null;
-        }
-      | {
-          readonly kind: "prepared";
-          readonly resolve: (input: {
-            readonly toolId: string;
-            readonly defaultRequiresApproval?: boolean;
-          }) => EffectivePolicy;
-        };
-
-    const compareProviderPolicyRule = (
-      a: ToolPolicyProviderRule,
-      b: ToolPolicyProviderRule,
-    ): number => {
-      if (a.position < b.position) return -1;
-      if (a.position > b.position) return 1;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    };
-
-    const resolveProviderPolicyFromRules = (
-      toolId: string,
-      rules: readonly ToolPolicyProviderRule[],
-    ): EffectivePolicy => {
-      for (const rule of [...rules].sort(compareProviderPolicyRule)) {
-        if (!matchPattern(rule.pattern, toolId)) continue;
-        return {
-          action: rule.action,
-          source: "user",
-          pattern: rule.pattern,
-          policyId: rule.id,
-        };
-      }
-      // Toolkit-style providers are capability allowlists. No matching rule
-      // means the tool is outside the capability boundary.
-      return {
-        action: "block",
-        source: "user",
-        pattern: "*",
-      };
-    };
-
-    const listActivePolicyRuleSet = (): Effect.Effect<ActivePolicyRuleSet, StorageFailure> =>
-      activeToolPolicyProvider
-        ? // Batched per-operation resolver: fetch all policy + connection state
-          // once, then resolve every tool in this operation against that
-          // snapshot. Avoids the per-tool resolve N+1 on the list surface.
-          activeToolPolicyProvider.prepare
-          ? activeToolPolicyProvider.prepare().pipe(
-              Effect.map((resolve) => ({
-                kind: "prepared" as const,
-                resolve,
-              })),
-            )
-          : activeToolPolicyProvider.resolve
-            ? Effect.succeed({
-                kind: "provider" as const,
-                provider: activeToolPolicyProvider,
-                rules: null,
-              })
-            : activeToolPolicyProvider.list().pipe(
-                Effect.map((rules) => ({
-                  kind: "provider" as const,
-                  provider: activeToolPolicyProvider!,
-                  rules,
-                })),
-              )
-        : core
-            .findMany("tool_policy", {})
-            .pipe(Effect.map((rows) => ({ kind: "global" as const, rows })));
-
-    const resolvePolicyFromRuleSet = (
-      toolId: string,
-      ruleSet: ActivePolicyRuleSet,
-      defaultRequiresApproval?: boolean,
-    ): Effect.Effect<EffectivePolicy, StorageFailure> =>
-      ruleSet.kind === "prepared"
-        ? Effect.succeed(ruleSet.resolve({ toolId, defaultRequiresApproval }))
-        : ruleSet.kind === "provider"
-          ? ruleSet.provider.resolve
-            ? ruleSet.provider.resolve({ toolId, defaultRequiresApproval })
-            : Effect.succeed(resolveProviderPolicyFromRules(toolId, ruleSet.rules ?? []))
-          : Effect.succeed(
-              resolveEffectivePolicy(
-                toolId,
-                ruleSet.rows,
-                ownerRankForRow,
-                defaultRequiresApproval,
-              ),
-            );
+    const makeToolPolicyEvaluator = (): Effect.Effect<ToolPolicyEvaluator, StorageFailure> =>
+      access.toolPolicy({
+        policyRows: core.findMany("tool_policy", {}),
+        provider: activeToolPolicyProvider,
+      });
 
     // ------------------------------------------------------------------
     // Tools (read surface)
@@ -5528,7 +5481,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       // network side effects on a read-only credential. Skip it entirely:
       // read-only-ness of the platform read path is a stated invariant here,
       // not an accident of the best-effort catch below.
-      if (config.platformView === true) return;
+      if (access.capabilities.storageWrites === "denied") return;
       const integrations = yield* core.findMany("integration", {});
       if (integrations.length === 0) return;
       const integrationBySlug = new Map(integrations.map((row) => [row.slug, row] as const));
@@ -5692,7 +5645,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           select: TOOL_INVOCATION_COLUMNS,
         });
         const includeBlocked = filter?.includeBlocked ?? false;
-        const policyRules = yield* listActivePolicyRuleSet();
+        const policyEvaluator = yield* makeToolPolicyEvaluator();
         // Only tools whose integration is still in the catalog. A tool row
         // whose integration was removed is an orphan (a removal that could
         // not reach this subject's rows): listing it invites an invoke that
@@ -5704,11 +5657,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tool = rowToTool(row);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
-            const effective = yield* resolvePolicyFromRuleSet(
-              normalizedPolicyId(tool),
-              policyRules,
-              tool.annotations?.requiresApproval,
-            );
+            const effective = yield* policyEvaluator.resolve({
+              toolId: normalizedPolicyId(tool),
+              defaultRequiresApproval: tool.annotations?.requiresApproval,
+            });
             if (effective.action === "block") continue;
           }
           tools.push(tool);
@@ -5717,11 +5669,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tool = staticToolToTool(entry);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
-            const effective = yield* resolvePolicyFromRuleSet(
-              normalizedPolicyId(tool),
-              policyRules,
-              tool.annotations?.requiresApproval,
-            );
+            const effective = yield* policyEvaluator.resolve({
+              toolId: normalizedPolicyId(tool),
+              defaultRequiresApproval: tool.annotations?.requiresApproval,
+            });
             if (effective.action === "block") continue;
           }
           tools.push(tool);
@@ -5733,15 +5684,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       address: ToolAddress,
     ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
       Effect.gen(function* () {
-        const policyRules = yield* listActivePolicyRuleSet();
+        const policyEvaluator = yield* makeToolPolicyEvaluator();
         const staticEntry = staticTools.get(String(address));
         if (staticEntry) {
           const tool = staticToolToTool(staticEntry);
-          const effective = yield* resolvePolicyFromRuleSet(
-            normalizedPolicyId(tool),
-            policyRules,
-            tool.annotations?.requiresApproval,
-          );
+          const effective = yield* policyEvaluator.resolve({
+            toolId: normalizedPolicyId(tool),
+            defaultRequiresApproval: tool.annotations?.requiresApproval,
+          });
           if (effective.action === "block") return null;
           const preview = yield* Effect.tryPromise({
             try: () =>
@@ -5779,11 +5729,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         });
         if (!row) return null;
         const tool = rowToTool(row);
-        const effective = yield* resolvePolicyFromRuleSet(
-          normalizedPolicyId(tool),
-          policyRules,
-          tool.annotations?.requiresApproval,
-        );
+        const effective = yield* policyEvaluator.resolve({
+          toolId: normalizedPolicyId(tool),
+          defaultRequiresApproval: tool.annotations?.requiresApproval,
+        });
         if (effective.action === "block") return null;
 
         const runtime = runtimes.get(row.plugin_id);
@@ -5941,11 +5890,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
-    // Policies — owner-ranked (user=0 inner, org=1 outer).
+    // Policies — CRUD over the stored rows. LIST ordering follows the
+    // product's owner precedence; how rules RESOLVE into an effective
+    // decision is the product's `ExecutorAccess.toolPolicy` hook.
     // ------------------------------------------------------------------
 
-    const ownerRankForRow = (row: { readonly owner: string }): number =>
-      row.owner === "user" ? 0 : 1;
+    const ownerListRank = (row: { readonly owner: string }): number => {
+      const rank = accessOwners.indexOf(row.owner as Owner);
+      return rank === -1 ? accessOwners.length : rank;
+    };
 
     // Tool policies gate by tool identity (`<integration>.<tool>`), independent of
     // which connection serves it; the org/user split is handled by owner-scoped
@@ -5961,7 +5914,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         .pipe(
           Effect.map((rows) =>
             [...rows]
-              .sort((a, b) => ownerRankForRow(a) - ownerRankForRow(b) || comparePolicyRow(a, b))
+              .sort((a, b) => ownerListRank(a) - ownerListRank(b) || comparePolicyRow(a, b))
               .map(rowToToolPolicy),
           ),
         );
@@ -6089,7 +6042,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             requiresApproval = annotations?.requiresApproval;
           }
         }
-        return resolveEffectivePolicy(toolId, policyRows, ownerRankForRow, requiresApproval);
+        // The stored-rules surface: this deliberately resolves the WORKSPACE
+        // rules a settings UI edits — a session capability allowlist (the
+        // plugin provider) is a different question and is not consulted here.
+        const evaluator = yield* access.toolPolicy({
+          policyRows: Effect.succeed(policyRows),
+          provider: null,
+        });
+        return yield* evaluator.resolve({ toolId, defaultRequiresApproval: requiresApproval });
       });
 
     // ------------------------------------------------------------------
@@ -6305,6 +6265,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
       });
 
+    // An approval pause can outlive its pre-pause snapshot by minutes or
+    // days: an admin may rewrite policies while the call waits on a human.
+    // The granted approval stays granted — it is never asked again — but the
+    // decision to RUN must be fresh, so after an accepted approval the
+    // effective policy is re-resolved from the live rule source before any
+    // credential is resolved or handler executes. A rule that now BLOCKS the
+    // tool wins over the stale snapshot; a fresh `require_approval` is
+    // already satisfied by the approval that was just granted. Callers that
+    // retained storage rows across the pause re-read those themselves.
+    const recheckPolicyAfterApproval = (
+      toolId: string,
+      address: ToolAddress,
+      defaultRequiresApproval: boolean | undefined,
+    ): Effect.Effect<void, ToolBlockedError | StorageFailure> =>
+      Effect.gen(function* () {
+        const policyEvaluator = yield* makeToolPolicyEvaluator();
+        const fresh = yield* policyEvaluator.resolve({ toolId, defaultRequiresApproval });
+        if (fresh.action === "block") {
+          return yield* new ToolBlockedError({
+            address,
+            pattern: fresh.pattern ?? "*",
+          });
+        }
+      });
+
     // ------------------------------------------------------------------
     // execute — the invoke path.
     // ------------------------------------------------------------------
@@ -6388,12 +6373,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // not the 5-segment dynamic form.
         const staticEntry = staticTools.get(String(address));
         if (staticEntry) {
-          const policyRules = yield* listActivePolicyRuleSet();
-          const policy = yield* resolvePolicyFromRuleSet(
-            String(address),
-            policyRules,
-            staticEntry.tool.annotations?.requiresApproval,
-          );
+          const policyEvaluator = yield* makeToolPolicyEvaluator();
+          const policy = yield* policyEvaluator.resolve({
+            toolId: String(address),
+            defaultRequiresApproval: staticEntry.tool.annotations?.requiresApproval,
+          });
           if (policy.action === "block") {
             return yield* new ToolBlockedError({
               address,
@@ -6401,6 +6385,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
+          if (approvalRequired(staticEntry.tool.annotations, policy)) {
+            yield* recheckPolicyAfterApproval(
+              String(address),
+              address,
+              staticEntry.tool.annotations?.requiresApproval,
+            );
+          }
           return yield* wrapInvocationError(
             staticEntry.tool.handler({
               ctx: staticEntry.ctx,
@@ -6472,7 +6463,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
           { startImmediately: true },
         );
-        const policyRulesFiber = yield* Effect.forkChild(listActivePolicyRuleSet());
+        const policyEvaluatorFiber = yield* Effect.forkChild(makeToolPolicyEvaluator());
         const connectionRowFiber = yield* Effect.forkChild(
           findConnectionRow({
             owner: parsed.owner,
@@ -6508,13 +6499,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
           // Resolve policy (owner-ranked).
           const toolForPolicy = rowToTool(row);
-          const policyRules = yield* Fiber.join(policyRulesFiber);
+          const policyEvaluator = yield* Fiber.join(policyEvaluatorFiber);
           const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
-          const policy = yield* resolvePolicyFromRuleSet(
-            normalizedPolicyId(toolForPolicy),
-            policyRules,
-            annotations?.requiresApproval,
-          );
+          const policy = yield* policyEvaluator.resolve({
+            toolId: normalizedPolicyId(toolForPolicy),
+            defaultRequiresApproval: annotations?.requiresApproval,
+          });
           if (policy.action === "block") {
             return yield* new ToolBlockedError({
               address,
@@ -6571,6 +6561,56 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }
           yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
 
+          // Fresh decisions after the pause (see `recheckPolicyAfterApproval`):
+          // besides the policy, re-read the rows this call retained across
+          // the approval. A connection or tool removed while the call waited
+          // on a human must fail as not-found here — before any credential
+          // is resolved — not execute against rows that no longer exist.
+          let approvedToolRow = row;
+          let approvedConnectionRow = connectionRow;
+          if (approvalRequired(resolvedAnnotations, policy)) {
+            yield* recheckPolicyAfterApproval(
+              normalizedPolicyId(toolForPolicy),
+              address,
+              resolvedAnnotations?.requiresApproval,
+            );
+            const freshToolRow = yield* core.findFirst("tool", {
+              where: (b: AnyCb) =>
+                b.and(
+                  byOwner(parsed.owner)(b),
+                  b("integration", "=", String(parsed.integration)),
+                  b("connection", "=", String(parsed.connection)),
+                  b("name", "=", String(parsed.tool)),
+                ),
+              select: TOOL_INVOCATION_COLUMNS,
+            });
+            if (!freshToolRow) {
+              return yield* new ToolNotFoundError({ address });
+            }
+            // The plugin runtime and handler were bound to the PRE-pause row.
+            // If the integration was torn down and re-registered under a
+            // different plugin while the call waited, the tool the user
+            // approved no longer exists in that form — fail as not-found
+            // rather than hand the replacement row to the old plugin.
+            if (freshToolRow.plugin_id !== row.plugin_id) {
+              return yield* new ToolNotFoundError({ address });
+            }
+            approvedToolRow = freshToolRow;
+            const freshConnectionRow = yield* findConnectionRow({
+              owner: parsed.owner,
+              integration: parsed.integration,
+              name: parsed.connection,
+            });
+            if (!freshConnectionRow) {
+              return yield* new ConnectionNotFoundError({
+                owner: parsed.owner,
+                integration: parsed.integration,
+                name: parsed.connection,
+              });
+            }
+            approvedConnectionRow = freshConnectionRow;
+          }
+
           // Resolve every named credential input (`variable → value`); `value` is
           // the primary `token` for single-input + OAuth callers. The
           // integration-row read is independent of credential resolution, so
@@ -6594,9 +6634,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // integration read cannot gate the credential error and a failed
           // one is deliberately abandoned, never silently dropped as an
           // unobserved value.
-          const valuesFiber = yield* Effect.forkChild(resolveConnectionValues(connectionRow), {
-            startImmediately: true,
-          });
+          const valuesFiber = yield* Effect.forkChild(
+            resolveConnectionValues(approvedConnectionRow),
+            {
+              startImmediately: true,
+            },
+          );
           const integrationRowFiber = yield* Effect.forkChild(
             findIntegrationRow(parsed.integration),
           );
@@ -6611,7 +6654,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!integrationRow) {
             return yield* new IntegrationNotFoundError({ slug: parsed.integration });
           }
-          const grantedScopes = grantedScopesFromRow(connectionRow);
+          const grantedScopes = grantedScopesFromRow(approvedConnectionRow);
           const invokeTool = runtime.plugin.invokeTool;
           const invokeWith = (
             resolved: Record<string, string | null>,
@@ -6620,7 +6663,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               owner: parsed.owner,
               integration: parsed.integration,
               connection: parsed.connection,
-              template: AuthTemplateSlug.make(connectionRow.template),
+              template: AuthTemplateSlug.make(approvedConnectionRow.template),
               value: resolved[PRIMARY_INPUT_VARIABLE] ?? null,
               values: resolved,
               config: decodeJsonColumn(integrationRow.config),
@@ -6629,7 +6672,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             return wrapInvocationError(
               invokeTool({
                 ctx: runtime.ctx,
-                toolRow: row,
+                toolRow: approvedToolRow,
                 credential,
                 args,
                 elicit: buildElicit(address, args, handler),
@@ -6656,7 +6699,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // guidance rather than a masked one.
           const { result, usedValues } = yield* Effect.gen(function* () {
             if (!isUnauthorizedToolFailure(first)) return { result: first, usedValues: values };
-            const refreshed = yield* forceRefreshConnectionValues(connectionRow).pipe(
+            const refreshed = yield* forceRefreshConnectionValues(approvedConnectionRow).pipe(
               // A failed re-mint is not this call's failure to report: the upstream
               // already produced an auth failure with recovery guidance, which is
               // strictly more actionable than a refresh-plumbing error. Keep it.
@@ -6671,7 +6714,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               usedValues: refreshed,
             };
           });
-          yield* healPersistedHealthOnUse(connectionRow, result, usedValues);
+          yield* healPersistedHealthOnUse(approvedConnectionRow, result, usedValues);
           return result;
         });
         // Interrupting an already-completed (or already-joined) fiber is a
@@ -6684,7 +6727,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // so an interruption that lands before the join reaches it promptly.
         return yield* Effect.ensuring(
           invokeDynamicTool,
-          Fiber.interruptAll([toolRowFiber, policyRulesFiber, connectionRowFiber]),
+          Fiber.interruptAll([toolRowFiber, policyEvaluatorFiber, connectionRowFiber]),
         );
       }).pipe(
         // Expected tool failures (`ToolResult.fail`) resolve through the
@@ -6788,16 +6831,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // register credential providers.
     // ------------------------------------------------------------------
 
+    // IDENTITY partitions, deliberately NOT narrowed by `access.owners`:
+    // these name where the binding's identity lives, while WHICH of them a
+    // plugin blob store may read or write is the separate product decision
+    // (`BlobAccess`) applied per store below. Identity-bound consumers keep
+    // the full shape — see the pending-approval store.
     const blobPartitions: OwnerPartitions = {
       org: `o:${tenant}`,
       user: subject != null ? `u:${tenant}:${subject}` : null,
     };
 
-    // Pending approvals file under the narrowest partition this executor has:
-    // a subject-bound executor keeps them private to that member, and a pure-org
-    // executor (no subject) files them at the org. Either way the partition IS
-    // the ownership check — another caller's executor reads a different
-    // namespace and simply does not see the record.
+    // Pending approvals file under the narrowest IDENTITY partition this
+    // executor has: a subject-bound executor keeps them private to that
+    // member, and a pure-org executor (no subject) files them at the org.
+    // The partition IS the ownership check — another caller's executor reads
+    // a different namespace and simply does not see the record. CONTINUATION
+    // IDENTITY, not resource visibility: this routing must never follow the
+    // product's narrowed `access.owners` view — rerouting an org-only
+    // member's approvals into the SHARED org namespace would let any
+    // coworker's binding consume them.
     const pendingApprovals = makePendingApprovalStore(
       blobs,
       blobPartitions.user ?? blobPartitions.org,
@@ -6815,10 +6867,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         core,
         pluginId: plugin.id,
         owner: ownerBinding,
+        readOwners: accessOwners,
       });
       const storageDeps: StorageDeps = {
         owner: ownerBinding,
-        blobs: pluginBlobStore(blobs, blobPartitions, plugin.id),
+        blobs: pluginBlobStore(blobs, blobPartitions, plugin.id, {
+          owners: accessOwners,
+          storageWrites: access.capabilities.storageWrites,
+        }),
         pluginStorage,
       };
       const storage = plugin.storage(storageDeps);
@@ -7140,7 +7196,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     // Default OFF: without the opt-in there is no `admin` key at all, so the
     // tenant-wide handle is never even constructed.
-    const admin = config.platformView === true ? makeAdmin() : undefined;
+    const admin = access.capabilities.adminReads ? makeAdmin() : undefined;
 
     // ------------------------------------------------------------------
     // close

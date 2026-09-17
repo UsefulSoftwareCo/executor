@@ -95,7 +95,11 @@ describe("owner policy reach", () => {
       withDb(async (db) => {
         await seedTwoSubjects(db);
 
-        const bound = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT_A });
+        const bound = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT_A,
+          owners: ["user", "org"],
+        });
         const rows = await bound.findMany("connection", {});
 
         expect(rows.map((row) => row.name).sort()).toEqual(["a-personal", "shared"]);
@@ -111,6 +115,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
         const rows = await platform.findMany("connection", {});
@@ -129,6 +134,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
         const rows = await platform.findMany("connection", {});
@@ -149,6 +155,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: null,
+          owners: ["org"],
           reach: "tenant",
         });
         const rows = await platform.findMany("connection", {});
@@ -168,6 +175,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
 
@@ -197,6 +205,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
 
@@ -225,6 +234,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
 
@@ -249,6 +259,7 @@ describe("owner policy reach", () => {
         const platform = withQueryContext(db.db, {
           tenant: TENANT,
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           reach: "tenant",
         });
 
@@ -272,12 +283,17 @@ describe("owner policy reach", () => {
       withDb(async (db) => {
         // The guard must not disturb the product view: an ordinary bound
         // context writes exactly as before.
-        const bound = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT_A });
+        const bound = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT_A,
+          owners: ["user", "org"],
+        });
 
         await bound.create("connection", {
           tenant: TENANT,
           owner: "user",
           subject: SUBJECT_A,
+          owners: ["user", "org"],
           integration: "github",
           name: "written-by-bound-view",
           template: "apiKey",
@@ -296,13 +312,18 @@ describe("owner policy reach", () => {
   it.effect("a bound context still cannot write outside its own subject", () =>
     Effect.promise(() =>
       withDb(async (db) => {
-        const bound = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT_A });
+        const bound = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT_A,
+          owners: ["user", "org"],
+        });
 
         await expect(
           bound.create("connection", {
             tenant: TENANT,
             owner: "user",
             subject: SUBJECT_B,
+            owners: ["user", "org"],
             integration: "github",
             name: "cross-subject",
             template: "apiKey",

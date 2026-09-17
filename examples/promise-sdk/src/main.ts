@@ -20,6 +20,7 @@ import { Effect } from "effect";
 import { mcpPlugin } from "@executor-js/plugin-mcp/promise";
 import { openApiPlugin, variable } from "@executor-js/plugin-openapi/promise";
 import { graphqlPlugin } from "@executor-js/plugin-graphql/promise";
+import { workspaceServiceAccess } from "@executor-js/product-access";
 
 // ---------------------------------------------------------------------------
 // 1. Create the executor with all plugins
@@ -44,6 +45,9 @@ const memoryProvider: CredentialProvider = {
 };
 
 const executor = await createExecutor({
+  // Subject-less single-workspace embedder: the product posture is stated
+  // explicitly — the SDK ships no default.
+  access: workspaceServiceAccess(),
   plugins,
   providers: [memoryProvider],
   onElicitation: "accept-all",

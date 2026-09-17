@@ -15,6 +15,7 @@ import {
 import type { OnePasswordService } from "./service";
 import { OnePasswordError } from "./errors";
 import { OnePasswordAccount, OnePasswordConfig, DesktopAppAuth } from "./types";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: v1 routed configure/removeConfig through an explicit `ScopeId`
 // (`executor.onepassword.configure(config, ScopeId.make("test-scope"))`) and
@@ -63,7 +64,7 @@ describe("onepassword plugin", () => {
   it.effect("registers onepassword as a credential provider", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
       const providers = yield* executor.providers.list();
       expect(providers).toContain(ONEPASSWORD);
@@ -73,7 +74,7 @@ describe("onepassword plugin", () => {
   it.effect("configure upserts accounts by id and removeConfig removes them one by one", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
 
       const initial = yield* executor.onepassword.getConfig();
@@ -124,7 +125,7 @@ describe("onepassword plugin", () => {
   it.effect("removeConfig without an id removes everything", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
       yield* executor.onepassword.configure({
         name: "Work",
@@ -144,7 +145,7 @@ describe("onepassword plugin", () => {
   it.effect("getConfig redacts every account's service-account token", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
 
       yield* executor.onepassword.configure({
@@ -171,7 +172,7 @@ describe("onepassword plugin", () => {
   it.effect("exposes provider configuration as agent-callable static tools", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
 
       const configured = yield* executor.execute(
@@ -225,7 +226,7 @@ describe("onepassword plugin", () => {
   it.effect("status reports not-configured before configure", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [onepasswordPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [onepasswordPlugin()] as const }),
       );
       const status = yield* executor.onepassword.status();
       expect(status.connected).toBe(false);
@@ -248,6 +249,7 @@ describe("onepassword store", () => {
       makeInMemoryBlobStore(),
       { org: "org_test", user: null },
       "onepassword",
+      { owners: ["org"], storageWrites: "allowed" },
     );
     return { blobs, store: makeOnePasswordStore(blobs) };
   };

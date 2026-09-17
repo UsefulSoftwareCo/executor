@@ -8,6 +8,7 @@ import {
   type CredentialProvider,
 } from "@executor-js/sdk/promise";
 import { openApiPlugin, variable } from "@executor-js/plugin-openapi/promise";
+import { workspaceServiceAccess } from "@executor-js/product-access";
 
 const inventoryApi = {
   openapi: "3.0.0",
@@ -92,6 +93,9 @@ const memoryProvider: CredentialProvider = {
 };
 
 const executor = await createExecutor({
+  // Subject-less single-workspace embedder: the product posture is stated
+  // explicitly — the SDK ships no default.
+  access: workspaceServiceAccess(),
   plugins: [openApiPlugin()],
   providers: [memoryProvider],
   onElicitation: "accept-all",

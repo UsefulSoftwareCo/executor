@@ -13,6 +13,7 @@ import {
   type Executor,
 } from "@executor-js/sdk";
 import { collectTables } from "@executor-js/api/server";
+import { singleUserAccess } from "@executor-js/product-access";
 import { loadPluginsFromJsonc } from "@executor-js/config";
 import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
@@ -220,6 +221,9 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
             { plugin_key: event.pluginKey },
           ),
         onElicitation: "accept-all",
+        // Single-user product: one human owns the deployment and may
+        // configure everything (see @executor-js/product-access).
+        access: singleUserAccess(),
         oauthEndpointUrlPolicy: { allowHttp: true },
         // EXPLICIT OAuth callback — the daemon serves the v2 `/api/oauth/callback`
         // route on the same origin as the web UI. Derived from `webBaseUrl`

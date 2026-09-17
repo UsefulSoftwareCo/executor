@@ -49,7 +49,23 @@ const unscopedExecutorTable = <const TColumns extends UserColumns>(
     id: keyColumn("id"),
   });
   out.unique(`${name}_id_uidx`, ["id"]);
-  return out.policy({ name: executorUnscopedPolicyName });
+  // No visibility condition (isolation lives in the namespace string), but
+  // the read-only / delete-only postures still hold for the FumaDB-backed
+  // blob store. External blob backends never see table policies, so the
+  // executor ALSO wraps its base BlobStore when storage writes are denied —
+  // this is defense in depth for the table-backed path, not the sole guard.
+  return out.policy<ExecutorOwnerPolicyContext>({
+    name: executorUnscopedPolicyName,
+    onCreate: ({ context }) => assertReachReadOnly(name, "write", context),
+    onUpdate: ({ context }) => {
+      assertReachReadOnly(name, "write", context);
+      return true;
+    },
+    onDelete: ({ context }) => {
+      assertReachReadOnly(name, "delete", context);
+      return true;
+    },
+  });
 };
 
 /** A tenant-shared table (catalog / blobs) — partitioned only by `tenant`. */

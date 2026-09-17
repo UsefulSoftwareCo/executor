@@ -12,6 +12,7 @@ import {
   type PluginStorageCollectionWhere,
 } from "./plugin-storage";
 import { makeTestConfig, makeTestExecutor } from "./testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const ToolCall = Schema.Struct({
   runId: Schema.String,
@@ -167,6 +168,7 @@ describe("plugin storage collections", () => {
   it.effect("queries declared indexes through the executor's SQLite FumaDB target", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -229,6 +231,7 @@ describe("plugin storage collections", () => {
   it.effect("bulk puts and removes plugin storage rows", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -275,6 +278,7 @@ describe("plugin storage collections", () => {
   it.effect("stores and overwrites every row when a bulk write spans multiple batches", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -312,6 +316,7 @@ describe("plugin storage collections", () => {
   it.effect("rolls back every plugin storage row when a bulk write fails", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -369,6 +374,7 @@ describe("plugin storage collections", () => {
   it.effect("leaves pre-existing rows intact when a bulk overwrite fails mid-batch", () =>
     Effect.gen(function* () {
       const config = makeTestConfig({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -435,6 +441,7 @@ describe("plugin storage collections", () => {
     () =>
       Effect.gen(function* () {
         const executor = yield* makeTestExecutor({
+          access: testAccess.member(),
           backend: "sqlite",
           plugins: [executionHistoryPlugin] as const,
         });
@@ -463,6 +470,7 @@ describe("plugin storage collections", () => {
       // One executor bound to a subject sees both org and user owner rows; a
       // user-owned row shadows an org-owned row under the same key on read.
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });
@@ -508,6 +516,7 @@ describe("plugin storage collections", () => {
   it.effect("rejects runtime queries against undeclared index fields", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         backend: "sqlite",
         plugins: [executionHistoryPlugin] as const,
       });

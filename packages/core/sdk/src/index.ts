@@ -188,11 +188,12 @@ export {
   ownerForItemId,
 } from "./provider-item-owner";
 
-// Tool policies.
+// Tool policies — vocabulary + matching/placement utilities. Resolution
+// semantics live in `@executor-js/product-access/policy`.
 export {
   matchPattern,
   isValidPattern,
-  effectivePolicyFromSorted,
+  comparePolicyRow,
   ToolPolicyActionSchema,
   type ToolPolicy,
   type CreateToolPolicyInput,
@@ -446,10 +447,18 @@ export {
 export {
   CurrentOrgWriteAccess,
   currentOrgWriteAccess,
+  executorAccessViolation,
   makeOrgWriteAccessState,
+  type AccessDecision,
+  type ExecutorAccess,
+  type ExecutorAccessCapabilities,
   type OrgWriteAccess,
   type OrgWriteAccessState,
-} from "./org-write-access";
+  type SettingsWriteTarget,
+  type ToolPolicyEvaluationInput,
+  type ToolPolicyEvaluator,
+  type ToolPolicySources,
+} from "./access";
 
 // CLI / runtime config.
 export {

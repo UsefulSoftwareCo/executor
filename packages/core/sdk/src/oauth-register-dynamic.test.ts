@@ -12,6 +12,7 @@ import { OAuthRegisterDynamicError } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // RFC 7591 Dynamic Client Registration, end to end:
 //   probe → registerDynamicClient (no pasted client id/secret) → listClients
@@ -64,7 +65,7 @@ describe("oauth.registerDynamicClient", () => {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
           plugins,
-          orgWrites: "denied",
+          access: testAccess.member("denied"),
         });
 
         const error = yield* executor.oauth
@@ -94,7 +95,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         // Probe surfaces the registration endpoint + advertised auth methods so
@@ -197,7 +201,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -230,7 +237,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -276,7 +286,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -327,7 +340,10 @@ describe("oauth.registerDynamicClient", () => {
         // reused, so a fresh DCR registration happens. The GC migration then
         // backfills/GCs any duplicate this transient window mints.
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { config, executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
         const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
@@ -379,7 +395,10 @@ describe("oauth.registerDynamicClient", () => {
         const server = yield* serveOAuthTestServer({
           scopes: ["openid", "offline_access"],
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         yield* executor.oauth.registerDynamicClient({
@@ -413,7 +432,10 @@ describe("oauth.registerDynamicClient", () => {
         // row's origin_issuer, the reuse lookup keys on it and mints no
         // duplicate. This is the steady state the migration establishes.
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { config, executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
         const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
@@ -467,7 +489,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
         const resourceA = `${server.issuerUrl}/mcp/a`;
@@ -533,7 +558,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
         const resourceA = `${server.issuerUrl}/mcp/a`;
@@ -638,7 +666,10 @@ describe("oauth.registerDynamicClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -733,7 +764,10 @@ describe("oauth.registerDynamicClient", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
           const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -784,7 +818,10 @@ describe("oauth.registerDynamicClient", () => {
           // Mirror Mercury: reject any client_name containing the brand.
           approveClientName: (name) => !name.includes("Acme"),
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -821,7 +858,10 @@ describe("oauth.registerDynamicClient", () => {
           scopes: ["read"],
           approveClientName: () => false,
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -866,7 +906,10 @@ describe("oauth.registerDynamicClient", () => {
           approveRedirectUri: (uri) =>
             uri.startsWith("http://localhost") || uri.startsWith("http://127."),
         });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
         const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 
@@ -910,7 +953,10 @@ describe("oauth.registerDynamicClient", () => {
             scopes: ["read"],
             approveRedirectUri: () => false, // reject every redirect URI, even loopback
           });
-          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
+            plugins,
+          });
           yield* executor.acme.seed();
           const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
 

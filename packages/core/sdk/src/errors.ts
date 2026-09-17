@@ -149,10 +149,9 @@ export class IntegrationRemovalNotAllowedError extends Schema.TaggedErrorClass<I
   }
 }
 
-/** A connection create or workspace-level mutation (an `owner: "org"` row, or
- *  the tenant-shared integration catalog) was attempted on an executor bound
- *  with `orgWrites: "denied"` — a member who may USE workspace resources but
- *  not configure them. Reads, tool execution, and operational writes (token
+/** A user-intent settings mutation was denied by the product's
+ *  `ExecutorAccess.settingsWrite` decision for its target.
+ *  Reads, tool execution, and operational writes (token
  *  refresh, catalog re-sync) are unaffected; only the user-intent settings
  *  surfaces raise this. */
 export class OrgWriteDeniedError

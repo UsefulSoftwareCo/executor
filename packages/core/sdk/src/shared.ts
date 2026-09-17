@@ -88,10 +88,11 @@ export {
 } from "./elicitation";
 
 // Tool-policy helpers + projections (pure functions / Schema).
+// Resolution semantics (owner ranking, most-restrictive merge, fallbacks)
+// live in `@executor-js/product-access/policy`, which builds on these.
 export {
   matchPattern,
   isValidPattern,
-  effectivePolicyFromSorted,
   comparePolicyRow,
   patternSpecificity,
   positionForNewPattern,

@@ -17,7 +17,7 @@
 // acting member, and this plane deliberately serves the whole tenant.
 //
 // The executor is built by `makePlatformExecutor` — `{ tenant, subject:
-// undefined, platformView: true }` — so the reads are tenant-wide and read-only
+// undefined, access: platformObserverAccess() }` — so the reads are tenant-wide and read-only
 // by storage policy, and no `subject` row is minted for the caller.
 //
 // Cross-tenant isolation is structural, not a check in this file: the tenant is

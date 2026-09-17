@@ -1,15 +1,17 @@
 // ---------------------------------------------------------------------------
-// Tool policies — pattern matcher + policy resolution. Pure functions; the
-// executor stitches them into `tools.list`, `execute`, and the public
-// `executor.policies` CRUD surface. Plugins consume the same surface.
+// Tool policies — the decision VOCABULARY (types, schemas, projections) plus
+// the pure pattern-matching and rule-placement utilities the executor's CRUD
+// surface needs. Policies are owner-scoped (org | user) rows.
 //
-// v2: policies are owner-scoped (org | user) instead of scope-stacked. Each
-// owner contributes its first matching rule by local position; the final answer
-// is the most restrictive matched action across owners, so a user preference
-// cannot weaken an org guardrail (org = outer, user = inner).
+// HOW rules resolve into an effective decision — owner ranking, the
+// most-restrictive merge across owners, the plugin-default fallback and the
+// capability-allowlist default — is a PRODUCT rule: it lives in
+// `@executor-js/product-access/policy` and reaches core only through the
+// `ExecutorAccess.toolPolicy` hook, whose `EffectivePolicy` answers core
+// enforces at list/schema/invoke/approval-recheck.
 // ---------------------------------------------------------------------------
 
-import { Match, Schema } from "effect";
+import { Schema } from "effect";
 import { generateKeyBetween } from "fractional-indexing";
 
 import type { ToolPolicyAction, ToolPolicyRow } from "./core-schema";
@@ -121,10 +123,11 @@ export const isValidPattern = (pattern: string): boolean => {
 };
 
 // ---------------------------------------------------------------------------
-// Resolution — each owner contributes its first matching rule by local
-// position; the most restrictive matched action across owners wins. Caller
-// passes an `ownerRank` so the resolver doesn't need to know which owner is
-// the outer guardrail.
+// Ordering / placement utilities. HOW matched rules combine into an
+// effective decision (owner ranking, most-restrictive merge, fallbacks) is a
+// PRODUCT rule and lives in `@executor-js/product-access/policy`; core only
+// consumes the resulting `EffectivePolicy` through
+// `ExecutorAccess.toolPolicy` and enforces it.
 // ---------------------------------------------------------------------------
 
 export const comparePolicyRow = (
@@ -178,106 +181,6 @@ export const positionForNewPattern = (
   const prev = idx === 0 ? null : committed[idx - 1]!.position;
   const next = idx === committed.length ? null : committed[idx]!.position;
   return generateKeyBetween(prev, next);
-};
-
-const actionRestrictionRank = (action: ToolPolicyAction): number =>
-  Match.value(action).pipe(
-    Match.when("block", () => 3),
-    Match.when("require_approval", () => 2),
-    Match.when("approve", () => 1),
-    Match.exhaustive,
-  );
-
-const moreRestrictive = <T extends { readonly action: ToolPolicyAction }>(
-  current: T | undefined,
-  candidate: T,
-): T => {
-  if (!current) return candidate;
-  const currentRank = actionRestrictionRank(current.action);
-  const candidateRank = actionRestrictionRank(candidate.action);
-  return candidateRank > currentRank ? candidate : current;
-};
-
-export const resolveToolPolicy = (
-  toolId: string,
-  policies: readonly ToolPolicyRow[],
-  ownerRank: (row: Pick<ToolPolicyRow, "owner">) => number,
-): PolicyMatch | undefined => {
-  if (policies.length === 0) return undefined;
-  const sorted = [...policies].sort((a, b) => {
-    const sa = ownerRank(a);
-    const sb = ownerRank(b);
-    if (sa !== sb) return sa - sb;
-    return comparePolicyRow(a, b);
-  });
-  const firstMatchByOwner = new Map<string, PolicyMatch>();
-  for (const row of sorted) {
-    if (firstMatchByOwner.has(row.owner)) continue;
-    if (matchPattern(row.pattern, toolId)) {
-      firstMatchByOwner.set(row.owner, {
-        action: row.action as ToolPolicyAction,
-        pattern: row.pattern,
-        policyId: row.id,
-      });
-    }
-  }
-  let selected: PolicyMatch | undefined;
-  for (const match of firstMatchByOwner.values()) {
-    selected = moreRestrictive(selected, match);
-  }
-  return selected;
-};
-
-// ---------------------------------------------------------------------------
-// Layered resolution — user-authored rules + plugin default `requiresApproval`.
-// ---------------------------------------------------------------------------
-
-const liftPlugin = (defaultRequiresApproval: boolean | undefined): EffectivePolicy =>
-  defaultRequiresApproval
-    ? { action: "require_approval", source: "plugin-default" }
-    : { action: "approve", source: "plugin-default" };
-
-const liftUser = (match: PolicyMatch): EffectivePolicy => ({
-  action: match.action,
-  source: "user",
-  pattern: match.pattern,
-  policyId: match.policyId,
-});
-
-export const resolveEffectivePolicy = (
-  toolId: string,
-  policies: readonly ToolPolicyRow[],
-  ownerRank: (row: Pick<ToolPolicyRow, "owner">) => number,
-  defaultRequiresApproval?: boolean,
-): EffectivePolicy => {
-  const match = resolveToolPolicy(toolId, policies, ownerRank);
-  return match ? liftUser(match) : liftPlugin(defaultRequiresApproval);
-};
-
-export const effectivePolicyFromSorted = (
-  toolId: string,
-  sortedPolicies: readonly (Pick<ToolPolicy, "pattern" | "action" | "id"> &
-    Partial<Pick<ToolPolicy, "owner">>)[],
-  defaultRequiresApproval?: boolean,
-): EffectivePolicy => {
-  const firstMatchByOwner = new Map<string, EffectivePolicy>();
-  for (const p of sortedPolicies) {
-    const ownerKey = "owner" in p && p.owner ? String(p.owner) : "__flat__";
-    if (firstMatchByOwner.has(ownerKey)) continue;
-    if (matchPattern(p.pattern, toolId)) {
-      firstMatchByOwner.set(ownerKey, {
-        action: p.action,
-        source: "user",
-        pattern: p.pattern,
-        policyId: p.id,
-      });
-    }
-  }
-  let selected: EffectivePolicy | undefined;
-  for (const match of firstMatchByOwner.values()) {
-    selected = moreRestrictive(selected, match);
-  }
-  return selected ?? liftPlugin(defaultRequiresApproval);
 };
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import { withQueryContext } from "@executor-js/fumadb/query";
+import type { ExecutorAccess } from "./access";
 import { collectTables, createExecutor, type Executor, type ExecutorConfig } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
 import { ProviderItemId, ProviderKey, Subject, Tenant } from "./ids";
@@ -134,15 +135,18 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
   readonly firstPartyOAuthClients?: ExecutorConfig<TPlugins>["firstPartyOAuthClients"];
   readonly enterpriseManagedRollout?: ExecutorConfig<TPlugins>["enterpriseManagedRollout"];
-  /** Workspace-settings permission for the test binding (see
-   *  `ExecutorConfig.orgWrites`). Defaults to allowed, like production hosts
-   *  with no role model. */
-  readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+  /** Product access decisions for the test binding (see
+   *  `ExecutorConfig.access`). REQUIRED — this fixture is generic and has no
+   *  posture of its own. Tests state one explicitly, normally from
+   *  `@executor-js/product-access/testing` (`testAccess.member()`, …; the
+   *  sdk's own tests resolve that package through the workspace ROOT
+   *  devDependency, keeping the package graph acyclic). */
+  readonly access: ExecutorAccess;
   readonly waitUntil?: ExecutorConfig<TPlugins>["waitUntil"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
-  options?: TestConfigOptions<TPlugins>,
+  options: TestConfigOptions<TPlugins>,
 ): Omit<ExecutorConfig<TPlugins>, "db"> & {
   readonly db: FumaDb;
   readonly testDb: TestFumaDb;
@@ -156,9 +160,14 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     backend: options?.backend ?? "sqlite",
     dataDir: options?.dataDir,
   });
+  // The fixture's SEEDING/INSPECTION handle: tests read and write rows
+  // through it directly, so it carries the binding's full identity view,
+  // stated explicitly. The executor built from this config re-binds its own
+  // context from `options.access` and never inherits this one.
   const db = withQueryContext(testDb.db, {
     tenant,
     subject,
+    owners: subject != null ? ["user", "org"] : ["org"],
   } satisfies ExecutorOwnerPolicyContext);
 
   // EXPLICIT OAuth callback: default to a stable test URL so the redirect flow
@@ -178,7 +187,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     onElicitation: "accept-all",
     onIntegrationChange: options?.onIntegrationChange,
     ...(redirectUri != null ? { redirectUri } : {}),
-    ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+    access: options.access,
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
     firstPartyOAuthClients: options?.firstPartyOAuthClients,
     enterpriseManagedRollout: options?.enterpriseManagedRollout,
@@ -209,7 +218,7 @@ export class TestWorkspace extends Context.Service<TestWorkspace, TestWorkspaceH
 }
 
 export const makeTestWorkspaceHarness = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
-  options?: TestConfigOptions<TPlugins>,
+  options: TestConfigOptions<TPlugins>,
 ) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
@@ -233,7 +242,7 @@ export const makeTestWorkspaceHarness = <const TPlugins extends readonly AnyPlug
   );
 
 export const makeTestWorkspaceLayer = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
-  options?: TestConfigOptions<TPlugins>,
+  options: TestConfigOptions<TPlugins>,
 ) =>
   Layer.effect(TestWorkspace)(
     makeTestWorkspaceHarness(options).pipe(
@@ -242,7 +251,7 @@ export const makeTestWorkspaceLayer = <const TPlugins extends readonly AnyPlugin
   );
 
 export const makeTestExecutor = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
-  options?: TestConfigOptions<TPlugins>,
+  options: TestConfigOptions<TPlugins>,
 ) => makeTestWorkspaceHarness(options).pipe(Effect.map(({ executor }) => executor));
 
 /** Built-in in-memory writable credential provider, contributed as a plugin

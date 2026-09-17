@@ -60,6 +60,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@executor-js/api": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "bun-types": "catalog:",

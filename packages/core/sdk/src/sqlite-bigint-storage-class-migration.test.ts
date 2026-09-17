@@ -88,7 +88,11 @@ describe("legacy bigint storage class migration", () => {
         });
         expect(await storageClassOf(db, "c_legacy")).toBe("integer");
 
-        const scoped = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT });
+        const scoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT,
+          owners: ["user", "org"],
+        });
         // Not "returns a bad value" — the read THROWS, which is why the gateway
         // lost every saved integration rather than one field of one row.
         await expect(scoped.findMany("connection", {})).rejects.toThrow(/type number/);
@@ -118,7 +122,11 @@ describe("legacy bigint storage class migration", () => {
         expect(await storageClassOf(db, "c_healthy")).toBe("blob");
         expect(await storageClassOf(db, "c_null")).toBe("null");
 
-        const scoped = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT });
+        const scoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT,
+          owners: ["user", "org"],
+        });
         const rows = await scoped.findMany("connection", {});
         expect(
           rows.map((row) => [row.name, row.expires_at == null ? null : Number(row.expires_at)]),
@@ -143,7 +151,11 @@ describe("legacy bigint storage class migration", () => {
         expect(await Effect.runPromise(runSqliteBigintStorageClassMigration(db.client))).toBe(1);
         expect(await Effect.runPromise(runSqliteBigintStorageClassMigration(db.client))).toBe(0);
 
-        const scoped = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT });
+        const scoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT,
+          owners: ["user", "org"],
+        });
         const rows = await scoped.findMany("connection", {});
         expect(rows.map((row) => Number(row.expires_at))).toEqual([LEGACY_EXPIRES_AT]);
       }),
@@ -169,7 +181,11 @@ describe("legacy bigint storage class migration", () => {
 
         expect(await Effect.runPromise(runSqliteBigintStorageClassMigration(db.client))).toBe(2);
 
-        const scoped = withQueryContext(db.db, { tenant: TENANT, subject: SUBJECT });
+        const scoped = withQueryContext(db.db, {
+          tenant: TENANT,
+          subject: SUBJECT,
+          owners: ["user", "org"],
+        });
         const integrations = await scoped.findMany("integration", {});
         expect(integrations.map((row) => Number(row.config_revised_at))).toEqual([
           LEGACY_EXPIRES_AT,

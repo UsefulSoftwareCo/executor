@@ -25,6 +25,7 @@
     "@executor-js/execution": "workspace:*",
     "@executor-js/fumadb": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@types/node": "catalog:",
     "drizzle-orm": "catalog:",

@@ -32,6 +32,7 @@ import {
 } from "@executor-js/plugin-openapi/testing";
 
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const JsonNameBody = Schema.fromJsonString(
   Schema.Struct({
@@ -172,7 +173,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: ObjectBody.pipe(HttpApiSchema.asMultipart()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mp" });
 
@@ -222,7 +225,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "paperless" });
 
       const schema = yield* executor.tools.schema(conn.address("body.upload"));
@@ -298,7 +303,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "pages" });
 
       const schema = yield* executor.tools.schema(conn.address("body.uploadPages"));
@@ -378,7 +385,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "broken" });
 
       const exit = yield* executor
@@ -424,7 +433,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "notes" });
 
       // The rewrite is scoped to multipart bodies: a JSON body keeps its
@@ -465,7 +476,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "notes-jsonapi" });
 
       yield* executor.execute(conn.address("body.createNote"), {
@@ -511,7 +524,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mixed" });
 
       const schema = yield* executor.tools.schema(conn.address("body.uploadMixed"));
@@ -564,7 +579,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         },
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "reffed" });
 
       // Documented limitation: component schemas are carried through
@@ -584,7 +601,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/xml" })),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "xml" });
 
@@ -603,7 +622,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         transformSpec: replaceRequestBodyContent("/submit", "post", contentFor("text/xml")),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "tx" });
 
@@ -622,7 +643,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.String.pipe(HttpApiSchema.asText()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "tp" });
 
@@ -639,7 +662,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "bin" });
 
@@ -658,7 +683,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "bin_b64" });
 
@@ -677,7 +704,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "bin_b64_bad" });
 
@@ -699,7 +728,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, {
         slug: "bin_nested_b64_bad",
@@ -723,7 +754,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, {
         slug: "bin_b64_missing",
@@ -743,7 +776,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, {
         slug: "bin_object_body",
@@ -767,7 +802,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, {
         slug: "bin_string_body",
@@ -837,7 +874,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
           }),
         });
 
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail" });
 
         const schema = yield* executor.tools.schema(conn.address("gmail.getAttachment"));
@@ -921,7 +960,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail_text" });
 
       const result = yield* executor.execute(conn.address("gmailText.getAttachment"), {
@@ -989,7 +1030,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "zip_attachment" });
 
       const result = yield* executor.execute(conn.address("zipAttachment.getAttachment"), {
@@ -1107,7 +1150,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
           ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "gmail_meta" });
 
       const result = yield* executor.execute(conn.address("gmailMeta.getAttachment"), {
@@ -1156,7 +1201,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "files" });
 
       const schema = yield* executor.tools.schema(conn.address("files.download"));
@@ -1210,7 +1257,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "files" });
 
       const result = yield* executor.execute(conn.address("files.download"), {
@@ -1247,7 +1296,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: multiContentPayload,
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mc" });
 
@@ -1265,7 +1316,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         payload: multiContentPayload,
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mc2" });
 
@@ -1295,7 +1348,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mc_b64" });
 
@@ -1322,7 +1377,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         }),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mc_b64_bad_ct" });
 
@@ -1352,7 +1409,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
           },
         }),
       });
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mc_b64_schema" });
 
@@ -1375,7 +1434,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       const { server } = yield* startEchoServer({
         payload: multiContentPayload,
       });
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, {
         slug: "mc3",
@@ -1404,7 +1465,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
       const { server } = yield* startEchoServer({
         payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       });
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "bin_schema" });
 
@@ -1450,7 +1513,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "mpe" });
 
@@ -1492,7 +1557,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "fe" });
 
@@ -1523,7 +1590,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "fd" });
 
@@ -1550,7 +1619,9 @@ describe("OpenAPI non-JSON request body dispatch", () => {
         ),
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       // No encoding → OAS3 defaults: style=form, explode=true.
       const conn = yield* addOpenApiTestConnection(executor, server, { slug: "fdx" });

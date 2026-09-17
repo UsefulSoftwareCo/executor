@@ -38,6 +38,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { Context, Data, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
+import { memberAccessForRole } from "@executor-js/product-access";
 import type { AnyPlugin } from "@executor-js/sdk";
 import type { ExecutionEngine } from "@executor-js/execution";
 
@@ -247,10 +248,9 @@ export const makeExecutionStackMiddleware = <
             resolved.organizationId,
             resolved.organizationName,
             {
-              orgWrites:
-                resolved.orgRoleModel === "none" || resolved.orgRole === "admin"
-                  ? "allowed"
-                  : "denied",
+              // The product's role rule, decided from the freshly resolved
+              // principal for exactly this request's stack.
+              access: memberAccessForRole(resolved),
             },
           ).pipe(
             Effect.provide(options.stackLayer, { local: true }),

@@ -22,6 +22,7 @@ import {
 } from "./ids";
 import { definePlugin } from "./plugin";
 import { resetSubjectTouchCache, touchSubject } from "./subject-registry";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // The platform view: `executor.admin`, an OPT-IN read-only surface that reads
 // across every subject in the tenant. Written against the real SQLite bring-up
@@ -254,7 +255,12 @@ const makePlatformExecutor = (
     db: db.db,
     plugins: [providerPlugin],
     onElicitation: "accept-all",
-    ...(options?.platformView === false ? {} : { platformView: true }),
+    access:
+      options?.platformView === false
+        ? options?.subject === null
+          ? testAccess.org()
+          : testAccess.member()
+        : testAccess.platform({ subject: options?.subject !== null }),
   }).pipe(Effect.orDie);
 
 const requireAdmin = (executor: Executor) => {

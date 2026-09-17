@@ -3,11 +3,13 @@ import { Effect, Predicate, Result } from "effect";
 import { makeTestExecutor } from "@executor-js/sdk/testing";
 
 import { toolkitsPlugin } from "./server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 describe("toolkitsPlugin", () => {
   it.effect("creates toolkits and manages ordered policy rules", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [toolkitsPlugin()] as const,
       });
 
@@ -51,6 +53,7 @@ describe("toolkitsPlugin", () => {
   it.effect("rejects duplicate visible slugs", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [toolkitsPlugin()] as const,
       });
       yield* executor.toolkits.create({ owner: "org", name: "Deploy Kit" });
@@ -67,6 +70,7 @@ describe("toolkitsPlugin", () => {
   it.effect("resolves toolkit policies with implicit deny and workspace owner limits", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [toolkitsPlugin()] as const,
       });
 
@@ -135,6 +139,7 @@ describe("toolkitsPlugin", () => {
   it.effect("treats a persisted connection-root approve as an access policy", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [toolkitsPlugin()] as const,
       });
 
@@ -169,6 +174,7 @@ describe("toolkitsPlugin", () => {
   it.effect("applies a broad approve policy over a narrower connection", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [toolkitsPlugin()] as const,
       });
 

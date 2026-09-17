@@ -49,6 +49,7 @@ import {
   createExecutor,
 } from "@executor-js/sdk";
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
+import { testAccess } from "@executor-js/product-access/testing";
 import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
 import { mcpPlugin } from "@executor-js/plugin-mcp";
 import { McpExtensionService, McpGroup, McpHandlers } from "@executor-js/plugin-mcp/api";
@@ -98,6 +99,7 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       db: sqlite.db,
       plugins,
       onElicitation: "accept-all",
+      access: testAccess.member(),
       oauthEndpointUrlPolicy: { allowHttp: true },
       // EXPLICIT OAuth callback — required now that the localhost default is
       // gone; the local daemon serves `/api/oauth/callback` on the web origin.

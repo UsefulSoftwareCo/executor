@@ -4,7 +4,7 @@
 // The product plane (`/api/*`) answers "what can I, this member, reach". This
 // one answers the OWNER's question: "who are my users, and what have they
 // connected". It reads the SDK's platform view (`executor.admin`, opt-in via
-// `platformView: true`), which is read-only by construction — the owner policy
+// `platformObserverAccess()`), which is read-only by construction — the owner policy
 // rejects writes at `reach: "tenant"` — so every endpoint here is a GET.
 //
 // VOCABULARY: this is the translation seam. Internal code says subject / tenant

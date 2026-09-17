@@ -41,6 +41,7 @@ import type * as Cause from "effect/Cause";
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 
 import { loadMcpAppsShellHtml } from "../shell-html";
+import { testAccess } from "@executor-js/product-access/testing";
 
 type ShellServer = {
   readonly url: string;
@@ -1305,7 +1306,10 @@ const startMcpHarness = async (openApi: OpenApiServer): Promise<McpHarness> => {
   const executor = await Effect.runPromise(
     Effect.gen(function* () {
       const built = yield* createExecutor(
-        makeTestConfig({ plugins: [inventoryPlugin(openApi.postRequests)] }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [inventoryPlugin(openApi.postRequests)],
+        }),
       );
       // Tools only exist per connection, so register the integration and open
       // one org `main` connection — that is what makes

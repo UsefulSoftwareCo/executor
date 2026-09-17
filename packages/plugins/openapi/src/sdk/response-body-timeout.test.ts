@@ -16,6 +16,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 import { makeOpenApiHttpApiTestIntegrationConfig } from "../testing";
 
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const BODY_READ_DEADLINE_MS = 15_000;
 const RESPONSE_BODY_TIMEOUT_MS = 100;
@@ -42,7 +43,9 @@ const testPlugins = () =>
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+    );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(TimeoutApi, {
         slug: "body_timeout",

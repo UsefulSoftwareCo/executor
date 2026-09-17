@@ -9,6 +9,7 @@ import { artifactUrlFor } from "@executor-js/host-mcp/create-artifact";
 import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
 import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import type { ExecutorDbHandle } from "@executor-js/api/server";
+import { requestBoundMemberAccess } from "@executor-js/product-access";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
@@ -151,7 +152,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource, orgWrites: "request" },
+        { mcpResource: sessionMeta.resource, access: requestBoundMemberAccess() },
       ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into

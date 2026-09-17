@@ -49,6 +49,7 @@ import {
   serveOpenApiHttpApiTestServer,
   unwrapInvocation,
 } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const TOOL_ERROR_TYPESCRIPT =
   "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
@@ -393,7 +394,9 @@ describe("OpenAPI Plugin", () => {
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
 
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const preview = yield* executor.openapi.previewSpec(server.specJson);
 
@@ -408,7 +411,10 @@ describe("OpenAPI Plugin", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthDiscoverableOpenApiSpec();
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: testPlugins(server.httpClientLayer) }),
+          makeTestConfig({
+            access: testAccess.member(),
+            plugins: testPlugins(server.httpClientLayer),
+          }),
         );
 
         const preview = yield* executor.openapi.previewSpec(server.url("/api/schema/"));
@@ -456,7 +462,9 @@ describe("OpenAPI Plugin", () => {
 
   it.effect("exposes static openapi executor control tools via execute", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       // v2: static control tools are NOT part of `tools.list()` (that's the
       // persisted per-connection catalog) and aren't `tools.schema()`-resolvable;
@@ -473,7 +481,9 @@ describe("OpenAPI Plugin", () => {
 
   it.effect("invokes static previewSpec through executor.execute", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const preview = unwrapInvocation(
         yield* executor.execute(ToolAddress.make("executor.openapi.previewSpec"), {
@@ -495,7 +505,9 @@ describe("OpenAPI Plugin", () => {
 
   it.effect("invokes static addSpec through executor.execute", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
 
       const result = unwrapInvocation(
         yield* executor.execute(ToolAddress.make("executor.openapi.addSpec"), {
@@ -517,7 +529,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "url", url: specServer.specUrl },
@@ -565,7 +579,10 @@ describe("OpenAPI Plugin", () => {
 
   it.effect("static previewSpec returns actionable tool failures", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [openApiPlugin()] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [openApiPlugin()] as const,
+      });
       const executor = yield* createExecutor(config);
 
       const result = yield* executor.execute(ToolAddress.make("executor.openapi.previewSpec"), {
@@ -587,7 +604,7 @@ describe("OpenAPI Plugin", () => {
   it.effect("requires approval before adding an integration through the runtime tool", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [openApiPlugin()] as const }),
+        makeTestConfig({ access: testAccess.member(), plugins: [openApiPlugin()] as const }),
       );
 
       const declined = yield* executor
@@ -607,7 +624,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
@@ -625,7 +644,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
@@ -642,7 +663,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
         const calls = { count: 0 };
@@ -671,7 +694,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
         const calls = { count: 0 };
@@ -705,7 +730,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
         const calls = { count: 0 };
@@ -738,7 +765,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
         const calls = { count: 0 };
@@ -771,7 +800,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
@@ -812,7 +843,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
 
@@ -829,7 +862,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "test" });
         const failure = yield* executor
@@ -853,7 +888,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const multiServer = {
           ...server,
           specJson: makeOpenApiTestSpecJson(TestApi, {
@@ -889,7 +926,9 @@ describe("OpenAPI Plugin", () => {
         const server = yield* serveOpenApiEchoTestServer({
           transformSpec: withEchoCookieParameter,
         });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const conn = yield* addOpenApiTestConnection(executor, server, {
           slug: "cookie_params",
           headers: { Cookie: "configured=yes" },
@@ -923,7 +962,9 @@ describe("OpenAPI Plugin", () => {
         const server = yield* serveOpenApiEchoTestServer({
           transformSpec: withEchoCookieParameter,
         });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         const conn = yield* addOpenApiTestConnection(executor, server, {
           slug: "cookie_unknown",
         });
@@ -951,7 +992,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const conn = yield* addOpenApiTestConnection(executor, server, { slug: "records" });
 
@@ -980,7 +1023,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
@@ -1012,7 +1057,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: server.specJson },
@@ -1044,7 +1091,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         // The spec declares bearer auth; the caller passes NO template — the
         // agentic add path (MCP/API) does exactly this. Without server-side
@@ -1097,7 +1146,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         // No baseUrl override: the spec declares `servers`, so the host is
         // resolved per call from the operation's servers rather than baked into
@@ -1127,7 +1178,9 @@ describe("OpenAPI Plugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         // The add page sends [] when the user deletes every detected method.
         // That intent must survive — deriving methods back from the spec here
@@ -1158,7 +1211,9 @@ describe("OpenAPI Plugin", () => {
 
   it.effect("addSpec accepts Graph-sized OpenAPI blobs", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const largeDescription = "x".repeat(36 * 1024 * 1024);
 
       const added = yield* executor.openapi.addSpec({
@@ -1191,7 +1246,9 @@ paths:
     "addSpec accepts Microsoft Graph-scale operation catalogs from one spec",
     () =>
       Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const added = yield* executor.openapi.addSpec({
           spec: { kind: "blob", value: microsoftGraphScaleSpecText() },
@@ -1208,7 +1265,9 @@ paths:
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         yield* addOpenApiTestConnection(executor, server, { slug: "removable" });
         expect((yield* executor.tools.list()).map((t) => String(t.name))).toContain(
@@ -1232,7 +1291,9 @@ paths:
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         // First add carries an apiKey auth template + a distinctive description.
         // A silent upsert on re-add would clobber both.
@@ -1294,7 +1355,9 @@ paths:
         // The mutable spec server is a real 127.0.0.1 listener — reach it over
         // the default fetch-based client, like production would.
         const specServer = yield* serveMutableOpenApiSpecTestServer({ initialApi: TestApi });
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
 
         const added = yield* executor.openapi.addSpec({
           spec: { kind: "url", url: specServer.specUrl },
@@ -1370,7 +1433,7 @@ paths:
   it.effect("denies member updateSpec before writing an org blob", () =>
     Effect.gen(function* () {
       const blobs = recordingBlobStore();
-      const config = makeTestConfig({ plugins: testPlugins() });
+      const config = makeTestConfig({ access: testAccess.member(), plugins: testPlugins() });
       const admin = yield* createExecutor({ ...config, blobs: blobs.store });
       yield* admin.openapi.addSpec({
         spec: { kind: "blob", value: testApiSpecText() },
@@ -1380,7 +1443,7 @@ paths:
       const member = yield* createExecutor({
         ...config,
         blobs: blobs.store,
-        orgWrites: "denied",
+        access: testAccess.member("denied"),
       });
 
       const error = yield* member.openapi
@@ -1398,7 +1461,9 @@ paths:
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* servePluginTestApi();
-        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+        const executor = yield* createExecutor(
+          makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+        );
         yield* addOpenApiTestConnection(executor, server, { slug: "pasted" });
 
         // A pasted-blob integration has no source URL — re-fetch must say so.
@@ -1450,6 +1515,7 @@ paths:
         const plugins = testPlugins();
 
         const alice = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "alice",
@@ -1470,6 +1536,7 @@ paths:
         });
 
         const bob = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "bob",
@@ -1513,7 +1580,9 @@ paths:
 
   it.effect("updateSpec on an unknown slug fails with IntegrationNotFoundError", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       const error = yield* executor.openapi.updateSpec("missing").pipe(Effect.flip);
       expect(Predicate.isTagged(error, "IntegrationNotFoundError")).toBe(true);
     }),

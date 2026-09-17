@@ -17,6 +17,7 @@ import { makeOpenApiHttpApiTestIntegrationConfig, unwrapInvocation } from "../te
 
 import { collectStreamingBody, STREAM_MAX_BYTES } from "./invoke";
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const testPlugins = () =>
   [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
@@ -35,7 +36,9 @@ const StreamingApi = HttpApi.make("streamingResponseTest")
 
 const buildExecutor = (baseUrl: string) =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+    );
     yield* executor.openapi.addSpec(
       makeOpenApiHttpApiTestIntegrationConfig(StreamingApi, { slug: "streaming", baseUrl }),
     );
@@ -293,7 +296,9 @@ describe("OpenAPI streaming responses", () => {
         );
       });
 
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: testPlugins() }),
+      );
       yield* executor.openapi.addSpec({
         spec: {
           kind: "blob",

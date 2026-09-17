@@ -23,6 +23,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { mcpPlugin } from "./plugin";
 import { makeEchoMcpServer, serveMcpServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEG = IntegrationSlug.make("iso_mcp");
 const TEMPLATE = AuthTemplateSlug.make("bearer");
@@ -43,7 +44,10 @@ describe("MCP owner isolation", () => {
     Effect.gen(function* () {
       const server = yield* serveAuthRecordingMcpServer;
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       // One integration with a Bearer header auth template; the connection's

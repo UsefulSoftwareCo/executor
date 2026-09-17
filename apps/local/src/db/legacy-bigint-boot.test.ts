@@ -17,13 +17,21 @@ import { Effect } from "effect";
 import { withQueryContext } from "@executor-js/fumadb/query";
 
 import { collectTables } from "@executor-js/api/server";
-import { runSqliteDataMigrations } from "@executor-js/sdk";
+import { runSqliteDataMigrations, type ExecutorOwnerPolicyContext } from "@executor-js/sdk";
 
 import { localDataMigrations } from "./data-migrations";
 import { createSqliteFumaDb } from "./sqlite-fumadb";
 
 const TENANT = "executor-workspace-1771";
 const SUBJECT = "local";
+// The fixture's inspection context: the local single-user binding's full
+// identity view, with its owner partitions stated explicitly — the owner
+// policy has no full-view default, and the seeded row is a `user` row.
+const FIXTURE_CONTEXT: ExecutorOwnerPolicyContext = {
+  tenant: TENANT,
+  subject: SUBJECT,
+  owners: ["user", "org"],
+};
 // Epoch millis, the shape an OAuth token expiry takes.
 const LEGACY_EXPIRES_AT = 1787321623456;
 
@@ -71,7 +79,7 @@ describe("local boot over a legacy bigint database", () => {
     await seedLegacyConnection(dbPath);
 
     const sqlite = await openDb(dbPath);
-    const scoped = withQueryContext(sqlite.db, { tenant: TENANT, subject: SUBJECT });
+    const scoped = withQueryContext(sqlite.db, FIXTURE_CONTEXT);
     // The reported symptom: not a wrong value, a throw — so the gateway lost
     // every saved integration at once.
     await expect(scoped.findMany("connection", {})).rejects.toThrow(/type number/);
@@ -88,7 +96,7 @@ describe("local boot over a legacy bigint database", () => {
     );
     expect(applied).toContain("2026-08-28-bigint-storage-class");
 
-    const scoped = withQueryContext(sqlite.db, { tenant: TENANT, subject: SUBJECT });
+    const scoped = withQueryContext(sqlite.db, FIXTURE_CONTEXT);
     const rows = await scoped.findMany("connection", {});
     expect(rows.map((row) => [row.name, Number(row.expires_at)])).toEqual([
       ["default", LEGACY_EXPIRES_AT],
@@ -112,7 +120,7 @@ describe("local boot over a legacy bigint database", () => {
     );
     expect(applied).not.toContain("2026-08-28-bigint-storage-class");
 
-    const scoped = withQueryContext(second.db, { tenant: TENANT, subject: SUBJECT });
+    const scoped = withQueryContext(second.db, FIXTURE_CONTEXT);
     const rows = await scoped.findMany("connection", {});
     expect(rows.map((row) => Number(row.expires_at))).toEqual([LEGACY_EXPIRES_AT]);
     await second.close();

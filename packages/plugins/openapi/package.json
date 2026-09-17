@@ -86,6 +86,7 @@
     "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@executor-js/api": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@types/js-yaml": "4.0.9",
     "@types/node": "catalog:",

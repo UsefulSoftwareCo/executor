@@ -18,6 +18,7 @@ import {
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { scopesFromAuthorizeUrl, serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // First-party OAuth clients: host-operated apps declared in executor config
 // (`firstPartyOAuthClients`), addressed as `first-party:<name>`. Resolved from
@@ -119,6 +120,7 @@ describe("first-party oauth clients", () => {
         Effect.gen(function* () {
           const server = yield* serveOAuthTestServer({ scopes: ["read"] });
           const { executor } = yield* makeTestWorkspaceHarness({
+            access: testAccess.member(),
             plugins,
             firstPartyOAuthClients: [firstPartyClientFor(server)],
           });
@@ -170,6 +172,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["repo"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [{ ...firstPartyClientFor(server), authorizationScopes: [] }],
         });
@@ -204,6 +207,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read", "offline_access"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [
             {
@@ -240,6 +244,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const harness = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [firstPartyClientFor(server)],
         });
@@ -288,6 +293,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [
             {
@@ -330,6 +336,7 @@ describe("first-party oauth clients", () => {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         let enabled = true;
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           subject: "review-user",
           tenant: "review-org",
@@ -368,6 +375,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const harness = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [
             {
@@ -439,6 +447,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read", "write"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [{ ...firstPartyClientFor(server), allowedScopes: ["read"] }],
         });
@@ -467,6 +476,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [firstPartyClientFor(server)],
         });
@@ -496,7 +506,10 @@ describe("first-party oauth clients", () => {
     Effect.scoped(
       Effect.gen(function* () {
         yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
         yield* executor.acme.seed();
 
         const error = yield* executor.oauth
@@ -523,6 +536,7 @@ describe("first-party oauth clients", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["read"] });
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           firstPartyOAuthClients: [firstPartyClientFor(server)],
         });

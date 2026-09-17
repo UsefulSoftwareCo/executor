@@ -16,6 +16,7 @@
     "@executor-js/plugin-onepassword": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/plugin-workos-vault": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "effect": "catalog:"
   },

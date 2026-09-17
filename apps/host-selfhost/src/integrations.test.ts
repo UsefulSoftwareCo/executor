@@ -11,6 +11,7 @@ import { makeScopedExecutor } from "@executor-js/api/server";
 import { createSelfHostDb, SelfHostDb } from "./db/self-host-db";
 import { SelfHostScopedExecutorSeams } from "./execution";
 import type { SelfHostPlugins } from "./plugins";
+import { memberAccess } from "@executor-js/product-access";
 
 // The self-host scoped-executor seams (DbProvider over the long-lived SelfHostDb,
 // fresh per-request plugins, host config) over the shared `makeScopedExecutor`,
@@ -21,9 +22,9 @@ const createScopedExecutor = (
   organizationId: string,
   organizationName: string,
 ) =>
-  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, organizationName).pipe(
-    Effect.provide(SelfHostScopedExecutorSeams),
-  );
+  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, organizationName, {
+    access: memberAccess("allowed"),
+  }).pipe(Effect.provide(SelfHostScopedExecutorSeams));
 
 const dataDir = mkdtempSync(join(tmpdir(), "eh-src-"));
 process.env.EXECUTOR_DATA_DIR = dataDir;

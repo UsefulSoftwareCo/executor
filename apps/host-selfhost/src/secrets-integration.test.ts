@@ -12,6 +12,7 @@ import { makeScopedExecutor } from "@executor-js/api/server";
 import { createSelfHostDb, SelfHostDb } from "./db/self-host-db";
 import { SelfHostScopedExecutorSeams } from "./execution";
 import type { SelfHostPlugins } from "./plugins";
+import { memberAccess } from "@executor-js/product-access";
 
 // In v2 a connection IS the credential: its inline `value` is written through the
 // default writable provider — here the encrypted-secrets provider, which stores
@@ -28,9 +29,9 @@ const createScopedExecutor = (
   organizationId: string,
   organizationName: string,
 ) =>
-  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, organizationName).pipe(
-    Effect.provide(SelfHostScopedExecutorSeams),
-  );
+  makeScopedExecutor<SelfHostPlugins>(accountId, organizationId, organizationName, {
+    access: memberAccess("allowed"),
+  }).pipe(Effect.provide(SelfHostScopedExecutorSeams));
 
 let dbLayer!: Layer.Layer<SelfHostDb>;
 let dbHandle: Awaited<ReturnType<typeof createSelfHostDb>> | undefined;

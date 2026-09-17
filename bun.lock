@@ -11,6 +11,7 @@
         "@effect/tsgo": "^0.5.2",
         "@effect/vitest": "catalog:",
         "@executor-js/plugin-provider-service-split": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@typescript/native-preview": "^7.0.0-dev.20260410.1",
         "@vitest/expect": "catalog:",
         "@vitest/mocker": "catalog:",
@@ -76,6 +77,7 @@
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
         "@executor-js/plugin-workos-vault": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-dynamic-worker": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -186,6 +188,7 @@
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-dynamic-worker": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -239,6 +242,7 @@
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -296,6 +300,7 @@
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -397,6 +402,7 @@
         "@executor-js/plugin-onepassword": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
         "@executor-js/plugin-workos-vault": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
       },
@@ -410,6 +416,7 @@
       "version": "0.0.54",
       "dependencies": {
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
       },
@@ -425,6 +432,7 @@
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
       },
       "devDependencies": {
@@ -484,6 +492,7 @@
       "dependencies": {
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "effect": "catalog:",
       },
@@ -546,6 +555,7 @@
       },
       "devDependencies": {
         "@effect/vitest": "catalog:",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
@@ -601,6 +611,25 @@
         "tsup": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
+      },
+    },
+    "packages/core/product-access": {
+      "name": "@executor-js/product-access",
+      "version": "1.6.8",
+      "dependencies": {
+        "@executor-js/sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "effect": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "effect": "catalog:",
       },
     },
     "packages/core/sdk": {
@@ -704,6 +733,7 @@
       "dependencies": {
         "@cfworker/json-schema": "^4.1.1",
         "@executor-js/execution": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@modelcontextprotocol/ext-apps": "^1.7.4",
         "@modelcontextprotocol/sdk": "^1.29.0",
@@ -734,6 +764,7 @@
         "@effect/vitest": "catalog:",
         "@executor-js/execution": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@tailwindcss/browser": "^4.2.2",
         "@tailwindcss/vite": "catalog:",
@@ -820,6 +851,7 @@
         "@executor-js/execution": "workspace:*",
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@types/node": "catalog:",
         "drizzle-orm": "catalog:",
@@ -895,6 +927,7 @@
         "react": "catalog:",
       },
       "devDependencies": {
+        "@executor-js/product-access": "workspace:*",
         "@types/react": "catalog:",
         "tsup": "catalog:",
         "typescript": "catalog:",
@@ -945,6 +978,7 @@
         "@executor-js/sdk": "workspace:*",
       },
       "devDependencies": {
+        "@executor-js/product-access": "workspace:*",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
         "effect": "catalog:",
@@ -969,6 +1003,7 @@
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
@@ -1003,6 +1038,7 @@
       },
       "devDependencies": {
         "@effect/vitest": "catalog:",
+        "@executor-js/product-access": "workspace:*",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
         "effect": "catalog:",
@@ -1031,6 +1067,7 @@
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@modelcontextprotocol/server": "2.0.0",
         "@types/node": "catalog:",
@@ -1068,6 +1105,7 @@
       "devDependencies": {
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@types/node": "catalog:",
         "@types/react": "catalog:",
         "bun-types": "catalog:",
@@ -1105,6 +1143,7 @@
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@types/js-yaml": "4.0.9",
         "@types/node": "catalog:",
@@ -1158,6 +1197,7 @@
         "@effect/atom-react": "catalog:",
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@tanstack/react-router": "catalog:",
         "@types/node": "catalog:",
@@ -1224,6 +1264,7 @@
         "@base-ui/react": "^1.3.0",
         "@effect/atom-react": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/product-access": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@hookform/resolvers": "^5.2.2",
         "@lobehub/icons": "^5.4.0",
@@ -1868,6 +1909,8 @@
     "@executor-js/plugin-toolkits": ["@executor-js/plugin-toolkits@workspace:packages/plugins/toolkits"],
 
     "@executor-js/plugin-workos-vault": ["@executor-js/plugin-workos-vault@workspace:packages/plugins/workos-vault"],
+
+    "@executor-js/product-access": ["@executor-js/product-access@workspace:packages/core/product-access"],
 
     "@executor-js/react": ["@executor-js/react@workspace:packages/react"],
 

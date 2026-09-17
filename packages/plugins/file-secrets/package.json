@@ -47,6 +47,7 @@
     "@executor-js/sdk": "workspace:*"
   },
   "devDependencies": {
+    "@executor-js/product-access": "workspace:*",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
     "effect": "catalog:",

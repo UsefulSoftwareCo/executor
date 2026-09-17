@@ -47,6 +47,7 @@
     "react": "catalog:"
   },
   "devDependencies": {
+    "@executor-js/product-access": "workspace:*",
     "@types/react": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:"

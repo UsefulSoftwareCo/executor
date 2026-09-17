@@ -17,12 +17,14 @@ npm install @executor-js/sdk @executor-js/execution @executor-js/runtime-quickjs
 ## Usage
 
 ```ts
+import { workspaceServiceAccess } from "@executor-js/product-access";
 import { createExecutor } from "@executor-js/sdk";
 import { createExecutionEngine } from "@executor-js/execution";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 const executor = await createExecutor({
   onElicitation: "accept-all",
+  access: workspaceServiceAccess(),
 });
 
 const engine = createExecutionEngine({

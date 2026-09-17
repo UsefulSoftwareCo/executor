@@ -39,6 +39,7 @@ import { makeTestWorkOSVaultClient } from "@executor-js/plugin-workos-vault/test
 import executorConfig from "../executor.config";
 import { DbService } from "./db/db";
 import { createDrizzleFumaDb } from "./db/fuma";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // Test-only plugin: exposes one in-memory tool that elicits once. Lets the
@@ -124,6 +125,7 @@ const buildScopedExecutor = (
       plugins,
       httpClientLayer: FetchHttpClient.layer,
       onElicitation: "accept-all",
+      access: testAccess.member(),
     });
   });
 

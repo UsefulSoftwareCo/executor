@@ -18,6 +18,7 @@ import {
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removeClient permanently deletes an owner-scoped oauth_client row, keyed by
 // (owner, slug). The owner policy on `oauth_client` prevents removing another
@@ -32,7 +33,10 @@ describe("oauth.removeClient", () => {
   it.effect("removes a client so it no longer lists", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         yield* executor.oauth.createClient({
           owner: "user",
@@ -58,7 +62,10 @@ describe("oauth.removeClient", () => {
   it.effect("is idempotent — removing a non-existent client succeeds", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         // No client was ever created; removing it must not error.
         yield* executor.oauth.removeClient("user", OAuthClientSlug.make("never-existed"));
@@ -72,7 +79,10 @@ describe("oauth.removeClient", () => {
   it.effect("removing an org client leaves a user client intact (and vice versa)", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
+          plugins,
+        });
 
         yield* executor.oauth.createClient({
           owner: "org",
@@ -115,6 +125,7 @@ describe("oauth.removeClient", () => {
         const tenant = "shared-tenant";
 
         const a = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-a",
@@ -131,6 +142,7 @@ describe("oauth.removeClient", () => {
         });
 
         const b = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-b",
@@ -155,6 +167,7 @@ describe("oauth.removeClient", () => {
         const tenant = "shared-tenant";
 
         const a = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-a",
@@ -171,6 +184,7 @@ describe("oauth.removeClient", () => {
         });
 
         const b = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-b",
@@ -194,6 +208,7 @@ describe("oauth.removeClient", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           coreTools: {},
         });
@@ -306,6 +321,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
       Effect.gen(function* () {
         const store = new Map<string, string>();
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
@@ -339,6 +355,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
       Effect.gen(function* () {
         const store = new Map<string, string>();
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
@@ -360,6 +377,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
       Effect.gen(function* () {
         const store = new Map<string, string>();
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [txPlugin(store)] as const,
         });
         yield* executor.oauth.createClient(userClient("user-secret"));
@@ -385,6 +403,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
         const tenant = "shared-tenant";
 
         const a = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-a",
@@ -394,6 +413,7 @@ describe("removing a client defers the secret deletion to the outermost commit",
         expect(secretValue(store)).toBe("a-secret");
 
         const b = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant,
           subject: "subject-b",
@@ -454,6 +474,7 @@ describe("removing a client does not delete a recreated client's secret", () => 
         });
         const store = new Map<string, string>();
         const { executor } = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [txPlugin(store), integrationPlugin] as const,
           redirectUri: null,
         });

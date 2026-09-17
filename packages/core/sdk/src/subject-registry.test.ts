@@ -9,6 +9,7 @@ import { definePlugin } from "./plugin";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
 import { resetSubjectTouchCache, touchSubject } from "./subject-registry";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // `touchSubject` is the only writer of the `subject` table. Written against the
 // real SQLite bring-up (the same statements local/self-host/D1 boot with) so
@@ -32,6 +33,7 @@ const scopedTo = (db: SqliteTestFumaDb, tenant: string) =>
   withQueryContext(db.db, {
     tenant,
     subject: null,
+    owners: [],
   } satisfies ExecutorOwnerPolicyContext);
 
 const storedSubjects = (
@@ -345,6 +347,7 @@ const subjectsOf = (
     const rows = await withQueryContext(harness.config.db as never, {
       tenant,
       subject: null,
+      owners: [],
     } satisfies ExecutorOwnerPolicyContext).findMany("subject", {});
     return rows.map((row) => String(row.external_id));
   });
@@ -354,6 +357,7 @@ describe("connections.create subject sighting", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant: TENANT,
         });
@@ -377,6 +381,7 @@ describe("connections.create subject sighting", () => {
         // The row names the acting principal, not the connection's owner tier:
         // a member who only ever creates org connections still exists.
         const harness = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins,
           tenant: TENANT,
         });
@@ -398,6 +403,7 @@ describe("connections.create subject sighting", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeTestWorkspaceHarness({
+          access: testAccess.org(),
           plugins,
           tenant: TENANT,
           subject: null,

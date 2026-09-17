@@ -34,6 +34,7 @@ import { variable } from "@executor-js/sdk/http-auth";
 
 import { serveOpenApiHttpApiTestServer } from "../testing";
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 /** The credential the connection authenticates with. Longer than the sample's
  *  120-char value cap on purpose: truncating before scrubbing would leave a
@@ -84,6 +85,7 @@ const withProbe = <A, E, R>(
     });
     const executor = yield* createExecutor(
       makeTestConfig({
+        access: testAccess.member(),
         plugins: [
           openApiPlugin({ httpClientLayer: FetchHttpClient.layer }),
           memoryCredentialsPlugin(),

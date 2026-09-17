@@ -29,6 +29,7 @@ import { mcpPlugin, userFacingProbeMessage, toIntegrationConfig } from "./plugin
 import { McpInvocationError } from "./errors";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
 import { makeAnnotationsMcpServer, serveMcpServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: the v1 addSource / scopes / secrets / credential-binding / usages /
 // sources.configure / multi-scope shadowing suites. v2 has no scope stack, no
@@ -261,6 +262,7 @@ const seedCallToolExecutor = (input: {
     Effect.gen(function* () {
       const server = yield* serveCallToolServer(input.callTool);
       const config = makeTestConfig({
+        access: testAccess.member(),
         plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
       });
       const executor = yield* createExecutor(config);
@@ -590,9 +592,7 @@ describe("mcpPlugin", () => {
   it.effect("creates executor with mcp plugin", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [mcpPlugin()] as const,
-        }),
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
       );
 
       expect(executor.mcp).toBeDefined();
@@ -631,7 +631,9 @@ describe("mcpPlugin", () => {
 
   it.effect("integration catalog has no configured MCP integrations initially", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       const integrations = yield* executor.integrations.list();
       expect(integrations.filter((i) => i.kind === "mcp")).toHaveLength(0);
     }),
@@ -639,7 +641,9 @@ describe("mcpPlugin", () => {
 
   it.effect("projects an MCP server family into the integration catalog", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       yield* executor.mcp.addServer({
         name: "Cloudflare Docs",
         family: "cloudflare",
@@ -656,7 +660,9 @@ describe("mcpPlugin", () => {
 
   it.effect("connection tools list is empty until a connection is created", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       const tools = yield* executor.tools.list();
       expect(tools.filter((tool) => String(tool.address).startsWith("tools."))).toHaveLength(0);
     }),
@@ -667,7 +673,10 @@ describe("mcpPlugin", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: [] });
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+          makeTestConfig({
+            access: testAccess.member(),
+            plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+          }),
         );
         const attachedClient = OAuthClientSlug.make("axiom-mcp");
         const unrelatedClient = OAuthClientSlug.make("manual-app");
@@ -726,7 +735,10 @@ describe("mcpPlugin", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+          makeTestConfig({
+            access: testAccess.member(),
+            plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+          }),
         );
 
         yield* executor.mcp.addServer({
@@ -769,7 +781,9 @@ describe("mcpPlugin", () => {
   // adding an API key to an OAuth server must NOT displace the OAuth method.
   it.effect("configureAuth merge-appends a custom method without clobbering oauth", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
 
       yield* executor.mcp.addServer({
         name: "OAuth MCP",
@@ -796,7 +810,9 @@ describe("mcpPlugin", () => {
 
   it.effect("configureAuth replace mode swaps the declared set with kind-based slugs", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
 
       yield* executor.mcp.addServer({
         name: "Open MCP",
@@ -826,7 +842,10 @@ describe("mcpPlugin", () => {
           scopes: ["channels:history", "users:read"],
         });
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+          makeTestConfig({
+            access: testAccess.member(),
+            plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+          }),
         );
 
         yield* executor.mcp.addServer({
@@ -870,7 +889,10 @@ describe("mcpPlugin", () => {
       Effect.gen(function* () {
         const server = yield* serveOAuthTestServer({ scopes: ["mcp"] });
         const executor = yield* createExecutor(
-          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+          makeTestConfig({
+            access: testAccess.member(),
+            plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+          }),
         );
 
         yield* executor.mcp.addServer({
@@ -911,7 +933,10 @@ describe("mcpPlugin", () => {
   it.effect("registers integration + connection with 0 tools when discovery fails", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       const slugStr = "broken_source";
@@ -941,7 +966,10 @@ describe("mcpPlugin", () => {
 
   it.effect("static probeEndpoint returns actionable tool failures", () =>
     Effect.gen(function* () {
-      const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [mcpPlugin()] as const,
+      });
       const executor = yield* createExecutor(config);
 
       const result = yield* executor.execute(ToolAddress.make("executor.mcp.probeEndpoint"), {
@@ -1294,7 +1322,10 @@ describe("mcpPlugin", () => {
                 ),
           ),
         );
-        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [mcpPlugin()] as const,
+        });
         const executor = yield* createExecutor(config);
 
         const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
@@ -1330,7 +1361,10 @@ describe("mcpPlugin", () => {
                 : HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 }),
             ),
           );
-          const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+          const config = makeTestConfig({
+            access: testAccess.member(),
+            plugins: [mcpPlugin()] as const,
+          });
           const executor = yield* createExecutor(config);
 
           const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
@@ -1372,7 +1406,10 @@ describe("mcpPlugin", () => {
             return HttpServerResponse.jsonUnsafe({ message: "Unauthorized" }, { status: 401 });
           }),
         );
-        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const config = makeTestConfig({
+          access: testAccess.member(),
+          plugins: [mcpPlugin()] as const,
+        });
         const executor = yield* createExecutor(config);
 
         const result = yield* executor.mcp.probeEndpoint(server.url("/mcp"));
@@ -1400,7 +1437,10 @@ const serveAnnotationsTestServer = serveMcpServer(makeAnnotationsMcpServer);
 
 const seedAnnotationsExecutor = (serverUrl: string) =>
   createExecutor(
-    makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+    makeTestConfig({
+      access: testAccess.member(),
+      plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+    }),
   ).pipe(
     Effect.tap((executor) =>
       Effect.gen(function* () {
@@ -1508,7 +1548,9 @@ describe("mcpPlugin detect URL-token fallback", () => {
   // a candidate.
   it.effect("returns low-confidence candidate when path has /mcp segment", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/mcp");
       const mcp = results.find((r) => r.kind === "mcp");
       expect(mcp).toBeDefined();
@@ -1518,7 +1560,9 @@ describe("mcpPlugin detect URL-token fallback", () => {
 
   it.effect("matches mcp on hostname label", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       const results = yield* executor.integrations.detect("http://mcp.127.0.0.1.nip.io:1/");
       const mcp = results.find((r) => r.kind === "mcp");
       expect(mcp?.confidence).toBe("low");
@@ -1527,7 +1571,9 @@ describe("mcpPlugin detect URL-token fallback", () => {
 
   it.effect("does not match mcp as a substring", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       // `/mcpstore` contains `mcp` but it is not a separator-bounded run, so
       // the URL-token fallback must not fire.
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/mcpstore");
@@ -1537,7 +1583,9 @@ describe("mcpPlugin detect URL-token fallback", () => {
 
   it.effect("returns null when no token match and no wire-shape match", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
       const results = yield* executor.integrations.detect("http://127.0.0.1:1/api/v1");
       expect(results.find((r) => r.kind === "mcp")).toBeUndefined();
     }),
@@ -1590,7 +1638,9 @@ describe("mcpPlugin endpoint telemetry", () => {
   it.effect("stamps a sanitized endpoint on the detect span", () =>
     Effect.gen(function* () {
       const spans: Array<Tracer.NativeSpan> = [];
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
 
       yield* executor.integrations
         .detect(`http://svc-user:${USERINFO_PASSWORD}@127.0.0.1:1/api/mcp?token=${QUERY_TOKEN}`)
@@ -1620,7 +1670,9 @@ describe("mcpPlugin endpoint telemetry", () => {
   it.effect("stamps a sanitized endpoint on the probe_endpoint span", () =>
     Effect.gen(function* () {
       const spans: Array<Tracer.NativeSpan> = [];
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+      );
 
       yield* executor.mcp
         .probeEndpoint(`http://127.0.0.1:1/mcp?token=${QUERY_TOKEN}`)
@@ -1649,6 +1701,7 @@ describe("stdio static env", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const config = makeTestConfig({
+          access: testAccess.member(),
           plugins: [
             memoryCredentialsPlugin(),
             mcpPlugin({ dangerouslyAllowStdioMCP: true }),
@@ -1725,6 +1778,7 @@ describe("stdio static env", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const config = makeTestConfig({
+          access: testAccess.member(),
           plugins: [
             memoryCredentialsPlugin(),
             mcpPlugin({ dangerouslyAllowStdioMCP: true }),
@@ -1777,6 +1831,7 @@ describe("stdio static env", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const config = makeTestConfig({
+            access: testAccess.member(),
             plugins: [
               memoryCredentialsPlugin(),
               mcpPlugin({ dangerouslyAllowStdioMCP: true }),
@@ -1832,6 +1887,7 @@ describe("stdio static env", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const config = makeTestConfig({
+          access: testAccess.member(),
           plugins: [
             memoryCredentialsPlugin(),
             mcpPlugin({ dangerouslyAllowStdioMCP: true }),

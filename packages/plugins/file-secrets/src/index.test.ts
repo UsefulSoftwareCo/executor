@@ -17,13 +17,17 @@ import { ProviderKey } from "@executor-js/sdk";
 import { makeTestWorkspaceHarness } from "@executor-js/sdk/testing";
 
 import { fileSecretsPlugin } from "./index";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const FILE_PROVIDER = ProviderKey.make("file");
 
 const inspectPlugin = (plugin: ReturnType<typeof fileSecretsPlugin>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const workspace = yield* makeTestWorkspaceHarness({ plugins: [plugin] as const });
+      const workspace = yield* makeTestWorkspaceHarness({
+        access: testAccess.member(),
+        plugins: [plugin] as const,
+      });
       const items = yield* workspace.executor.providers.items(FILE_PROVIDER);
       return {
         filePath: workspace.executor.fileSecrets.filePath,
@@ -136,6 +140,7 @@ describe("file secrets auth location", () => {
         vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
         writeAuthFile(legacyFilePath, "not-json");
         const workspace = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [fileSecretsPlugin()] as const,
         });
 
@@ -158,6 +163,7 @@ describe("file secrets auth location", () => {
         vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
         mkdirSync(legacyFilePath, { recursive: true });
         const workspace = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [fileSecretsPlugin()] as const,
         });
 
@@ -185,6 +191,7 @@ describe("file secrets auth location", () => {
         const legacyContents = '{"legacy-token":"legacy-secret"}';
         writeAuthFile(legacyFilePath, legacyContents);
         const workspace = yield* makeTestWorkspaceHarness({
+          access: testAccess.member(),
           plugins: [fileSecretsPlugin()] as const,
         });
 

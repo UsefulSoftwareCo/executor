@@ -35,6 +35,7 @@
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/plugin-provider-service-split": "workspace:*",
     "@executor-js/plugin-toolkits": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
     "@executor-js/sdk": "workspace:*",

@@ -24,6 +24,7 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 import { mcpPlugin } from "./plugin";
 import { variable } from "@executor-js/sdk/http-auth";
 import { makeEchoMcpServer, serveMcpServer } from "../testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const serveRecordingServer = serveMcpServer(() =>
   makeEchoMcpServer({
@@ -40,7 +41,10 @@ describe("MCP multi-placement auth", () => {
     Effect.gen(function* () {
       const server = yield* serveRecordingServer;
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       yield* executor.mcp.addServer({
@@ -88,7 +92,10 @@ describe("MCP multi-placement auth", () => {
     Effect.gen(function* () {
       const server = yield* serveRecordingServer;
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       yield* executor.mcp.addServer({
@@ -126,7 +133,10 @@ describe("MCP multi-placement auth", () => {
     Effect.gen(function* () {
       const server = yield* serveRecordingServer;
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       // Two declared methods; each connection picks one by template slug.
@@ -193,7 +203,10 @@ describe("MCP multi-placement auth", () => {
     Effect.gen(function* () {
       const server = yield* serveRecordingServer;
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
+        }),
       );
 
       yield* executor.mcp.addServer({

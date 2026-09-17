@@ -32,6 +32,7 @@ import { createExecutor } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { UrlRedactingSpanProcessor } from "./redact-span-urls";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // Synthetic placeholders — never a real authorization code or CSRF state.
 const CODE = "synthetic-authorization-code-9f2c";
@@ -55,7 +56,7 @@ describe("oauth callback telemetry", () => {
   it.effect("exports no span attribute containing the authorization code or state", () =>
     Effect.gen(function* () {
       const { exporter, provider, tracerLayer } = makeTracing();
-      const executor = yield* createExecutor(makeTestConfig({}));
+      const executor = yield* createExecutor(makeTestConfig({ access: testAccess.member() }));
 
       const web = yield* Effect.acquireRelease(
         Effect.sync(() =>

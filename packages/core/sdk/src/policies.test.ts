@@ -15,15 +15,15 @@ import {
 import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { createExecutor } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
-import {
-  effectivePolicyFromSorted,
-  isValidPattern,
-  matchPattern,
-  resolveToolPolicy,
-} from "./policies";
+// Resolution semantics are PRODUCT rules — these tests exercise the real
+// implementations from @executor-js/product-access (via the workspace root
+// devDependency), never a copy.
+import { effectivePolicyFromSorted, resolveToolPolicy } from "@executor-js/product-access/policy";
+import { isValidPattern, matchPattern } from "./policies";
 import { definePlugin, tool } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestExecutor } from "./testing";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // ---------------------------------------------------------------------------
 // Pure unit tests — pattern matcher + resolution. No executor required.
@@ -332,7 +332,7 @@ const addr = (integration: IntegrationSlug, tool: string): ToolAddress =>
   ToolAddress.make(`tools.${integration}.org.${CONN}.${tool}`);
 
 const setupExecutor = () =>
-  makeTestExecutor({ plugins: [policyTestPlugin()] as const }).pipe(
+  makeTestExecutor({ access: testAccess.member(), plugins: [policyTestPlugin()] as const }).pipe(
     Effect.tap((executor) =>
       Effect.gen(function* () {
         yield* executor.ptest.seed();
@@ -533,7 +533,10 @@ describe("executor.policies", () => {
   it.effect("fails when the policy vanishes during update", () =>
     Effect.gen(function* () {
       let armed = false;
-      const config = makeTestConfig({ plugins: [policyTestPlugin()] as const });
+      const config = makeTestConfig({
+        access: testAccess.member(),
+        plugins: [policyTestPlugin()] as const,
+      });
       const executor = yield* createExecutor({
         ...config,
         db: removePolicyAfterUpdate(config.db, () => armed),
@@ -685,6 +688,7 @@ describe("active tool-policy provider", () => {
   it.effect("uses provider rules as an allowlist for list, schema, and execute", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
+        access: testAccess.member(),
         plugins: [staticPlugin, policyProviderPlugin] as const,
       });
 

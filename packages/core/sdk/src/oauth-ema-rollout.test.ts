@@ -34,6 +34,7 @@ import type {
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { serveOAuthTestServer, type OAuthTestServerShape } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const INTEG = IntegrationSlug.make("acme");
 const TEMPLATE = AuthTemplateSlug.make("oauth");
@@ -233,6 +234,7 @@ const tokenExchangeCount = (servers: EnterpriseServers) =>
 
 const harness = (rollout: EnterpriseManagedRollout | undefined) =>
   makeTestWorkspaceHarness({
+    access: testAccess.member(),
     plugins,
     tenant: TENANT,
     subject: SUBJECT,

@@ -14,6 +14,7 @@ import {
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { buildExecuteDescription, parseIntegrationInventory } from "./description";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const memoryProvider = (): CredentialProvider => {
   const store = new Map<string, string>();
@@ -74,7 +75,10 @@ describe("buildExecuteDescription", () => {
   it.effect("lists the connected integrations, not the connection prefixes", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [slackPlugin, githubPlugin] as const,
+        }),
       );
       yield* executor["slack-plugin"].seed();
       yield* executor["github-plugin"].seed();
@@ -121,7 +125,10 @@ describe("buildExecuteDescription", () => {
   it.effect("lists integration names only, with no descriptions", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [slackPlugin, githubPlugin] as const,
+        }),
       );
       yield* executor["slack-plugin"].seed();
       yield* executor["github-plugin"].seed();
@@ -154,7 +161,9 @@ describe("buildExecuteDescription", () => {
 
   it.effect("dedupes many connections of one integration into a single line", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [githubPlugin] as const }),
+      );
       yield* executor["github-plugin"].seed();
       yield* executor.connections.create({
         owner: "org",
@@ -181,7 +190,9 @@ describe("buildExecuteDescription", () => {
 
   it.effect("omits the Available integrations section when no connections exist", () =>
     Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [] as const }),
+      );
 
       const description = yield* buildExecuteDescription(executor);
 
@@ -195,7 +206,10 @@ describe("parseIntegrationInventory", () => {
   it.effect("round-trips the slugs a built description lists", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [slackPlugin, githubPlugin] as const,
+        }),
       );
       yield* executor["slack-plugin"].seed();
       yield* executor["github-plugin"].seed();

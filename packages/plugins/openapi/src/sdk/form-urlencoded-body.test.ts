@@ -30,6 +30,7 @@ import {
 } from "@executor-js/plugin-openapi/testing";
 
 import { openApiPlugin } from "./plugin";
+import { testAccess } from "@executor-js/product-access/testing";
 
 type Captured = {
   contentType: string;
@@ -76,30 +77,28 @@ const plugins = [
   memoryCredentialsPlugin(),
 ] as const;
 
-layer(
-  makeTestWorkspaceLayer({
-    plugins,
-  }),
-  { timeout: "15 seconds" },
-)("OpenAPI non-JSON request body serialization", (it) => {
-  it.effect("form-urlencoded object body is properly encoded (no '[object Object]')", () =>
-    Effect.gen(function* () {
-      const { server, captured } = yield* startEchoServer();
-      const { config } = yield* TestWorkspace;
-      const executor = yield* createExecutor({ ...config, plugins });
+layer(makeTestWorkspaceLayer({ access: testAccess.member(), plugins }), { timeout: "15 seconds" })(
+  "OpenAPI non-JSON request body serialization",
+  (it) => {
+    it.effect("form-urlencoded object body is properly encoded (no '[object Object]')", () =>
+      Effect.gen(function* () {
+        const { server, captured } = yield* startEchoServer();
+        const { config } = yield* TestWorkspace;
+        const executor = yield* createExecutor({ ...config, plugins });
 
-      const conn = yield* addOpenApiTestConnection(executor, server, { slug: "form" });
+        const conn = yield* addOpenApiTestConnection(executor, server, { slug: "form" });
 
-      yield* executor.execute(conn.address("forms.submit"), {
-        body: { name: "Acme", email: "a@b.com" },
-      });
+        yield* executor.execute(conn.address("forms.submit"), {
+          body: { name: "Acme", email: "a@b.com" },
+        });
 
-      expect(captured.contentType).toBe("application/x-www-form-urlencoded");
-      expect(captured.body).not.toBe("[object Object]");
+        expect(captured.contentType).toBe("application/x-www-form-urlencoded");
+        expect(captured.body).not.toBe("[object Object]");
 
-      const parsed = new URLSearchParams(captured.body);
-      expect(parsed.get("name")).toBe("Acme");
-      expect(parsed.get("email")).toBe("a@b.com");
-    }),
-  );
-});
+        const parsed = new URLSearchParams(captured.body);
+        expect(parsed.get("name")).toBe("Acme");
+        expect(parsed.get("email")).toBe("a@b.com");
+      }),
+    );
+  },
+);

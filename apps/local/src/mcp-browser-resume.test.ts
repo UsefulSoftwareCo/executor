@@ -34,6 +34,7 @@ import {
 
 import { createMcpRequestHandler } from "./mcp";
 import { createSqliteFumaDb } from "./db/sqlite-fumadb";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const TEST_BASE_URL = "http://local.test";
 
@@ -90,6 +91,7 @@ const makeExecutor = async (tmpDir: string): Promise<Executor> => {
       db: sqlite.db,
       plugins,
       onElicitation: "accept-all",
+      access: testAccess.member(),
     }),
   );
 

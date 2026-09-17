@@ -79,6 +79,7 @@
     "@effect/vitest": "catalog:",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
+    "@executor-js/product-access": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@tailwindcss/browser": "^4.2.2",
     "@tailwindcss/vite": "catalog:",

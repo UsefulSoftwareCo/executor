@@ -34,12 +34,14 @@
 import { Context, Effect, Option } from "effect";
 
 import type { McpResource } from "@executor-js/host-mcp";
+import { platformObserverAccess } from "@executor-js/product-access";
 import {
   createExecutor,
   Subject,
   Tenant,
   type AnyPlugin,
   type Executor,
+  type ExecutorAccess,
   type ExecutorConfig,
   type FirstPartyOAuthClientConfig,
   type StorageFailure,
@@ -258,12 +260,13 @@ export const makeScopedExecutor = <
   // `EngineStackIdentity` (the engine decorator still wants it); not part of the
   // v2 executor binding, which is `{ tenant, subject }` only.
   _organizationName: string,
-  options?: {
+  options: {
     readonly plugins?: PluginsProviderContext;
-    /** Workspace-settings permission for this binding (see
-     *  `ExecutorConfig.orgWrites`). Hosts derive it from the acting member's
-     *  role; omitted -> allowed (hosts with no role model). */
-    readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+    /** The product's access decisions for this binding (see
+     *  `ExecutorConfig.access`) — REQUIRED, selected by the host from
+     *  `@executor-js/product-access` (role-derived on the HTTP plane,
+     *  request-bound on session stacks). */
+    readonly access: ExecutorAccess;
   },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
@@ -336,7 +339,7 @@ export const makeScopedExecutor = <
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
       ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
-      ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+      access: options.access,
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
@@ -370,9 +373,9 @@ export const makeScopedExecutor = <
 // An org-level caller (a WorkOS org-scoped API key, or an owner/admin acting on
 // the whole workspace) has NO acting member, so there is no honest subject to
 // bind. This builds the executor that shape implies: `{ tenant, subject:
-// undefined, platformView: true }`.
+// undefined, access: platformObserverAccess() }`.
 //
-// WHAT "READ-ONLY" MEANS HERE, PRECISELY. `platformView: true` puts
+// WHAT "READ-ONLY" MEANS HERE, PRECISELY. The platform access posture puts
 // `writes: "denied"` on the executor's base owner-policy context and
 // `reach: "tenant"` on the `admin` handle's. So:
 //   - EVERY surface on this executor — `admin`, and the ordinary `connections`
@@ -429,6 +432,6 @@ export const makePlatformExecutor = (
       httpClientLayer: makeHostedHttpClientLayer(hostedHttpOptions),
       fetch: makeHostedFetch(hostedHttpOptions),
       onElicitation: "accept-all",
-      platformView: true,
+      access: platformObserverAccess(),
     }).pipe(Effect.withSpan("executor.platform.create_executor"));
   });

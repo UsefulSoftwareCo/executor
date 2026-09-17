@@ -5,6 +5,7 @@ import { makeTestConfig } from "@executor-js/sdk/testing";
 import { keychainPlugin } from "./index";
 import { makeKeychainProvider } from "./provider";
 import { setPassword, deletePassword } from "./keyring";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // removed: v1 tests routed through `executor.secrets.set/get/remove` with
 // `ScopeId`/`SecretId`/`SetSecretInput`/`RemoveSecretInput` and a scope-derived
@@ -33,9 +34,7 @@ describe("keychain plugin", () => {
   it.effect("exposes keychain metadata and registers a provider when reachable", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
-        makeTestConfig({
-          plugins: [keychainPlugin()] as const,
-        }),
+        makeTestConfig({ access: testAccess.member(), plugins: [keychainPlugin()] as const }),
       );
 
       expect(executor.keychain.displayName).toBeTypeOf("string");
@@ -60,6 +59,7 @@ describe("keychain plugin", () => {
 
         const executor = yield* createExecutor(
           makeTestConfig({
+            access: testAccess.member(),
             plugins: [keychainPlugin({ serviceName })] as const,
           }),
         );
@@ -86,6 +86,7 @@ describe("keychain plugin", () => {
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({
+          access: testAccess.member(),
           plugins: [keychainPlugin({ serviceName: "executor-test" })] as const,
         }),
       );

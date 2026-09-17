@@ -9,6 +9,7 @@ import type { AuthenticationInput } from "@executor-js/plugin-openapi";
 
 import { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-format-adapter";
 import { googleCatalog } from "./presets";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const TASKS_URL = "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest";
 const GMAIL_URL = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest";
@@ -179,6 +180,7 @@ it.effect("adds a Google Discovery URL through the OpenAPI plugin with derived i
   Effect.gen(function* () {
     const executor = yield* createExecutor(
       makeTestConfig({
+        access: testAccess.member(),
         plugins: [
           openApiPlugin({
             httpClientLayer: discoveryHttpClientLayer,
@@ -211,6 +213,7 @@ it.effect(
       );
       const executor = yield* createExecutor(
         makeTestConfig({
+          access: testAccess.member(),
           plugins: [
             openApiPlugin({
               httpClientLayer: discoveryHttpClientLayer,
@@ -257,6 +260,7 @@ it.effect("preserves a Google preset's full consumer consent boundary when refre
     );
     const executor = yield* createExecutor(
       makeTestConfig({
+        access: testAccess.member(),
         plugins: [
           openApiPlugin({
             httpClientLayer: gmailDiscoveryHttpClientLayer,

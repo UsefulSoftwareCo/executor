@@ -29,6 +29,7 @@ import {
 import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig } from "./test-config";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const STORE = ProviderKey.make("remote-store");
 const INTEG = IntegrationSlug.make("acme");
@@ -55,7 +56,7 @@ const plugin = (provider: CredentialProvider) =>
 const executorWithConnection = (provider: CredentialProvider) =>
   Effect.gen(function* () {
     const executor = yield* createExecutor(
-      makeTestConfig({ plugins: [plugin(provider)] as const }),
+      makeTestConfig({ access: testAccess.member(), plugins: [plugin(provider)] as const }),
     );
     yield* executor.acme.seed();
     yield* executor.connections.create({
@@ -110,7 +111,9 @@ describe("a credential provider that stops answering", () => {
         get: (id) => Effect.sync(() => items.get(String(id)) ?? null),
         set: (id, value) => Effect.sync(() => void items.set(String(id), value)),
       };
-      const executor = yield* createExecutor(makeTestConfig({ plugins: [plugin(lit)] as const }));
+      const executor = yield* createExecutor(
+        makeTestConfig({ access: testAccess.member(), plugins: [plugin(lit)] as const }),
+      );
       yield* executor.acme.seed();
       yield* executor.connections.create({
         owner: "org",
@@ -144,7 +147,10 @@ describe("a credential provider that stops answering", () => {
       }
 
       const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [plugin(new ClassProvider() as CredentialProvider)] as const }),
+        makeTestConfig({
+          access: testAccess.member(),
+          plugins: [plugin(new ClassProvider() as CredentialProvider)] as const,
+        }),
       );
       yield* executor.acme.seed();
       yield* executor.connections.create({
@@ -184,6 +190,7 @@ describe("a credential provider that stops answering", () => {
 
       const executor = yield* createExecutor(
         makeTestConfig({
+          access: testAccess.member(),
           plugins: [plugin(new PrototypeProvider() as CredentialProvider)] as const,
         }),
       );

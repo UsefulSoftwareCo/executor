@@ -29,6 +29,7 @@ import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
 import { probeMcpEndpointShape } from "./probe-shape";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const MCP_INITIALIZE_BODY = JSON.stringify({
   jsonrpc: "2.0",
@@ -176,7 +177,9 @@ const messageFromUnknown = (cause: unknown): string =>
 
 const runEndpointProbe = (url: string): Effect.Effect<EndpointProbeOutcome> =>
   Effect.gen(function* () {
-    const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
+    const executor = yield* createExecutor(
+      makeTestConfig({ access: testAccess.member(), plugins: [mcpPlugin()] as const }),
+    );
     return yield* executor.mcp.probeEndpoint(url).pipe(
       Effect.map(
         (r) =>

@@ -13,6 +13,7 @@ import {
 } from "./in-memory-session-store";
 import { defaultMcpResource, type Principal } from "./seams";
 import { createExecutorMcpServer } from "./tool-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 const TEST_PRINCIPAL: Principal = {
   accountId: "acct_test",
@@ -161,7 +162,10 @@ const openSession = async (
 
 it("keeps overlapping warm-session workspace writes bound to their request roles", async () => {
   const executor = await Effect.runPromise(
-    createExecutor({ ...makeTestConfig(), orgWrites: "request" }),
+    createExecutor({
+      ...makeTestConfig({ access: testAccess.member() }),
+      access: testAccess.requestBound(),
+    }),
   );
   const started = new Map<string, () => void>();
   const startedPromises = ["member", "admin"].map(
@@ -240,7 +244,10 @@ it("keeps overlapping warm-session workspace writes bound to their request roles
 
 it("binds a paused workspace write to the resuming principal after demotion", async () => {
   const executor = await Effect.runPromise(
-    createExecutor({ ...makeTestConfig(), orgWrites: "request" }),
+    createExecutor({
+      ...makeTestConfig({ access: testAccess.member() }),
+      access: testAccess.requestBound(),
+    }),
   );
   const executionId = "exec_resume_demotion";
   const pattern = "paused-resume-demotion.*";
@@ -313,7 +320,10 @@ it("binds a paused workspace write to the resuming principal after demotion", as
 
 it("uses the browser approver's demoted role after an admin starts waiting", async () => {
   const executor = await Effect.runPromise(
-    createExecutor({ ...makeTestConfig({ coreTools: {} }), orgWrites: "request" }),
+    createExecutor({
+      ...makeTestConfig({ access: testAccess.member(), coreTools: {} }),
+      access: testAccess.requestBound(),
+    }),
   );
   const executionId = "exec_browser_resume_demotion";
   const pattern = "browser-resume-demotion.*";
@@ -695,7 +705,9 @@ describe("pre-initialize dispatch through the in-memory session store", () => {
   it("shuts down the scoped executor and custom closer when an idle session is evicted", async () => {
     let executorClosed = 0;
     let customClosed = 0;
-    const realExecutor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const realExecutor = await Effect.runPromise(
+      createExecutor(makeTestConfig({ access: testAccess.member() })),
+    );
     const testExecutor = {
       ...realExecutor,
       close: () =>
@@ -743,7 +755,9 @@ describe("pre-initialize dispatch through the in-memory session store", () => {
 
   it("shuts down the scoped executor when sessions.close() is called", async () => {
     let executorClosed = 0;
-    const realExecutor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const realExecutor = await Effect.runPromise(
+      createExecutor(makeTestConfig({ access: testAccess.member() })),
+    );
     const testExecutor = {
       ...realExecutor,
       close: () =>

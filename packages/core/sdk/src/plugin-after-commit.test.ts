@@ -13,6 +13,7 @@ import {
 import { definePlugin } from "./plugin";
 import { makeTestExecutor } from "./test-config";
 import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { testAccess } from "@executor-js/product-access/testing";
 
 // A plugin's `removeConnection` runs INSIDE core's removal transaction, which is
 // what makes its database work atomic with the row deletions. The same property
@@ -98,9 +99,10 @@ const revokingPlugin = (revoked: string[]) =>
   })();
 
 const setup = (revoked: string[]) =>
-  makeTestExecutor({ plugins: [revokingPlugin(revoked)] as const }).pipe(
-    Effect.tap((executor) => executor.demo.seed()),
-  );
+  makeTestExecutor({
+    access: testAccess.member(),
+    plugins: [revokingPlugin(revoked)] as const,
+  }).pipe(Effect.tap((executor) => executor.demo.seed()));
 
 const REF = {
   owner: "org",
