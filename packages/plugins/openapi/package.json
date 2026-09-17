@@ -78,7 +78,7 @@
     "@effect/platform-node": "catalog:",
     "@executor-js/config": "workspace:*",
     "@executor-js/sdk": "workspace:*",
-    "js-yaml": "4.1.1",
+    "js-yaml": "4.3.2",
     "lucide-react": "^1.7.0",
     "openapi-types": "^12.1.3"
   },

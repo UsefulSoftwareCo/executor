@@ -51,13 +51,18 @@ const api = composePluginApi([] as const);
  */
 const ARTIFACT_ROW_COUNT = 40;
 
-const artifactSource = (marker: string) => `
+const artifactSource = (marker: string, linkUrl?: string) => `
 function App() {
   return (
     <div className="flex h-full flex-col gap-4">
       <div data-testid="artifact-header" className="shrink-0">
         <h2>Release Readiness</h2>
         <p data-testid="artifact-marker">${marker}</p>
+        ${
+          linkUrl === undefined
+            ? ""
+            : `<a data-testid="artifact-pr-link" href={${JSON.stringify(linkUrl)}} target="_blank" rel="noreferrer">Open pull request</a>`
+        }
       </div>
       <div data-testid="artifact-scroll" className="min-h-0 flex-1 overflow-auto">
         {Array.from({ length: ${ARTIFACT_ROW_COUNT} }, (_, i) => (
@@ -144,14 +149,14 @@ const recordHandshakeOrdering = async (page: Page): Promise<void> => {
 const readHandshakeOrdering = (page: Page): Promise<ReadonlyArray<string>> =>
   page.evaluate(() => globalThis.__handshakeOrder ?? []);
 
-const readConsoleStyle = (page: Page): Promise<{ primary: string; buttonBg: string }> =>
-  page.evaluate(() => {
-    const button = document.querySelector("button");
-    return {
-      primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
-      buttonBg: button ? getComputedStyle(button).backgroundColor : "",
-    };
-  });
+const readConsoleStyle = async (page: Page): Promise<{ primary: string; buttonBg: string }> => {
+  const button = page.getByRole("button", { name: "Rename", exact: true });
+  await button.waitFor();
+  return button.evaluate((element) => ({
+    primary: getComputedStyle(document.documentElement).getPropertyValue("--primary").trim(),
+    buttonBg: getComputedStyle(element).backgroundColor,
+  }));
+};
 
 // The shell's compiled stylesheet declares `--mcp-apps-shell-stylesheet: 1`
 // on `:root` as a provenance marker (see the shell's globals.css): the shell's
@@ -187,6 +192,8 @@ scenario(
     const suffix = uniqueSuffix();
     const title = `Release Readiness ${suffix}`;
     const marker = `artifact-ok-${suffix}`;
+    const pullRequestUrl = new URL("/policies?from=artifact-link", target.baseUrl).toString();
+    const source = artifactSource(marker, pullRequestUrl).trim();
 
     // Tracked so cleanup runs even when an assertion below fails.
     let artifactId: ArtifactId | undefined;
@@ -215,7 +222,7 @@ scenario(
       );
 
       const rendered = yield* session.call("create-artifact", {
-        code: artifactSource(marker),
+        code: source,
         title,
         description: "Whether the current release is ready to ship",
       });
@@ -306,6 +313,19 @@ scenario(
               message: "the shell completed the handshake rather than sitting on Connecting",
             })
             .not.toContain("Connecting");
+        });
+
+        await step("A pull request link opens with a normal left-click", async () => {
+          const openedPage = page.context().waitForEvent("page");
+          await artifactContent(page).getByTestId("artifact-pr-link").click();
+          const popup = await openedPage;
+          await popup.waitForURL(pullRequestUrl, { timeout: 20_000 });
+
+          expect(
+            popup.url(),
+            "the sandbox handed the link to the host, which opened a new tab",
+          ).toBe(pullRequestUrl);
+          await popup.close();
         });
 
         await step("The host was listening before the shell could speak", async () => {
@@ -552,6 +572,10 @@ scenario(
         String(structuredOf(shown).url ?? shown.text),
         "show-artifact delivers the same deep link for a non-Apps client",
       ).toContain(String(artifactId));
+      expect(
+        shown.text,
+        "show-artifact includes the current source in its text result for a non-Apps client",
+      ).toContain(`Source:\n\`\`\`tsx\n${source}\n\`\`\``);
     }).pipe(
       Effect.ensuring(
         Effect.suspend(() =>
@@ -582,8 +606,10 @@ scenario(
     const suffix = uniqueSuffix();
     const originalTitle = `Draft Dashboard ${suffix}`;
     const renamedTitle = `Quarterly Dashboard ${suffix}`;
+    const listDeleteTitle = `List Card ${suffix}`;
 
     let artifactId: ArtifactId | undefined;
+    let listArtifactId: ArtifactId | undefined;
 
     yield* Effect.gen(function* () {
       const rendered = yield* session.call("create-artifact", {
@@ -633,26 +659,88 @@ scenario(
         originalTitle,
       );
 
+      // A second artifact for the gallery card's own delete path: the detail
+      // page steps below consume the renamed one, and the card's hover →
+      // Delete affordance is a separate surface the console must keep working.
+      const listed = yield* session.call("create-artifact", {
+        code: artifactSource(`list-delete-${suffix}`),
+        title: listDeleteTitle,
+        description: "A dashboard the user will delete from the gallery",
+      });
+      expect(listed.ok, `create-artifact succeeded: ${listed.text}`).toBe(true);
+      listArtifactId = structuredOf(listed).artifactId as ArtifactId;
+      expect(listArtifactId, "the second artifact was persisted").toBeTruthy();
+
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Delete the artifact from the list", async () => {
+        await step("Delete the artifact from its gallery card", async () => {
           await visit(page, "/artifacts");
+          // Card actions reveal on hover; the card is the link's enclosing tile.
           const card = page.locator('[data-slot="artifact-card"]').filter({
-            hasText: renamedTitle,
+            hasText: listDeleteTitle,
           });
           await card.waitFor({ timeout: 20_000 });
           await card.hover();
           await card.getByRole("button", { name: "Delete" }).click();
 
           const confirm = page.getByRole("alertdialog");
-          await confirm.getByRole("heading", { name: `Delete ${renamedTitle}?` }).waitFor();
+          await confirm.getByRole("heading", { name: `Delete ${listDeleteTitle}?` }).waitFor();
           await confirm.getByRole("button", { name: "Delete Artifact" }).click();
           await confirm.waitFor({ state: "hidden", timeout: 20_000 });
+          await page
+            .getByRole("link", { name: `Open artifact ${listDeleteTitle}` })
+            .waitFor({ state: "detached", timeout: 20_000 });
         });
 
-        await step("The artifact is gone from the list", async () => {
-          await page
+        let releaseListRefresh = () => {};
+        let markListRefreshStarted = () => {};
+        const listRefreshGate = new Promise<void>((resolve) => {
+          releaseListRefresh = resolve;
+        });
+        const listRefreshStarted = new Promise<void>((resolve) => {
+          markListRefreshStarted = resolve;
+        });
+
+        await step("Open the artifact and delete it from its detail page", async () => {
+          await visit(page, "/artifacts");
+          await page.getByRole("link", { name: `Open artifact ${renamedTitle}` }).click();
+          await page.getByRole("heading", { name: renamedTitle }).waitFor({ timeout: 20_000 });
+
+          // Hold the post-delete list refresh open. The redirected gallery must
+          // carry the optimistic removal across the route handoff rather than
+          // relying on a fast canonical response to hide a stale-cache flash.
+          await page.route("**/artifacts", async (route) => {
+            if (route.request().method() !== "GET") {
+              await route.continue();
+              return;
+            }
+            markListRefreshStarted();
+            await listRefreshGate;
+            await route.continue();
+          });
+
+          await page.getByRole("button", { name: "Delete" }).click();
+          const confirm = page.getByRole("alertdialog");
+          await confirm.getByRole("heading", { name: `Delete ${renamedTitle}?` }).waitFor();
+          await confirm.getByRole("button", { name: "Delete Artifact" }).click();
+        });
+
+        await step("The redirected gallery already omits the deleted artifact", async () => {
+          await page.waitForURL((url) => /\/artifacts\/?$/.test(url.pathname), {
+            timeout: 20_000,
+          });
+          await page.getByRole("heading", { name: "Saved artifacts" }).waitFor({ timeout: 20_000 });
+          await listRefreshStarted;
+
+          const deletedCardCount = await page
             .getByRole("link", { name: `Open artifact ${renamedTitle}` })
-            .waitFor({ state: "detached", timeout: 20_000 });
+            .count();
+          releaseListRefresh();
+          await page.unrouteAll({ behavior: "wait" });
+
+          expect(
+            deletedCardCount,
+            "the optimistic delete survives navigation while the list refresh is pending",
+          ).toBe(0);
         });
       });
 
@@ -660,12 +748,22 @@ scenario(
       expect(afterDelete.text, "the agent no longer offers the deleted artifact").not.toContain(
         renamedTitle,
       );
+      expect(afterDelete.text, "nor the artifact deleted from its gallery card").not.toContain(
+        listDeleteTitle,
+      );
 
       const missing = yield* session.call("show-artifact", { id: artifactId });
       expect(missing.ok, "fetching a deleted artifact is an error, not an empty render").toBe(
         false,
       );
     }).pipe(
+      Effect.ensuring(
+        Effect.suspend(() =>
+          listArtifactId === undefined
+            ? Effect.void
+            : client.artifacts.remove({ params: { artifactId: listArtifactId } }),
+        ).pipe(Effect.ignore),
+      ),
       Effect.ensuring(
         Effect.suspend(() =>
           artifactId === undefined

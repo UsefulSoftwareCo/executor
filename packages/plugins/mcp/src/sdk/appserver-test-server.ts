@@ -9,7 +9,11 @@
 //     server, so the bridge must follow `nextCursor`;
 //   - a `needs_approval` tool that emits a server→client
 //     `mcpServer/elicitation/request` and only succeeds when the answer is
-//     an accept — the round trip through executor's elicitation bridge.
+//     an accept — the round trip through executor's elicitation bridge;
+//   - approvals whose terms travel in `_meta`, in both directions: Chrome's
+//     per-site grant STATES `persist: "always"`, Computer Use's app approval
+//     OFFERS `persist: ["session", "always"]` and reads the answer's
+//     `_meta.persist` to know whether to remember the app.
 import * as readline from "node:readline";
 
 import { Option, Schema } from "effect";
@@ -51,7 +55,11 @@ const decodeToolCallParams = Schema.decodeUnknownOption(
 );
 
 const decodeElicitAnswer = Schema.decodeUnknownOption(
-  Schema.Struct({ action: Schema.String, content: Schema.optional(Schema.Unknown) }),
+  Schema.Struct({
+    action: Schema.String,
+    content: Schema.optional(Schema.Unknown),
+    _meta: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+  }),
 );
 
 const THREAD_ID = "thread-fixture-1";
@@ -188,6 +196,34 @@ const handleToolCall = (id: number | string, params: unknown): void => {
       });
       return;
     }
+    // A Computer-Use-shaped app approval: no schema to fill in, and the
+    // terms OFFER how long an accept lasts. The answer's `_meta.persist`
+    // picks one; without it the runtime treats the accept as one-time.
+    if (args?.code?.includes("__needs_app_approval")) {
+      const elicitationId = nextServerRequestId++;
+      pendingApprovals.set(elicitationId, id);
+      write({
+        jsonrpc: "2.0",
+        id: elicitationId,
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: THREAD_ID,
+          turnId: null,
+          serverName: "node_repl",
+          mode: "form",
+          message: 'Allow Computer Use to use "Finder"?',
+          requestedSchema: { type: "object", properties: {} },
+          _meta: {
+            codex_approval_kind: "mcp_tool_call",
+            connector_id: "computer-use",
+            connector_name: "Computer Use",
+            persist: ["session", "always"],
+            riskLevel: "low",
+          },
+        },
+      });
+      return;
+    }
     reply(id, {
       content: [{ type: "text", text: args?.code ?? "" }],
       // Echoed so a test can assert the turn metadata the Chrome client
@@ -275,7 +311,11 @@ const handleElicitationAnswer = (id: number | string, result: unknown): void => 
   pendingApprovals.delete(id);
   const answer = Option.getOrUndefined(decodeElicitAnswer(result));
   if (answer?.action === "accept") {
-    reply(callId, { content: [{ type: "text", text: "approved" }] });
+    reply(callId, {
+      content: [{ type: "text", text: "approved" }],
+      // Echoed so a test can assert what the runtime would remember.
+      structuredContent: { persist: answer._meta?.["persist"] ?? null },
+    });
     return;
   }
   reply(callId, {

@@ -1,3 +1,100 @@
 ---
-return Astro.redirect("/#pricing", 302);
+import RailLayout from "../layouts/RailLayout.astro";
+import { pricingTiers } from "../content/site-copy";
+import "../styles/variants/pricing.css";
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+
+// Same tiers the Markdown route serves; the card layout only needs a split
+// between the number and its unit, and a real href for each call to action.
+const cards = [
+  {
+    tier: pricingTiers[0]!,
+    amount: "$0",
+    unit: "/ month",
+    href: "/cloud",
+    label: "Start free",
+    recommended: false,
+  },
+  {
+    tier: pricingTiers[1]!,
+    amount: "$15",
+    unit: "/ member / month",
+    href: "/cloud",
+    label: "Start free trial",
+    recommended: true,
+  },
+  {
+    tier: pricingTiers[2]!,
+    amount: "Custom",
+    unit: "",
+    href: "mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry",
+    label: "Contact us",
+    recommended: false,
+  },
+];
 ---
+
+<RailLayout
+  title="Pricing — Executor"
+  description="Start free, pay per member. Executor Cloud pricing for teams and enterprises."
+  current="pricing"
+>
+  <article class="doc">
+    <header class="doc__intro">
+      <h1 class="doc__title">Start free, pay per member.</h1>
+      <p class="doc__lede">
+        Cloud is free for small teams. Team is one flat price per person. Enterprise is
+        for orgs that need it on their own infrastructure with their own controls.
+      </p>
+    </header>
+
+    <div class="pricing">
+      {
+        cards.map(({ tier, amount, unit, href, label, recommended }) => (
+          <section class:list={["pricing__card", recommended && "pricing__card--rec"]}>
+            <span class="pricing__eyebrow">{recommended ? "Recommended" : tier.name === "Free" ? "Get started" : "Custom needs"}</span>
+            <h2 class="pricing__name">{tier.name}</h2>
+            <p class="pricing__aud">{tier.audience.replace(" (recommended)", "")}</p>
+            <p class="pricing__price">
+              <span class="pricing__amount">{amount}</span>
+              {unit ? <span class="pricing__unit">{unit}</span> : null}
+            </p>
+            <a href={href} class={recommended ? "btn-primary" : "btn-secondary"}>{label}</a>
+            {tier.featuresLabel ? <p class="pricing__flabel">{tier.featuresLabel}</p> : null}
+            <ul class="check-list">
+              {tier.features.map((f) => (
+                <li>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
+      }
+    </div>
+
+
+    <section class="doc__section">
+      <h2 class="doc__h">Questions</h2>
+      <dl class="doc__beats">
+        <div>
+          <dt>What counts as an execution?</dt>
+          <dd>One call to the Executor tool from your agent. A single execution can make many tool calls inside it.</dd>
+        </div>
+        <div>
+          <dt>What happens when the free tier runs out?</dt>
+          <dd>Calls pause until the month resets or you move to Team. Nothing is deleted.</dd>
+        </div>
+        <div>
+          <dt>Can I mix Cloud and self-hosted?</dt>
+          <dd>Yes. They are the same code, and an agent can point at more than one Executor.</dd>
+        </div>
+      </dl>
+      <p class="doc__quiet-p">
+        Something else? <a href="mailto:rhys@executor.sh?subject=Executor%20pricing">Email Rhys</a>.
+      </p>
+    </section>
+  </article>
+</RailLayout>

@@ -1,0 +1,1 @@
+ALTER TABLE "workos_sync" ADD COLUMN "drained_at" timestamp with time zone;

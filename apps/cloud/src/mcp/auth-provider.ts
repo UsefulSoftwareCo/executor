@@ -2,7 +2,7 @@
 // Cloud McpAuthProvider adapter — the cloud analog of selfHostMcpAuthProviderLayer.
 //
 // Folds the entire cloud edge auth/authz surface (WorkOS JWT verify + API-key
-// bearer + per-request org-liveness check + the two OAuth discovery docs) into
+// bearer + per-request membership check + the two OAuth discovery docs) into
 // ONE `McpAuthProvider` Layer behind the shared host-mcp envelope.
 //
 // `authenticate(request)` runs on EVERY /mcp request and resolves a typed
@@ -10,13 +10,16 @@
 //   - missing bearer       -> Unauthorized (challenge: Bearer resource_metadata=…)
 //   - invalid token/api key -> Unauthorized (challenge: Bearer error="invalid_token" …)
 //   - transient JWKS OR membership-lookup infra -> Unavailable (caught here;
-//       envelope renders a retryable 503 -32001). A WorkOS blip during the live
-//       org check is a TRANSIENT failure, not evidence the org is gone, so it
-//       must NOT reach the Forbidden/destroy path below.
+//       envelope renders a retryable 503 -32001). The membership check reads
+//       the local mirror (`auth/organization.ts`), so the infra that can fail
+//       here is the database — or WorkOS, on the one path that still asks it
+//       (an organization the mirror has never seen). Either is TRANSIENT, not
+//       evidence the org is gone, and must NOT reach the Forbidden/destroy
+//       path below.
 //   - no org / revoked org  -> Forbidden ("No organization in session …", -32001).
 //       This requires a POSITIVE determination (the lookup SUCCEEDED and the org
 //       is absent), never a failed lookup. Because authenticate reads the
-//       mcp-session-id header to do the live org check, the envelope's
+//       mcp-session-id header to do the membership check, the envelope's
 //       dispose-on-Forbidden-with-sessionId path reproduces the old inline
 //       clearExistingSession.
 //   - verified + org allowed -> Authenticated(principal)
@@ -70,15 +73,17 @@ const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
 
-// A transient WorkOS failure (429 / 5xx / timeout / network) during the live
-// membership lookup must NOT masquerade as "org revoked" — but the failure
-// channel alone is not enough to tell them apart: WorkOS also answers with
-// DEFINITIVE 4xx denials (401 revoked/invalid API key, 403, 404 deleted org)
-// that the SDK throws as typed exceptions. So the classification is:
+// A transient failure during the membership lookup must NOT masquerade as
+// "org revoked". The lookup reads the local mirror, so in steady state its
+// only failure is the database; the one path that still asks WorkOS (an
+// organization the mirror has never seen, resolved for a caller WorkOS
+// confirms as its member) can also fail with a DEFINITIVE 4xx denial (401
+// revoked/invalid API key, 403, 404 deleted org) that the SDK throws as a
+// typed exception. So the classification is:
 //   - lookup SUCCEEDS with `null`            -> genuine absence -> Forbidden
 //   - lookup FAILS with WorkOS 401/403/404   -> definitive denial -> Forbidden
 //       (fail CLOSED: WorkOS answered and said no; retrying cannot help)
-//   - lookup FAILS any other way (429/5xx/timeout/network/no status)
+//   - lookup FAILS any other way (database, 429/5xx/timeout/network/no status)
 //       -> transient -> retryable 503, session preserved
 // The status rides on `WorkOSError.status` (threaded from the SDK exception at
 // the service boundary in auth/workos.ts); `isDefinitiveWorkOSDenial` is the
@@ -91,7 +96,7 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
  * organizationId) into the full {@link Principal} the seam validates.
  *
- * The org name and slug come from the record the live membership check just
+ * The org name and slug come from the record the membership check just
  * resolved — this is the whole point of `authorize` returning the record rather
  * than an id. They used to be dropped here (`organizationName: ""`), which left
  * the session Durable Object to re-read the same row over a fresh database
@@ -182,8 +187,9 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // slug (`/acme/mcp`, what the install card prints) or a legacy org id
         // (`/org_xxx/mcp`), carried in the header by `prepareMcpOrgScope`; the
         // bare `/mcp` falls back to the token's `org_id`. Either way
-        // `orgAuth.authorize` resolves the selector and re-checks live WorkOS
-        // membership below, so the URL is a selector, not a trust boundary.
+        // `orgAuth.authorize` resolves the selector and re-checks membership
+        // against the local mirror below, so the URL is a selector, not a
+        // trust boundary.
         const organizationSelector = mcpOrganizationFromRequest(request) ?? token.organizationId;
         if (!organizationSelector) {
           yield* annotateMcpRequest(request, { token, parseBody });

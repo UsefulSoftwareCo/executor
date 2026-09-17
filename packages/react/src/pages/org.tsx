@@ -69,7 +69,7 @@ import { isAsyncResultLoading } from "../lib/async-result";
 
 type MemberData = {
   id: string;
-  email: string;
+  email: string | null;
   name: string | null;
   avatarUrl: string | null;
   role: string;
@@ -79,6 +79,23 @@ type MemberData = {
 };
 
 type RoleData = { slug: string; name: string };
+
+/** What a member row is called: name, else email, else the one thing every
+ *  member has — a membership id — so a profile the host has not learned yet
+ *  still renders as a row an admin can act on. */
+const memberLabel = (member: MemberData): string => member.name ?? member.email ?? member.id;
+
+const memberInitials = (member: MemberData): string => {
+  if (member.name) {
+    return member.name
+      .split(" ")
+      .map((n: string) => n[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
+  }
+  return (member.email?.[0] ?? "?").toUpperCase();
+};
 
 type InviteState = {
   email: string;
@@ -314,7 +331,7 @@ export function OrgPage(props: {
               const filtered = search
                 ? members.filter(
                     (m: MemberData) =>
-                      m.email.toLowerCase().includes(search.toLowerCase()) ||
+                      (m.email?.toLowerCase().includes(search.toLowerCase()) ?? false) ||
                       (m.name?.toLowerCase().includes(search.toLowerCase()) ?? false),
                   )
                 : members;
@@ -338,21 +355,14 @@ export function OrgPage(props: {
                         <img src={member.avatarUrl} alt="" className="size-8 rounded-full" />
                       ) : (
                         <div className="flex size-8 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-                          {member.name
-                            ? member.name
-                                .split(" ")
-                                .map((n: string) => n[0])
-                                .join("")
-                                .slice(0, 2)
-                                .toUpperCase()
-                            : member.email[0]!.toUpperCase()}
+                          {memberInitials(member)}
                         </div>
                       )}
 
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="truncate text-sm font-medium text-foreground leading-none">
-                            {member.name ?? member.email}
+                            {memberLabel(member)}
                           </p>
                           {member.isCurrentUser && (
                             <Badge className="bg-muted text-muted-foreground">You</Badge>
@@ -361,7 +371,7 @@ export function OrgPage(props: {
                             <Badge className="bg-muted text-muted-foreground">Invited</Badge>
                           )}
                         </div>
-                        {member.name && (
+                        {member.name && member.email && (
                           <p className="mt-0.5 truncate text-xs text-muted-foreground leading-none">
                             {member.email}
                           </p>
@@ -421,7 +431,7 @@ export function OrgPage(props: {
                               onClick={() =>
                                 setRemovingMember({
                                   id: member.id,
-                                  name: member.name ?? member.email,
+                                  name: memberLabel(member),
                                 })
                               }
                             >

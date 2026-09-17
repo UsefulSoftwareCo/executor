@@ -19,11 +19,9 @@ import {
   type PausedExecutionHooks,
   type ResumeFallbackOutcome,
 } from "@executor-js/host-mcp/tool-server";
-import { defaultMcpResource, type McpResource } from "@executor-js/host-mcp";
-import {
-  ResumeResponsePayload,
-  decodeResumeResponse,
-} from "@executor-js/host-mcp/browser-approval";
+import { defaultMcpResource, mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
+import { decodeResumeResponse, type McpToolMode } from "@executor-js/host-mcp/browser-approval";
+import { ElicitationResponse } from "@executor-js/sdk";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
@@ -77,6 +75,9 @@ interface McpSessionInitBase {
    *  tools, read off `?search_tools=` at connect time. Absent means the
    *  default (disabled). */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface, read off `?mode=` at connect time. Absent means the
+   *  default (codemode). */
+  readonly toolMode?: McpToolMode;
   /** The MCP resource the session was minted against (`/mcp` default vs a
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
@@ -151,6 +152,11 @@ interface SessionMetaBase {
    *  {@link McpSessionInit}). Absent — including for sessions persisted before
    *  the flag existed — means the default (disabled). */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface (carried from {@link McpSessionInit}). Absent —
+   *  including for sessions persisted before the field existed — means
+   *  codemode. A cold restore MUST rebuild the same surface the client first
+   *  saw, or its cached tool names stop resolving mid-conversation. */
+  readonly toolMode?: McpToolMode;
   /** The MCP resource the session serves (carried from {@link McpSessionInit});
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;
@@ -203,10 +209,9 @@ const AGENTS_DESTROY_PENDING_KEY = "cf_agents_destroy_pending";
 const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
 const MCP_MESSAGE_HEADER = "cf-mcp-message";
 const MODEL_RESUME_FORWARD_TIMEOUT_MS = 10_000;
-const MCP_STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
 const approvalResponseKey = (executionId: string) => `approval-response:${executionId}`;
 const BrowserApprovalDecisionStorage = Schema.Struct({
-  response: ResumeResponsePayload,
+  response: ElicitationResponse,
   orgWriteAccess: Schema.Literals(["allowed", "denied"]),
 });
 const decodeBrowserApprovalDecision = Schema.decodeUnknownOption(BrowserApprovalDecisionStorage);
@@ -752,13 +757,20 @@ export abstract class McpAgentSessionDOBase<
     // which survives disposeIdleRuntime, so a later reconnect GET re-inits the
     // DO and replays it. Counting them would make every delivered-but-unacked
     // POST response pin the runtime alive indefinitely.
-    const rows = await this.ctx.storage.list<readonly JsonRpcRequestId[]>({
-      prefix: MCP_STREAM_REQS_KEY_PREFIX,
-      limit: 1_000,
-    });
+    //
+    // Rows stamped with an epoch older than this incarnation's are dead work,
+    // not running work: the isolate that was going to produce their response
+    // was reset, so nothing will ever answer them and they must not hold the
+    // runtime open. The transport's orphan sweep tells the client and removes
+    // the row on the next GET; until then they simply do not count.
+    const [openStreams, currentEpoch] = await Promise.all([
+      this.getOpenStreamRequestIds(),
+      this.currentSessionEpoch(),
+    ]);
     let count = 0;
-    for (const requestIds of rows.values()) {
-      if (Array.isArray(requestIds)) count += requestIds.length;
+    for (const stream of openStreams) {
+      if (stream.epoch < currentEpoch) continue;
+      count += stream.requestIds.length;
     }
     return count;
   }
@@ -1585,6 +1597,7 @@ export abstract class McpAgentSessionDOBase<
 
   async validateMcpSessionOwner(
     identity: McpApprovalOwner,
+    resource: McpResource,
   ): Promise<"ok" | "not_found" | "forbidden" | "terminated"> {
     const self = this;
     return Effect.runPromise(
@@ -1613,10 +1626,11 @@ export abstract class McpAgentSessionDOBase<
             Effect.withSpan("McpSessionDO.restore_transport_runtime"),
           );
         }
-        return identity.accountId === sessionMeta.userId &&
-          identity.organizationId === sessionMeta.organizationId
-          ? ("ok" as const)
-          : ("forbidden" as const);
+        const ownerMatches =
+          identity.accountId === sessionMeta.userId &&
+          identity.organizationId === sessionMeta.organizationId;
+        const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
+        return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
       }).pipe(
         Effect.withSpan("McpSessionDO.validateMcpSessionOwner"),
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results

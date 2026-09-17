@@ -1,0 +1,1017 @@
+/* Document-style homepage body. Measured prose, hairline sections. */
+.doc {
+  max-width: 720px;
+  /* Without the rail there is nothing to align to, so the column centres. */
+  margin-inline: auto;
+  padding: 4rem 1.5rem 6rem;
+  overflow-x: clip;
+}
+@media (min-width: 640px) {
+  .doc {
+    padding: 4.5rem 2.5rem 7rem;
+  }
+}
+@media (min-width: 1024px) {
+  /* Fill the content column; the frame around rail + content is centred. */
+  .doc {
+    max-width: none;
+    margin-inline: 0;
+    padding-inline: 0;
+  }
+  .doc__intro,
+  .doc__section > :not(.doc__fig--wide):not(.testi) {
+    max-width: 720px;
+  }
+}
+
+.doc__title {
+  font-size: clamp(1.6rem, 2.6vw, 2.1rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.22;
+  color: var(--color-ink);
+  text-wrap: pretty;
+  margin-bottom: 1rem;
+}
+.doc__lede {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+  margin-bottom: 1.6rem;
+}
+.doc__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  margin-bottom: 1.1rem;
+}
+.doc__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.doc__quiet {
+  font-size: 13.5px;
+  color: var(--color-ink-3);
+}
+.doc__quiet:hover {
+  color: var(--color-ink);
+}
+.doc__works {
+  font-size: 13px;
+  color: var(--color-ink-2);
+}
+.doc__works span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-3);
+  margin-right: 0.5rem;
+}
+
+.doc__section {
+  border-top: 1px solid var(--color-rule);
+  margin-top: 3.25rem;
+  padding-top: 2.25rem;
+}
+.doc__h {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--color-ink);
+  margin-bottom: 1rem;
+}
+.doc__section > p {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--color-ink-2);
+  text-wrap: pretty;
+}
+.doc__section > p + p {
+  margin-top: 1rem;
+}
+.doc__section a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__section a:hover {
+  text-decoration-color: var(--color-ink);
+}
+
+.doc__fig {
+  margin-top: 1.75rem;
+}
+.doc__fig .figcap {
+  margin-top: 0.85rem;
+}
+.doc__fig--wide {
+  margin-top: 1.5rem;
+}
+/* The context demo is designed for a wide canvas; let it break out of the
+   prose measure on large screens. */
+/* The context demo spans the full content column but never past it. */
+.doc__fig--wide {
+  max-width: 100%;
+}
+
+.doc__beats {
+  display: grid;
+  gap: 1.25rem;
+}
+.doc__beats dt {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin-bottom: 0.2rem;
+}
+.doc__beats dd {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+}
+
+.doc__ways {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0;
+}
+.doc__ways li {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--color-rule);
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+}
+.doc__ways li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__ways strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__ways a,
+.doc__ways code {
+  margin-left: 0.4rem;
+}
+.doc__ways code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 5px;
+  padding: 0.1rem 0.4rem;
+  color: var(--color-ink);
+}
+.doc__num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-3);
+  padding-top: 0.25rem;
+}
+
+.doc__list {
+  display: grid;
+  gap: 0;
+}
+.doc__list li {
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--color-rule);
+  font-size: 15.5px;
+}
+.doc__list li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__quiet-p {
+  margin-top: 0.75rem;
+  font-size: 14px !important;
+  color: var(--color-ink-3) !important;
+}
+
+/* ── Hero variants ── */
+.doc__runs {
+  font-size: 15px;
+  color: var(--color-ink-2);
+  margin-bottom: 1rem;
+}
+.doc__paths {
+  display: grid;
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 1.1rem;
+}
+@media (min-width: 720px) {
+  .doc__paths {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.doc__path {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1rem 1.1rem 1.05rem;
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+.doc__path:hover {
+  background: var(--color-surface-2);
+}
+.doc__path--primary {
+  background: var(--color-ink);
+  color: #bdbdbd;
+}
+.doc__path--primary:hover {
+  background: #1f1f24;
+}
+.doc__path-k {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.doc__path--primary .doc__path-k,
+.doc__path--primary .doc__path-a {
+  color: var(--color-surface);
+}
+.doc__path-d {
+  font-size: 13.5px;
+  line-height: 1.5;
+  flex: 1;
+}
+.doc__path-d code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.doc__path-a {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+  margin-top: 0.4rem;
+}
+.doc__actions--quiet {
+  margin-bottom: 0;
+}
+.doc__actions--quiet .doc__quiet {
+  max-width: 34ch;
+  line-height: 1.4;
+}
+
+.doc__specs {
+  display: grid;
+  border-top: 1px solid var(--color-rule);
+}
+.doc__specs > div {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.doc__specs dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-3);
+  padding-top: 0.25rem;
+}
+.doc__specs dd {
+  color: var(--color-ink-2);
+}
+.doc__specs a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+
+.doc__tabs {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  padding: 3px;
+  margin-bottom: 1rem;
+  background: var(--color-surface-2);
+}
+.doc__tabs button {
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 0.4rem 0.85rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-2);
+  cursor: pointer;
+}
+.doc__tabs button[aria-selected="true"] {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 0 0 1px var(--color-rule);
+}
+.doc__tabpanes p {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--color-ink-2);
+  margin-bottom: 1rem;
+  max-width: 60ch;
+  /* Always two lines tall, so the buttons sit at the same height on every tab. */
+  min-height: calc(2 * 1.6em);
+}
+.doc__tabpanes .doc__actions {
+  min-height: 46px;
+}
+.doc__tabpanes .doc__actions {
+  margin-bottom: 1.1rem;
+}
+.doc__cmd {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+  color: var(--color-ink);
+}
+
+.doc__fig--hero {
+  margin-top: 2rem;
+  max-width: 720px;
+}
+
+/* ── More hero variants ── */
+.doc__lede--runs a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__lede--runs a:hover {
+  text-decoration-color: var(--color-ink);
+}
+
+.doc__term {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  padding: 0.5rem 0;
+  margin-bottom: 1.1rem;
+}
+.doc__term-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr auto;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.45rem 1rem;
+}
+.doc__term-k {
+  color: var(--color-ink-3);
+}
+.doc__term-k::before {
+  content: "$ ";
+  color: var(--color-rule-strong);
+}
+.doc__term-v {
+  color: var(--color-ink);
+}
+a.doc__term-v {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+a.doc__term-v:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__term-n {
+  color: var(--color-ink-3);
+  font-size: 11.5px;
+}
+@media (max-width: 719.98px) {
+  .doc__term-n {
+    display: none;
+  }
+}
+
+.doc__rows {
+  display: grid;
+  margin-bottom: 1.1rem;
+}
+.doc__rows li {
+  display: grid;
+  grid-template-columns: 2.25rem 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--color-rule);
+}
+.doc__rows li:last-child {
+  border-bottom: 1px solid var(--color-rule);
+}
+.doc__rows-b {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 14.5px;
+  color: var(--color-ink-2);
+}
+.doc__rows-b strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__rows-a {
+  padding: 0.5rem 0.9rem;
+  font-size: 13.5px;
+}
+
+.doc__mono-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.doc__mono-links a {
+  color: var(--color-ink-3);
+}
+.doc__mono-links a:hover {
+  color: var(--color-ink);
+}
+
+.doc__icons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+@media (min-width: 720px) {
+  .doc__icons {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.doc__icon {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  transition: background 0.15s ease;
+}
+.doc__icon:hover {
+  background: var(--color-surface-2);
+}
+.doc__icon svg {
+  margin-bottom: 0.35rem;
+}
+.doc__icon span {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.doc__icon small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+}
+
+/* ── Byline ── */
+.doc__byline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 1.1rem;
+  font-size: 13.5px;
+  color: var(--color-ink-2);
+  text-decoration: none;
+}
+.doc__byline img {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+}
+.doc__byline strong {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.doc__byline-x {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-3);
+}
+.doc__byline:hover .doc__byline-x {
+  color: var(--color-ink);
+}
+
+.doc__sig {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 1.25rem;
+  text-decoration: none !important;
+}
+.doc__sig img {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--color-rule);
+}
+.doc__sig-b {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 14px;
+}
+.doc__sig-b strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.doc__sig-b span {
+  color: var(--color-ink-3);
+}
+.doc__sig:hover .doc__sig-b span {
+  color: var(--color-ink);
+}
+
+/* ── Intro steps with hover reveals ── */
+.doc__steps {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.25rem 0 1rem;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+.doc__steps li {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.25rem;
+  align-items: baseline;
+}
+.doc__steps a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__steps a:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__pop {
+  position: relative;
+  display: inline-block;
+  outline: none;
+}
+.doc__pop-word {
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--color-ink-3);
+  cursor: default;
+}
+.doc__pop:hover .doc__pop-word,
+.doc__pop:focus-visible .doc__pop-word {
+  text-decoration-style: solid;
+  text-decoration-color: var(--color-ink);
+}
+.doc__pop-panel {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: max-content;
+  max-width: 420px;
+  padding: 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow:
+    0 1px 2px rgba(13, 13, 16, 0.04),
+    0 12px 32px -12px rgba(13, 13, 16, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    visibility 0s linear 0.15s;
+}
+.doc__pop:hover .doc__pop-panel,
+.doc__pop:focus-within .doc__pop-panel {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+.doc__pop-tile,
+.doc__pop-pill {
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 0.2s ease,
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: calc(var(--i, 0) * 28ms);
+}
+.doc__pop:hover .doc__pop-tile,
+.doc__pop:hover .doc__pop-pill,
+.doc__pop:focus-within .doc__pop-tile,
+.doc__pop:focus-within .doc__pop-pill {
+  opacity: 1;
+  transform: scale(1);
+}
+.doc__pop-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.doc__pop-tile img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+.doc__pop-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .doc__pop-panel,
+  .doc__pop-tile,
+  .doc__pop-pill {
+    transition: none;
+  }
+}
+
+/* Agent marks on the copy button, so it reads as "for your agent". */
+.doc__copy-logos {
+  display: inline-flex;
+  margin-right: 0.35rem;
+}
+.doc__copy-logos img {
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-rule);
+  object-fit: contain;
+}
+.doc__copy-logos img + img {
+  margin-left: -5px;
+}
+
+/* ── Platform download ── */
+.doc__dl {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.doc__dl-link {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__dl-link:hover {
+  text-decoration-color: var(--color-ink);
+}
+.doc__dl-other > summary {
+  font-size: 13px;
+}
+.doc__dl .download-other-list {
+  left: 0;
+  transform: none;
+}
+.doc__ways .doc__dl {
+  margin-left: 0.4rem;
+}
+.doc__ways .doc__dl a {
+  margin-left: 0;
+}
+/* Explicit, since utility classes added at runtime are not guaranteed to be
+   in the build. */
+.doc__dl > .hidden,
+.doc__dl-other.hidden {
+  display: none;
+}
+
+/* Tab panes share one grid cell, so the tallest one sets the height and
+   switching tabs never shifts the content below. Hidden panes stay in the
+   layout but are invisible and inert. */
+.doc__tabpanes {
+  display: grid;
+}
+.doc__tabpanes > [role="tabpanel"] {
+  grid-area: 1 / 1;
+}
+.doc__tabpanes > [role="tabpanel"][data-inactive] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.doc__subhead {
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--color-ink-2);
+  margin-bottom: 1.5rem;
+}
+
+/* ── Run it: four cells ── */
+.doc__ways {
+  display: grid;
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 1.25rem;
+}
+@media (min-width: 720px) {
+  .doc__ways {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.doc__way {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1.25rem 1.3rem 1.35rem;
+  background: var(--color-surface);
+}
+.doc__way--rec::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--color-ink);
+}
+.doc__way-k {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.doc__way-d {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+  flex: 1;
+}
+.doc__way-a {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.6rem;
+}
+.doc__way-a .btn-primary,
+.doc__way-a .btn-secondary,
+.doc__way-a .doc__cmd {
+  font-size: 13.5px;
+  padding: 0.55rem 0.95rem;
+}
+/* The section-wide link rule must not restyle real buttons. */
+.doc__section a.btn-primary,
+.doc__section a.btn-secondary {
+  text-decoration: none;
+}
+.doc__section a.btn-primary {
+  color: var(--color-surface);
+}
+
+/* A list at the end of a section: no bottom hairline, the next section's top
+   rule closes it. Avoids two rules a few pixels apart. */
+.doc__list--open li:last-child {
+  border-bottom: 0;
+}
+
+/* ── Phones ── */
+@media (max-width: 719.98px) {
+  .doc {
+    padding: 2.25rem 1.25rem 4rem;
+  }
+  .doc__title {
+    font-size: 1.75rem;
+  }
+  .doc__steps {
+    font-size: 16px;
+  }
+  .doc__steps li {
+    grid-template-columns: 1.75rem 1fr;
+  }
+  .doc__subhead {
+    font-size: 16px;
+  }
+  /* Hover reveals become tap reveals. The word can sit anywhere on the line,
+     so the panel is not anchored to it; it is fixed across the viewport width
+     just under the top bar. */
+  .doc__pop {
+    position: static;
+  }
+  .doc__pop-panel {
+    position: fixed;
+    left: 1rem;
+    right: 1rem;
+    top: 64px;
+    width: auto;
+    max-width: none;
+  }
+  .doc__tabs {
+    display: flex;
+    width: 100%;
+  }
+  .doc__tabs button {
+    flex: 1;
+    padding: 0.45rem 0.4rem;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .doc__tabpanes p {
+    min-height: 0;
+  }
+  .doc__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .doc__actions > .btn-primary,
+  .doc__actions > .btn-secondary,
+  .doc__actions > .doc__cmd,
+  .doc__actions > .doc__dl {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .doc__dl {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .doc__dl > a {
+    width: 100%;
+    justify-content: center;
+  }
+  .doc__dl-other {
+    align-self: center;
+  }
+  .doc__dl .download-other-list {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .doc__section {
+    margin-top: 2.5rem;
+    padding-top: 1.75rem;
+  }
+  .doc__h {
+    font-size: 20px;
+  }
+  .doc__ways {
+    grid-template-columns: 1fr;
+  }
+  .doc__way-a .btn-primary,
+  .doc__way-a .btn-secondary {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .doc__way-a .doc__dl {
+    width: 100%;
+  }
+  .doc__fig--hero .surface-card {
+    padding: 1rem;
+  }
+}
+
+/* Below the rail breakpoint the intro is centred, not left-ragged. */
+@media (max-width: 1023.98px) {
+  .doc__intro {
+    text-align: center;
+  }
+  .doc__steps {
+    justify-content: center;
+  }
+  .doc__steps li {
+    display: flex;
+    justify-content: center;
+    gap: 0.6rem;
+  }
+  .doc__tabs {
+    margin-inline: auto;
+  }
+  .doc__tabpanes p {
+    margin-inline: auto;
+  }
+  .doc__actions {
+    justify-content: center;
+  }
+  .doc__pop-panel {
+    text-align: left;
+  }
+}
+
+/* ── Blog ── */
+.doc__posts {
+  display: grid;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--color-rule);
+}
+.doc__post {
+  display: grid;
+  gap: 0.3rem;
+  padding: 1.15rem 0 1.25rem;
+  border-bottom: 1px solid var(--color-rule);
+  text-decoration: none;
+  color: var(--color-ink-2);
+}
+.doc__post-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--color-ink-3);
+}
+.doc__post-title {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.15s ease;
+}
+.doc__post:hover .doc__post-title {
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__post-desc {
+  font-size: 15px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.doc__crumb {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--color-ink-3);
+  margin-bottom: 1rem;
+}
+.doc__crumb:hover {
+  color: var(--color-ink);
+}
+.doc__sig--post {
+  margin-top: 0.5rem;
+}
+.doc__intro--post {
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--color-rule);
+  margin-bottom: 2rem;
+}
+@media (min-width: 1024px) {
+  .doc__prose,
+  .doc__posts {
+    max-width: 720px;
+  }
+}

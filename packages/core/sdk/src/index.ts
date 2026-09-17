@@ -112,7 +112,7 @@ export type { Tool, ToolDef, ToolListFilter, ToolAnnotations } from "./tool";
 export type { CredentialProvider, ProviderEntry } from "./provider";
 
 // Public projections / detection.
-export { ToolSchemaView, IntegrationDetectionResult } from "./types";
+export { ToolSchemaView, ToolAnnotationsView, IntegrationDetectionResult } from "./types";
 
 // Health-check vocabulary (pure Schema + helpers).
 export {
@@ -243,6 +243,8 @@ export {
 // Elicitation.
 export {
   ElicitationMeta,
+  ElicitationResponseMeta,
+  offeredPersistence,
   FormElicitation,
   UrlElicitation,
   ElicitationAction,
@@ -251,6 +253,7 @@ export {
   type ElicitationRequest,
   type ElicitationHandler,
   type ElicitationContext,
+  type ElicitationSource,
   type OnElicitation,
   type InvokeOptions,
 } from "./elicitation";

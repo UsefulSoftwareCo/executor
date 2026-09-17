@@ -29,6 +29,7 @@ import {
   createPkceCodeVerifier,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
+import { parseChallenges } from "./www-authenticate";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -250,8 +251,8 @@ const executeText = (
 // ---------------------------------------------------------------------------
 // RFC 9728 — Protected Resource Metadata
 //
-// Not covered by `oauth4webapi`. Hand-rolled probe: try the path-scoped
-// well-known first, then the origin-scoped fallback.
+// Follow the protected endpoint's advertised metadata URL before trying
+// path-scoped and origin-scoped well-known locations (RFC 9728 section 5).
 // ---------------------------------------------------------------------------
 
 const buildResourceMetadataUrls = (resourceUrl: string): string[] => {
@@ -278,6 +279,61 @@ const withResourceQueryParams = (
   return parsed.toString();
 };
 
+const discoverResourceMetadataChallenge = (
+  resourceUrl: string,
+  options: DiscoveryRequestOptions,
+): Effect.Effect<string | null, OAuthDiscoveryError> =>
+  provideHttpClient(
+    Effect.gen(function* () {
+      yield* validateEndpointUrl(resourceUrl, "resource", options.endpointUrlPolicy);
+      let request = HttpClientRequest.get(
+        withResourceQueryParams(resourceUrl, options.resourceQueryParams),
+      ).pipe(HttpClientRequest.setHeader("accept", "application/json"));
+      for (const [name, value] of Object.entries(options.resourceHeaders ?? {})) {
+        request = HttpClientRequest.setHeader(request, name, value);
+      }
+      if (options.mcpProtocolVersion) {
+        request = HttpClientRequest.setHeader(
+          request,
+          MCP_PROTOCOL_VERSION_HEADER,
+          options.mcpProtocolVersion,
+        );
+      }
+      const client = yield* HttpClient.HttpClient;
+      // Read headers only: an MCP GET can open a long-lived event stream.
+      const response = yield* HttpClient.withScope(client)
+        .execute(request)
+        .pipe(
+          Effect.timeout(Duration.millis(options.timeoutMs ?? OAUTH2_DEFAULT_TIMEOUT_MS)),
+          Effect.mapError(
+            (cause) =>
+              new OAuthDiscoveryError({
+                message: "Failed to discover the protected resource authentication challenge",
+                cause,
+              }),
+          ),
+        );
+      if (response.status !== 401 && response.status !== 403) return null;
+      const header = response.headers["www-authenticate"];
+      if (header === undefined) return null;
+      const challenges = parseChallenges(header);
+      if (challenges === null) return null;
+      for (const challenge of challenges) {
+        if (challenge.scheme !== "bearer") continue;
+        const metadataUrl = challenge.params.get("resource_metadata");
+        if (metadataUrl === undefined) continue;
+        return yield* validateEndpointUrl(
+          metadataUrl,
+          "resource_metadata",
+          options.endpointUrlPolicy,
+        );
+      }
+      return null;
+    }).pipe(Effect.scoped),
+    options,
+  );
+
+/** Discover RFC 9728 metadata, preferring an explicit Bearer challenge URL. */
 export const discoverProtectedResourceMetadata = (
   resourceUrl: string,
   options: DiscoveryRequestOptions = {},
@@ -286,12 +342,22 @@ export const discoverProtectedResourceMetadata = (
   OAuthDiscoveryError
 > =>
   Effect.gen(function* () {
-    for (const url of buildResourceMetadataUrls(resourceUrl)) {
-      const requestUrl = withResourceQueryParams(url, options.resourceQueryParams);
+    const advertisedUrl = yield* discoverResourceMetadataChallenge(resourceUrl, options);
+    const metadataUrls =
+      advertisedUrl === null ? buildResourceMetadataUrls(resourceUrl) : [advertisedUrl];
+    for (const url of metadataUrls) {
+      // A challenge may name another origin. Never forward resource credentials there.
+      const sameOrigin = new URL(url).origin === new URL(resourceUrl).origin;
+      const requestUrl = withResourceQueryParams(
+        url,
+        sameOrigin ? options.resourceQueryParams : undefined,
+      );
       let request = HttpClientRequest.get(requestUrl).pipe(
         HttpClientRequest.setHeader("accept", "application/json"),
       );
-      for (const [name, value] of Object.entries(options.resourceHeaders ?? {})) {
+      for (const [name, value] of Object.entries(
+        sameOrigin ? (options.resourceHeaders ?? {}) : {},
+      )) {
         request = HttpClientRequest.setHeader(request, name, value);
       }
       if (options.mcpProtocolVersion) {

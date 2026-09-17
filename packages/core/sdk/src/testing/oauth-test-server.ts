@@ -66,6 +66,13 @@ export interface OAuthTestServerOptions {
   readonly omitTokenResponseScopes?: readonly string[];
   readonly supportRefresh?: boolean;
   readonly tokenExpiresInSeconds?: number;
+  /** Refuse a refresh-token grant whose `scope` parameter names anything outside
+   *  this list, answering the RFC 6749 §5.2 envelope Railway returns:
+   *  `invalid_scope: refresh token missing requested scope`. Models an AS whose
+   *  refresh token carries a narrower grant than the authorization it echoed
+   *  back, so a client that re-sends its recorded grant is refused (issue
+   *  #1969). Omit to accept any `scope`, the default. */
+  readonly refreshGrantScopes?: readonly string[];
   readonly invalidRefreshTokenDescription?: string;
   /** RFC 6749 error code returned when a refresh-token grant is rejected.
    *  Defaults to `invalid_grant`; set to e.g. `invalid_request` to mirror
@@ -852,6 +859,17 @@ export const serveOAuthTestServer = (
                     contentType: rejection.contentType ?? "text/plain; charset=utf-8",
                   })
                 : oauthError(400, invalidRefreshTokenErrorCode, invalidRefreshTokenDescription);
+            }
+            const grantScopes = options.refreshGrantScopes;
+            if (grantScopes) {
+              const granted = new Set(grantScopes);
+              const requestedScope = params.get("scope");
+              const outsideGrant = (requestedScope ?? "")
+                .split(/[\s,]+/)
+                .filter((scope) => scope.length > 0 && !granted.has(scope));
+              if (outsideGrant.length > 0) {
+                return oauthError(400, "invalid_scope", "refresh token missing requested scope");
+              }
             }
             const nextAccessToken = `at_${randomUUID()}`;
             const nextRefreshToken = `rt_${randomUUID()}`;

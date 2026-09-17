@@ -13,6 +13,7 @@ describe("skills registry", () => {
     expect(EXECUTE_SKILL.body).toContain(
       "Do not use `fetch` — all API calls go through `tools.*`.",
     );
+    expect(EXECUTE_SKILL.body).toContain("read `result.data.connections`");
   });
 
   it("finds a skill by exact name and misses unknown names", () => {
@@ -53,5 +54,19 @@ describe("skills registry", () => {
 
   it("serves the full catalog to a session that opted in to artifacts", () => {
     expect(skillCatalogFor({ artifacts: true })).toEqual(SKILLS);
+  });
+});
+
+describe("artifact discovery guides", () => {
+  it("uses the search/invoke workflow without advertising execute", () => {
+    const catalog = skillCatalogFor({ artifacts: true, discovery: "search-invoke" });
+    expect(catalog.map((skill) => skill.name)).toEqual(["create-artifact", "artifact-style"]);
+    const body = findSkill("create-artifact", catalog)?.body;
+    expect(body).toContain("integrations");
+    expect(body).toContain("invoke");
+    expect(body).toContain("queryOptions");
+    expect(body).not.toContain("`execute`");
+    expect(body).not.toContain("connections.list");
+    expect(skillCatalogFor({ artifacts: false, discovery: "search-invoke" })).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
-import type { OrgWriteAccess } from "@executor-js/sdk";
+import type { Executor, OrgWriteAccess } from "@executor-js/sdk";
 
 import {
   buildResumeApprovalUrl,
@@ -12,6 +12,8 @@ import {
   readArtifactsEnabled,
   readElicitationMode,
   readSearchToolsEnabled,
+  readToolMode,
+  type McpToolMode,
 } from "./browser-approval";
 import {
   makeInProcessBrowserApprovalStore,
@@ -31,7 +33,7 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import type { BrowserApprovalStore } from "./tool-server";
+import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -98,6 +100,8 @@ export class McpEngineBuildError extends Data.TaggedError("McpEngineBuildError")
 export interface BuiltMcpServer {
   readonly mcpServer: McpServer;
   readonly engine: ExecutionEngine<Cause.YieldableError>;
+  readonly executor?: Executor;
+  readonly close?: () => Promise<void>;
 }
 
 /** The browser-mode wiring the store hands a build call when a session opts in. */
@@ -115,13 +119,15 @@ export interface McpBuildServerOptions {
   /** Whether this session serves the per-integration `search_<integration>`
    *  tools. False unless the client connected with `?search_tools=true`. */
   readonly searchToolsEnabled?: boolean;
+  /** The tool surface (`?mode=`): codemode (default) or passthrough. */
+  readonly mode?: McpToolMode;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
 export type McpBuildServer = (
   principal: Principal,
   options?: McpBuildServerOptions,
-) => Effect.Effect<BuiltMcpServer, McpEngineBuildError>;
+) => Effect.Effect<BuiltMcpServer, McpEngineBuildError | McpPassthroughUnavailableError>;
 
 export interface InMemoryMcpSessionStore {
   /** The `McpSessionStore` seam value to hand to `inMemoryMcpSessionsLayer`. */
@@ -243,6 +249,8 @@ export const makeInMemoryMcpSessionStore = (
   const servers = new Map<string, McpServer>();
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
+  const executors = new Map<string, Executor>();
+  const closers = new Map<string, () => Promise<void>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
   // Monotonic-ish last-touch stamp per live session, the first input the idle
   // sweep reads. Written on create and on every forwarded request.
@@ -294,20 +302,33 @@ export const makeInMemoryMcpSessionStore = (
   ): Promise<void> =>
     ignoreClose(id, "engine", engine ? () => Effect.runPromise(engine.shutdown) : undefined);
 
+  /**
+   * Shut down a session's scoped executor and its plugin resources (such as
+   * tool subprocesses and connection pools). Every disposal path goes through here.
+   */
+  const shutdownExecutor = (id: string | null, executor: Executor | undefined): Promise<void> =>
+    ignoreClose(id, "executor", executor ? () => Effect.runPromise(executor.close()) : undefined);
+
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const transport = transports.get(id);
     const server = servers.get(id);
     const engine = engines.get(id);
+    const executor = executors.get(id);
+    const closer = closers.get(id);
     transports.delete(id);
     servers.delete(id);
     owners.delete(id);
     engines.delete(id);
+    executors.delete(id);
+    closers.delete(id);
     lastSeen.delete(id);
     activeRequests.delete(id);
     if (opts.transport)
       await ignoreClose(id, "transport", transport ? () => transport.close() : undefined);
     if (opts.server) await ignoreClose(id, "server", server ? () => server.close() : undefined);
     await shutdownEngine(id, engine);
+    await shutdownExecutor(id, executor);
+    await ignoreClose(id, "session", closer);
   };
 
   /**
@@ -397,13 +418,18 @@ export const makeInMemoryMcpSessionStore = (
   ): McpBuildServerOptions => {
     const artifactsEnabled = readArtifactsEnabled(request);
     const searchToolsEnabled = readSearchToolsEnabled(request);
-    const mode = readElicitationMode(request);
-    if (mode !== "browser") {
-      return { artifactsEnabled, searchToolsEnabled, elicitationMode: { mode } };
-    }
-    return {
+    const toolMode = readToolMode(request);
+    const surface = {
       artifactsEnabled,
       searchToolsEnabled,
+      mode: toolMode,
+    };
+    const mode = readElicitationMode(request);
+    if (mode !== "browser") {
+      return { ...surface, elicitationMode: { mode } };
+    }
+    return {
+      ...surface,
       elicitationMode: {
         mode: "browser",
         // Prefer the pinned public origin; fall back to the request URL (correct
@@ -430,7 +456,7 @@ export const makeInMemoryMcpSessionStore = (
       ...buildOptionsFor(request, () => createdSessionId),
       resource,
     }).pipe(
-      Effect.flatMap(({ mcpServer, engine }) =>
+      Effect.flatMap(({ mcpServer, engine, executor, close }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
@@ -441,6 +467,8 @@ export const makeInMemoryMcpSessionStore = (
               servers.set(sid, mcpServer);
               owners.set(sid, { principal, resource });
               engines.set(sid, engine);
+              if (executor) executors.set(sid, executor);
+              if (close) closers.set(sid, close);
               lastSeen.set(sid, Date.now());
             },
             onsessionclosed: (sid) => void dispose(sid, { server: true }),
@@ -458,19 +486,24 @@ export const makeInMemoryMcpSessionStore = (
             orgWriteAccessForPrincipal(principal),
             () => {
               // Nothing was ever registered under a session id, so `dispose` has
-              // no entry to work from — release the three handles by hand, engine
-              // included.
+              // no entry to work from — release the handles by hand, engine
+              // and executor included.
               void ignoreClose(null, "transport", () => transport.close());
               void ignoreClose(null, "server", () => mcpServer.close());
               void shutdownEngine(null, engine);
+              void shutdownExecutor(null, executor);
+              if (close) void ignoreClose(null, "session", close);
             },
           );
         }),
       ),
       // A build failure has nowhere typed to go in the envelope; render a 500.
-      Effect.catchTag("McpEngineBuildError", () =>
-        Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
-      ),
+      Effect.catchTags({
+        McpEngineBuildError: () =>
+          Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
+        McpPassthroughUnavailableError: () =>
+          Effect.succeed(jsonRpcError(500, -32603, "Internal server error")),
+      }),
     );
   };
 
@@ -623,7 +656,13 @@ export const makeInMemoryMcpSessionStore = (
     sweepIdleSessions,
     close: async () => {
       if (sweepTimer !== undefined) clearInterval(sweepTimer);
-      const ids = new Set([...transports.keys(), ...servers.keys(), ...engines.keys()]);
+      const ids = new Set([
+        ...transports.keys(),
+        ...servers.keys(),
+        ...engines.keys(),
+        ...executors.keys(),
+        ...closers.keys(),
+      ]);
       await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };

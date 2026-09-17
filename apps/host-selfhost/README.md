@@ -57,3 +57,18 @@ src/
   db/ · mcp/ · execution.ts · plugins.ts · observability.ts
 web/                the TanStack Router SPA (setup, login, join, admin, …)
 ```
+
+## Container permissions when upgrading
+
+The container runs as UID/GID `65532:65532`. New Docker named volumes inherit
+that ownership from the image. Existing volumes created by a root-running
+release must be backed up and assigned to this UID/GID before the first start
+of the new image. Bind-mounted data directories need the same write access.
+
+Stop the old container before changing data-directory ownership. Verify the
+exact volume or bind-mount path, make a backup, and change ownership only within
+that data directory. The application does not change existing volume ownership
+automatically. Keep the previous image and backup available for rollback.
+
+The Docker build and runtime base images are pinned by digest. Update the tag
+and digest together when applying upstream security updates.

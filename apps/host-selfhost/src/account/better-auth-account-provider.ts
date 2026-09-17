@@ -145,7 +145,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
             const members = result.members.map((member) => ({
               id: member.id,
               userId: member.userId,
-              email: member.user?.email ?? "",
+              email: member.user?.email ?? null,
               name: member.user?.name ?? null,
               avatarUrl: member.user?.image ?? null,
               role: member.role,

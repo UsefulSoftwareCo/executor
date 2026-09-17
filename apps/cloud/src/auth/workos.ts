@@ -4,9 +4,16 @@
 
 import { env } from "cloudflare:workers";
 import { Context, Data, Effect, Layer, Option, Predicate, Schema } from "effect";
-import { GeneratePortalLinkIntent, WorkOS } from "@workos-inc/node/worker";
+import {
+  GeneratePortalLinkIntent,
+  WorkOS,
+  type Event as WorkOSEvent,
+  type EventName as WorkOSEventName,
+  type OrganizationMembershipStatus,
+} from "@workos-inc/node/worker";
 import { defaults as ironDefaults, unseal as unsealIron } from "iron-webcrypto";
 import { decodeJwt, jwtVerify } from "jose";
+import { workosAccessTokenOptions } from "./access-token-options";
 import { JWKSInvalid, JWKSNoMatchingKey, JWKSTimeout } from "jose/errors";
 import { parseCookie } from "./cookies";
 import { createCachedRemoteJWKSet, type CachedRemoteJWKSet } from "./jwks-cache";
@@ -15,6 +22,7 @@ import {
   tryPromiseService,
   withServiceLogging,
   workosErrorFromFailure,
+  type WorkOSError,
 } from "./errors";
 
 const COOKIE_NAME = "wos-session";
@@ -45,6 +53,20 @@ type WorkOSAutoPaginatable<Resource> = {
   readonly data: Resource[];
   readonly listMetadata: WorkOSListMetadata;
   readonly autoPagination: () => Promise<Resource[]>;
+};
+
+/**
+ * One read of the WorkOS Events API stream. `events` names the types to
+ * return; `after` resumes from an event id (exclusive), `rangeStart` (ISO)
+ * bounds a first read that has no cursor yet. Mirrors the SDK's
+ * `ListEventOptions` with readonly inputs.
+ */
+export type WorkOSListEventsOptions = {
+  readonly events: readonly WorkOSEventName[];
+  readonly after?: string;
+  readonly rangeStart?: string;
+  readonly limit?: number;
+  readonly order?: "asc" | "desc";
 };
 
 export type WorkOSCollectedList<Resource> = {
@@ -179,7 +201,7 @@ const getWorkOSSessionJwks = (() => {
 
 const verifyJwtOnce = (accessToken: string, jwks: CachedRemoteJWKSet) =>
   Effect.tryPromise({
-    try: () => jwtVerify(accessToken, jwks),
+    try: () => jwtVerify(accessToken, jwks, workosAccessTokenOptions),
     catch: (cause) => new ServiceAdapterError({ cause }),
   });
 
@@ -644,18 +666,30 @@ const make = Effect.gen(function* () {
     deleteApiKey: (id: string) =>
       use("apiKeys.deleteApiKey", (wos) => wos.apiKeys.deleteApiKey(id)),
 
-    /** List organization memberships with user details. */
-    listOrgMembers: (organizationId: string) =>
+    /**
+     * An organization's memberships, all pages. Defaults to active + pending
+     * (the seat-occupying set); pass `statuses` to narrow — the invite
+     * write-through lists only `pending` to find the membership WorkOS
+     * created for the invitee.
+     */
+    listOrgMembers: (
+      organizationId: string,
+      statuses: readonly OrganizationMembershipStatus[] = ["active", "pending"],
+    ) =>
       use("userManagement.listOrganizationMemberships", async (wos) =>
         collectWorkOSList(
           await wos.userManagement.listOrganizationMemberships({
             organizationId,
-            statuses: ["active", "pending"],
+            statuses: [...statuses],
           }),
         ),
       ),
 
-    /** Get a user's membership in an organization. */
+    /**
+     * A user's membership in an organization (active or pending), or `null`
+     * when WorkOS lists none: the user is not a member, or the organization
+     * is gone.
+     */
     getUserOrgMembership: (organizationId: string, userId: string) =>
       use("userManagement.listOrganizationMemberships", async (wos) => {
         const response = await wos.userManagement.listOrganizationMemberships({
@@ -663,23 +697,13 @@ const make = Effect.gen(function* () {
           userId,
           statuses: ["active", "pending"],
         });
-        return response.data[0] ?? null;
+        const [membership] = response.data;
+        return membership === undefined ? null : membership;
       }),
 
     /** Get a user by ID. */
     getUser: (userId: string) =>
       use("userManagement.getUser", (wos) => wos.userManagement.getUser(userId)),
-
-    /** List users matching an email within one organization. */
-    listUsers: (params: { email: string; organizationId: string }) =>
-      use("userManagement.listUsers", async (wos) =>
-        collectWorkOSList(
-          await wos.userManagement.listUsers({
-            email: params.email,
-            organizationId: params.organizationId,
-          }),
-        ),
-      ),
 
     /** Send an organization invitation. */
     sendInvitation: (params: { email: string; organizationId: string; roleSlug?: string }) =>
@@ -732,12 +756,6 @@ const make = Effect.gen(function* () {
         wos.userManagement.deleteOrganizationMembership(membershipId),
       ),
 
-    /** Get the role for a membership. */
-    getOrgMembership: (membershipId: string) =>
-      use("userManagement.getOrganizationMembership", (wos) =>
-        wos.userManagement.getOrganizationMembership(membershipId),
-      ),
-
     /** Update a membership's role. */
     updateOrgMembershipRole: (membershipId: string, roleSlug: string) =>
       use("userManagement.updateOrganizationMembership", (wos) =>
@@ -750,6 +768,48 @@ const make = Effect.gen(function* () {
     listOrgRoles: (organizationId: string) =>
       use("organizations.listOrganizationRoles", (wos) =>
         wos.organizations.listOrganizationRoles({ organizationId }),
+      ),
+
+    /**
+     * One page of the Events API stream, oldest first when `order` is `asc`.
+     * The reconciler (`workos-events-sync.ts`) is the only consumer: it pages
+     * by `after` = the last event id it applied, so the stream is replayable
+     * from the persisted cursor. Returns the SDK page as-is (`data` +
+     * `listMetadata.after`); paging is the caller's loop, not
+     * `collectWorkOSList`, because each page is committed before the next is
+     * read.
+     */
+    listEvents: (options: WorkOSListEventsOptions) =>
+      use("events.listEvents", (wos) =>
+        wos.events.listEvents({
+          events: [...options.events],
+          ...(options.after === undefined ? {} : { after: options.after }),
+          ...(options.rangeStart === undefined ? {} : { rangeStart: options.rangeStart }),
+          ...(options.limit === undefined ? {} : { limit: options.limit }),
+          ...(options.order === undefined ? {} : { order: options.order }),
+        }),
+      ),
+
+    /**
+     * Verify a webhook delivery against `secret` (the endpoint's signing
+     * secret from the WorkOS dashboard) and decode its event. A local HMAC
+     * check, no network: it fails with a status-less `WorkOSError` when the
+     * `WorkOS-Signature` header is missing its parts, older than the SDK's
+     * tolerance, or does not match `payload`. The decoded event is returned
+     * for the caller to inspect; the webhook route deliberately does NOT
+     * apply it (the Events API is the only source the mirror replays from).
+     */
+    constructWebhookEvent: (params: {
+      readonly payload: Record<string, unknown>;
+      readonly sigHeader: string;
+      readonly secret: string;
+    }): Effect.Effect<WorkOSEvent, WorkOSError> =>
+      use("webhooks.constructEvent", (wos) =>
+        wos.webhooks.constructEvent({
+          payload: params.payload,
+          sigHeader: params.sigHeader,
+          secret: params.secret,
+        }),
       ),
 
     /** Get an organization (includes domains). */

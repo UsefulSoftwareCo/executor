@@ -306,6 +306,8 @@ describe("hosted outbound HTTP client", () => {
           headers: {
             "content-type": "application/json",
             "cf-ray": "a2ca5b47bb7f3550",
+            location: "https://example.com/callback?code=secret-code",
+            "mcp-session-id": "secret-session",
           },
         })) as typeof globalThis.fetch;
 
@@ -316,6 +318,9 @@ describe("hosted outbound HTTP client", () => {
             HttpClientRequest.setHeaders({
               accept: "application/json",
               "x-goog-api-key": "live-credential",
+              referer: "https://example.com/callback?code=secret-code",
+              "mcp-session-id": "secret-session",
+              tracestate: "vendor=secret-value",
             }),
           ),
         );
@@ -332,6 +337,63 @@ describe("hosted outbound HTTP client", () => {
         "application/json",
       );
       expect(String(spanAttributes.get("http.response.header.cf-ray"))).toBe("<redacted>");
+      for (const key of [
+        "http.request.header.referer",
+        "http.request.header.mcp-session-id",
+        "http.request.header.tracestate",
+        "http.response.header.location",
+        "http.response.header.mcp-session-id",
+      ]) {
+        expect(String(spanAttributes.get(key))).toBe("<redacted>");
+      }
     }),
   );
+});
+
+describe("hosted TLS policy", () => {
+  it.effect(
+    "rejects public plaintext requests even when private development access is enabled",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* validateHostedOutboundUrl("http://api.example/data", {
+          requireTls: true,
+          allowLocalNetwork: true,
+        }).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        yield* validateHostedOutboundUrl("https://api.example/data", { requireTls: true });
+        yield* validateHostedOutboundUrl("http://127.0.0.1:3000/data", {
+          requireTls: true,
+          allowLocalNetwork: true,
+        });
+      }),
+  );
+
+  it("blocks HTTPS downgrade redirects before sending the redirected request", async () => {
+    let calls = 0;
+    const guarded = makeHostedFetch({
+      requireTls: true,
+      resolveHostname: publicResolver,
+      fetch: (async () => {
+        calls++;
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://api.example/data" },
+        });
+      }) as typeof globalThis.fetch,
+    });
+    await expect(
+      guarded("https://api.example/data", {
+        headers: { authorization: "Bearer synthetic-secret" },
+      }),
+    ).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "This host requires HTTPS for outbound requests",
+    });
+    expect(calls).toBe(1);
+    await expect(guarded("http://api.example/data")).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+      reason: "This host requires HTTPS for outbound requests",
+    });
+    expect(calls).toBe(1);
+  });
 });

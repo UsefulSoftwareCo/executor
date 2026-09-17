@@ -1,5 +1,10 @@
-import { Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { Effect, Exit, Fiber, Layer, Option, Predicate, Schema, Stream } from "effect";
+import {
+  HttpClient,
+  type HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 import { isToolFile, type ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
@@ -838,12 +843,8 @@ const applyRequestBody = (
   });
 
   if (isJsonContentType(contentType)) {
-    // Pre-serialized JSON strings pass through with the declared media
-    // type preserved (important for `application/vnd.foo+json` etc.).
-    if (typeof bodyValue === "string") {
-      return sent(HttpClientRequest.bodyText(request, bodyValue, contentType));
-    }
-    return sent(HttpClientRequest.bodyJsonUnsafe(request, bodyValue));
+    const text = typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue);
+    return sent(HttpClientRequest.bodyText(request, text, contentType));
   }
 
   if (isFormUrlEncoded(contentType)) {
@@ -1153,6 +1154,44 @@ export const buildRequest = Effect.fn("OpenApi.buildRequest")(function* (
 });
 
 // ---------------------------------------------------------------------------
+// Transport failure classification
+// ---------------------------------------------------------------------------
+
+const urlHost = Option.liftThrowable((url: string) => new URL(url).host);
+
+// `fetch` rejects with a generic `TypeError("fetch failed")`; the errno-style
+// code (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …) sits on the innermost
+// link of its `cause` chain. The walk is bounded so a cyclic cause cannot spin.
+const TransportCauseLink = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+});
+const decodeTransportCauseLink = Schema.decodeUnknownOption(TransportCauseLink);
+const TRANSPORT_CAUSE_MAX_DEPTH = 5;
+
+const transportFailureCode = (cause: unknown, depth = 0): string | undefined =>
+  Option.match(decodeTransportCauseLink(cause), {
+    onNone: () => undefined,
+    onSome: (link) =>
+      (link.cause !== undefined && depth < TRANSPORT_CAUSE_MAX_DEPTH
+        ? transportFailureCode(link.cause, depth + 1)
+        : undefined) ?? link.code,
+  });
+
+// A transport failure produced no response: DNS, connection refused, TLS, or a
+// socket dropped before headers. The TransportError carries the whole request
+// (URL, headers, credentials), so only the origin and the errno-style code are
+// lifted onto the invocation error.
+const transportFailureFields = (reason: HttpClientError.HttpClientError["reason"]) =>
+  Predicate.isTagged(reason, "TransportError")
+    ? {
+        reason: "transport_error" as const,
+        upstreamHost: Option.getOrUndefined(urlHost(reason.request.url)),
+        transportCode: transportFailureCode(reason.cause),
+      }
+    : {};
+
+// ---------------------------------------------------------------------------
 // Public API — invoke a single operation
 // ---------------------------------------------------------------------------
 
@@ -1187,6 +1226,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         (err) =>
           new OpenApiInvocationError({
             message: "HTTP request failed",
+            ...transportFailureFields(err.reason),
             statusCode: Option.none(),
             cause: err,
           }),
@@ -1201,7 +1241,6 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
         }),
       ),
     );
-    const fiber = runFork(responseEffect);
     const interrupt = () => {
       runFork(Fiber.interrupt(fiber));
     };
@@ -1211,6 +1250,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
       interrupt();
       resume(Effect.succeed(Option.none()));
     }, responseHeadersTimeoutMs);
+    const fiber = runFork(responseEffect);
     signal.addEventListener("abort", interrupt, { once: true });
     return Effect.sync(() => {
       clearTimeout(timer);
@@ -1261,7 +1301,6 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
             }),
           ),
         );
-        const fiber = runFork(bodyEffect);
         const interrupt = () => {
           runFork(Fiber.interrupt(fiber));
         };
@@ -1271,6 +1310,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
           interrupt();
           resume(Effect.succeed(Option.none()));
         }, responseBodyTimeoutMs);
+        const fiber = runFork(bodyEffect);
         signal.addEventListener("abort", interrupt, { once: true });
         return Effect.sync(() => {
           clearTimeout(timer);

@@ -290,6 +290,9 @@ export type ExecuteError =
   | PluginNotLoadedError
   | NoHandlerError
   | ConnectionNotFoundError
+  /** The tool row outlived its integration (an orphan the catalog no longer
+   *  lists), so there is no plugin config to invoke it against. */
+  | IntegrationNotFoundError
   | CredentialProviderNotRegisteredError
   | CredentialResolutionError
   | ElicitationDeclinedError
@@ -298,6 +301,5 @@ export type ExecuteError =
 /** Convenience union spanning every typed error the SDK raises. */
 export type ExecutorError =
   | ExecuteError
-  | IntegrationNotFoundError
   | IntegrationRemovalNotAllowedError
   | ArtifactNotFoundError;

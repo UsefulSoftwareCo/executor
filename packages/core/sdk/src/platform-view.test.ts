@@ -424,6 +424,61 @@ const expectWriteRefused = <A, E extends { readonly _tag: string }>(
     Effect.orDie,
   );
 
+describe("platform view — admin.listSubjects externalIds filter", () => {
+  it.effect("keeps only the named ids, still ordered and paged through storage", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db));
+
+        const only = yield* admin.listSubjects({ externalIds: [SUBJECT_B] });
+        expect(only.map((entry) => entry.externalId)).toEqual([SUBJECT_B]);
+
+        // Ids the tenant does not hold are simply absent — including another
+        // tenant's subject, which the policy keeps out regardless of the filter.
+        const mixed = yield* admin.listSubjects({
+          externalIds: [SUBJECT_B, "user_nobody", "user_elsewhere", SUBJECT_A],
+        });
+        expect(mixed.map((entry) => entry.externalId).sort()).toEqual([SUBJECT_A, SUBJECT_B]);
+
+        // "Filter, then page": the window applies to the filtered set.
+        const all = yield* admin.listSubjects();
+        const second = yield* admin.listSubjects({
+          externalIds: [SUBJECT_A, SUBJECT_B],
+          limit: 1,
+          offset: 1,
+        });
+        expect(second.map((entry) => entry.externalId)).toEqual([all[1]?.externalId]);
+      }),
+    ),
+  );
+
+  it.effect("an empty id set matches nothing, on both list reads", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db));
+
+        expect(yield* admin.listSubjects({ externalIds: [] })).toEqual([]);
+        expect(yield* admin.listSubjectsWithConnections({ externalIds: [] })).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("the joined read filters the same way and still joins connections", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seed(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db));
+
+        const rows = yield* admin.listSubjectsWithConnections({ externalIds: [SUBJECT_A] });
+        expect(rows.map((entry) => entry.externalId)).toEqual([SUBJECT_A]);
+        expect(rows[0]?.connections.length).toBeGreaterThan(0);
+      }),
+    ),
+  );
+});
+
 describe("platform view — read-only across every surface", () => {
   it.effect("refuses org-row writes through policies and oauth", () =>
     withDb((db) =>
@@ -501,6 +556,10 @@ describe("platform view — read-only across every surface", () => {
     withDb((db) =>
       Effect.gen(function* () {
         yield* seed(db);
+        // The list surface serves only catalog-backed connections.
+        yield* insertIntegration(db, "github");
+        yield* insertIntegration(db, "linear");
+        yield* insertIntegration(db, "stripe");
         const executor = yield* makePlatformExecutor(db, { subject: null });
 
         const connections = yield* executor.connections.list().pipe(Effect.orDie);
@@ -799,6 +858,10 @@ describe("platform view — default off", () => {
     withDb((db) =>
       Effect.gen(function* () {
         yield* seed(db);
+        // The list surface serves only catalog-backed connections.
+        yield* insertIntegration(db, "github");
+        yield* insertIntegration(db, "linear");
+        yield* insertIntegration(db, "stripe");
         // Enabling the platform view must not widen ANY existing surface.
         const executor = yield* makePlatformExecutor(db, { subject: SUBJECT_A });
 

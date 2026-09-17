@@ -235,6 +235,39 @@ describe("codex app-server bridge", () => {
     ),
   );
 
+  it.effect("carries the answer's persistence down to the app-server", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Computer Use's app approval OFFERS `persist: ["session", "always"]`
+        // and remembers the app only when the answer's `_meta.persist` names
+        // one. A reply rebuilt from `action` and `content` alone was a
+        // one-time approval, so the same app prompted on every call.
+        const connection = yield* withConnection(appServerInput("node_repl", { surface: "sky" }));
+        let offered: unknown;
+        connection.client.setRequestHandler("elicitation/create", (request) => {
+          offered = request.params._meta?.["persist"];
+          return Promise.resolve({
+            action: "accept" as const,
+            content: {},
+            _meta: { persist: "always" },
+          });
+        });
+
+        const result = yield* Effect.promise(() =>
+          connection.client.callTool({
+            name: "get_app_state",
+            arguments: { app: "__needs_app_approval" },
+          }),
+        );
+        expect(offered, "the offered scopes reach the client").toEqual(["session", "always"]);
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent, "and the chosen one reaches Codex").toEqual({
+          persist: "always",
+        });
+      }),
+    ),
+  );
+
   it.effect("a tool outside the sky surface is refused rather than sent to the REPL", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -1,13 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { AccountProvider } from "@executor-js/api/server";
+import { AccountProvider, MemberDirectory } from "@executor-js/api/server";
 import { AccountError, AccountForbidden } from "@executor-js/api";
 
 import { ApiKeyService, OrgApiKeyNotFound } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import { ORG_SELECTOR_HEADER } from "../auth/organization";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import { AutumnService } from "../extensions/billing/service";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
 
@@ -37,6 +38,19 @@ const MEMBER = "user_member";
 const ORG_KEY = "key_org_1";
 const USER_KEY = "key_user_1";
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
+
+// The mirror's account row as `ensureAccount` mints it: id only, profile
+// columns unfilled until a WorkOS user payload arrives.
+const bareAccount = (id: string) => ({
+  id,
+  email: null,
+  firstName: null,
+  lastName: null,
+  avatarUrl: null,
+  workosUpdatedAt: null,
+  lastSignInAt: null,
+  createdAt,
+});
 const orgHeaders = { [ORG_SELECTOR_HEADER]: ORG };
 
 const session = (accountId: string) => ({
@@ -49,32 +63,12 @@ const session = (accountId: string) => ({
   refreshedSession: null,
 });
 
-/** Membership roles: only ADMIN carries the `admin` role slug. */
+// Membership is read from the mirror, never from WorkOS: revoke makes no
+// WorkOS call at all.
 const stubWorkOS = Layer.succeed(
   WorkOSClient,
   new Proxy({} as WorkOSClientService, {
-    get: (_target, prop) => {
-      if (prop === "listUserMemberships") {
-        return (userId: string) =>
-          Effect.succeed({
-            data: [{ userId, organizationId: ORG, status: "active" }],
-          });
-      }
-      if (prop === "getUserOrgMembership") {
-        return (organizationId: string, userId: string) =>
-          Effect.succeed(
-            organizationId === ORG
-              ? {
-                  id: `om_${userId}`,
-                  userId,
-                  organizationId,
-                  role: { slug: userId === ADMIN ? "admin" : "member" },
-                }
-              : null,
-          );
-      }
-      return () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`);
-    },
+    get: (_target, prop) => () => Effect.die(`unexpected WorkOSClient.${String(prop)} call`),
   }),
 );
 
@@ -82,28 +76,83 @@ const stubUsers = Layer.succeed(UserStoreService)({
   use: (_op, fn) =>
     Effect.promise(() =>
       fn({
-        ensureAccount: async (id: string) => ({ id, createdAt }),
-        getAccount: async (id: string) => ({ id, createdAt }),
+        ensureAccount: async (id: string) => bareAccount(id),
+        getAccount: async (id: string) => bareAccount(id),
         upsertOrganization: async (org: { id: string; name: string }) => ({
           ...org,
           slug: org.id,
+          backfilledAt: createdAt,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         getOrganization: async (id: string) => ({
           id,
           name: `Org ${id}`,
           slug: id,
+          backfilledAt: createdAt,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
         getOrganizationBySlug: async (slug: string) => ({
           id: slug,
           name: `Org ${slug}`,
           slug,
+          backfilledAt: createdAt,
+          deletedAt: null,
+          workosUpdatedAt: null,
           createdAt,
         }),
+        markOrganizationDeleted: async () => null,
         deleteOrganizationCascade: async () => {},
       }),
     ),
+});
+
+// Revoke changes no membership, so the mirror is never written.
+const stubMirror = Layer.succeed(WorkOsMirror)({
+  upsertUser: () => Effect.die("revoke does not write the membership mirror"),
+  upsertMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteMembership: () => Effect.die("revoke does not write the membership mirror"),
+  deleteUser: () => Effect.die("revoke does not write the membership mirror"),
+  getCursor: () => Effect.die("revoke does not read the events cursor"),
+  applyPage: () => Effect.die("revoke does not move the events cursor"),
+  applyOrganizationScan: () => Effect.die("revoke does not run the backfill"),
+  replayBoundary: () => Effect.die("revoke does not run the reconciler"),
+  setReplayBoundary: () => Effect.die("revoke does not run the backfill"),
+  backfillCompletedAt: () => Effect.die("revoke does not check mirror readiness"),
+  markBackfillCompleted: () => Effect.die("revoke does not run the backfill"),
+  drainedAt: () => Effect.die("revoke does not check mirror readiness"),
+  markDrained: () => Effect.die("revoke does not run the reconciler"),
+  organizationBackfilledAt: () => Effect.die("revoke does not report seats"),
+});
+
+// The mirror as the directory reads it: both are active members of ORG, and
+// only ADMIN carries the `admin` role. Revoke reads the caller's membership
+// (the org check and the admin gate) and nothing else.
+const stubDirectory = Layer.succeed(MemberDirectory)({
+  membership: (accountId, organizationId) =>
+    Effect.succeed(
+      organizationId === ORG
+        ? {
+            accountId,
+            membershipId: `om_${accountId}`,
+            organizationId,
+            email: null,
+            name: null,
+            avatarUrl: null,
+            role: accountId === ADMIN ? "admin" : "member",
+            status: "active" as const,
+            lastActiveAt: null,
+          }
+        : null,
+    ),
+  membershipById: () => Effect.die("revoke does not look up by membership id"),
+  membershipsOf: () => Effect.die("revoke does not list the caller's memberships"),
+  members: () => Effect.die("revoke does not list members"),
+  membersById: () => Effect.die("revoke does not batch members"),
+  findByEmail: () => Effect.die("revoke does not resolve emails"),
 });
 
 const stubAutumn = Layer.succeed(AutumnService)({
@@ -143,6 +192,8 @@ const providerWith = (accountId: string) => {
           Layer.mergeAll(
             stubWorkOS,
             stubUsers,
+            stubMirror,
+            stubDirectory,
             stubApiKeys,
             stubAutumn,
             Layer.succeed(AccountCaller)({ session: session(accountId) }),

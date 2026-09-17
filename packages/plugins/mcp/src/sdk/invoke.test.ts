@@ -1,12 +1,15 @@
 import { beforeAll, describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
+// oxlint-disable-next-line executor/no-vitest-import -- boundary: fake-clock coverage for the active-work deadline
+import { afterEach, vi } from "vitest";
 
 import {
   ProtocolError,
   SdkErrorCode,
   SdkHttpError,
   type OAuthClientProvider,
+  type ClientContext,
 } from "@modelcontextprotocol/client";
 import { ElicitationResponse } from "@executor-js/sdk";
 import { serveTestHttpApp } from "@executor-js/sdk/testing";
@@ -19,7 +22,7 @@ import { createMcpConnector, type McpConnection, type McpConnector } from "./con
 // that precondition here — these tests construct SDK errors directly.
 beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
-import { invokeMcpTool } from "./invoke";
+import { invokeMcpTool, makeActiveWorkDeadline, MCP_ACTIVE_WORK_TIMEOUT_MS } from "./invoke";
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
 
@@ -121,13 +124,23 @@ const invocationRejectionCases = [
       status: 401,
     }),
     expectedStatus: 401 as number | undefined,
+    expectedProtocolError: undefined as { code: number; message: string } | undefined,
+    expectedSdkFailure: { name: "SdkHttpError", code: SdkErrorCode.ClientHttpAuthentication } as {
+      name: string;
+      code?: string | number;
+    },
   },
   {
+    // The JSON-RPC error is the server's own answer to the call: its code is
+    // not an HTTP status, and its message is kept (structurally, beside the
+    // sanitized invocation message) so the plugin can hand it to the caller.
     name: "does not treat MCP protocol error codes as HTTP statuses",
     toolId: "protocol_error",
     transport: "streamable-http",
     cause: new ProtocolError(401, "application-level do-not-leak"),
     expectedStatus: undefined,
+    expectedProtocolError: { code: 401, message: "application-level do-not-leak" },
+    expectedSdkFailure: { name: "ProtocolError", code: 401 },
   },
   {
     name: "does not invent a status from non-HTTP rejection shapes",
@@ -135,6 +148,8 @@ const invocationRejectionCases = [
     transport: "streamable-http",
     cause: { code: -1, message: "socket said do-not-leak" },
     expectedStatus: undefined,
+    expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object", code: -1 },
   },
   {
     name: "extracts the status from the SDK SSE POST error prefix without leaking the body",
@@ -144,10 +159,151 @@ const invocationRejectionCases = [
       message: "Error POSTing to endpoint (HTTP 403): do-not-leak: upstream auth challenge",
     },
     expectedStatus: 403,
+    expectedProtocolError: undefined,
+    expectedSdkFailure: { name: "object" },
   },
 ];
 
 describe("invokeMcpTool", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("pauses the active-work deadline across overlapping elicitations", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const deadline = makeActiveWorkDeadline(100);
+
+    vi.advanceTimersByTime(40);
+    deadline.pause();
+    deadline.pause();
+    vi.advanceTimersByTime(1_000);
+    expect(deadline.signal.aborted).toBe(false);
+
+    deadline.resume();
+    vi.advanceTimersByTime(100);
+    expect(deadline.signal.aborted).toBe(false);
+
+    deadline.resume();
+    vi.advanceTimersByTime(59);
+    expect(deadline.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(deadline.signal.aborted).toBe(true);
+    deadline.dispose();
+  });
+
+  it("uses the active signal for a tool call and excludes elicitation from its deadline", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+
+    let requestHandler:
+      | ((request: { params: unknown }, context: ClientContext) => Promise<unknown>)
+      | undefined;
+    let callOptions: { signal: AbortSignal; timeout: number } | undefined;
+    let finishElicitation: (() => void) | undefined;
+    let resolveElicitationStarted: (() => void) | undefined;
+    const elicitationStarted = new Promise<void>((resolve) => {
+      resolveElicitationStarted = resolve;
+    });
+    const connectionAbort = new AbortController();
+
+    const client = {
+      setRequestHandler: (_method: string, handler: unknown) => {
+        requestHandler = handler as typeof requestHandler;
+      },
+      callTool: async (_request: unknown, options: { signal: AbortSignal; timeout: number }) => {
+        callOptions = options;
+        await requestHandler!(
+          {
+            params: { mode: "form", message: "Approve?", requestedSchema: {} },
+          },
+          { mcpReq: { signal: connectionAbort.signal } } as ClientContext,
+        );
+        // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+        return await new Promise<never>((_resolve, reject) => {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+
+    const invocation = Effect.runPromise(
+      invokeMcpTool({
+        toolId: "slow",
+        toolName: "slow",
+        args: {},
+        transport: "streamable-http",
+        connector: Effect.succeed({
+          // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only invokeMcpTool's surface
+          client: client as unknown as McpConnection["client"],
+          close: () => Promise.resolve(),
+        }),
+        elicit: () =>
+          Effect.callback((resume) => {
+            resolveElicitationStarted!();
+            finishElicitation = () =>
+              resume(Effect.succeed(ElicitationResponse.make({ action: "accept" })));
+          }),
+      }),
+    ).then(
+      () => "completed" as const,
+      () => "failed" as const,
+    );
+
+    await elicitationStarted;
+    expect(callOptions?.timeout).toBeGreaterThan(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(false);
+
+    finishElicitation!();
+    await Promise.resolve();
+    await Promise.resolve();
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(true);
+    expect(await invocation).toBe("failed");
+  });
+
+  it("interrupts an elicitation when the MCP connection closes", async () => {
+    let requestHandler:
+      | ((request: { params: unknown }, context: ClientContext) => Promise<unknown>)
+      | undefined;
+    const connectionAbort = new AbortController();
+    const client = {
+      setRequestHandler: (_method: string, handler: unknown) => {
+        requestHandler = handler as typeof requestHandler;
+      },
+      callTool: async () => {
+        await requestHandler!(
+          {
+            params: { mode: "form", message: "Approve?", requestedSchema: {} },
+          },
+          { mcpReq: { signal: connectionAbort.signal } } as ClientContext,
+        );
+        return { content: [] };
+      },
+    };
+
+    const invocation = Effect.runPromise(
+      invokeMcpTool({
+        toolId: "closed",
+        toolName: "closed",
+        args: {},
+        transport: "streamable-http",
+        connector: Effect.succeed({
+          // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only invokeMcpTool's surface
+          client: client as unknown as McpConnection["client"],
+          close: () => Promise.resolve(),
+        }),
+        elicit: () => Effect.callback(() => undefined),
+      }),
+    ).then(
+      () => "completed" as const,
+      () => "failed" as const,
+    );
+
+    await Promise.resolve();
+    connectionAbort.abort();
+    expect(await invocation).toBe("failed");
+  });
+
   for (const testCase of invocationRejectionCases) {
     it.effect(testCase.name, () =>
       Effect.gen(function* () {
@@ -163,14 +319,16 @@ describe("invokeMcpTool", () => {
         expect(Predicate.isTagged(error, "McpInvocationError")).toBe(true);
         const invocation = error as McpInvocationError;
         expect(invocation.toolName).toBe(testCase.toolId);
-        expect(invocation).toMatchObject({
-          message: `MCP tool call failed for ${testCase.toolId}`,
-        });
+        expect(invocation.message.startsWith(`MCP tool call failed for ${testCase.toolId} (`)).toBe(
+          true,
+        );
+        expect(invocation.sdkFailure).toEqual(testCase.expectedSdkFailure);
         expect(invocation).toMatchObject({
           message: expect.not.stringContaining("do-not-leak"),
         });
         expect(invocation.status).toBe(testCase.expectedStatus);
         expect("cause" in invocation).toBe(false);
+        expect(invocation.protocolError).toEqual(testCase.expectedProtocolError);
       }),
     );
   }

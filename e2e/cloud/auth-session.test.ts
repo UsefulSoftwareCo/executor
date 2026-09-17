@@ -5,7 +5,7 @@
 // callback refusing forged/incomplete redirects, the sealed-session cookie
 // actually authorizing the session API, and logout dropping the cookie.
 import { expect } from "@effect/vitest";
-import { Effect, Encoding, Result, Schema } from "effect";
+import { Effect, Encoding, Option, Result, Schema } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
@@ -46,11 +46,10 @@ scenario(
     const decoded = decodeLoginState(
       Result.getOrElse(Encoding.decodeBase64UrlString(state), () => ""),
     );
-    expect(decoded._tag, "the state decodes as our login-state envelope").toBe("Some");
-    expect(
-      decoded._tag === "Some" ? decoded.value.nonce : "",
-      "the state carries an unguessable CSRF nonce",
-    ).toMatch(/^[0-9a-f]{64}$/);
+    expect(Option.isSome(decoded), "the state decodes as our login-state envelope").toBe(true);
+    expect(Option.getOrThrow(decoded).nonce, "the state carries an unguessable CSRF nonce").toMatch(
+      /^[0-9a-f]{64}$/,
+    );
     expect(
       authorizeUrl.searchParams.get("redirect_uri"),
       "AuthKit is told to come back to this deployment's callback",
@@ -62,6 +61,31 @@ scenario(
     );
     expect(stateCookie, "the login state expires quickly").toContain("Max-Age=600");
     expect(stateCookie, "the login state is not readable by page scripts").toContain("HttpOnly");
+  }),
+);
+
+scenario(
+  "Auth · login refuses return paths that normalize outside the allowed pages",
+  {},
+  Effect.gen(function* () {
+    yield* Api;
+    const target = yield* Target;
+    for (const returnTo of [
+      "/\\evil.example",
+      "/safe/../api/auth/me",
+      "/safe/%2e%2e/api/auth/me",
+    ]) {
+      const login = new URL("/api/auth/login", target.baseUrl);
+      login.searchParams.set("returnTo", returnTo);
+      const response = yield* Effect.promise(() => fetch(login, { redirect: "manual" }));
+      expect(response.status).toBe(302);
+      const state = new URL(response.headers.get("location") ?? "").searchParams.get("state") ?? "";
+      const decoded = decodeLoginState(
+        Result.getOrElse(Encoding.decodeBase64UrlString(state), () => ""),
+      );
+      expect(Option.isSome(decoded)).toBe(true);
+      expect(Option.getOrThrow(decoded).returnTo).toBeUndefined();
+    }
   }),
 );
 

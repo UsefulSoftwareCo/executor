@@ -6,6 +6,7 @@ import {
 } from "@executor-js/plugin-openapi/providers/microsoft";
 import { slackMcpUserScopes } from "@executor-js/react/lib/slack-mcp-oauth";
 import { IntegrationSlug, type FirstPartyOAuthClientConfig } from "@executor-js/sdk";
+import { HUBSPOT_OPTIONAL_SCOPES } from "@executor-js/sdk/host-internal";
 
 import { makeGoogleOAuthListing } from "../analytics/google-oauth-listing";
 import { POSTHOG_INGEST_HOST } from "../edge/passthrough";
@@ -150,12 +151,6 @@ const HUBSPOT_REQUIRED_SCOPES = [
   "settings.users.write",
   "tickets",
   "timeline",
-] as const;
-
-const HUBSPOT_OPTIONAL_SCOPES = [
-  "content",
-  "crm.objects.custom.read",
-  "crm.schemas.custom.read",
 ] as const;
 
 const MICROSOFT_SCOPES = [
@@ -333,6 +328,9 @@ export const firstPartyOAuthClientsFor = (
   }),
   ...client(env.FIRST_PARTY_SLACK_CLIENT_ID, env.FIRST_PARTY_SLACK_CLIENT_SECRET, {
     name: "slack",
+    // Slack MCP requires Marketplace approval for use outside the app's workspace.
+    // Keep the client resolvable for existing connections while withholding it.
+    unlisted: true,
     authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
     tokenUrl: "https://slack.com/api/oauth.v2.user.access",
     resource: "https://mcp.slack.com",

@@ -23,6 +23,13 @@ describe("isSafeReturnTo", () => {
   const unsafe = [
     "https://evil.example", // absolute URL — off-origin redirect
     "//evil.example", // protocol-relative — same thing in disguise
+    "/\\evil.example", // browsers normalize backslashes to slashes
+    "/\t/evil.example", // URL parsing strips embedded tabs
+    "/\n/evil.example",
+    "/\r/evil.example",
+    "/safe/../api/auth/me", // normalized API destination
+    "/safe/%2e%2e/api/auth/me",
+    "/api/oauth/callback/../logout",
     "/api/auth/logout", // API endpoints are never a landing page
     "/api/oauth/callback/extra?state=oauth-state", // only the exact OAuth callback resumes
     "/api", // bare /api too
@@ -46,6 +53,9 @@ describe("isSafeReturnTo", () => {
 describe("safeReturnTo", () => {
   it("passes a safe path through", () => {
     expect(safeReturnTo("/tools")).toBe("/tools");
+  });
+  it("returns the canonical destination while preserving its query and fragment", () => {
+    expect(safeReturnTo("/old/../tools?view=all#list")).toBe("/tools?view=all#list");
   });
   it("nulls unsafe and absent values", () => {
     expect(safeReturnTo("https://evil.example")).toBeNull();

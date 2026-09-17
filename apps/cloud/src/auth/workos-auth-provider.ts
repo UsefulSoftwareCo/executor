@@ -19,13 +19,17 @@
 //   - session without org header -> NoOrganization 403 no_organization (fail closed)
 //   - session org not authorized -> NoOrganization 403 no_organization
 //   - no auth header             -> falls through to the sealed-session path
-// The org-resolution infra errors (`UserStoreError` / `WorkOSError`) are
-// `Effect.die`d so they surface as 500 defects — the same status the old inline
-// resolver produced when those bubbled up.
+// The org-resolution infra errors (`UserStoreError` / `WorkOSError` /
+// `MemberDirectoryError` / `WorkOsMirrorError`) are `Effect.die`d so they
+// surface as 500 defects — the same status the old inline resolver produced
+// when those bubbled up.
 //
-// The per-request `UserStoreService` (read by the org-resolution path) stays a
-// REQUIREMENT OF THE LAYER, satisfied by the facade's per-request DB combine —
-// NOT a function-level requirement (that is what forced a forked tag before).
+// The per-request `UserStoreService` + `MemberDirectory` + `WorkOsMirror`
+// (read by the org-resolution path: the org row, the caller's mirrored
+// membership, and the on-demand scan of an organization the backfill never
+// covered) stay REQUIREMENTS OF THE LAYER, satisfied by the facade's
+// per-request DB combine — NOT function-level requirements (that is what
+// forced a forked tag before).
 // ---------------------------------------------------------------------------
 
 import { Effect, Layer } from "effect";
@@ -34,6 +38,7 @@ import type { JWTVerifyGetKey } from "jose";
 
 import {
   IdentityProvider,
+  MemberDirectory,
   NoOrganization,
   Unauthorized,
   Unavailable,
@@ -41,6 +46,7 @@ import {
 import type {
   FailureRenderingStrategy,
   IdentityFailure,
+  MemberDirectoryError,
   PlatformPrincipal,
   Principal,
   ResolvedPrincipal,
@@ -48,6 +54,7 @@ import type {
 
 import { ApiKeyService } from "./api-keys";
 import { workosApiJwtBearerConfig } from "./api-jwt-bearer";
+import { WorkOsMirror } from "./workos-mirror";
 import { BEARER_PREFIX } from "./bearer";
 import {
   authorizeOrganization,
@@ -57,7 +64,7 @@ import {
 } from "./organization";
 import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
-import type { UserStoreError, WorkOSError } from "./errors";
+import type { UserStoreError, WorkOSError, WorkOsMirrorError } from "./errors";
 import { WorkOSClient } from "./workos";
 import { verifyWorkosUserManagementToken } from "../mcp/jwt";
 
@@ -66,7 +73,7 @@ import { verifyWorkosUserManagementToken } from "../mcp/jwt";
  * (user_management) access token: the client-scoped SSO JWKS resolver. Issuer
  * and audience are NOT pinned (the client-scoped JWKS binds the token to this
  * app; user_management tokens carry no audience and an app-specific issuer) and
- * org membership is re-checked live downstream. Passed in as a plain value so
+ * org membership is re-checked against the mirror downstream. Passed in as a plain value so
  * this module stays `cloudflare:workers`-free and the node-pool resolver tests
  * can inject a local JWKS. Production supplies {@link workosApiJwtBearerConfig}.
  */
@@ -118,7 +125,7 @@ const looksLikeJwt = (token: string): boolean => token.split(".").length === 3;
 /**
  * Resolve a WorkOS device-login (user_management) access token into a protected
  * `Principal`. Verifies the token's signature + expiry against the client-scoped
- * SSO JWKS, then live-checks org membership, exactly like the api-key path. The
+ * SSO JWKS, then checks org membership in the mirror, exactly like the api-key path. The
  * `org_id` claim must be present (a token with no org context is rejected as
  * `NoOrganization`). NOTE: this is a different WorkOS token domain than the MCP
  * `/oauth2` tokens (different keyset, no audience), so it does NOT reuse the MCP
@@ -191,7 +198,7 @@ export const isPlatformAuth = (value: BearerAuth): value is PlatformAuth =>
  * path.
  *
  * The org branch does NOT call `authorizeOrganization`: that checks a USER's
- * live membership, and there is no user here. The key itself is the authority —
+ * membership, and there is no user here. The key itself is the authority —
  * WorkOS validated it and reported which org owns it — so the org row is merely
  * resolved (mirrored on first read) for its name and slug.
  */
@@ -200,8 +207,14 @@ export const resolveBearerAuth = (
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
   BearerAuth,
-  Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
-  WorkOSClient | ApiKeyService | UserStoreService
+  | Unauthorized
+  | NoOrganization
+  | Unavailable
+  | UserStoreError
+  | WorkOSError
+  | WorkOsMirrorError
+  | MemberDirectoryError,
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
 > =>
   Effect.gen(function* () {
     const authHeader = request.headers.get("authorization");
@@ -229,6 +242,9 @@ export const resolveBearerAuth = (
 
     if (owner.scope === "org") {
       const org = yield* resolveOrganization(owner.organizationId);
+      // The key outlives the org until the purge removes it; an org marked
+      // deleted refuses it as it refuses every member's session.
+      if (org.deletedAt !== null) return yield* new NoOrganization(NO_ORGANIZATION_IN_API_KEY);
       return {
         kind: "platform",
         organizationId: org.id,
@@ -277,8 +293,14 @@ export const resolveApiKeyPrincipal = (
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
   ResolvedPrincipal | null,
-  Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
-  WorkOSClient | ApiKeyService | UserStoreService
+  | Unauthorized
+  | NoOrganization
+  | Unavailable
+  | UserStoreError
+  | WorkOSError
+  | WorkOsMirrorError
+  | MemberDirectoryError,
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
 > =>
   Effect.gen(function* () {
     const auth = yield* resolveBearerAuth(request, jwt);
@@ -306,8 +328,9 @@ export const resolveSessionPrincipal = (request: Request) =>
     // browser-global and pinned to whichever org WorkOS last touched, so
     // falling back to it silently serves ANOTHER org's data to a multi-org
     // user (the wrong-tenant connection-list bug, 2026-07). A header-less
-    // session call gets a clear 403 instead. Membership is re-checked live —
-    // the header is a selector, not a trust boundary (see organization.ts).
+    // session call gets a clear 403 instead. Membership is re-checked against
+    // the mirror — the header is a selector, not a trust boundary (see
+    // organization.ts).
     // A bare-URL first paint (no org in the path yet) may 403 here; that's
     // the safe outcome — OrgSlugGate immediately canonicalizes the URL onto
     // an org slug, the org-keyed atom registry remounts, and everything
@@ -340,9 +363,10 @@ export const resolveSessionPrincipal = (request: Request) =>
  * no roles to resolve, so each leaf already carries `roles: []`. Raises the
  * SHARED identity errors directly (`Unauthorized | NoOrganization | Unavailable`,
  * each carrying its machine `code` + `message`); the org-resolution infra errors
- * (`UserStoreError` / `WorkOSError`) bubble for `workosIdentityLayer` to `die`.
- * Keeps `WorkOSClient` / `ApiKeyService` / `UserStoreService` as requirements (the
- * org-resolution path reads them) so it stays request-scoped. Re-exported for
+ * (`UserStoreError` / `WorkOSError` / `MemberDirectoryError`) bubble for
+ * `workosIdentityLayer` to `die`. Keeps `WorkOSClient` / `ApiKeyService` /
+ * `UserStoreService` / `MemberDirectory` as requirements (the org-resolution
+ * path reads them) so it stays request-scoped. Re-exported for
  * `protected-api-key-auth.node.test.ts`, which asserts the per-path principal +
  * shared error codes this folded resolver emits.
  */
@@ -351,8 +375,14 @@ export const resolveProtectedPrincipal = (
   jwt: JwtBearerConfig | null = null,
 ): Effect.Effect<
   ResolvedPrincipal,
-  Unauthorized | NoOrganization | Unavailable | UserStoreError | WorkOSError,
-  WorkOSClient | ApiKeyService | UserStoreService
+  | Unauthorized
+  | NoOrganization
+  | Unavailable
+  | UserStoreError
+  | WorkOSError
+  | WorkOsMirrorError
+  | MemberDirectoryError,
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
 > =>
   Effect.gen(function* () {
     const bearerPrincipal = yield* resolveApiKeyPrincipal(request, jwt);
@@ -362,22 +392,24 @@ export const resolveProtectedPrincipal = (
 
 /**
  * Cloud's NEUTRAL `IdentityProvider` Layer. Closes over the long-lived
- * `WorkOSClient` + `ApiKeyService`; the request-scoped `UserStoreService` stays a
- * REQUIREMENT OF THE LAYER, satisfied per request by the facade's DB combine.
- * `authenticate` matches the neutral shape exactly (`Effect<Principal,
- * Unauthorized | NoOrganization | Unavailable>`): rejected credentials already
- * carry the shared errors; the org-resolution infra errors (`UserStoreError` /
- * `WorkOSError`) are `Effect.die`d so they surface as 500 defects, never on the
- * error channel.
+ * `WorkOSClient` + `ApiKeyService`; the request-scoped `UserStoreService` +
+ * `MemberDirectory` stay REQUIREMENTS OF THE LAYER, satisfied per request by the
+ * facade's DB combine. `authenticate` matches the neutral shape exactly
+ * (`Effect<Principal, Unauthorized | NoOrganization | Unavailable>`): rejected
+ * credentials already carry the shared errors; the org-resolution infra errors
+ * (`UserStoreError` / `WorkOSError` / `MemberDirectoryError`) are `Effect.die`d
+ * so they surface as 500 defects, never on the error channel.
  */
 export const workosIdentityLayer: Layer.Layer<
   IdentityProvider,
   never,
-  WorkOSClient | ApiKeyService | UserStoreService
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
 > = Layer.effect(
   IdentityProvider,
   Effect.gen(function* () {
-    const context = yield* Effect.context<WorkOSClient | ApiKeyService | UserStoreService>();
+    const context = yield* Effect.context<
+      WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
+    >();
     return IdentityProvider.of({
       authenticate: (request) =>
         resolveProtectedPrincipal(request, workosApiJwtBearerConfig).pipe(
@@ -390,6 +422,10 @@ export const workosIdentityLayer: Layer.Layer<
             UserStoreError: (error) => Effect.die(error),
             // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: org-resolution infra failure -> 500 defect, matches prior inline-resolver behavior
             WorkOSError: (error) => Effect.die(error),
+            // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: membership-mirror read failure -> 500 defect, same class as the store failure above
+            MemberDirectoryError: (error) => Effect.die(error),
+            // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: membership-mirror read failure -> 500 defect, same class as the store failure above
+            WorkOsMirrorError: (error) => Effect.die(error),
           }),
           Effect.provide(context),
         ),

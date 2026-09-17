@@ -29,6 +29,21 @@ describe("extractArtifactRoles", () => {
     expect(roles).toEqual([{ role: "vercel", integration: "vercel" }]);
   });
 
+  it("reads a hyphenated integration from a bracket reference", () => {
+    const roles = extractArtifactRoles(
+      `useQuery(tools["cloudflare-bindings"].d1_database_query.queryOptions({ sql: "SELECT 1" }));`,
+    );
+    expect(roles).toEqual([{ role: "cloudflare-bindings", integration: "cloudflare-bindings" }]);
+  });
+
+  it("reads a hyphenated integration from single-quoted bracket references", () => {
+    expect(
+      extractArtifactRoles(
+        `useQuery(tools['cloudflare-bindings']('production').query.queryOptions({}));`,
+      ),
+    ).toEqual([{ role: "production", integration: "cloudflare-bindings" }]);
+  });
+
   it("collapses repeated references to one role", () => {
     const roles = extractArtifactRoles(
       `useQuery(tools.linear.issues.list.queryOptions({}));

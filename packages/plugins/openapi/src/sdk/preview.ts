@@ -25,10 +25,10 @@ import {
   type KeepPathItem,
 } from "./split";
 import { HttpMethod, ServerInfo, type ExtractedOperation, type ExtractionResult } from "./types";
+import { getHealthCheckParameters } from "./health-check-operation";
 
-// Mutating HTTP methods: mirrors `REQUIRE_APPROVAL` in `./invoke` but kept
-// inline so this browser-safe preview module never pulls in the HTTP execution
-// path. A health check should be safe to re-run, so these rank last.
+// Keep potentially mutating methods ranked below ordinary reads. This mirrors
+// REQUIRE_APPROVAL without importing the HTTP execution path into the browser.
 const DESTRUCTIVE_METHODS = new Set(["post", "put", "patch", "delete"]);
 
 // Cap on health-check candidate METADATA carried in the preview, so the add
@@ -487,18 +487,11 @@ const buildPreviewHealthCheckCandidates = (
     .map((def): HealthCheckCandidate => {
       const op = def.operation;
       const method = op.method.toLowerCase();
-      const parameters = op.parameters.map((parameter) => ({
-        name: parameter.name,
-        location: parameter.location,
-        required: parameter.required,
-        ...(Option.isSome(parameter.description)
-          ? { description: parameter.description.value }
-          : {}),
-      }));
+      const parameters = getHealthCheckParameters(op);
       return {
         operation: def.toolPath,
         method,
-        requiredArgCount: op.parameters.filter((parameter) => parameter.required).length,
+        requiredArgCount: parameters.filter((parameter) => parameter.required).length,
         destructive: DESTRUCTIVE_METHODS.has(method),
         summary:
           Option.getOrUndefined(op.summary) ??
@@ -590,13 +583,19 @@ export const previewSpecText = Effect.fn("OpenApi.previewSpecText")(function* (s
 
 const streamedCandidate = (op: StreamedPreviewOperation): HealthCheckCandidate => {
   const method = op.method.toLowerCase();
+  const parameters = [
+    ...op.parameters,
+    ...(op.requestBodyRequired === undefined
+      ? []
+      : [{ name: "body", location: "body", required: op.requestBodyRequired }]),
+  ];
   return {
     operation: op.toolPath,
     method,
-    requiredArgCount: op.parameters.filter((parameter) => parameter.required).length,
+    requiredArgCount: parameters.filter((parameter) => parameter.required).length,
     destructive: DESTRUCTIVE_METHODS.has(method),
     summary: op.summary ?? op.description ?? `${method.toUpperCase()} ${op.pathTemplate}`,
-    ...(op.parameters.length > 0 ? { parameters: op.parameters } : {}),
+    ...(parameters.length > 0 ? { parameters } : {}),
   };
 };
 

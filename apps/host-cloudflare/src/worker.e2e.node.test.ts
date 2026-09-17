@@ -302,6 +302,102 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(toolNames).toContain("execute");
   }, 60_000);
 
+  it("serves toolkit MCP sessions and rejects cross-resource session reuse", async () => {
+    const createToolkit = await worker.fetch("/api/toolkits", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        owner: "org",
+        name: `Cloudflare Toolkit ${runId}`,
+        slug: `cloudflare-toolkit-${runId}`,
+      }),
+    });
+    expect(createToolkit.status).toBe(200);
+    const toolkit = (await createToolkit.json()) as { id: string; slug: string };
+
+    const addConnection = await worker.fetch(`/api/toolkits/${toolkit.id}/connections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pattern: "executor.*" }),
+    });
+    expect(addConnection.status).toBe(200);
+
+    const accept = "application/json, text/event-stream";
+    const toolkitPath = `/mcp/toolkits/${toolkit.slug}`;
+    const rpc = (path: string, sessionId: string | null, body: unknown) =>
+      worker.fetch(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept,
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    const init = await rpc(toolkitPath, null, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "toolkit-route-test", version: "1" },
+      },
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    await rpc(toolkitPath, sessionId, {
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    });
+
+    const list = await rpc(toolkitPath, sessionId, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+    });
+    expect(list.status).toBe(200);
+    const listed = await readMcpJson<{
+      result?: { tools?: ReadonlyArray<{ name: string }> };
+    }>(list);
+    expect(listed.result?.tools?.map((tool) => tool.name)).toContain("execute");
+
+    const reusedOnDefault = await rpc("/mcp", sessionId, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/list",
+    });
+    expect(reusedOnDefault.status).toBe(403);
+
+    const reusedOnOtherToolkit = await rpc(`${toolkitPath}-other`, sessionId, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/list",
+    });
+    expect(reusedOnOtherToolkit.status).toBe(403);
+    for (const method of ["GET", "DELETE"]) {
+      const response = await worker.fetch("/mcp", {
+        method,
+        headers: { accept, "mcp-session-id": sessionId! },
+      });
+      expect(response.status).toBe(403);
+    }
+    const stillUsable = await rpc(toolkitPath, sessionId, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/list",
+    });
+    expect(stillUsable.status).toBe(200);
+    const deleted = await worker.fetch(toolkitPath, {
+      method: "DELETE",
+      headers: { accept, "mcp-session-id": sessionId! },
+    });
+    expect(deleted.status).toBe(204);
+  }, 60_000);
+
   it("serves streamable HTTP GET only for initialized sessions", async () => {
     const missing = await worker.fetch("/mcp", {
       method: "GET",
@@ -513,7 +609,9 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       };
     }>(resume);
     expect(resumed.result?.structuredContent?.status).not.toBe("execution_not_found");
-    expect(resumed.result?.structuredContent?.recovery).not.toBe("re_execute");
+    expect(resumed.result?.structuredContent?.recovery, JSON.stringify(resumed.result)).not.toBe(
+      "re_execute",
+    );
     expect(resumed.result?.isError).toBeFalsy();
     expect(resumed.result?.structuredContent?.status).toBe("completed");
   }, 60_000);

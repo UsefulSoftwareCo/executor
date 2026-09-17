@@ -16,7 +16,7 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import type { ProtocolError } from "@modelcontextprotocol/client";
+import type { ClientContext, ProtocolError } from "@modelcontextprotocol/client";
 
 // SDK error classes come through the lazy loader; by the time a tool call can
 // fail, the connect path has always loaded the module (see client-module.ts).
@@ -33,11 +33,104 @@ import {
 import { McpConnectionError, McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import type { McpConnection, McpConnector } from "./connection";
 import type { McpConnectionPool } from "./connection-pool";
-import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
+import {
+  httpRefusalMessageFromCause,
+  httpStatusFromCause,
+  insufficientScopeFromCause,
+} from "./http-status";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The MCP SDK's default request timer measures wall-clock time. An elicitation
+ * is user work, so it must not consume the tool's active-work budget. The SDK
+ * still gets a long timer as a transport-level backstop; this controller owns
+ * the normal deadline and is paused while one or more elicitation handlers are
+ * waiting for input.
+ */
+export const MCP_ACTIVE_WORK_TIMEOUT_MS = 60_000;
+const MCP_SDK_TIMEOUT_BACKSTOP_MS = 2_147_483_647;
+
+export type ActiveWorkDeadline = {
+  readonly signal: AbortSignal;
+  readonly pause: () => void;
+  readonly resume: () => void;
+  readonly dispose: () => void;
+};
+
+export const makeActiveWorkDeadline = (
+  timeoutMs: number = MCP_ACTIVE_WORK_TIMEOUT_MS,
+): ActiveWorkDeadline => {
+  const controller = new AbortController();
+  let remainingMs = timeoutMs;
+  let pendingElicitations = 0;
+  let startedAt: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const stopTimer = (): void => {
+    if (timer === undefined || startedAt === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+    remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
+    startedAt = undefined;
+  };
+
+  const abortForTimeout = (): void => {
+    timer = undefined;
+    startedAt = undefined;
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: AbortSignal consumers need a stable timeout reason
+    controller.abort(new Error("MCP tool invocation exceeded its active-work deadline"));
+  };
+
+  const startTimer = (): void => {
+    if (controller.signal.aborted || pendingElicitations > 0) return;
+    if (remainingMs <= 0) {
+      abortForTimeout();
+      return;
+    }
+    startedAt = Date.now();
+    timer = setTimeout(() => {
+      remainingMs = 0;
+      abortForTimeout();
+    }, remainingMs);
+  };
+
+  startTimer();
+
+  return {
+    signal: controller.signal,
+    pause: () => {
+      pendingElicitations += 1;
+      if (pendingElicitations === 1) stopTimer();
+    },
+    resume: () => {
+      if (pendingElicitations === 0) return;
+      pendingElicitations -= 1;
+      if (pendingElicitations === 0) startTimer();
+    },
+    dispose: () => {
+      stopTimer();
+      // oxlint-disable-next-line executor/no-error-constructor -- boundary: disposing the scoped signal must interrupt SDK work
+      controller.abort(new Error("MCP tool invocation was disposed"));
+    },
+  };
+};
+
+const abortOnSignals = (signals: readonly AbortSignal[]): Effect.Effect<never, Error> =>
+  Effect.callback<never, Error>((resume) => {
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: an aborted MCP handler must reject its JSON-RPC response
+    const abort = () => resume(Effect.fail(new Error("MCP elicitation was cancelled")));
+    if (signals.some((signal) => signal.aborted)) {
+      abort();
+      return;
+    }
+    for (const signal of signals) signal.addEventListener("abort", abort, { once: true });
+    return Effect.sync(() => {
+      for (const signal of signals) signal.removeEventListener("abort", abort);
+    });
+  });
 
 const ArgsRecord = Schema.Record(Schema.String, Schema.Unknown);
 const decodeArgsRecord = Schema.decodeUnknownOption(ArgsRecord);
@@ -61,6 +154,30 @@ export const isUnknownToolMessage = (message: string, toolName: string): boolean
     `(?:unknown tool:?\\s*"?${name}"?|tool\\s+"?${name}"?\\s+(?:not found|is not available|does not exist))`,
     "i",
   ).test(message);
+};
+
+/** The class name and stable code of an SDK rejection, for the defect log.
+ *  Structural only: the message is deliberately not read here. */
+const summarizeSdkFailure = (cause: unknown): { name: string; code?: string | number } => {
+  // oxlint-disable-next-line executor/no-instanceof-error -- boundary: the MCP SDK rejects with Error subclasses whose constructor name is the only class discriminator for non-branded errors
+  const name = cause instanceof Error ? cause.constructor.name : typeof cause;
+  const code = Predicate.hasProperty(cause, "code") ? cause.code : undefined;
+  return typeof code === "string" || typeof code === "number" ? { name, code } : { name };
+};
+
+/** A 4xx other than the auth walls, with a JSON body that names the problem,
+ *  is the server refusing THIS call (a validation failure at the HTTP layer)
+ *  — not a dead transport. 401/403 keep their auth classification; 5xx and
+ *  bodyless 4xx stay opaque, since there is nothing the caller can act on. */
+const httpRefusal = (
+  status: number | undefined,
+  cause: unknown,
+): { readonly httpRefusal: { readonly status: number; readonly message: string } } | {} => {
+  if (status === undefined || status < 400 || status >= 500 || status === 401 || status === 403) {
+    return {};
+  }
+  const message = httpRefusalMessageFromCause(cause);
+  return message === undefined ? {} : { httpRefusal: { status, message } };
 };
 
 const asProtocolError = (cause: unknown): ProtocolError | undefined => {
@@ -129,12 +246,21 @@ const decodeElicitContent = Schema.decodeUnknownSync(
  *  server contributes nothing rather than noise. */
 export const APPROVAL_TERM_KEYS = ["persist", "origin", "connector_name", "connector_id"] as const;
 
+const isStringList = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/** A term is a string, or a list of strings: Computer Use OFFERS
+ *  `persist: ["session", "always"]` for the answer to pick from, where
+ *  Chrome STATES `persist: "always"`. Either way it is a term of the grant. */
+const isApprovalTerm = (value: unknown): value is string | readonly string[] =>
+  typeof value === "string" || isStringList(value);
+
 export const approvalTerms = (meta: Record<string, unknown> | undefined) => {
   if (meta === undefined) return {};
   const terms = Object.fromEntries(
     APPROVAL_TERM_KEYS.flatMap((key) => {
       const value = meta[key];
-      return typeof value === "string" ? [[key, value] as const] : [];
+      return isApprovalTerm(value) ? [[key, value] as const] : [];
     }),
   );
   return Object.keys(terms).length > 0 ? { meta: terms } : {};
@@ -156,36 +282,55 @@ const toElicitationRequest = (params: McpElicitParams): ElicitationRequest => {
       });
 };
 
-const installElicitationHandler = (client: McpConnection["client"], elicit: Elicit): void => {
-  client.setRequestHandler("elicitation/create", async (request: { params: unknown }) => {
-    const params = decodeElicitParams(request.params);
-    const req = toElicitationRequest(params);
-    // Use runPromiseExit so we can inspect typed failures — `elicit`
-    // fails with `ElicitationDeclinedError` on decline/cancel, which
-    // we translate into the equivalent MCP elicit response instead of
-    // surfacing as a JSON-RPC error.
-    const exit = await Effect.runPromiseExit(elicit(req));
-    if (Exit.isSuccess(exit)) {
-      const response = exit.value;
-      return {
-        action: response.action,
-        ...(response.action === "accept" && response.content
-          ? { content: decodeElicitContent(response.content) }
-          : {}),
-      };
-    }
-    const failure = exit.cause.reasons.find(Cause.isFailReason);
-    if (failure) {
-      const err = failure.error;
-      if (Predicate.isTagged(err, "ElicitationDeclinedError")) {
-        const action =
-          Predicate.hasProperty(err, "action") && err.action === "cancel" ? "cancel" : "decline";
-        return { action };
+const installElicitationHandler = (
+  client: McpConnection["client"],
+  elicit: Elicit,
+  deadline: ActiveWorkDeadline,
+): void => {
+  client.setRequestHandler(
+    "elicitation/create",
+    async (request: { params: unknown }, ctx: ClientContext) => {
+      const params = decodeElicitParams(request.params);
+      const req = toElicitationRequest(params);
+      deadline.pause();
+      // Use runPromiseExit so we can inspect typed failures — `elicit`
+      // fails with `ElicitationDeclinedError` on decline/cancel, which
+      // we translate into the equivalent MCP elicit response instead of
+      // surfacing as a JSON-RPC error.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK request handlers are promise callbacks and must release the active-work lease
+      try {
+        const exit = await Effect.runPromiseExit(
+          Effect.raceFirst(elicit(req), abortOnSignals([ctx.mcpReq.signal, deadline.signal])),
+        );
+        if (Exit.isSuccess(exit)) {
+          const response = exit.value;
+          const persist = response.action === "accept" ? response.meta?.persist : undefined;
+          return {
+            action: response.action,
+            ...(response.action === "accept" && response.content
+              ? { content: decodeElicitContent(response.content) }
+              : {}),
+            ...(persist === undefined ? {} : { _meta: { persist } }),
+          };
+        }
+        const failure = exit.cause.reasons.find(Cause.isFailReason);
+        if (failure) {
+          const err = failure.error;
+          if (Predicate.isTagged(err, "ElicitationDeclinedError")) {
+            const action =
+              Predicate.hasProperty(err, "action") && err.action === "cancel"
+                ? "cancel"
+                : "decline";
+            return { action };
+          }
+        }
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK async request handlers signal unexpected failures by rejecting
+        throw Cause.squash(exit.cause);
+      } finally {
+        deadline.resume();
       }
-    }
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK async request handlers signal unexpected failures by rejecting
-    throw Cause.squash(exit.cause);
-  });
+    },
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -218,10 +363,18 @@ const useConnection = (
   onToolListChanged: (() => void) | undefined,
 ): Effect.Effect<unknown, McpInvocationError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
-    installElicitationHandler(connection.client, elicit);
+    const deadline = yield* Effect.acquireRelease(
+      Effect.sync(() => makeActiveWorkDeadline()),
+      (activeWork) => Effect.sync(activeWork.dispose),
+    );
+    installElicitationHandler(connection.client, elicit, deadline);
     installToolListChangedHandler(connection.client, onToolListChanged);
     return yield* Effect.tryPromise({
-      try: () => connection.client.callTool({ name: toolName, arguments: args }),
+      try: () =>
+        connection.client.callTool(
+          { name: toolName, arguments: args },
+          { signal: deadline.signal, timeout: MCP_SDK_TIMEOUT_BACKSTOP_MS },
+        ),
       catch: (cause) => {
         if (Predicate.isTagged(cause, "McpOAuthReauthorizationRequired")) {
           return new McpOAuthReauthorizationRequired({
@@ -241,16 +394,34 @@ const useConnection = (
           });
         }
         const status = httpStatusFromCause(cause);
-        const protocolFailure = asProtocolError(cause) !== undefined;
+        const protocolError = asProtocolError(cause);
+        const sdkFailure = summarizeSdkFailure(cause);
         return new McpInvocationError({
           toolName,
-          message: `MCP tool call failed for ${toolName}`,
+          // The class and code ride in the message because the dispatch
+          // defect log renders only `Error#toString()`: without them the
+          // trace says which tool failed and nothing about how.
+          message: `MCP tool call failed for ${toolName} (${[
+            sdkFailure.name,
+            ...(sdkFailure.code === undefined ? [] : [String(sdkFailure.code)]),
+            ...(status === undefined ? [] : [`HTTP ${status}`]),
+          ].join(" ")})`,
+          sdkFailure,
           ...(status === undefined ? {} : { status }),
-          ...(!protocolFailure ? { transportFailure: true } : {}),
+          ...(protocolError === undefined
+            ? { transportFailure: true }
+            : {
+                // A JSON-RPC error is the server's answer to this call, written
+                // for the caller (the same trust level as an `isError` result
+                // envelope), so its message may travel back to the sandbox.
+                // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: the narrowing above reaches the SDK's ProtocolError, whose message is the server's JSON-RPC error text
+                protocolError: { code: protocolError.code, message: protocolError.message },
+              }),
           ...(isUnknownToolCause(cause, toolName) ? { unknownTool: true } : {}),
           ...(status === 403 && insufficientScopeFromCause(cause)
             ? { insufficientScope: true }
             : {}),
+          ...httpRefusal(status, cause),
         });
       },
     }).pipe(
@@ -258,7 +429,7 @@ const useConnection = (
         attributes: { "mcp.tool.name": toolName },
       }),
     );
-  });
+  }).pipe(Effect.scoped);
 
 // ---------------------------------------------------------------------------
 // Public API

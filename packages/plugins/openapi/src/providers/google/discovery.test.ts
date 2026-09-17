@@ -160,6 +160,11 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
     ),
   ).toBe("https://photospicker.googleapis.com/$discovery/rest?version=v1");
   expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://www.googleapis.com/discovery/v1/apis/analyticsdata/v1beta/rest",
+    ),
+  ).toBe("https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta");
+  expect(
     normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/forms/v1/rest"),
   ).toBe("https://forms.googleapis.com/$discovery/rest?version=v1");
   expect(
@@ -171,6 +176,11 @@ it("accepts only supported HTTPS Google Discovery endpoints", () => {
   expect(
     normalizeGoogleDiscoveryUrl("https://photospicker.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://photospicker.googleapis.com/$discovery/rest?version=v1");
+  expect(
+    normalizeGoogleDiscoveryUrl(
+      "https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta",
+    ),
+  ).toBe("https://analyticsdata.googleapis.com/$discovery/rest?version=v1beta");
   expect(
     normalizeGoogleDiscoveryUrl("https://forms.googleapis.com/$discovery/rest?version=v1"),
   ).toBe("https://forms.googleapis.com/$discovery/rest?version=v1");

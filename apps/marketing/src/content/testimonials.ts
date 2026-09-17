@@ -1,0 +1,394 @@
+// Public posts about Executor on X, hand-picked. Text is quoted as written,
+// with @-mentions and links reduced to plain words so a card reads on its own.
+// Avatars live in src/assets/pfps/<handle>.<ext> and ship as hashed assets.
+//
+// Order is the display order; the marquee rows draw from this list in turn, so
+// the first twelve are what a reader sees before the rows start to move.
+
+export interface Testimonial {
+  readonly handle: string;
+  readonly name: string;
+  readonly id: string;
+  readonly text: string;
+}
+
+export const testimonials: readonly Testimonial[] = [
+  {
+    handle: "euboid",
+    name: "Wilson Wilson",
+    id: "2098424364207108181",
+    text: "I disconnected all my MCPs and switched to executor.sh. Best thing I've done this year. Claude, Codex, Hermes, Grok, Cursor - it's so much overhead remembering where you've connected what. Now I just have one MCP - and all my agents inherit all my tools. Highly recommend!",
+  },
+  {
+    handle: "nateberkopec",
+    name: "Nate Berkopec",
+    id: "2099995262802641129",
+    text: "For the last 3 months I've been telling all my clients to move everything to MCPs and executor.sh.",
+  },
+  {
+    handle: "cramforce",
+    name: "Malte Ubl",
+    id: "2042626213697720632",
+    text: "I've been working on integrating Rhys's excellent `executor` package into just-bash.",
+  },
+  {
+    handle: "aidenybai",
+    name: "Aiden Bai",
+    id: "2052907020202979362",
+    text: "executor is very good software",
+  },
+  {
+    handle: "chribjel",
+    name: "Christoffer Bjelke",
+    id: "2092939357980123545",
+    text: "update: it *is* the perfect wrapper. now executor.sh is my only mcp for all my agents, and i just configure my other connected services through executor. all integrations can have multiple connections, so i can have personal/work accounts for every integration. so so nice, literally perfect",
+  },
+  {
+    handle: "ethanniser",
+    name: "Ethan Niser",
+    id: "2094632205570207834",
+    text: "I dont think I've ever oauthed so much in my life until AI. connections, connections, connections. s/o executor.sh",
+  },
+  {
+    handle: "ThomsenDrake",
+    name: "Drake Thomsen",
+    id: "2093758541798506783",
+    text: "Moving my connectors onto executor.sh is such a refreshing experience. I now only have to configure a single connector when I'm setting up a new agent instead of 15 different OAuths or API keys",
+  },
+  {
+    handle: "NathanFlurry",
+    name: "Nathan Flurry",
+    id: "2078663475782685025",
+    text: "really digging executor + browserbase for unifying my integrations. i use agents in a lot of places: linux rig over ssh, amp orbs for bg agents, claude/chatgpt on mobile. this setup lets me sign in once (browser or mcp) and access it everywhere",
+  },
+  {
+    handle: "samhogan",
+    name: "Sam Hogan",
+    id: "2094813654202089970",
+    text: "My favorite features: Quick set-up. Easily share MCPs between agent harnesses with centralized authentication and access control. Auth once, use everywhere. Codemode execution by default",
+  },
+  {
+    handle: "DanielLockyer",
+    name: "Daniel Lockyer",
+    id: "2084357678105563583",
+    text: "I've been using Executor since this mini-pitch and honestly it's great. I just configure my MCPs/OpenAPIs in one place and all my clients can use the connections. I've also used the blocklist feature to remove dangerous actions from some MCPs, very nice. Can recommend!",
+  },
+  {
+    handle: "JosXa_",
+    name: "JosXa",
+    id: "2054494157096329504",
+    text: "I compared dozens of MCP aggregators and we finally have a winner. Executor is going to become a standard, I can smell it",
+  },
+  {
+    handle: "davis7",
+    name: "Ben Davis",
+    id: "2036226001877999868",
+    text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
+  },
+  {
+    handle: "thesherlocker",
+    name: "Sherlock",
+    id: "2100071527811354813",
+    text: "Okay, this is really cool, I don't know why I've delayed my adoption so much. Executor is now my default",
+  },
+  {
+    handle: "BenceRedmond",
+    name: "Bence Redmond",
+    id: "2084739965972529153",
+    text: "The use case for Executor is obvious to anyone who's had to manage MCP servers across Claude Code/Codex/Hermes/etc. Incredibly useful, and resolves so many frustrations that I've had with agent configs over the past few months. The product roadmap is also super exciting!",
+  },
+  {
+    handle: "ryan_morr",
+    name: "Ryan Morrissey",
+    id: "2084728209946665280",
+    text: 'Executor is awesome and has solved so many problems for us. Most of our prompts for hermes nowadays include the words "use executor" or "can you use executor". One of the few products I find myself recommending to people daily',
+  },
+  {
+    handle: "johnyeo_",
+    name: "John Yeo",
+    id: "2069495395001012464",
+    text: "executor is the one tool we were looking for to unify our MCP servers across our team, we all use it daily now",
+  },
+  {
+    handle: "philzona",
+    name: "Phil Zona",
+    id: "2074193951377052115",
+    text: 'Finally trying executor.sh and I get why people like it so much. Setup was extremely simple relative to what it actually does. Its concept of "toolkits" is cool too. Very very impressed so far',
+  },
+  {
+    handle: "kaeden_dev",
+    name: "Kaeden",
+    id: "2069516381381599593",
+    text: "I was thinking about building some custom Effect-based MCPs like you did with YNAB, until I realized that Executor already did everything I wanted. It's been incredibly useful.",
+  },
+  {
+    handle: "shuv1337",
+    name: "shuv",
+    id: "2099997871403876730",
+    text: "executor is so good. i have limited toolkits deployed to my whole team via grok bot enterprise, plus a much more robust set of tools for myself/my clankers. it's incredibly useful",
+  },
+  {
+    handle: "sergical",
+    name: "Serge",
+    id: "2090812289427386851",
+    text: "very much enjoying Executor. configure different connections for the same MCP: I have a work and a personal Cloudflare account so I don't need to re-auth into different ones. manage all the connections between different clients. 1Password to manage secrets instead of storing them in plain text. really well done",
+  },
+  {
+    handle: "kr0der",
+    name: "Anthony Kroeger",
+    id: "2070191407722361022",
+    text: "wait executor might be one of the best things ever made for AI agents",
+  },
+  {
+    handle: "KyleFinken",
+    name: "Kyle Finken",
+    id: "2063665744718758055",
+    text: "Incredibly surprised i haven't seen more people talking about poke + executor. By far the best experience for personal agent integrations rn",
+  },
+  {
+    handle: "somto_odera",
+    name: "Somto",
+    id: "2099100010558226582",
+    text: "Moved all of my MCP tooling to executor.sh - self deployed and tbh, its delightful not worrying about setup on my local or VM - one interface and everything is available",
+  },
+  {
+    handle: "zaherg",
+    name: "Zaher",
+    id: "2068721541664170003",
+    text: "I can't express how much I enjoy having Executor added to my toolset. there are many projects, but this one is something I can see myself keep using",
+  },
+  {
+    handle: "andrelandgraf",
+    name: "Andre Landgraf",
+    id: "2052978148912807954",
+    text: "Def check out Executor! I use it primarily for code mode across a few REST APIs and MCP servers. So nice when you'd otherwise have to run thousands of tool calls across meetup RSVP reviews etc",
+  },
+  {
+    handle: "JamieBrock19060",
+    name: "James Brock",
+    id: "2071491693099331802",
+    text: "I've installed and configured Executor with my Claude and Codex. The three of us love it. Been able to cull so many tools loading at session launch. App is being updated like crazy. Interesting to see where this goes!",
+  },
+  {
+    handle: "itschrisjayden",
+    name: "chris jayden",
+    id: "2099826643028074541",
+    text: "I underestimated executor.sh, it's amazing! I run it locally on my mac mini, and my other devices just pull from it, amazing!",
+  },
+  {
+    handle: "jwwwel",
+    name: "joel",
+    id: "2096890755629367713",
+    text: "damn executor.sh is so goated. i can really bring my favourite mcps to whatever harness without needing to set it up again, so nice!!",
+  },
+  {
+    handle: "coreyhainesco",
+    name: "Corey Haines",
+    id: "2090133127243190284",
+    text: "Really liking executor.sh to make it easy to port agent integrations across platforms.",
+  },
+  {
+    handle: "shuv1337",
+    name: "shuv",
+    id: "2083436548394193027",
+    text: "executor.sh is excellent. i have to admit, i spent way too much time forking, integrating and maintaining pieces of it in my own project and hadn't used it 'as is' in a while. it's become very good so i'm back to just running local executor now. great work!",
+  },
+  {
+    handle: "branalytc",
+    name: "brandon",
+    id: "2098659909131022704",
+    text: "finally setup executor.sh and it's working great! happy to finally have a unified mcp!!",
+  },
+  {
+    handle: "itsmeblueguy",
+    name: "blueguy",
+    id: "2099969058280284299",
+    text: "And executor.sh is all about MCPs eheh. Btw, been using it and loving :D",
+  },
+  {
+    handle: "zevtnax",
+    name: "Mrigank Krishan",
+    id: "2099696720552854008",
+    text: "I'm using executor.sh for this - been great so far!",
+  },
+  {
+    handle: "miaugladiator1",
+    name: "jan",
+    id: "2092940116142518517",
+    text: "can vouch, been using it for like a month and its so peak",
+  },
+  {
+    handle: "RocketmanSh",
+    name: "SH",
+    id: "2092986417651540477",
+    text: "Yep it's perfect!",
+  },
+  {
+    handle: "ryan_morr",
+    name: "Ryan Morrissey",
+    id: "2083702861465362545",
+    text: "It's truly a stellar product we use it everyday",
+  },
+  {
+    handle: "WillUndrll",
+    name: "Will Undrell",
+    id: "2069491705636680079",
+    text: "Congrats bro! I'm a huge fan of Executor, I use it exclusively now and it works a dream!",
+  },
+  {
+    handle: "IanMitchel1",
+    name: "Ian",
+    id: "2088675335403667694",
+    text: "Been hard with a baby but I've been trying to consciously spend more time using and learning different AI tools. I can't even imagine doing this without Executor. How did you all live like that?",
+  },
+  {
+    handle: "mteamisloading",
+    name: "mteam.gwei",
+    id: "2087307035947724943",
+    text: "Set up Executor Cloud today to give my cloud agents access to all my accounts from one plane. Great experience! Well done",
+  },
+  {
+    handle: "jachands",
+    name: "Jacob Hands",
+    id: "2075693541523669036",
+    text: "Btw executor is fantastic",
+  },
+  {
+    handle: "adamghaida",
+    name: "adam ghaida",
+    id: "2082163483395936275",
+    text: "thanks rhys :)) executor has definitely been incredibly powerful for our users and also a joy here",
+  },
+  {
+    handle: "Swedish_chef",
+    name: "Axel",
+    id: "2082161772514160818",
+    text: "Executor makes it so incredibly easy for end users",
+  },
+  {
+    handle: "alexrigler",
+    name: "Alex Rigler",
+    id: "2064741056835715141",
+    text: "Folks should really take a look at Executor. It is awesome and a great codebase too",
+  },
+  {
+    handle: "grfwings",
+    name: "Griffin",
+    id: "2052902747473879245",
+    text: "Executor is a great tool, please give it a try!",
+  },
+  {
+    handle: "jeremyosih",
+    name: "Jeremy Osih",
+    id: "2043813713195487315",
+    text: "executor is soo good, thx for everything !",
+  },
+  {
+    handle: "rmedranollamas",
+    name: "Ramón Medrano Llamas",
+    id: "2072032965270360423",
+    text: "executor may be a masterstroke now that it clicked on me",
+  },
+  {
+    handle: "sensho",
+    name: "sensho",
+    id: "2069504511690080560",
+    text: "WE all love executor",
+  },
+  {
+    handle: "georgekontridze",
+    name: "George Kontridze",
+    id: "2099406752358043678",
+    text: "Executor is also great",
+  },
+  {
+    handle: "zaherg",
+    name: "Zaher",
+    id: "2083113232080724033",
+    text: "all I had to do is to add it as integration to my executor, and now I have access to it as mcp without deploying any MCP",
+  },
+  {
+    handle: "UltraLinx",
+    name: "Oliur",
+    id: "2088533267511218619",
+    text: "Whilst setting this up I kinda realised a lot of apps don't have MCP gateways, so I ended up having Claude build the MCPs for me and host it on the same VPS as Executor. HUGE time saver. And I can choose which MCPs to share with my team or keep them private.",
+  },
+  {
+    handle: "capeflow",
+    name: "Florian Bühringer",
+    id: "2065232432450949618",
+    text: "Cloudflare artifacts + executor.sh with agent-native skill authoring. Centralized - shared - instantly updated across the team (as it's behind execute). Works like a charm",
+  },
+  {
+    handle: "aryasaatvik",
+    name: "Saatvik",
+    id: "2073992713255649365",
+    text: "one of my favorite use cases for executor.sh codemode is great for correlating across multiple sources and tools and you can reuse auth across all agents",
+  },
+  {
+    handle: "kr0der",
+    name: "Anthony Kroeger",
+    id: "2094006573605834870",
+    text: "we're saved, add this to Claude Code/Cursor ASAP via Executor. both are lacking computer use at the moment so this is super useful since i use both",
+  },
+  {
+    handle: "samilaa",
+    name: "Sami Laakkonen",
+    id: "2070264715822174416",
+    text: "be me. setting up openclaws for my team. access & integration hell. 1h later demo of Executor from Rhys. problem solved",
+  },
+  {
+    handle: "MejiasDev",
+    name: "Jose Mejias",
+    id: "2094904849099796833",
+    text: "Pi + Herdr + Collie + Executor is unbeaten. Is not even close.",
+  },
+  {
+    handle: "dillon_mulroy",
+    name: "Dillon Mulroy",
+    id: "2067248377222308290",
+    text: "self hosted executor - no more managing a bunch of disparate mcp servers",
+  },
+  {
+    handle: "mynameisyahia",
+    name: "Yahia Bakour",
+    id: "2072938289582297219",
+    text: "Check out Executor! A really novel approach to orchestrating tool calls for agents without blowing up your context window with provider-specific semantics. Feels obvious in hindsight",
+  },
+  {
+    handle: "0xRaduan",
+    name: "Raduan Al-Shedivat",
+    id: "2042547575132160004",
+    text: "all problems of MCPs are solved with executor",
+  },
+  {
+    handle: "NathanFlurry",
+    name: "Nathan Flurry",
+    id: "2073133993122492900",
+    text: 'tldr why i\'m excited for executor/integrations: everyone needs a "company brain". everyone thinks memory is the issue. but nobody gets past the integrations phase. tackle integrations first, everything else comes later. and most importantly oss + self-hostable',
+  },
+  {
+    handle: "flybayer",
+    name: "Brandon Ravion",
+    id: "2062225610919788681",
+    text: "executor.sh to get code mode for any API or MCP",
+  },
+  {
+    handle: "benapatton",
+    name: "Ben Patton",
+    id: "2097672856477839558",
+    text: "What are we doing people?! Just use executor.sh or find an alternative.",
+  },
+  {
+    handle: "aidansunbury",
+    name: "Aidan Sunbury",
+    id: "2086974526706086293",
+    text: "We use Executor for MCP access, tailscale aperture for inference access, infisical for secret access",
+  },
+  {
+    handle: "erikrogne",
+    name: "Erik Rogne",
+    id: "2098769030735864132",
+    text: "Finally. This is a great idea",
+  },
+];

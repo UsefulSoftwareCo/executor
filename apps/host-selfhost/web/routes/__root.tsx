@@ -46,21 +46,15 @@ export const Route = createRootRoute({
   component: RootComponent,
 });
 
-// Self-host adds the account's API keys and the instance Admin page (members +
-// invite links) to the shared nav. The Admin page and its API gate to
-// owner/admin, so a non-admin who opens it just sees the access notice.
-const selfHostNavItems = [
-  ...defaultShellNavItems,
-  { to: "/api-keys", label: "API keys" },
-  { to: "/admin", label: "Admin" },
-];
+// Self-host adds account API keys for every member. The instance administration
+// surfaces are appended separately after the active member is confirmed as an
+// owner/admin, so plain members are not offered links that only refuse them.
+const selfHostNavItems = [...defaultShellNavItems, { to: "/api-keys", label: "API keys" }];
 
-// Sections only an owner/admin of the instance may open. Users reads the
-// tenant-wide admin plane, gated on a Better Auth owner/admin member, so a
-// plain member is not shown a link that would only refuse them. (The existing
-// /admin entry predates this and stays unconditional — it is this instance's
-// member/invite page, and its own notice covers a non-admin who opens it.)
-const selfHostAdminNavItems = [{ to: "/users", label: "Users" }];
+const selfHostAdminNavItems = [
+  { to: "/admin", label: "Admin" },
+  { to: "/users", label: "Users" },
+];
 
 const signOut = async () => {
   await authClient.signOut();

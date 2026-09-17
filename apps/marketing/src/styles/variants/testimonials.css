@@ -1,0 +1,176 @@
+/* Testimonial marquee. Rows of hairline cards drift sideways, alternating
+   direction. Grayscale only; the avatar is the only colour on the card. */
+.testi {
+  display: grid;
+  gap: 12px;
+  margin-top: 1.5rem;
+  /* Bleed to the column edges and fade the ends so cards enter and leave
+     softly instead of clipping hard. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+.testi__row {
+  display: flex;
+  gap: 12px;
+  overflow: hidden;
+  --testi-duration: 180s;
+}
+.testi__row[data-row="1"] {
+  --testi-duration: 210s;
+}
+.testi__row[data-row="2"] {
+  --testi-duration: 195s;
+}
+.testi__track {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+  animation: testi-drift var(--testi-duration) linear infinite;
+  /* Hold still until the section has been seen once, so the first cards a
+     reader meets are the ones at the head of the list, not wherever the
+     loop happened to be. */
+  animation-play-state: paused;
+}
+.testi[data-seen] .testi__track {
+  animation-play-state: running;
+}
+.testi__row[data-row="1"] .testi__track {
+  animation-direction: reverse;
+}
+/* The second copy exists only so the loop is seamless. Keep it out of
+   find-in-page, selection, and the accessibility tree. */
+.testi__track[inert] {
+  user-select: none;
+}
+.testi[data-seen]:hover .testi__track {
+  animation-play-state: paused;
+}
+@keyframes testi-drift {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    /* One full copy plus its trailing gap. */
+    transform: translateX(calc(-100% - 12px));
+  }
+}
+
+.testi__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: 300px;
+  padding: 0.85rem 1rem 0.95rem;
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  text-decoration: none !important;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.testi__card:hover {
+  border-color: var(--color-rule-strong);
+  background: var(--color-surface-2);
+}
+.testi__who {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.testi__who img {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px var(--color-rule);
+}
+.testi__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.testi__handle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-3);
+  white-space: nowrap;
+}
+.testi__text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* "Add yours": an empty-looking card at the head of the middle row. */
+.testi__card--add {
+  border-style: dashed;
+  border-color: var(--color-rule-strong);
+  background: transparent;
+}
+.testi__card--add:hover {
+  border-style: solid;
+  border-color: var(--color-ink);
+  background: var(--color-surface);
+}
+.testi__add-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--color-rule-strong);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--color-ink-2);
+  flex-shrink: 0;
+}
+.testi__card--add:hover .testi__add-mark {
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+}
+
+/* Reduced motion: no drift, one copy, wrap into a grid. */
+@media (prefers-reduced-motion: reduce) {
+  .testi {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .testi__row {
+    display: contents;
+  }
+  .testi__track {
+    animation: none;
+    flex-wrap: wrap;
+  }
+  .testi__track[aria-hidden="true"] {
+    display: none;
+  }
+  .testi__card {
+    width: calc(50% - 6px);
+  }
+}
+
+@media (max-width: 719.98px) {
+  .testi {
+    /* No edge fade on phones: it eats the first card's left edge. */
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .testi__card {
+    width: 240px;
+  }
+  .testi__text {
+    -webkit-line-clamp: 5;
+  }
+}

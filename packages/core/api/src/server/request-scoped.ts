@@ -13,8 +13,9 @@
 // both build the inner layer at construction time. The only primitive
 // that actually rebuilds per request is a router middleware whose
 // per-request handler builds the layer with a *fresh* `MemoMap` and a
-// per-request scope, so `acquireRelease` fires per request and finalizers
-// run when the request fiber's scope closes.
+// per-request scope, so `acquireRelease` fires per request. Background work
+// retains that scope until its database writes finish; the response need not
+// wait, but the platform keep-alive must include resource cleanup too.
 //
 // The fresh `MemoMap` matters: `Layer.build` would otherwise inherit
 // `CurrentMemoMap` from the boot context (`HttpRouter.toWebHandler`
@@ -29,14 +30,24 @@
 // coverage that pins this rule down (sequential AND concurrent cases).
 // ---------------------------------------------------------------------------
 
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer, Scope } from "effect";
 import { HttpRouter } from "effect/unstable/http";
+
+/**
+ * Retain this request's resources for already-started background work. The
+ * caller owns task error reporting; the returned promise settles only after
+ * all retained tasks AND resource finalizers finish, for the host's waitUntil.
+ */
+export class RequestBackgroundTasks extends Context.Service<
+  RequestBackgroundTasks,
+  { readonly retain: (task: Promise<unknown>) => Promise<void> }
+>()("@executor-js/api/RequestBackgroundTasks") {}
 
 /**
  * Build an `HttpRouter.middleware` that provides `layer`'s services to
  * each request. The layer is rebuilt per HTTP request so
- * `Effect.acquireRelease` fires per request and is released when the
- * request fiber's scope closes.
+ * `Effect.acquireRelease` fires per request. Resources close after the handler
+ * and its registered background work settle, without delaying the response.
  *
  * The returned value is a `Middleware`. Use `.layer` to apply it as a
  * standalone layer; use `.combine(other)` to fold it into another
@@ -46,15 +57,55 @@ import { HttpRouter } from "effect/unstable/http";
  * outer middleware's `requires`).
  */
 export const requestScopedMiddleware = <A>(layer: Layer.Layer<A>) =>
-  HttpRouter.middleware<{ provides: A }>()((httpEffect) =>
-    Effect.scoped(
+  HttpRouter.middleware<{ provides: A | RequestBackgroundTasks }>()((httpEffect) =>
+    Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        // Fresh MemoMap per request — see file-level note for why we
-        // must NOT inherit `CurrentMemoMap` from the boot context.
-        const memoMap = yield* Layer.makeMemoMap;
-        const scope = yield* Effect.scope;
-        const services = yield* Layer.buildWithMemoMap(layer, memoMap, scope);
-        return yield* Effect.provideContext(httpEffect, services);
+        const scope = yield* Scope.make();
+        const pending = new Set<Promise<void>>();
+        const released = Promise.withResolvers<void>();
+        const background = RequestBackgroundTasks.of({
+          retain: (task) => {
+            // SDK tasks report their own failures. Both outcomes release the
+            // resource lease; a rejected task must not leak its database.
+            const settled = task.then(
+              () => {
+                pending.delete(settled);
+              },
+              () => {
+                pending.delete(settled);
+              },
+            );
+            pending.add(settled);
+            return released.promise;
+          },
+        });
+        return yield* restore(
+          Effect.gen(function* () {
+            // Never inherit the boot MemoMap: concurrent requests each own
+            // their socket, including after either response has been sent.
+            const memoMap = yield* Layer.makeMemoMap;
+            const services = yield* Layer.buildWithMemoMap(layer, memoMap, scope);
+            return yield* Effect.provideContext(httpEffect, services);
+          }).pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.provideService(RequestBackgroundTasks, background),
+          ),
+        ).pipe(
+          Effect.onExit((exit) => {
+            const release = Effect.gen(function* () {
+              // A retained task may start another task before it settles.
+              while (pending.size > 0) {
+                yield* Effect.promise(() => Promise.all(pending));
+              }
+            }).pipe(
+              Effect.ensuring(Scope.close(scope, exit)),
+              Effect.ensuring(Effect.sync(() => released.resolve())),
+            );
+            // With no background work, preserve synchronous teardown. Otherwise
+            // the resource owner, including cleanup, is kept alive by the host.
+            return pending.size === 0 ? release : release.pipe(Effect.forkDetach, Effect.asVoid);
+          }),
+        );
       }),
     ),
   );

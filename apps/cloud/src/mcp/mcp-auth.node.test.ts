@@ -2,7 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
 
-import { McpJwtVerificationError, verifyMcpAccessToken, verifyWorkOSMcpAccessToken } from "./jwt";
+import {
+  McpJwtVerificationError,
+  verifyMcpAccessToken,
+  verifyWorkOSMcpAccessToken,
+  verifyWorkosUserManagementToken,
+} from "./jwt";
 
 const issuer = "https://test-authkit.example.com";
 const resource = "https://test-resource.example.com/mcp";
@@ -112,4 +117,75 @@ describe("MCP AuthKit token verification", () => {
       expect(error).toBeInstanceOf(McpJwtVerificationError);
     }),
   );
+});
+
+describe("access token expiry and identity boundaries", () => {
+  for (const kind of ["mcp", "user-management"] as const) {
+    for (const invalidClaim of ["missing-exp", "missing-iat"] as const) {
+      it.effect(`${kind} rejects ${invalidClaim}`, () =>
+        Effect.gen(function* () {
+          const { publicKey, privateKey } = yield* Effect.promise(() => generateKeyPair("RS256"));
+          const jwk = yield* Effect.promise(() => exportJWK(publicKey));
+          const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid: "expiry-key" }] });
+          const now = Math.floor(Date.now() / 1000);
+          const claims = {
+            sub: "user_test",
+            org_id: "org_test",
+            iss: issuer,
+            aud: resource,
+            ...(invalidClaim === "missing-exp" ? {} : { exp: now + 300 }),
+            ...(invalidClaim === "missing-iat" ? {} : { iat: now }),
+          };
+          const token = yield* Effect.promise(() =>
+            new SignJWT(claims)
+              .setProtectedHeader({ alg: "RS256", kid: "expiry-key" })
+              .sign(privateKey),
+          );
+          const error = yield* Effect.flip(
+            kind === "mcp"
+              ? verifyMcpAccessToken(token, jwks, { issuer, audience: resource })
+              : verifyWorkosUserManagementToken(token, jwks),
+          );
+          expect(error).toBeInstanceOf(McpJwtVerificationError);
+          expect(error.reason).not.toBe("system");
+        }),
+      );
+    }
+    it.effect(`${kind} accepts a token issued more than a day ago that has not expired`, () =>
+      Effect.gen(function* () {
+        const { publicKey, privateKey } = yield* Effect.promise(() => generateKeyPair("RS256"));
+        const jwk = yield* Effect.promise(() => exportJWK(publicKey));
+        const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid: "expiry-key" }] });
+        const now = Math.floor(Date.now() / 1000);
+        const token = yield* Effect.promise(() =>
+          new SignJWT({
+            sub: "user_test",
+            org_id: "org_test",
+            iss: issuer,
+            aud: resource,
+            iat: now - 5 * 86400,
+            exp: now + 2 * 86400,
+          })
+            .setProtectedHeader({ alg: "RS256", kid: "expiry-key" })
+            .sign(privateKey),
+        );
+        const verified = yield* kind === "mcp"
+          ? verifyMcpAccessToken(token, jwks, { issuer, audience: resource })
+          : verifyWorkosUserManagementToken(token, jwks);
+        expect(verified).toEqual({ accountId: "user_test", organizationId: "org_test" });
+      }),
+    );
+    it.effect(`${kind} rejects a non-string organization claim`, () =>
+      Effect.gen(function* () {
+        const { jwks, sign } = yield* Effect.promise(() => makeVerifier());
+        const token = yield* Effect.promise(() =>
+          sign({ aud: resource, org_id: { id: "org_test" } }),
+        );
+        const verified = yield* kind === "mcp"
+          ? verifyMcpAccessToken(token, jwks, { issuer, audience: resource })
+          : verifyWorkosUserManagementToken(token, jwks);
+        expect(verified).toBeNull();
+      }),
+    );
+  }
 });

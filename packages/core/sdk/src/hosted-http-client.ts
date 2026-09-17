@@ -20,6 +20,8 @@ export type HostedHostnameResolver = (
 
 export interface HostedHttpClientOptions {
   readonly allowLocalNetwork?: boolean;
+  /** Require HTTPS, except private addresses explicitly allowed for local development. */
+  readonly requireTls?: boolean;
   readonly maxRedirects?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly resolveHostname?: HostedHostnameResolver;
@@ -155,6 +157,17 @@ export const validateHostedOutboundUrl = (
       });
     }
 
+    if (
+      options.requireTls &&
+      url.protocol !== "https:" &&
+      !(options.allowLocalNetwork && isLocalOrPrivateHostname(url.hostname))
+    ) {
+      return yield* new HostedOutboundRequestBlocked({
+        url: value,
+        reason: "This host requires HTTPS for outbound requests",
+      });
+    }
+
     if (isBlockedMetadataHostname(url.hostname)) {
       return yield* new HostedOutboundRequestBlocked({
         url: value,
@@ -272,6 +285,8 @@ export const makeHostedFetch = (options: HostedHttpClientOptions = {}): typeof g
 // request effect.
 // ---------------------------------------------------------------------------
 
+// Redirect/referrer URLs, MCP session IDs, and vendor trace state can carry
+// credentials. Keep them redacted even when other protocol headers are useful.
 const SPAN_SAFE_HEADER_NAMES = [
   "accept",
   "accept-encoding",
@@ -289,14 +304,10 @@ const SPAN_SAFE_HEADER_NAMES = [
   "if-modified-since",
   "if-none-match",
   "last-modified",
-  "location",
   "mcp-protocol-version",
-  "mcp-session-id",
   "origin",
-  "referer",
   "retry-after",
   "traceparent",
-  "tracestate",
   "transfer-encoding",
   "user-agent",
   "vary",

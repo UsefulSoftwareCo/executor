@@ -58,6 +58,17 @@ const isCustomerNotFoundCause = (cause: unknown): boolean => {
   }
 };
 
+/**
+ * The HTTP status an Autumn failure carries, when the autumn-js SDK error
+ * underneath it has one; `undefined` for a network or SDK-level failure.
+ */
+export const autumnStatusOf = (failure: AutumnFailure): number | undefined => {
+  const cause = failure.cause;
+  if (typeof cause !== "object" || cause === null) return undefined;
+  const { statusCode } = cause as { readonly statusCode?: unknown };
+  return typeof statusCode === "number" ? statusCode : undefined;
+};
+
 // ---------------------------------------------------------------------------
 // Service interface
 // ---------------------------------------------------------------------------

@@ -52,6 +52,44 @@ const statusFromNumericHttpCode = (cause: unknown): number | undefined =>
 export const httpStatusFromCause = (cause: unknown): number | undefined =>
   statusFromTypedTransportError(cause) ?? statusFromSsePostError(cause);
 
+// A server that validates a call at the HTTP layer answers with a 4xx whose
+// body is a JSON object naming the problem (Stripe's MCP: 422 for a missing
+// `stripe_context`). The transport keeps that body on `SdkHttpError.data.text`.
+// Read it STRUCTURALLY — parse, then pick a string message field — so a body
+// that is not a JSON object (an HTML error page, a proxy banner) contributes
+// nothing; only a message the server wrote for the caller comes out.
+const JsonErrorBody = Schema.Union([
+  Schema.Struct({ message: Schema.String }),
+  Schema.Struct({ error: Schema.String }),
+  Schema.Struct({ error: Schema.Struct({ message: Schema.String }) }),
+]);
+const decodeJsonErrorBody = Schema.decodeUnknownOption(JsonErrorBody);
+const SdkHttpErrorText = Schema.Struct({ text: Schema.String });
+const decodeSdkHttpErrorText = Schema.decodeUnknownOption(SdkHttpErrorText);
+
+const parseJsonSafe = (text: string): unknown => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: classifying an untrusted upstream error body; a parse failure just means "not a JSON body"
+  try {
+    // oxlint-disable-next-line executor/no-json-parse -- boundary: the parsed value is only structurally decoded for a message field, never used as domain data
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+/** The caller-facing message from a JSON error body the SDK's HTTP error
+ *  carries, or `undefined` when there is none. */
+export const httpRefusalMessageFromCause = (cause: unknown): string | undefined => {
+  const sdk = mcpClientSdkIfLoaded();
+  if (sdk === undefined || !sdk.client.SdkHttpError.isInstance(cause)) return undefined;
+  const text = Option.getOrUndefined(decodeSdkHttpErrorText(cause.data))?.text;
+  if (text === undefined) return undefined;
+  const body = Option.getOrUndefined(decodeJsonErrorBody(parseJsonSafe(text)));
+  if (body === undefined) return undefined;
+  if ("message" in body) return body.message;
+  return typeof body.error === "string" ? body.error : body.error.message;
+};
+
 /** Connection handshakes may receive the SDK's SSE error, whose numeric code
  * is an HTTP status. Keep this connection-only: JSON-RPC invocation errors
  * also have numeric `code` fields which are not HTTP statuses. */

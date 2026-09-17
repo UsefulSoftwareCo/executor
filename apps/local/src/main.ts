@@ -123,8 +123,11 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         engine,
         artifacts: executor.artifacts,
         connections: executor.connections,
+        tools: executor.tools,
+        integrations: executor.integrations,
         ...appsConfig,
       },
+      webBaseUrl: process.env.EXECUTOR_WEB_BASE_URL || undefined,
       createConfigForResource: async (resource) => {
         if (resource.kind === "default") {
           return {
@@ -132,6 +135,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
               engine,
               artifacts: executor.artifacts,
               connections: executor.connections,
+              tools: executor.tools,
+              integrations: executor.integrations,
               ...appsConfig,
             },
           };
@@ -157,6 +162,8 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             engine: toolkitEngine,
             artifacts: handle.executor.artifacts,
             connections: handle.executor.connections,
+            tools: handle.executor.tools,
+            integrations: handle.executor.integrations,
             ...appsConfig,
           },
           close: handle.dispose,

@@ -1673,3 +1673,82 @@ body {
 .blog-prose h3 + p {
   margin-top: 0;
 }
+
+/* ── Figure captions (paper-style numbered figures) ── */
+.figcap {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-ink-3);
+  letter-spacing: 0;
+  text-wrap: pretty;
+}
+.figcap__n {
+  color: var(--color-ink-2);
+  font-weight: 500;
+}
+
+/* ── Sidebar ("rail") layout. Active when a rail option is visible. ──
+   One centred frame (rail + content) of fixed max width, like a document
+   with a margin column. Content never exceeds its column. */
+.page:has(> .page__rail) {
+  --rail-w: 240px;
+  --frame-w: 1240px;
+}
+@media (min-width: 1024px) {
+  .page:has(> .page__rail) {
+    display: grid;
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    align-items: start;
+    max-width: var(--frame-w);
+    margin-inline: auto;
+  }
+  .page__rail {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow: hidden auto;
+    border-right: 1px solid var(--color-rule);
+  }
+  .page:has(> .page__rail) .page__body {
+    min-width: 0;
+    padding-inline: clamp(32px, 4vw, 64px);
+  }
+  .page:has(> .page__rail) .page__body .hero-inner,
+  .page:has(> .page__rail) .page__body .text-center {
+    text-align: left;
+  }
+  .page:has(> .page__rail) .page__body [class*="max-w-"].mx-auto,
+  .page:has(> .page__rail) .page__body .hero-inner .mx-auto,
+  .page:has(> .page__rail) .page__body .text-center .mx-auto {
+    margin-left: 0;
+  }
+  .page:has(> .page__rail) .page__body .hero-inner .hero-cta,
+  .page:has(> .page__rail) .page__body .hero-inner .audience-pane {
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+  .page:has(> .page__rail) .page__body .hero-inner h1 {
+    font-size: clamp(2.6rem, 5vw, 4.4rem);
+  }
+  /* The rail column has no page gutter of its own inside the frame; keep the
+     graph-paper hero texture behind the whole frame, not just the body. */
+}
+
+/* The hero graph-paper texture is a landing-page device. In rail mode the
+   page reads as a document, so it goes: the texture would sit behind the
+   sidebar and the hairline frame and fight both. */
+main:has(.page > .page__rail) > .pattern-bg,
+main:has(.page > .page__rail) > .pattern-bg + div {
+  display: none;
+}
+
+/* Below the desktop breakpoint the rail is a top bar; keep it in view. */
+@media (max-width: 1023.98px) {
+  .page__rail {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--color-surface);
+  }
+}

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
 
-import { mintInviteCode } from "../testing/mint-invite";
+import { createInviteMinter } from "../testing/mint-invite";
 
 // Real Better Auth path: set a secret + bootstrap admin before importing.
 // Better Auth skips origin checks in test mode by default; this suite exercises
@@ -22,6 +22,9 @@ const { makeSelfHostApiHandler } = await import("../app");
 
 const { handler, dispose } = await makeSelfHostApiHandler();
 afterAll(() => dispose());
+
+// Keep one admin session across invitation setup; production login limits stay enabled.
+const mintInvite = await createInviteMinter(handler);
 
 const BASE = "http://localhost:4788";
 
@@ -52,7 +55,7 @@ test("an HTTP trusted alias receives a usable session cookie with an HTTPS canon
 
 test("an explicitly trusted browser alias can sign up without changing the canonical base URL", async () => {
   const alias = "http://executor.home.arpa:4788";
-  const inviteCode = await mintInviteCode(handler);
+  const inviteCode = await mintInvite();
   const signUp = await handler(
     new Request(`${alias}/api/auth/sign-up/email`, {
       method: "POST",
@@ -76,7 +79,7 @@ test("an explicitly trusted browser alias can sign up without changing the canon
 
 test("an unlisted browser alias remains blocked", async () => {
   const alias = "http://untrusted.home.arpa:4788";
-  const inviteCode = await mintInviteCode(handler);
+  const inviteCode = await mintInvite();
   const signUp = await handler(
     new Request(`${alias}/api/auth/sign-up/email`, {
       method: "POST",
@@ -134,7 +137,7 @@ test("migrations create both the Better Auth and FumaDB executor schema regions"
 });
 
 test("sign-up issues a bearer token and resolves to a per-user org-pinned identity", async () => {
-  const inviteCode = await mintInviteCode(handler);
+  const inviteCode = await mintInvite();
   const signUp = await handler(
     new Request(`${BASE}/api/auth/sign-up/email`, {
       method: "POST",
@@ -169,21 +172,17 @@ test("sign-up issues a bearer token and resolves to a per-user org-pinned identi
 });
 
 test("self-host API keys are not capped by Better Auth's default request limit", async () => {
-  const inviteCode = await mintInviteCode(handler);
-  const signUp = await handler(
-    new Request(`${BASE}/api/auth/sign-up/email`, {
+  // This test exercises API-key requests, so use the seeded account instead
+  // of consuming another sign-up attempt in the production rate-limit window.
+  const signIn = await handler(
+    new Request(`${BASE}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        email: "key-user@test.local",
-        password: "member-password-123",
-        name: "Key User",
-        inviteCode,
-      }),
+      body: JSON.stringify({ email: "admin@test.local", password: "admin-password-123" }),
     }),
   );
-  expect(signUp.status).toBe(200);
-  const token = signUp.headers.get("set-auth-token");
+  expect(signIn.status).toBe(200);
+  const token = signIn.headers.get("set-auth-token");
   expect(token).toBeTruthy();
 
   const createKey = await handler(

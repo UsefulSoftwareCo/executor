@@ -73,6 +73,10 @@ const TEST_BASE_URL = "http://local.test";
 
 interface Harness {
   readonly fetch: typeof globalThis.fetch;
+  readonly registerRemoteServer: (input: {
+    readonly slug: string;
+    readonly endpoint: string;
+  }) => Effect.Effect<void, unknown>;
   readonly dispose: () => Promise<void>;
 }
 
@@ -132,6 +136,18 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
       webHandler(
         input instanceof Request ? input : new Request(input, init),
       )) as typeof globalThis.fetch,
+    // `oauth.start` refuses an integration that is not in the catalog, so the
+    // flow under test needs a registered MCP server to mint against.
+    registerRemoteServer: ({ slug, endpoint }) =>
+      executor.mcp
+        .addServer({
+          transport: "remote",
+          name: slug,
+          slug,
+          endpoint,
+          authenticationTemplate: [{ kind: "oauth2", slug: "oauth" }],
+        })
+        .pipe(Effect.asVoid),
     dispose: async () => {
       await Effect.runPromise(Effect.ignore(Effect.tryPromise(() => disposeHandler())));
       await Effect.runPromise(
@@ -190,6 +206,12 @@ describe("local oauth (real OAuth discovery + stubbed start)", () => {
           );
           expect(probed.authorizationUrl).toBe(oauth.authorizationEndpoint);
           expect(probed.tokenUrl).toBe(oauth.tokenEndpoint);
+
+          // The catalog row `start` mints against.
+          yield* harness.registerRemoteServer({
+            slug: "mcp_remote",
+            endpoint: oauth.mcpResourceUrl,
+          });
 
           // createClient — register an owner-scoped OAuth app for the start flow.
           const slug = `mcp-oauth2-${randomBytes(4).toString("hex")}`;

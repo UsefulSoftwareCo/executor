@@ -1140,13 +1140,76 @@ describe("mcpPlugin", () => {
         expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
 
         const error = failure as { readonly message: string; readonly cause?: unknown };
-        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
+        // The defect log renders only the message, so it names the SDK
+        // rejection (class + code) without carrying the upstream body.
+        expect(error).toMatchObject({
+          message:
+            "MCP tool call failed for explode (SdkHttpError CLIENT_HTTP_NOT_IMPLEMENTED HTTP 500)",
+        });
         expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
         expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
         const cause = error.cause as McpInvocationError;
         expect(cause.status).toBe(500);
         expect(cause).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
         expect("cause" in cause).toBe(false);
+      }),
+    ),
+  );
+
+  // Stripe's MCP validates the OAuth account context at the HTTP layer: a
+  // call without `stripe_context` gets a 422 whose JSON body names the missing
+  // field. That is the server refusing THIS call, so it must reach the caller
+  // as a typed failure carrying the server's message — the same treatment as
+  // a JSON-RPC invalid-params refusal — not scrub into an opaque defect.
+  it.effect("surfaces a 4xx JSON refusal from tools/call as a typed tool failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_http_422",
+          callTool: () =>
+            HttpServerResponse.jsonUnsafe(
+              { message: "stripe_context is required for this tool" },
+              { status: 422 },
+            ),
+        });
+
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "mcp_tool_error",
+            message: "stripe_context is required for this tool",
+            status: 422,
+            retryable: false,
+            details: { upstream: { status: 422 } },
+          },
+        });
+        expect(result).not.toMatchObject({ error: { details: { category: "authentication" } } });
+      }),
+    ),
+  );
+
+  // A bodyless 4xx (or a body that is not a JSON object) has no message the
+  // caller can act on, so it keeps the opaque-defect path: nothing from the
+  // transport error text is copied out.
+  it.effect("keeps a 4xx without a JSON message opaque", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_http_422_text",
+          callTool: httpStatusCallTool(422),
+        });
+
+        const failure = yield* executor
+          .execute(toolAddress, {}, { onElicitation: "accept-all" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+        const error = failure as { readonly message: string; readonly cause?: unknown };
+        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
+        const cause = error.cause as McpInvocationError;
+        expect(cause.status).toBe(422);
+        expect(cause.httpRefusal).toBeUndefined();
       }),
     ),
   );
@@ -1159,17 +1222,57 @@ describe("mcpPlugin", () => {
           callTool: jsonRpcErrorCallTool(401),
         });
 
-        const failure = yield* executor
-          .execute(toolAddress, {}, { onElicitation: "accept-all" })
-          .pipe(Effect.flip);
-        expect(Predicate.isTagged(failure, "ToolInvocationError")).toBe(true);
+        const result = yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" });
 
-        const error = failure as { readonly message: string; readonly cause?: unknown };
-        expect(error).toMatchObject({ message: "MCP tool call failed for explode" });
-        expect(error).toMatchObject({ message: expect.not.stringContaining("do-not-leak") });
-        expect(Predicate.isTagged(error.cause, "McpInvocationError")).toBe(true);
-        const cause = error.cause as McpInvocationError;
-        expect(cause.status).toBeUndefined();
+        // A JSON-RPC error code is not an HTTP status: 401 here is the
+        // server's application-level answer, not an auth wall.
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "mcp_tool_error", details: { jsonrpc: { code: 401 } } },
+        });
+        expect(result).not.toMatchObject({ error: { status: 401 } });
+        expect(result).not.toMatchObject({ error: { details: { category: "authentication" } } });
+      }),
+    ),
+  );
+
+  // A server that validates arguments itself (Stripe's MCP, for one) refuses a
+  // bad call with `-32602 Invalid params` and a message naming the offending
+  // field. That answer is for the caller: without it the model cannot fix the
+  // arguments, and scrubbing it into "Internal tool error [id]" reads as an
+  // outage of the whole integration.
+  it.effect("surfaces a JSON-RPC invalid-params refusal as a typed tool failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_jsonrpc_invalid_params",
+          callTool: (rpc) =>
+            HttpServerResponse.jsonUnsafe({
+              jsonrpc: "2.0",
+              id: rpc.id ?? null,
+              error: {
+                code: -32602,
+                message:
+                  "Invalid method parameters: The property '#/intent' value \"x\" did not match one of the following values: a, b",
+              },
+            }),
+        });
+
+        const result = yield* executor.execute(
+          toolAddress,
+          { intent: "x" },
+          { onElicitation: "accept-all" },
+        );
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "mcp_tool_error",
+            message: expect.stringContaining("'#/intent'"),
+            retryable: false,
+            details: { jsonrpc: { code: -32602 } },
+          },
+        });
       }),
     ),
   );

@@ -9,6 +9,8 @@
 //   - Swagger UI + the OpenAPI JSON for the full cloud spec.
 //   - the Autumn billing proxy (`/api/billing/*`) — billing-as-extension (the
 //     `extensions.routes` SEAM, but served under `/api` like everything else).
+//   - the WorkOS webhook (`/api/webhooks/workos`) — signature-verified poke of
+//     the membership-mirror reconciler.
 //   - the global request-failure logging middleware.
 //
 // They all serve UNDER the `/api` prefix (the same namespace the protected +
@@ -19,15 +21,17 @@
 // so the postgres.js socket lives in the request fiber's scope).
 // ---------------------------------------------------------------------------
 
+import { env, waitUntil } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
 import { AccountApi, AdminUsersApi } from "@executor-js/api";
-import { requestScopedMiddleware } from "@executor-js/api/server";
+import { requestScopedMiddleware, type MemberDirectory } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
+import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
   CloudSessionAuthHandlers,
@@ -35,6 +39,8 @@ import {
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
 import { SessionAuthLive } from "../auth/middleware-live";
+import { runWorkOsEventsSync } from "../auth/workos-events-runner";
+import { makeWorkOsWebhookRoute } from "../auth/workos-webhook";
 import { makeCloudAdminUsersRoutes } from "../admin/admin-users-api";
 import { OrgApi, OrgHttpApi } from "../org/api";
 import { orgAuthMiddleware } from "../org/auth-middleware";
@@ -72,7 +78,9 @@ const spec = OpenApi.fromApi(CloudOpenApi);
  * read it — the few app-only billing touchpoints. It is NOT on the neutral boot
  * core.
  */
-export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserStoreService>) => {
+export const makeCloudExtensionRoutes = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+) => {
   // Session routes (login / callback / me / switch-org / …). Handlers yield
   // `UserStoreService` directly; the per-request DB combine keeps the postgres
   // socket request-scoped.
@@ -108,7 +116,19 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
   // rather than on the protected API because the protected plane's middleware
   // binds a product-view executor to one acting member — this one authorizes an
   // org key (or an admin session) and builds a subject-less platform view.
-  const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, { router: apiPrefixedRouter });
+  const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, {
+    router: apiPrefixedRouter,
+  });
+
+  // The WorkOS webhook needs no per-request DB layer: it verifies the
+  // signature with the boot `WorkOSClient` and detaches a reconciler pass
+  // that builds its own fresh services (the route's request scope is gone by
+  // the time the pass runs). `waitUntil` binds to the in-flight invocation.
+  const WebhookRoutes = makeWorkOsWebhookRoute({
+    secret: env.WORKOS_WEBHOOK_SECRET,
+    detach: waitUntil,
+    sync: runWorkOsEventsSync,
+  });
 
   return [
     SessionRoutes,
@@ -116,6 +136,7 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     AdminUsersRoutes,
     DocsRoutes,
     BillingRoutes,
+    WebhookRoutes,
     ApiErrorLoggingLive,
   ] as const;
 };

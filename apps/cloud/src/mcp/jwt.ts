@@ -7,9 +7,26 @@
 // the dependency points one way only.
 // ---------------------------------------------------------------------------
 
-import { Data, Effect, Result, Schema } from "effect";
+import { Data, Effect, Option, Result, Schema } from "effect";
 import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { JWKSInvalid, JWKSTimeout, JWTExpired } from "jose/errors";
+import { workosAccessTokenOptions } from "../auth/access-token-options";
+
+const parseIdentityClaims = Schema.decodeUnknownOption(
+  Schema.Struct({
+    sub: Schema.NonEmptyString,
+    org_id: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
+  }),
+);
+
+const identityFromClaims = (payload: unknown): VerifiedToken | null =>
+  Option.match(parseIdentityClaims(payload), {
+    onNone: () => null,
+    onSome: (claims) => ({
+      accountId: claims.sub,
+      organizationId: claims.org_id ?? null,
+    }),
+  });
 
 export type VerifiedToken = {
   /** The WorkOS account ID (user ID). */
@@ -91,18 +108,14 @@ export const verifyMcpAccessToken = (
     const { payload } = yield* Effect.tryPromise({
       try: () =>
         jwtVerify(token, jwks, {
+          ...workosAccessTokenOptions,
           issuer: options.issuer,
           audience: options.audience,
         }),
       catch: classifyJwtVerificationError,
     }).pipe(withJwtVerificationSpan);
 
-    if (!payload.sub) return null;
-
-    return {
-      accountId: payload.sub,
-      organizationId: (payload.org_id as string | undefined) ?? null,
-    } satisfies VerifiedToken;
+    return identityFromClaims(payload);
   });
 
 export const verifyWorkOSMcpAccessToken = (
@@ -134,14 +147,9 @@ export const verifyWorkOSMcpAccessToken = (
 export const verifyWorkosUserManagementToken = (token: string, jwks: JWTVerifyGetKey) =>
   Effect.gen(function* () {
     const { payload } = yield* Effect.tryPromise({
-      try: () => jwtVerify(token, jwks),
+      try: () => jwtVerify(token, jwks, workosAccessTokenOptions),
       catch: classifyJwtVerificationError,
     }).pipe(withJwtVerificationSpan);
 
-    if (!payload.sub) return null;
-
-    return {
-      accountId: payload.sub,
-      organizationId: (payload.org_id as string | undefined) ?? null,
-    } satisfies VerifiedToken;
+    return identityFromClaims(payload);
   });
