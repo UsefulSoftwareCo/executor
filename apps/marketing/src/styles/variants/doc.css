@@ -299,48 +299,6 @@
   text-decoration-color: var(--color-rule-strong);
 }
 
-.doc__tabs {
-  display: inline-flex;
-  gap: 0;
-  border: 1px solid var(--color-rule);
-  border-radius: 8px;
-  padding: 3px;
-  margin-bottom: 1rem;
-  background: var(--color-surface-2);
-}
-.doc__tabs button {
-  font: inherit;
-  font-size: 13.5px;
-  font-weight: 500;
-  padding: 0.4rem 0.85rem;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-2);
-  cursor: pointer;
-}
-.doc__tabs button[aria-selected="true"] {
-  background: var(--color-surface);
-  color: var(--color-ink);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    0 0 0 1px var(--color-rule);
-}
-.doc__tabpanes p {
-  font-size: 15.5px;
-  line-height: 1.6;
-  color: var(--color-ink-2);
-  margin-bottom: 1rem;
-  max-width: 60ch;
-  /* Always two lines tall, so the buttons sit at the same height on every tab. */
-  min-height: calc(2 * 1.6em);
-}
-.doc__tabpanes .doc__actions {
-  min-height: 46px;
-}
-.doc__tabpanes .doc__actions {
-  margin-bottom: 1.1rem;
-}
 .doc__cmd {
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -737,20 +695,6 @@ a.doc__term-v:hover {
   display: none;
 }
 
-/* Tab panes share one grid cell, so the tallest one sets the height and
-   switching tabs never shifts the content below. Hidden panes stay in the
-   layout but are invisible and inert. */
-.doc__tabpanes {
-  display: grid;
-}
-.doc__tabpanes > [role="tabpanel"] {
-  grid-area: 1 / 1;
-}
-.doc__tabpanes > [role="tabpanel"][data-inactive] {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .doc__subhead {
   font-size: 17px;
   line-height: 1.5;
@@ -858,25 +802,12 @@ a.doc__term-v:hover {
     width: auto;
     max-width: none;
   }
-  .doc__tabs {
-    display: flex;
-    width: 100%;
-  }
-  .doc__tabs button {
-    flex: 1;
-    padding: 0.45rem 0.4rem;
-    font-size: 13px;
-    white-space: nowrap;
-  }
-  .doc__tabpanes p {
-    min-height: 0;
-  }
   .doc__actions {
     flex-direction: column;
     align-items: stretch;
   }
   .doc__actions > .btn-primary,
-  .doc__actions > .btn-secondary,
+  .doc__actions > .btn-ghost,
   .doc__actions > .doc__cmd,
   .doc__actions > .doc__dl {
     width: 100%;
@@ -935,12 +866,6 @@ a.doc__term-v:hover {
     display: flex;
     justify-content: center;
     gap: 0.6rem;
-  }
-  .doc__tabs {
-    margin-inline: auto;
-  }
-  .doc__tabpanes p {
-    margin-inline: auto;
   }
   .doc__actions {
     justify-content: center;
@@ -1014,4 +939,44 @@ a.doc__term-v:hover {
   .doc__posts {
     max-width: 720px;
   }
+}
+
+/* ── Fine print under the hero buttons ── */
+.doc__subhead--fine {
+  font-size: 15px;
+  color: var(--color-ink-3);
+  max-width: 52ch;
+}
+.doc__subhead--fine a {
+  color: var(--color-ink-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-rule-strong);
+}
+.doc__subhead--fine a:hover {
+  color: var(--color-ink);
+}
+
+/* ── Ghost copy button: text weight of a link, hit area of a button ── */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  color: var(--color-ink-2);
+  border: 1px dashed var(--color-rule-strong);
+  border-radius: 8px;
+  padding: 0.7rem 1.1rem;
+  font-family: inherit;
+  font-weight: 500;
+  font-size: 14.5px;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.btn-ghost:hover {
+  color: var(--color-ink);
+  border-color: var(--color-ink-3);
 }

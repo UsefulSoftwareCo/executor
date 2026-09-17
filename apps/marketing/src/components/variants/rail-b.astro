@@ -1,9 +1,10 @@
 ---
 // Rail, variant B: "Gridline rail".
-// Compact and technical: mark-only wordmark, a tight link stack, an outlined
-// CTA, and a numbered mono index. A full-height hairline closes the right edge.
+// Compact and technical: mark-only wordmark, a tight link stack, two quiet
+// meta lines (open source, YC), and a numbered mono index. The rail does not
+// sell; the hero owns the call to action. A full-height hairline closes the
+// right edge.
 import "../../styles/variants/rail.css";
-import ycBackedBy from "../../assets/yc-backed-by.svg?url";
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
 
 const X_URL = "https://x.com/RhysSullivan";
@@ -47,38 +48,13 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
       <a href={SIGN_IN} class="rail__link rail__link--keep">Sign in</a>
     </nav>
 
-    <div class="rail__cta">
-      <a href="#install" class="rail__box rail__box--primary">Get started</a>
-      <a
-        href={GH}
-        target="_blank"
-        rel="noopener"
-        class="rail__box gh-star"
-        aria-label="Star Executor on GitHub"
-      >
-        <svg
-          class="gh-star__ico"
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          aria-hidden="true"
-        >
-          <path
-            fill="#e3b341"
-            d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"
-          ></path>
-        </svg>
-        <span>Star on GitHub</span>
-        {stars != null && <span class="gh-star__n">{stars}</span>}
+    <div class="rail__meta">
+      <a href={GH} target="_blank" rel="noopener" class="rail__meta-line">
+        <span>Open source</span>
+        {stars != null && <span class="rail__meta-n">★ {stars}</span>}
       </a>
-      <a
-        href="https://www.ycombinator.com"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="rail__box rail__box--yc"
-        aria-label="Backed by Y Combinator"
-      >
-        <img src={ycBackedBy} alt="Backed by Y Combinator" width="350" height="125" />
+      <a href="https://www.ycombinator.com" target="_blank" rel="noopener noreferrer" class="rail__meta-line">
+        <span>Backed by Y Combinator</span>
       </a>
     </div>
 
