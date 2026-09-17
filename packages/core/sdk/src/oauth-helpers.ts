@@ -73,22 +73,34 @@ export class OAuth2Error extends Data.TaggedError("OAuth2Error")<{
 export const isUnusableSuccessTokenResponse = (error: OAuth2Error): boolean =>
   error.status !== undefined && error.status < 300;
 
+/** 4xx statuses that describe THIS MINUTE rather than this grant. A 429 is the
+ *  authorization server asking us to come back, a 408 is its own request
+ *  timeout, and a 425 is a transport-level replay refusal — none of them is a
+ *  verdict on the refresh token, and re-sending the identical grant later can
+ *  succeed. Treating them as definitive ended connections permanently on one
+ *  rate-limited minute, which is likelier the more refreshers race. */
+const TRANSIENT_4XX_STATUSES: ReadonlySet<number> = new Set([408, 425, 429]);
+
 /**
  * Did the token endpoint answer in a way that re-sending the identical grant
  * cannot change?
  *
- * Yes for a 4xx — §5.2 mandates 400 for a grant the authorization server will
- * not honour, 401/403 are refusals, and a token endpoint answering 404 does not
- * start existing on the next attempt — and yes for a 2xx that carried no usable
- * token, because the server called it a success and still issued nothing.
+ * Yes for a 4xx that is not one of {@link TRANSIENT_4XX_STATUSES} — §5.2
+ * mandates 400 for a grant the authorization server will not honour, 401/403
+ * are refusals, and a token endpoint answering 404 does not start existing on
+ * the next attempt — and yes for a 2xx that carried no usable token, because
+ * the server called it a success and still issued nothing.
  *
- * No for a 5xx (the AS is having a bad minute) and no when there is no response
- * at all (transport). Those are exactly the failures a later attempt survives,
- * so they must stay retryable.
+ * No for a 5xx (the AS is having a bad minute), no for a rate-limited or
+ * timed-out 4xx, and no when there is no response at all (transport). Those are
+ * exactly the failures a later attempt survives, so they must stay retryable.
  */
 export const isPermanentTokenRejection = (error: OAuth2Error): boolean =>
   isUnusableSuccessTokenResponse(error) ||
-  (error.status !== undefined && error.status >= 400 && error.status < 500);
+  (error.status !== undefined &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    !TRANSIENT_4XX_STATUSES.has(error.status));
 
 // ---------------------------------------------------------------------------
 // Token response shape (RFC 6749 §5.1)

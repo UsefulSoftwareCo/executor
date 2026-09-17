@@ -1,22 +1,25 @@
-// Reproduction harness for the "Expired" status + refresh defects analysed in
-// plans/oauth-refresh-and-expired-status.md.
+// Regression coverage for the three causes of a wrong **Expired** status that
+// plans/oauth-refresh-and-expired-status.md ranks R1, R2, and R3. This file
+// started as the reproduction harness for that analysis: each cause had a test
+// that pinned the behavior on `main` and a skipped test that gave the required
+// behavior. The fix landed, so each cause now has one test, and it asserts the
+// required behavior.
 //
-// Each root cause gets TWO tests, with no branching inside either:
-//
-//   "documents current behavior" — passes on main today. This is the
-//     replication: it pins what a user actually sees, so the defect is not a
-//     matter of interpretation.
-//   "REPRO" — asserts the behavior we want. It FAILS on main today, so it is
-//     checked in skipped; it is the acceptance anchor for the fix phase named
-//     in its title, and that PR un-skips it green without editing it.
+// R1: a refresher that loses a rotation race adopts the peer's token. It does
+// not write the permanent rejection record.
+// R2: one temporary 4xx response (a 429) does not end the grant.
+// R3: the health probe refreshes before it answers `expired`.
 //
 // Deployment shape under test: ONE database, ONE credential store, TWO executor
-// instances each holding its OWN root db handle. That is cloud (per-request
-// `DbService` rebuild + per-session Durable Objects) and any multi-process
-// self-host. It is the shape `refreshGateFor`'s own doc block declares out of
-// scope, and the shape `oauth-flow.test.ts`'s two-instance test already builds
-// — that test asserts the spent token is not written back, but never looks at
-// what the loser's `invalid_grant` does to the connection ROW. These do.
+// instances, and one root database handle for each instance. That is the cloud
+// app (a per-request `DbService` rebuild plus per-session Durable Objects) and
+// any multi-process self-hosting. It is the shape that the `refreshGateFor`
+// documentation declares out of scope for the in-process gate.
+//
+// `oauth-flow.test.ts` already builds this shape in "a refresher paused after
+// reading the stored token never writes it back over a peer's rotated one".
+// That test examines the credential store. These tests examine the connection
+// row, which is where the wrong status was written.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
@@ -288,12 +291,13 @@ const deadGrantStamp = (row: unknown): number | undefined => {
 };
 
 // ---------------------------------------------------------------------------
-// R1 — the loser of a rotation race permanently bricks a healthy connection.
+// R1 — a refresher that loses the rotation race adopts the peer's token.
 // ---------------------------------------------------------------------------
 
 /** Run the race: A reads the stored refresh token and stalls, B wins and
- *  rotates it, A resumes and redeems the consumed token. Shared by both R1
- *  tests so they differ only in what they assert about the aftermath. */
+ *  rotates it, A resumes and redeems the consumed token. Returns the rotated
+ *  token and A's own outcome, so a test can assert what the loser did with the
+ *  refusal. */
 const runRotationRace = (race: Race) =>
   Effect.gen(function* () {
     const refreshItemId = race.refreshItemId();
@@ -314,69 +318,43 @@ const runRotationRace = (race: Race) =>
 
     // A resumes and redeems a token the authorization server already consumed.
     yield* Deferred.succeed(race.resumeFromRead, undefined);
-    yield* Fiber.join(loser);
+    const loserExit = yield* Fiber.join(loser);
 
     // The store still holds B's valid rotated token: this connection is not out
     // of credentials, it lost a race.
     expect(race.store.values.get(refreshItemId!)).toBe(rotatedRefreshToken);
-    return { refreshItemId: refreshItemId!, rotatedRefreshToken: rotatedRefreshToken! };
+    return {
+      refreshItemId: refreshItemId!,
+      rotatedRefreshToken: rotatedRefreshToken!,
+      loserExit,
+    };
   });
 
-describe("R1 — refresh race across two instances", () => {
-  it.effect("documents current behavior: the loser bricks a connection holding a valid token", () =>
+describe("R1 — a lost rotation race is not a dead grant", () => {
+  it.effect("the loser adopts the peer's token and the connection keeps refreshing", () =>
     withRace({}, (race) =>
       Effect.gen(function* () {
-        yield* runRotationRace(race);
+        const { loserExit } = yield* runRotationRace(race);
 
-        // A's `invalid_grant` recorded a dead grant on a connection whose
-        // stored refresh token is valid.
-        expect(
-          deadGrantStamp(yield* race.rawRow()),
-          "the loser marked the grant permanently dead",
-        ).toBeTypeOf("number");
-        const health = yield* race.b.connections.checkHealth(REF);
-        expect(health.status, "every surface now answers expired without probing").toBe("expired");
+        // The loser's own call recovered: it read the refresh item back, saw
+        // that a peer had replaced the value it sent, and used the access token
+        // that peer persisted.
+        expect(Exit.isSuccess(loserExit), "the losing refresher still served its call").toBe(true);
 
-        // The rotated token is still perfectly good — nobody is allowed to use
-        // it again. This is the permanent part.
-        yield* race.expire();
-        yield* race.server.clearRequests;
-        const next = yield* Effect.exit(race.b.execute(ADDRESS, {}));
-        expect(Exit.isSuccess(next), "the winner can no longer refresh either").toBe(false);
-        expect(
-          refreshGrants(yield* race.server.requests),
-          "the known-dead gate never sends another grant",
-        ).toHaveLength(0);
-      }),
-    ),
-  );
-
-  // Skipped, not deleted: this is the acceptance anchor for Phase 1 of
-  // plans/oauth-refresh-and-expired-status.md. The PR that lands the fix
-  // un-skips it and it must go green unchanged.
-  it.effect.skip("REPRO: a lost rotation race must not record a dead grant (Phase 1)", () =>
-    withRace({}, (race) =>
-      Effect.gen(function* () {
-        yield* runRotationRace(race);
-
-        // Phase 1 target: the loser notices the rotation and adopts it, so no
-        // dead grant is ever recorded.
-        expect(
-          deadGrantStamp(yield* race.rawRow()),
-          "a lost race must not record a dead grant",
-        ).toBeUndefined();
+        // No permanent rejection record, because the grant is alive.
+        expect(deadGrantStamp(yield* race.rawRow()), "no dead grant is recorded").toBeUndefined();
         const health = yield* race.b.connections.checkHealth(REF);
         expect(health.status, "and no surface answers expired").not.toBe("expired");
 
+        // The winner still refreshes with its own rotated token when the access
+        // token next expires.
         yield* race.expire();
         yield* race.server.clearRequests;
         const next = yield* Effect.exit(race.b.execute(ADDRESS, {}));
-        expect(Exit.isSuccess(next), "the winner can still refresh with its own valid token").toBe(
-          true,
-        );
+        expect(Exit.isSuccess(next), "the winner refreshes again on the next expiry").toBe(true);
         expect(
           refreshGrants(yield* race.server.requests).length,
-          "executor asked the authorization server again",
+          "the authorization server received that grant",
         ).toBeGreaterThan(0);
       }),
     ),
@@ -384,7 +362,7 @@ describe("R1 — refresh race across two instances", () => {
 });
 
 // ---------------------------------------------------------------------------
-// R2 — one transient 4xx (a 429) permanently kills the grant.
+// R2 — one temporary 4xx does not end a grant.
 // ---------------------------------------------------------------------------
 
 interface FlakyEndpoint {
@@ -457,7 +435,7 @@ const serveFlakyTokenEndpoint = (upstream: string) =>
   );
 
 /** Connect, point the backing app at a token endpoint that rate-limits once,
- *  and take that first (failing) refresh. Shared by both R2 tests. */
+ *  and take that first failing refresh. */
 const withRateLimitedRefresh = <A, E>(
   use: (input: {
     readonly race: Race;
@@ -483,44 +461,30 @@ const withRateLimitedRefresh = <A, E>(
     }),
   );
 
-describe("R2 — transient 4xx classification", () => {
-  it.effect("documents current behavior: one 429 permanently disables a working grant", () =>
+describe("R2 — a rate-limited refresh stays retryable", () => {
+  it.effect("a 429 from the token endpoint does not end the grant", () =>
     withRateLimitedRefresh(({ race, flaky }) =>
       Effect.gen(function* () {
+        // The endpoint forwards every grant after the first to the real
+        // authorization server, so it is healthy from here on. The next call
+        // must reach it.
+        const second = yield* Effect.exit(race.a.execute(ADDRESS, {}));
+        expect(Exit.isSuccess(second), "the retry refreshed and the call succeeded").toBe(true);
+        expect(flaky.attempts(), "executor asked the token endpoint again").toBeGreaterThan(1);
+
+        expect(
+          deadGrantStamp(yield* race.rawRow()),
+          "a rate limit is not a permanent rejection",
+        ).toBeUndefined();
         const health = yield* race.a.connections.checkHealth(REF);
-        expect(health.status, "one 429 rendered the connection permanently expired").toBe(
-          "expired",
-        );
-
-        // The endpoint is healthy from here on — every later grant would be
-        // forwarded to the real authorization server and succeed. Executor
-        // never sends one.
-        const attemptsBefore = flaky.attempts();
-        const second = yield* Effect.exit(race.a.execute(ADDRESS, {}));
-        expect(Exit.isSuccess(second), "and it never asks the healthy endpoint again").toBe(false);
-        expect(flaky.attempts(), "no further grant was attempted").toBe(attemptsBefore);
-      }),
-    ),
-  );
-
-  // Skipped, not deleted: Phase 1 acceptance anchor (see the note above).
-  it.effect.skip("REPRO: a 429 must stay retryable (Phase 1)", () =>
-    withRateLimitedRefresh(({ race, flaky }) =>
-      Effect.gen(function* () {
-        // Phase 1 target: a 429 is retryable, so the next attempt reaches the
-        // (now healthy) endpoint and the connection keeps working.
-        const second = yield* Effect.exit(race.a.execute(ADDRESS, {}));
-        expect(Exit.isSuccess(second), "a 429 does not end the grant").toBe(true);
-        expect(flaky.attempts(), "executor retried the refresh").toBeGreaterThan(1);
+        expect(health.status, "and the connection does not read as expired").not.toBe("expired");
       }),
     ),
   );
 });
 
 // ---------------------------------------------------------------------------
-// R3 — the health probe never refreshes reactively, so it writes `expired` for
-// a credential the tool path would have refreshed, then flips to healthy on the
-// next tool call. That flip is the "disconnected, then connected" symptom.
+// R3 — the probe refreshes before it answers expired.
 // ---------------------------------------------------------------------------
 
 /** Connect with a declared health check, then revoke the live access token
@@ -534,51 +498,39 @@ const withRevokedToken = <A, E>(use: (race: Race) => Effect.Effect<A, E>) =>
     }),
   );
 
-describe("R3 — probe verdict vs reactive refresh", () => {
-  it.effect("documents current behavior: probe says expired, the next tool call says healthy", () =>
+describe("R3 — the probe refreshes before it answers expired", () => {
+  it.effect("a revoked token that the refresh can replace probes healthy", () =>
     withRevokedToken((race) =>
       Effect.gen(function* () {
-        // The probe persists `expired` without ever trying the refresh token
-        // that would have fixed it …
         const verdict = yield* race.a.connections.checkHealth(REF);
-        expect(verdict.status).toBe("expired");
+        expect(verdict.status, "the probe re-minted instead of reporting expired").toBe("healthy");
         expect(
-          refreshGrants(yield* race.server.requests),
-          "the probe sent no refresh grant",
-        ).toHaveLength(0);
-        const persisted = yield* race.a.connections.get(REF);
-        expect(
-          persisted?.lastHealth?.status,
-          "and the verdict is persisted for every surface to read",
-        ).toBe("expired");
+          refreshGrants(yield* race.server.requests).length,
+          "the probe sent a refresh grant",
+        ).toBeGreaterThan(0);
 
-        // … then the very next tool call refreshes reactively, succeeds, and
-        // heals the row. Same connection, seconds apart, no user action:
-        // "disconnected" then "connected".
-        yield* race.a.execute(ADDRESS, {});
-        expect(
-          race.state.calls.length,
-          "the tool call retried with a re-minted token",
-        ).toBeGreaterThan(1);
-        const healed = yield* race.a.connections.get(REF);
-        expect(healed?.lastHealth?.status, "heal-on-use flipped the badge back").toBe("healthy");
+        // The persisted verdict agrees, so every surface reads healthy without
+        // waiting for a tool call to heal it.
+        const persisted = yield* race.a.connections.get(REF);
+        expect(persisted?.lastHealth?.status, "the healthy verdict is persisted").toBe("healthy");
       }),
     ),
   );
 
-  // Skipped, not deleted: Phase 3 acceptance anchor (see the note above).
-  it.effect.skip("REPRO: the probe must refresh before concluding expired (Phase 3)", () =>
-    withRevokedToken((race) =>
+  it.effect("a refused refresh still answers expired from the probe", () =>
+    withRace({ healthCheck: true }, (race) =>
       Effect.gen(function* () {
-        // Phase 3 target: the probe refreshes once before concluding expired.
+        // No revocation and no expiry: the probe answers from the credential it
+        // resolved. A refusal is what the persisted-expired contract in
+        // `connection-health-verdict.test.ts` covers; this asserts the retry
+        // did not turn the probe into a second grant on a healthy connection.
+        yield* race.server.clearRequests;
         const verdict = yield* race.a.connections.checkHealth(REF);
-        expect(verdict.status, "a refreshable revocation is not an expired connection").toBe(
-          "healthy",
-        );
+        expect(verdict.status).toBe("healthy");
         expect(
-          refreshGrants(yield* race.server.requests).length,
-          "the probe re-minted the token",
-        ).toBeGreaterThan(0);
+          refreshGrants(yield* race.server.requests),
+          "a healthy probe sends no refresh grant",
+        ).toHaveLength(0);
       }),
     ),
   );

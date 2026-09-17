@@ -1,7 +1,8 @@
 # The wrong Expired status: analysis and plan
 
-Status: the analysis is complete and the plan is proposed. This branch adds
-tests and this document. It does not change runtime behavior.
+Status: the analysis is complete and the plan is proposed. The diagnosis branch
+adds tests and this document only. The fix branch
+(`fix/oauth-refresh-evidence`) lands Phase 1 items 1 to 3 and Phase 3 item 1.
 
 ## The problem
 
@@ -248,11 +249,15 @@ symptom.
 
 ## 3. Replication
 
-Four causes have executable tests. Each cause has two tests. The first test
-shows the behavior on `main` today and passes. The second test gives the
-required behavior after the fix and fails on `main`. The test suite therefore
-skips the second test. The pull request that makes the fix removes the skip.
-The test must then pass without changes.
+Four causes have executable tests. Each cause has two tests on the diagnosis
+branch. The first test shows the behavior on `main` today and passes. The
+second test gives the required behavior after the fix and fails on `main`. The
+test suite therefore skips the second test. The pull request that makes the fix
+removes the skip. The test must then pass without changes.
+
+R1, R2, and R3 are fixed on `fix/oauth-refresh-evidence`. That branch replaces
+each pair with one test that asserts the required behavior, so the file is now
+regression coverage. R8 still ships its skipped test.
 
 ### The OAuth and health tests
 
@@ -352,26 +357,41 @@ row. That is the reason nobody found R1.
 ### Phase 1 — Stop the permanent damage (R1 detection and R2 classification)
 
 This phase is small and easy to review. It removes the permanent damage before
-the coordination of Phase 2 exists.
+the coordination of Phase 2 exists. Items 1 and 2 landed on
+`fix/oauth-refresh-evidence`. Item 3 landed in the narrow form below: the
+transient statuses are excluded, and the strike counter is deferred.
 
 1. **Detect the rotation before the system writes the record.** In
-   `performTokenRefresh`, read the row and the stored refresh item again after
-   a rejection. Compare the stored value with the value that the instance sent.
-   A difference means that another instance rotated the token. Do not write the
-   permanent rejection record in that case. Read the primary item and return
-   the access token of the other instance. Add the span attribute
-   `executor.oauth.refresh.outcome=adopted_peer_rotation`.
-2. **Add a fingerprint and a compare-and-set to the record write.** Add the
-   column `connection.refresh_token_fp`. Store a SHA-256 prefix of the refresh
-   token. Never store the token. Write the fingerprint everywhere the system
-   writes the refresh item: the mint paths at `executor.ts:4509`, `:4565`, and
-   `:4729`, which `oauth-service.ts:2344-2430` feeds, and
-   `persistRefreshedToken`. Then guard `markRefreshGrantDead` with a
-   compare-and-set on the observed `refresh_token_fp` and `updated_at`. Use the
-   same idiom as `persistHealthResult`. `updateMany` gives no row count, so
-   write first and read again to decide. A lost compare-and-set does nothing.
-   A successful rotation by another instance then always wins against an old
-   rejection.
+   `performTokenRefresh`, read the stored refresh item again after a rejection.
+   Compare the stored value with the value that the instance sent. A difference
+   means that another instance rotated the token. Do not write the permanent
+   rejection record in that case. Read the primary item and return the access
+   token of the other instance.
+
+   **Landed.** `adoptPeerRotatedToken` runs between the classification and the
+   record write, so the record is only considered after adoption failed. The
+   span attribute is `executor.oauth.refresh.peer_rotation_adopted=true`, and
+   `executor.oauth.refresh.outcome` stays `ok`, because the call did succeed.
+   The caller skips `persistRefreshedToken` for an adopted token: the peer
+   persisted it already, and persisting from a token response this instance
+   never received would erase the expiry the peer wrote.
+
+2. **Guard the record write against a peer's success.** Read the row again
+   before `markRefreshGrantDead` writes. When `expires_at` moved forward, or
+   went from null to a value, a peer refreshed this grant successfully while
+   our request was in flight. Skip the record then. Only a mint or a refresh
+   writes `expires_at`, so this signal does not fire for an unrelated write
+   such as a tool sync. Write against the fresh row, so the merge base is the
+   current `provider_state`.
+
+   **Landed in this form.** The plan first proposed a new
+   `connection.refresh_token_fp` column with a compare-and-set on it. That
+   needs a schema migration in four hosts, and the re-read of the stored
+   refresh item in item 1 already gives the precise signal. The `expires_at`
+   guard is the second net for the case where adoption itself fails, for
+   example when the primary item is unreadable. Revisit the fingerprint column
+   only if Phase 2's lease needs a stable token identity.
+
 3. **Narrow `isPermanentTokenRejection`.** Treat these cases as definitive: a
    §5.2 `invalid_grant`, and an unusable 2xx response with a JSON token body
    that carries an error code. Treat these cases as retryable: 408, 425, 429,
@@ -383,6 +403,15 @@ the coordination of Phase 2 exists.
    the existing gate: a truly rejected grant stops sending requests after two
    attempts and not after 100. It removes the risk that one wrong answer from a
    proxy ends a connection.
+
+   **Landed in part.** The transient statuses 408, 425, and 429 are excluded
+   and behave like a 5xx response. The strike counter is not implemented: it
+   needs the cooldown semantics decided first, and excluding the transient
+   statuses removes the case that motivated it. The non-JSON 2xx case is
+   unchanged, because `oauth-helpers.test.ts` pins a malformed JSON 200 as
+   definitive and the HTML-200 variant needs a structural "the body was JSON"
+   flag on `OAuth2Error`. Both remain open.
+
 4. Add these tests: a 429, a 5xx, a transport failure, and an HTML 200 give no
    record; two 400 responses with a gap give the record; one `invalid_grant`
    gives the record immediately; the existing `oauth-refresh-rejected*.test.ts`
@@ -421,6 +450,8 @@ it.
 
 ### Phase 3 — Make the probe report the truth (R3, R6, R8)
 
+Item 1 landed on `fix/oauth-refresh-evidence`. Items 2 to 5 are open.
+
 1. **Add a reactive refresh to `connectionCheckHealth`.** Act when all these
    conditions are true: the probe answers 401 or the plugin equivalent; the
    connection is OAuth; the connection has a refresh token; no permanent
@@ -428,6 +459,12 @@ it.
    Persist the second status. Add the span attribute
    `executor.health.refresh_retried`. This change makes the indicator agree
    with the next tool call. The lease of Phase 2 makes it safe.
+
+   **Landed.** The probe builds its credential through one local `probe`
+   function, runs it, and on an `expired` answer for an OAuth connection it
+   calls `forceRefreshConnectionValues` and runs the probe one more time. A
+   refused refresh keeps the first verdict.
+
 2. **Detect a scope shortfall in a 403.** Run `detectInsufficientScope` in the
    probe classification. Report a distinct result: `degraded` with
    `reason: insufficient_scope`. Feed the existing `missingOAuthScopes`
