@@ -484,6 +484,70 @@ describe("R2 — a rate-limited refresh stays retryable", () => {
 });
 
 // ---------------------------------------------------------------------------
+// R5 — a refresh response without `expires_in` keeps the advertised lifetime.
+// ---------------------------------------------------------------------------
+
+interface StrippingEndpoint {
+  readonly url: string;
+  readonly attempts: () => number;
+  readonly close: () => void;
+}
+
+/** A token endpoint that answers a refresh grant with a valid token response
+ *  that OMITS `expires_in`, which RFC 6749 permits, and rotates the refresh
+ *  token like the real one does. It stands in for an authorization server that
+ *  advertised a lifetime on the code exchange and then stopped repeating it. */
+const serveExpiresInStrippingEndpoint = () =>
+  Effect.acquireRelease(
+    Effect.callback<StrippingEndpoint>((resume) => {
+      let attempts = 0;
+      const server: Server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          if (!body.includes("grant_type=refresh_token")) {
+            res.writeHead(400, { "content-type": "text/plain" });
+            res.end("this fixture answers refresh grants only");
+            return;
+          }
+          attempts += 1;
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          res.end(
+            `{"access_token":"at_stripped_${attempts}","refresh_token":"rt_stripped_${attempts}","token_type":"Bearer"}`,
+          );
+          void req;
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const port = typeof address === "object" && address !== null ? address.port : 0;
+        resume(
+          Effect.succeed({
+            url: `http://127.0.0.1:${port}/token`,
+            attempts: () => attempts,
+            close: () => server.close(),
+          }),
+        );
+      });
+    }),
+    (handle) => Effect.sync(() => handle.close()),
+  );
+
+/** `connection.expires_at` off the raw row, which adapters return as a number or
+ *  a string. */
+const RowExpiry = Schema.Struct({ expires_at: Schema.optional(Schema.Unknown) });
+const decodeRowExpiry = Schema.decodeUnknownOption(RowExpiry);
+const rowExpiresAt = (row: unknown): number | null => {
+  const value = Option.getOrUndefined(decodeRowExpiry(row))?.expires_at;
+  // A bigint column: adapters hand back a number, a string, or a BigInt.
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string") return Number(value);
+  return null;
+};
+
+// ---------------------------------------------------------------------------
 // R3 — the probe refreshes before it answers expired.
 // ---------------------------------------------------------------------------
 
@@ -531,6 +595,54 @@ describe("R3 — the probe refreshes before it answers expired", () => {
           refreshGrants(yield* race.server.requests),
           "a healthy probe sends no refresh grant",
         ).toHaveLength(0);
+      }),
+    ),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// R5 — a refresh response without `expires_in` must not erase the expiry.
+// ---------------------------------------------------------------------------
+
+describe("R5 — a refresh response that omits expires_in", () => {
+  it.effect("keeps the advertised lifetime, so proactive refresh survives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const race = yield* makeRace({});
+        const mintedExpiry = rowExpiresAt(yield* race.rawRow());
+        expect(mintedExpiry, "the mint recorded the advertised expiry").not.toBeNull();
+        expect(
+          (mintedExpiry ?? 0) - Date.now(),
+          "and the test authorization server advertised an hour",
+        ).toBeGreaterThan(30 * 60_000);
+
+        const stripping = yield* serveExpiresInStrippingEndpoint();
+        yield* Effect.promise(() =>
+          race.config.db.updateMany("oauth_client", {
+            where: (builder) => builder("slug", "=", String(CLIENT)),
+            set: { token_url: stripping.url },
+          }),
+        );
+        yield* race.expire();
+
+        const first = yield* Effect.exit(race.a.execute(ADDRESS, {}));
+        expect(Exit.isSuccess(first), "the refresh succeeded").toBe(true);
+        expect(stripping.attempts(), "and it went to the endpoint that omits expires_in").toBe(1);
+
+        // This wrote null before the fix, which disabled the proactive check
+        // for the rest of the connection's life and left every later call to
+        // the reactive 401 path.
+        const refreshedExpiry = rowExpiresAt(yield* race.rawRow());
+        expect(refreshedExpiry, "the expiry survived a response without expires_in").not.toBeNull();
+        expect(
+          (refreshedExpiry ?? 0) - Date.now(),
+          "and it carries the lifetime the grant advertised",
+        ).toBeGreaterThan(30 * 60_000);
+
+        // The proactive path still works, so the next call needs no grant.
+        const second = yield* Effect.exit(race.a.execute(ADDRESS, {}));
+        expect(Exit.isSuccess(second), "the next call used the stored token").toBe(true);
+        expect(stripping.attempts(), "and sent no second grant").toBe(1);
       }),
     ),
   );

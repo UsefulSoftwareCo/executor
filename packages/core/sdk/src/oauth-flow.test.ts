@@ -54,11 +54,17 @@ const oauthPlugin = definePlugin(() => ({
   },
   // Echo the resolved credential value (the OAuth access token) back out.
   invokeTool: ({ credential }) => Effect.succeed({ token: credential.value }),
-  checkHealth: ({ credential }) =>
-    Effect.succeed({
-      status: credential.value === null ? "expired" : "healthy",
-      checkedAt: Date.now(),
-    }),
+  // Mirrors the protocol plugins: with no declared probe operation there is
+  // nothing to dial, so the plugin answers `unknown` and core falls back to the
+  // credential-only verdict. A plugin that CAN answer without a spec (MCP lists
+  // tools) is asked first and gives a real verdict.
+  checkHealth: ({ credential, spec }) =>
+    spec === undefined
+      ? Effect.succeed({ status: "unknown" as const, checkedAt: Date.now() })
+      : Effect.succeed({
+          status: credential.value === null ? ("expired" as const) : ("healthy" as const),
+          checkedAt: Date.now(),
+        }),
   extension: (ctx) => ({
     seed: (scopes: readonly string[] = []) =>
       ctx.core.integrations.register({
@@ -2085,7 +2091,7 @@ describe("oauth token refresh in resolveConnectionValue", () => {
             where: (b) => b("name", "=", "main"),
           }),
         );
-        expect(row?.provider_state).toEqual({ missingOAuthScopes: ["write"] });
+        expect(row?.provider_state).toMatchObject({ missingOAuthScopes: ["write"] });
         const listed = yield* executor.connections.list({ integration: INTEG });
         expect(listed[0]?.missingOAuthScopes).toEqual(["write"]);
       }),
@@ -2136,7 +2142,12 @@ describe("oauth token refresh in resolveConnectionValue", () => {
               where: (b) => b("name", "=", "main"),
             }),
           );
-          expect(row?.provider_state).toBeNull();
+          // No missing-scope record. `provider_state` itself is not null: the
+          // mint records the advertised token lifetime there so a later refresh
+          // whose response omits `expires_in` can still derive an expiry.
+          expect(
+            (row?.provider_state as { missingOAuthScopes?: unknown } | null)?.missingOAuthScopes,
+          ).toBeUndefined();
         }),
       ),
   );

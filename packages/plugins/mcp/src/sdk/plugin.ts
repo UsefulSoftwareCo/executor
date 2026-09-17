@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Result, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
@@ -46,7 +46,13 @@ import {
 import type { CodexPluginEntry } from "./codex-plugins";
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { createMcpConnectionPool } from "./connection-pool";
-import { discoverToolsFromInput } from "./discover";
+import {
+  connectionFailureToDiscoveryError,
+  DEFAULT_DISCOVER_TIMEOUT,
+  discoverToolsFromConnection,
+  discoverToolsFromInput,
+  withDiscoveryTimeout,
+} from "./discover";
 import {
   McpConnectionError,
   type McpConnectionFailureKind,
@@ -1969,7 +1975,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             }
           }
         }
-        const connector = yield* buildConnectorInput(
+        const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           credential.template === null ? null : String(credential.template),
@@ -1977,7 +1983,56 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           options?.httpClientLayer ?? ctx.httpClientLayer,
         );
 
-        return yield* discoverToolsFromInput(connector).pipe(
+        // Take the invocation pool's lease when this connection is poolable, so
+        // the probe REUSES the session or child process that tool calls already
+        // hold. Dialling a second connection made the probe the author of its
+        // own failure on a single-instance local server: Chrome DevTools MCP
+        // owns a browser and a debug port, Playwright MCP the same, `docker run
+        // -i` a container, so the second child could not start and the liveness
+        // check reported a connection broken while the server was up and
+        // serving. The UI re-probes every non-healthy verdict on every mount,
+        // so each page load started one more child. The key is built exactly as
+        // the invoke path builds it, which is what makes the lease hit the same
+        // entry.
+        const poolKey = isPoolableConnectorInput(connectorInput)
+          ? yield* connectionPoolKey(
+              connectorInput,
+              String(credential.template),
+              credential.values,
+              {
+                owner: String(credential.owner),
+                connection: String(credential.connection),
+              },
+            )
+          : undefined;
+        const discovery: Effect.Effect<void, McpToolDiscoveryError> =
+          poolKey === undefined
+            ? Effect.asVoid(discoverToolsFromInput(connectorInput))
+            : // The whole LEASE is bounded: the pool dials through its own
+              // acquire with no deadline, and a server that never completes its
+              // handshake would otherwise hang this probe where a dialling one
+              // timed out at fifteen seconds.
+              withDiscoveryTimeout(
+                connectionPool.withConnection(
+                  poolKey,
+                  createMcpConnector(connectorInput),
+                  (connection) => discoverToolsFromConnection(connection),
+                ),
+                Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
+              ).pipe(
+                Effect.asVoid,
+                // The pool dials, so the raw connector failures surface here
+                // instead of inside `discoverTools`. Map them through the same
+                // function that path uses, so a pooled probe classifies a 401,
+                // a 403, and a connect timeout exactly as a dialling one does.
+                Effect.mapError((error) =>
+                  Predicate.isTagged(error, "McpToolDiscoveryError")
+                    ? error
+                    : connectionFailureToDiscoveryError(error),
+                ),
+              );
+
+        return yield* discovery.pipe(
           Effect.map(
             () =>
               ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,

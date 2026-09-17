@@ -17,6 +17,8 @@
 
 import { Schema } from "effect";
 
+import { detectInsufficientScope } from "./insufficient-scope";
+
 // ---------------------------------------------------------------------------
 // Status: the five states a connection can be in. `expired` is the one this
 // whole feature exists for (Google's 7-day dev-token revocation): the credential
@@ -242,16 +244,32 @@ const errorReasonMarkers = (body: unknown): string[] => {
 };
 
 /** Classify a probe response from its status AND body. Everything is
- *  `classifyHttpStatus` except one carve-out: a 403 whose error body carries a
- *  known configuration reason (Google `accessNotConfigured` /
- *  `SERVICE_DISABLED`) is `misconfigured`, not `expired`: the credential
- *  authenticated; the upstream API is disabled in the OAuth client's project,
- *  and only enabling it there (not reconnecting) fixes it. */
-export const classifyProbeResponse = (status: number, body: unknown): HealthStatus => {
+ *  `classifyHttpStatus` except two carve-outs on a 403:
+ *
+ *  - A known configuration reason (Google `accessNotConfigured` /
+ *    `SERVICE_DISABLED`) is `misconfigured`: the credential authenticated, the
+ *    upstream API is disabled in the OAuth client's project, and only enabling
+ *    it there (not reconnecting) fixes it.
+ *  - A scope shortfall (RFC 6750 `insufficient_scope` in `WWW-Authenticate`,
+ *    `error: insufficient_scope` in the body, Google's
+ *    `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) is `degraded`: the credential
+ *    authenticated too, and the remedy is a NEW CONSENT with wider scope —
+ *    which the connection's `missingOAuthScopes` already offers — not a
+ *    reconnect. Reporting it as `expired` told the user the connection was dead
+ *    and sent them through a flow that could not fix it. `headers` is optional
+ *    so a caller that only kept the body still gets the body-based detection. */
+export const classifyProbeResponse = (
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): HealthStatus => {
   const byStatus = classifyHttpStatus(status);
   if (status !== 403 || byStatus !== "expired") return byStatus;
-  return errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))
-    ? "misconfigured"
+  if (errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))) {
+    return "misconfigured";
+  }
+  return detectInsufficientScope({ body, ...(headers === undefined ? {} : { headers }) }) !== null
+    ? "degraded"
     : "expired";
 };
 

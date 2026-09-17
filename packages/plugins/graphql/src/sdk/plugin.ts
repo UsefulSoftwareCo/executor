@@ -114,6 +114,14 @@ const appendUpstreamMessage = (detail: string, message?: string): string =>
     ? `${detail} Upstream said: ${truncateHealthDetail(message)}`
     : detail;
 
+/** Whether an upstream's own prose names an authentication failure.
+ *
+ *  Text matching, so it is deliberately the WEAKER signal: it is consulted only
+ *  when no HTTP status classified the failure, and never for a transport
+ *  failure. An OS-level refusal carries the word "permission" too — `EACCES:
+ *  permission denied` on a socket or a binary — and reading that as a dead
+ *  credential sent the user to re-enter a secret that was never the problem.
+ *  The caller excludes `reason: "network"` for exactly that case. */
 const isAuthMessage = (message: string | undefined): boolean =>
   message !== undefined &&
   /authoriz|authenticat|forbidden|permission|credential|api.?key|access denied|access token|invalid token|token expired|logged in|sign in/i.test(
@@ -141,7 +149,14 @@ const missingCredentialVariables = (
   });
 };
 
-const healthFromIntrospectionError = (
+/** Classify one introspection failure as a health verdict.
+ *
+ *  Exported for tests (not re-exported from `sdk/index.ts`, so this widens no
+ *  public API): the classification rules — which prose counts as an
+ *  authentication failure, and which reason may never be read from prose — are
+ *  the whole behavior under test, and reaching them through a live introspection
+ *  would test the transport instead. */
+export const healthFromIntrospectionError = (
   error: GraphqlIntrospectionError,
   checkedAt: number,
 ): HealthCheckResult => {
@@ -160,7 +175,12 @@ const healthFromIntrospectionError = (
     };
   }
 
-  if (httpStatus === 401 || httpStatus === 403 || isAuthMessage(upstream)) {
+  // A transport failure never classifies from prose: its message is the OS's or
+  // the HTTP client's, and "permission denied" there names a socket, not a
+  // credential (see `isAuthMessage`). An HTTP 401/403 still classifies on its
+  // own status whatever the reason.
+  const proseSaysAuth = error.reason !== "network" && isAuthMessage(upstream);
+  if (httpStatus === 401 || httpStatus === 403 || proseSaysAuth) {
     const statusDetail =
       httpStatus === 401 || httpStatus === 403
         ? `The endpoint rejected the credential with HTTP ${httpStatus}.`

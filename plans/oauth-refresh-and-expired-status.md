@@ -1,8 +1,8 @@
 # The wrong Expired status: analysis and plan
 
-Status: the analysis is complete and the plan is proposed. The diagnosis branch
-adds tests and this document only. The fix branch
-(`fix/oauth-refresh-evidence`) lands Phase 1 items 1 to 3 and Phase 3 item 1.
+Status: the analysis is complete. Causes R1, R2 in part, R3, R4, R5, R6, and
+R8 are fixed on this branch. Open: R7, the Phase 2 database lease, the strike
+counter, and the non-JSON 2xx case.
 
 ## The problem
 
@@ -255,9 +255,10 @@ second test gives the required behavior after the fix and fails on `main`. The
 test suite therefore skips the second test. The pull request that makes the fix
 removes the skip. The test must then pass without changes.
 
-R1, R2, and R3 are fixed on `fix/oauth-refresh-evidence`. That branch replaces
-each pair with one test that asserts the required behavior, so the file is now
-regression coverage. R8 still ships its skipped test.
+R1, R2, R3, and R8 are fixed on this branch. Each pair of tests became one
+test that asserts the required behavior, so both files are now regression
+coverage. R5 and R6 have new tests of their own. R4 changed two pinned
+expectations, and Phase 4 records them.
 
 ### The OAuth and health tests
 
@@ -303,11 +304,10 @@ cd packages/plugins/mcp && npx vitest run src/sdk/mcp-liveness-second-spawn.test
 #  1 passed | 1 skipped
 ```
 
-- **R8.** One instance runs and holds the lock. The passing test shows this
-  behavior: the probe starts a second child process, and the spawn log of the
-  fixture proves it; the second process does not start; the probe answers
-  `degraded` for a server that runs and serves requests. The skipped test fails
-  on the assertion "a server that is up and serving reads healthy".
+- **R8.** The fixture refuses to start while a live process holds its lock, so
+  two probes pass only when the second one reuses the child the first one
+  started. The test asserts one child for two probes, and a healthy verdict for
+  both.
 
 ### Quality gates for the new files
 
@@ -466,6 +466,71 @@ Item 1 landed on `fix/oauth-refresh-evidence`. Items 2 to 5 are open.
    refused refresh keeps the first verdict.
 
 2. **Detect a scope shortfall in a 403.** Run `detectInsufficientScope` in the
+   probe classification and report `degraded` instead of red **Expired**. Feed
+   the existing `missingOAuthScopes` mechanism and the "Reconnect to grant
+   access" interface.
+
+   **Landed, with one difference.** `classifyProbeResponse` takes the response
+   headers as an optional third argument, so an RFC 6750 challenge is recognised
+   as well as a body. The result is `degraded` with the existing
+   `upstream_status` reason: `HealthCheckReason` is a closed set persisted
+   inside `last_health`, and its own comment requires a new literal to ship in a
+   separate deploy, readers first. A new `insufficient_scope` literal stays
+   open.
+
+3. **Narrow the GraphQL `isAuthMessage` match.** Require an authentication
+   signal and a reason that is not a network reason. The single word
+   "permission" in free text must not give `expired`.
+
+   **Landed.** Prose is consulted only when `error.reason` is not `"network"`.
+   An HTTP 401 or 403 still classifies on its status.
+   `healthFromIntrospectionError` is exported for tests, and
+   `health-classification.test.ts` pins both halves: `connect EACCES:
+permission denied` is not `expired`, and an upstream that names an
+   authentication failure still is.
+
+4. **Stop the second MCP connection (R8).** Use the pooled connection when one
+   exists for that identity (`connection-pool.ts`) instead of the new connector
+   in `discoverToolsFromInput`. A probe of a stdio server then does not start a
+   second child of a single-instance process.
+
+   **Landed, in part.** The probe takes the pool lease, built from the same
+   identity the invoke path uses, so it reuses the session or child that tool
+   calls hold. `discoverToolsFromConnection` is the listing half of discovery
+   with no teardown, and `connectionFailureToDiscoveryError` maps the pooled
+   dial failures through the classification the dialling path uses. An
+   interrupted probe still releases its lease, and the pool closes a connection
+   its lease failed on, so `#1631` holds. Two parts stay open: a neutral
+   classification for the case where a process OUTSIDE executor holds the
+   resource, and a minimum interval for the non-healthy revalidation in
+   `use-connection-health.ts`, which still sends no `ifStaleMs`.
+
+5. Add these tests: two handles give exactly one grant at the AS, with the
+   Phase 0 harness extended; an expired lease gives no deadlock and a bounded
+   wait; a winner that crashes lets the loser continue after the lease ends.
+   Add the e2e scenario `oauth-refresh-cross-instance.test.ts` for the cloud
+   and self-hosting targets. Model it on `oauth-refresh-cross-session.test.ts`
+   but drive two planes: one HTTP health probe and one MCP tool call at the
+   same time.
+
+### Phase 3 — Make the probe report the truth (R3, R6, R8)
+
+Item 1 landed on `fix/oauth-refresh-evidence`. Items 2 to 5 are open.
+
+1. **Add a reactive refresh to `connectionCheckHealth`.** Act when all these
+   conditions are true: the probe answers 401 or the plugin equivalent; the
+   connection is OAuth; the connection has a refresh token; no permanent
+   rejection record exists. Then force one refresh and probe one more time.
+   Persist the second status. Add the span attribute
+   `executor.health.refresh_retried`. This change makes the indicator agree
+   with the next tool call. The lease of Phase 2 makes it safe.
+
+   **Landed.** The probe builds its credential through one local `probe`
+   function, runs it, and on an `expired` answer for an OAuth connection it
+   calls `forceRefreshConnectionValues` and runs the probe one more time. A
+   refused refresh keeps the first verdict.
+
+2. **Detect a scope shortfall in a 403.** Run `detectInsufficientScope` in the
    probe classification. Report a distinct result: `degraded` with
    `reason: insufficient_scope`. Feed the existing `missingOAuthScopes`
    mechanism and the "Reconnect to grant access" interface. Do not report red
@@ -501,13 +566,32 @@ Item 1 landed on `fix/oauth-refresh-evidence`. Items 2 to 5 are open.
    response omits `expires_in`, derive `expires_at` from that stored lifetime
    instead of writing null. Write null only for a grant that never advertised a
    lifetime.
-2. **Require evidence for `healthy`.** The credential-only path keeps `healthy`
-   when it performed a refresh, because that is evidence. Otherwise it answers
-   `unknown` with the detail "Credential present; not verified against the
-   upstream." Also let plugins that need no spec probe without one, for example
-   MCP tool discovery. Fewer connections then stay unverified. This changes
-   `google-health-checks.test.ts:381` on purpose. State that in the pull
-   request.
+
+   **Landed.** The mint records it, `persistRefreshedToken` falls back to it,
+   and a refresh that reports a new lifetime updates it. That update merges into
+   a freshly read `provider_state`, so it cannot bury a concurrent dead-grant
+   record under the copy the refresh started from. Two pinned expectations
+   changed with it: `oauth-flow.test.ts` asserted an exact `provider_state`
+   object and a null one, and both now carry the lifetime.
+
+2. **Require evidence for `healthy`.** Also let plugins that need no spec probe
+   without one, for example MCP tool discovery. Fewer connections then stay
+   unverified.
+
+   **Landed, in the narrower form.** The probe is asked first, with or without a
+   spec. A plugin that can answer without one — MCP lists tools — gives a real
+   verdict, which the old branch never reached. Only a plugin that answers
+   `unknown` falls back to the credential-only verdict, and that verdict is
+   computed from the values the probe already resolved, so nothing refreshes
+   twice. The fallback also reports `expired` when a credential value resolved
+   to null, which the plugins and heal-on-use already did.
+
+   The wider proposal — replacing the fallback's `healthy` with `unknown` — is
+   NOT implemented. It turns a large class of connections from green to grey,
+   which is a product decision rather than a defect fix. The
+   `google-health-checks` scenario still passes unchanged, because the OpenAPI
+   plugin declines without a spec and the fallback still produces that detail.
+
 3. Decide the interface for `unknown`. Use a grey indicator, no alarm text, and
    a "Check now" action that performs a real probe. `health-display.ts` already
    treats `unknown` as neutral.
@@ -565,19 +649,23 @@ Item 1 landed on `fix/oauth-refresh-evidence`. Items 2 to 5 are open.
 
 ## 6. Pull request boundaries
 
-1. Phase 0: the tests, the telemetry attributes, and the `MISTAKES.md` entry.
-   No behavior change.
-2. Phase 1 items 1 and 2: rotation detection, and the fingerprint with its
-   compare-and-set.
-3. Phase 1 item 3: the narrow classification and the strikes.
-4. Phase 2: the lease. This is the largest change. Put it behind a
+This branch ships Phase 0, Phase 1 items 1 to 3, Phase 3 items 1 to 4, and
+Phase 4 items 1 and 2 as ONE pull request: the causes share code paths, and
+each fix on its own leaves a wrong status reachable. The remaining work keeps
+these boundaries:
+
+1. Phase 2: the lease. This is the largest change. Put it behind a
    configuration flag that is on by default, and remove the flag in a later
    pull request.
-5. Phase 3: the probe refresh, the scope-aware 403, the narrow GraphQL match,
-   and the pooled MCP probe. R8 can ship on its own. It is the only fix that
-   addresses the reported local symptom without other changes, and it does not
-   change OAuth code. It can lead Phase 3 or ship before it.
-6. Phase 4, then Phase 5.
+2. Phase 1 item 3 remainder: the strike counter, and the structural "the body
+   was JSON" flag on `OAuth2Error` that the 2xx case needs.
+3. Phase 3 item 4 remainder: a neutral classification when a process outside
+   executor holds a single-instance resource, and a minimum interval for the
+   non-healthy revalidation.
+4. Phase 4 item 2 remainder and item 3: the evidence-tagged `healthy`, which is
+   a product decision, and the interface for `unknown`.
+5. Phase 5: the retry action, the message split, the skew, the optional
+   background refresh, and the alerts.
 
 For each pull request: run the narrowest meaningful vitest selection while you
 iterate; add one named e2e scenario when the change is user-visible; run
