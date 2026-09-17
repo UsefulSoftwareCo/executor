@@ -512,6 +512,9 @@ const SUPPORTED_SUBJECT_TOKEN_TYPES = new Set([
 const JwksUriMetadata = Schema.Struct({ jwks_uri: Schema.String });
 const decodeJwksUriMetadata = Schema.decodeUnknownOption(JwksUriMetadata);
 
+/** One JSON-RPC frame off the `/mcp` resource endpoint's body. */
+const decodeMcpResourceFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
 /** Resolve a trusted IdP's signing keys the way a Resource Authorization Server
  *  does: read its RFC 8414 metadata, follow `jwks_uri`, fetch the key set. Any
  *  failure yields `None`, which the caller reports as `invalid_grant` — the
@@ -1083,8 +1086,7 @@ export const serveOAuthTestServer = (
           // endpoint timed out at the discovery deadline. Answer the request's
           // OWN id, answer `tools/list` with an empty catalog, and stay silent
           // for notifications, which is the protocol.
-          const decodeMcpFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-          const frame = Option.getOrUndefined(decodeMcpFrame(body));
+          const frame = Option.getOrUndefined(decodeMcpResourceFrame(body));
           const frameIsRecord = frame !== null && typeof frame === "object";
           const frameRecord = frameIsRecord ? (frame as Record<string, unknown>) : {};
           const frameMethod =
