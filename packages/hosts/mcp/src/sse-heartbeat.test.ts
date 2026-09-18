@@ -186,4 +186,25 @@ describe("withMcpSseHeartbeat", () => {
     }
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("cancels the upstream body when the request aborts", async () => {
+    const abort = new AbortController();
+    const request = new Request("https://executor.test/mcp", {
+      method: "GET",
+      headers: { accept: "text/event-stream", "mcp-session-id": "s1" },
+      signal: abort.signal,
+    });
+    const upstream = pendingStream();
+    const wrapped = withMcpSseHeartbeat(request, sseResponse(upstream.stream));
+    const reader = wrapped.body!.getReader();
+    await readChunk(reader);
+    abort.abort("client-abort");
+    expect(upstream.cancelled()).toBe(true);
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: abort may already close the reader
+    try {
+      await reader.cancel();
+    } catch {
+      // already cancelled by abort
+    }
+  });
 });

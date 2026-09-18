@@ -39,12 +39,33 @@ export const withMcpSseHeartbeat = (request: Request, response: Response): Respo
       }
     | undefined;
   let cancelled = false;
+  let released = false;
 
   const stopTimer = (): void => {
     if (timer === undefined) return;
     clearInterval(timer);
     timer = undefined;
   };
+
+  const releaseUpstream = async (reason?: unknown): Promise<void> => {
+    if (released) return;
+    released = true;
+    cancelled = true;
+    stopTimer();
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: cancel after close is expected
+    try {
+      if (reader !== undefined) await reader.cancel(reason);
+      else await upstream.cancel(reason);
+    } catch {
+      // already closed
+    }
+  };
+
+  const onAbort = (): void => {
+    void releaseUpstream(request.signal.reason);
+  };
+  if (request.signal.aborted) onAbort();
+  else request.signal.addEventListener("abort", onAbort, { once: true });
 
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -62,8 +83,7 @@ export const withMcpSseHeartbeat = (request: Request, response: Response): Respo
       (timer as { unref?: () => void }).unref?.();
 
       if (cancelled) {
-        stopTimer();
-        await upstream.cancel();
+        await releaseUpstream(request.signal.reason);
         return;
       }
 
@@ -79,17 +99,13 @@ export const withMcpSseHeartbeat = (request: Request, response: Response): Respo
       } catch (error) {
         if (!cancelled) controller.error(error);
       } finally {
-        stopTimer();
+        request.signal.removeEventListener("abort", onAbort);
+        await releaseUpstream();
       }
     },
     async cancel(reason) {
-      cancelled = true;
-      stopTimer();
-      if (reader !== undefined) {
-        await reader.cancel(reason);
-        return;
-      }
-      await upstream.cancel(reason);
+      request.signal.removeEventListener("abort", onAbort);
+      await releaseUpstream(reason);
     },
   });
 

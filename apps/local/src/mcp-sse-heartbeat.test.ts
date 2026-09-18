@@ -81,10 +81,12 @@ describe("local MCP handler, quiet GET stream", () => {
       const origin = `http://127.0.0.1:${server.port}`;
       const { sessionId } = await openLiveSession(origin);
 
+      const getAbort = new AbortController();
+      const getTimeout = setTimeout(() => getAbort.abort(), 1_000);
       const get = await fetch(`${origin}/mcp`, {
         method: "GET",
         headers: { accept: "text/event-stream", "mcp-session-id": sessionId },
-        signal: AbortSignal.timeout(1_000),
+        signal: getAbort.signal,
       });
       expect(get.status).toBe(200);
       expect(get.headers.get("content-type")).toContain("text/event-stream");
@@ -94,6 +96,8 @@ describe("local MCP handler, quiet GET stream", () => {
       const first = await reader.read();
       expect(new TextDecoder().decode(first.value)).toBe(": keepalive\n\n");
       await reader.cancel();
+      getAbort.abort();
+      clearTimeout(getTimeout);
 
       const reconnect = await fetch(`${origin}/mcp`, {
         method: "GET",
