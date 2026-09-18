@@ -1,5 +1,15 @@
 # @executor-js/plugin-mcp
 
+## 1.6.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.10
+  - @executor-js/config@1.6.10
+  - @executor-js/api@1.4.73
+  - @executor-js/react@1.4.73
+
 ## 1.6.9
 
 ### Patch Changes

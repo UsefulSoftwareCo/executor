@@ -1,5 +1,28 @@
 # @executor-js/host-selfhost
 
+## 0.0.52
+
+### Patch Changes
+
+- [#2044](https://github.com/UsefulSoftwareCo/executor/pull/2044) [`004024b`](https://github.com/UsefulSoftwareCo/executor/commit/004024b453e9ba07317d2893f050a0d6dae6a67b) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add `EXECUTOR_DISABLE_AUTH_RATE_LIMIT` to the self-host. Better Auth 1.6.17 and later enforce sign-in rate limits strictly in production, and with no trusted proxy header every caller shares one bucket of three sign-ins per ten seconds. The Docker release gate signs in from many test files at once and tripped it. The flag is off by default; the e2e harness sets it for the image it tests.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.10
+  - @executor-js/runtime-quickjs@1.6.10
+  - @executor-js/execution@1.6.10
+  - @executor-js/plugin-graphql@1.6.10
+  - @executor-js/plugin-mcp@1.6.10
+  - @executor-js/plugin-openapi@1.6.10
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.17
+  - @executor-js/api@1.4.73
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.21
+  - @executor-js/plugin-encrypted-secrets@0.0.52
+  - @executor-js/plugin-provider-service-split@0.0.24
+  - @executor-js/plugin-toolkits@1.5.45
+  - @executor-js/react@1.4.73
+
 ## 0.0.51
 
 ### Patch Changes

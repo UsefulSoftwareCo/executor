@@ -1,5 +1,15 @@
 # @executor-js/onboarding-demo
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.10
+  - @executor-js/plugin-mcp@1.6.10
+  - @executor-js/plugin-openapi@1.6.10
+  - @executor-js/react@1.4.73
+
 ## 0.0.4
 
 ### Patch Changes

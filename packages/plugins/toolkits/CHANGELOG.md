@@ -1,5 +1,14 @@
 # @executor-js/plugin-toolkits
 
+## 1.5.45
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.10
+  - @executor-js/api@1.4.73
+  - @executor-js/react@1.4.73
+
 ## 1.5.44
 
 ### Patch Changes
