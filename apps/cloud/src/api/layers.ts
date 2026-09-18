@@ -10,7 +10,6 @@ import {
 
 import { SessionAuthLive } from "../auth/middleware-live";
 import { UserStoreService } from "../auth/context";
-import { cloudMemberDirectoryLayer } from "../auth/member-directory";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import {
   CloudAuthPublicHandlers,
@@ -29,20 +28,12 @@ import { AutumnService } from "../extensions/billing/service";
 import { cloudPlugins } from "../plugins";
 import { CoreSharedServices } from "../auth/workos";
 
-const DbLive = DbService.Live;
-const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
-const WorkOsMirrorLive = WorkOsMirror.Live.pipe(Layer.provide(DbLive));
-// The shared `MemberDirectory` read seam over the membership mirror — the
-// same per-request socket the mirror writes through.
-const MemberDirectoryLive = cloudMemberDirectoryLayer.pipe(Layer.provide(DbLive));
+// The per-request layer now lives in `./request-scoped` so modules that need
+// only the postgres socket (the auth plane) do not pull in the protected API
+// assembled below. Re-exported here for the existing callers.
+import { RequestScopedServicesLive } from "./request-scoped";
 
-// Per-request layer. Anything that opens an I/O object (postgres.js socket,
-// fetch stream readers, anything backed by a `Writable`) MUST live here —
-// `provideRequestScoped` rebuilds it per request so Cloudflare Workers'
-// I/O isolation is satisfied. See `api.request-scope.test.ts`.
-export const RequestScopedServicesLive: Layer.Layer<
-  DbService | UserStoreService | WorkOsMirror | MemberDirectory
-> = Layer.mergeAll(DbLive, UserStoreLive, WorkOsMirrorLive, MemberDirectoryLive);
+export { RequestScopedServicesLive };
 
 // Boot-scoped layer. Built once at worker boot, reused across requests.
 // Safe for config, in-memory caches, the global tracer provider, and

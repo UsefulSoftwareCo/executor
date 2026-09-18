@@ -24,7 +24,6 @@
 import { env, waitUntil } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
 
 import { AccountApi, AdminUsersApi } from "@executor-js/api";
@@ -32,32 +31,16 @@ import { requestScopedMiddleware, type MemberDirectory } from "@executor-js/api/
 
 import { UserStoreService } from "../auth/context";
 import { WorkOsMirror } from "../auth/workos-mirror";
-import {
-  CloudAuthPublicHandlers,
-  CloudSessionAuthHandlers,
-  NonProtectedApi,
-} from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
-import { SessionAuthLive } from "../auth/middleware-live";
 import { runWorkOsEventsSync } from "../auth/workos-events-runner";
 import { makeWorkOsWebhookRoute } from "../auth/workos-webhook";
 import { makeCloudAdminUsersRoutes } from "../admin/admin-users-api";
-import { OrgApi, OrgHttpApi } from "../org/api";
-import { orgAuthMiddleware } from "../org/auth-middleware";
-import { OrgHandlers } from "../org/handlers";
-import { AutumnService } from "../extensions/billing/service";
+import { OrgApi } from "../org/api";
 import { DbService } from "../db/db";
 import { ProtectedCloudApi } from "../api/layers";
 import { AutumnRoutesLive } from "./billing/route";
+import { apiPrefixedRouter, makeOrgRoutes, makeSessionRoutes } from "./session-routes";
 import { ApiErrorLoggingLive } from "../observability/error-logging";
-
-// The `/api`-prefixed `HttpRouter` view every cloud HttpApi group registers on,
-// so `/auth/me` serves at `/api/auth/me` (matching the protected + account
-// plane). Derived from the ambient router, exactly as `ExecutorApp.make` builds
-// its own internal prefixed view for the protected API.
-const apiPrefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
-  Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed("/api")),
-);
 
 // The full cloud OpenAPI spec, prefixed so the served paths match `/api/*`.
 const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi)
@@ -81,27 +64,10 @@ const spec = OpenApi.fromApi(CloudOpenApi);
 export const makeCloudExtensionRoutes = (
   rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
 ) => {
-  // Session routes (login / callback / me / switch-org / …). Handlers yield
-  // `UserStoreService` directly; the per-request DB combine keeps the postgres
-  // socket request-scoped.
-  const SessionRoutes = HttpApiBuilder.layer(NonProtectedApi).pipe(
-    Layer.provide(Layer.mergeAll(CloudAuthPublicHandlers, CloudSessionAuthHandlers)),
-    Layer.provide(requestScopedMiddleware(rsLive).layer),
-    Layer.provideMerge(SessionAuthLive),
-    Layer.provideMerge(AutumnService.Default),
-    Layer.provide(apiPrefixedRouter),
-  );
-
-  // Cloud-only WorkOS domain-verification routes; the auth middleware resolves
-  // the URL org selector header before falling back to the session org, so slug
-  // lookup needs the same request-scoped UserStoreService as other org-scoped
-  // APIs.
-  const OrgRoutes = HttpApiBuilder.layer(OrgHttpApi).pipe(
-    Layer.provide(OrgHandlers),
-    Layer.provide(orgAuthMiddleware(rsLive)),
-    Layer.provideMerge(AutumnService.Default),
-    Layer.provide(apiPrefixedRouter),
-  );
+  // Session + org routes, from the shared constructors the auth plane
+  // (`../app-auth`) mounts too — one definition, two planes.
+  const SessionRoutes = makeSessionRoutes(rsLive);
+  const OrgRoutes = makeOrgRoutes(rsLive);
 
   // Swagger UI at /api/docs + the OpenAPI JSON at /api/openapi.json, over the
   // `/api`-prefixed spec (so the served paths match).

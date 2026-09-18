@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
+import { isAppOwnedPath, servedByAppPlane, servedByAuthPlane } from "./app-paths";
 
 // Guards the start.ts dispatch decision: every surface the unified app handler
 // serves must be classified app-owned (forwarded to `app.handler`), and Start's
@@ -96,5 +96,79 @@ describe("app-plane dispatch", () => {
     expect(servedByAppPlane("/mcp", "POST")).toBe(false);
     expect(servedByAppPlane("/", "GET")).toBe(false);
     expect(servedByAppPlane("/.well-known/oauth-authorization-server", "GET")).toBe(false);
+  });
+});
+
+// The auth plane (`app-auth.ts`) is dispatched BEFORE the app plane, so this
+// list is load-bearing twice over: a path it claims but the auth handler does
+// not mount answers 404 from the wrong router, and a session path it misses
+// keeps paying the full app-graph cold start it exists to avoid.
+describe("auth-plane dispatch", () => {
+  const authPlane = [
+    ["GET", "/api/auth/login"],
+    ["POST", "/api/auth/logout"],
+    ["GET", "/api/auth/callback"],
+    ["GET", "/api/auth/cli-login"],
+    ["GET", "/api/auth/me"],
+    ["GET", "/api/auth/organizations"],
+    ["POST", "/api/auth/create-organization"],
+    ["POST", "/api/auth/delete-organization"],
+    ["GET", "/api/auth/pending-invitations"],
+    ["POST", "/api/auth/accept-invitation"],
+    ["GET", "/api/mcp-sessions/sess_1/executions/exec_1"],
+    ["POST", "/api/mcp-sessions/sess_1/executions/exec_1/resume"],
+    ["GET", "/api/org/domains"],
+    ["POST", "/api/org/domains/verify-link"],
+    ["DELETE", "/api/org/domains/dom_1"],
+  ] as const;
+  for (const [method, pathname] of authPlane) {
+    it(`serves ${method} ${pathname} on the auth plane`, () => {
+      expect(servedByAuthPlane(pathname, method)).toBe(true);
+      // Still app-owned: the auth plane is a subset of `/api`, not a new namespace.
+      expect(servedByAppPlane(pathname, method)).toBe(true);
+    });
+  }
+
+  // Everything else under `/api` stays on the full app plane. `/api/account/*`
+  // is the closest neighbour — it is the shared account API behind the WorkOS
+  // AccountProvider, NOT a session route, and it is not mounted here.
+  const appPlaneOnly = [
+    ["GET", "/api/account/members"],
+    ["GET", "/api/connections"],
+    ["GET", "/api/docs"],
+    ["GET", "/api/openapi.json"],
+    ["POST", "/api/billing/attach"],
+    ["POST", "/api/webhooks/workos"],
+    ["GET", "/api/admin/users"],
+  ] as const;
+  for (const [method, pathname] of appPlaneOnly) {
+    it(`leaves ${method} ${pathname} to the app plane`, () => {
+      expect(servedByAuthPlane(pathname, method)).toBe(false);
+    });
+  }
+
+  it("matches the method as well as the path", () => {
+    // `logout` is POST-only; a GET to it is not a route either plane mounts,
+    // and must not be claimed by the auth plane's router.
+    expect(servedByAuthPlane("/api/auth/logout", "GET")).toBe(false);
+    expect(servedByAuthPlane("/api/auth/me", "POST")).toBe(false);
+    expect(servedByAuthPlane("/api/org/domains", "DELETE")).toBe(false);
+  });
+
+  it("claims no unlisted path under /api/auth", () => {
+    expect(servedByAuthPlane("/api/auth/switch-organization", "POST")).toBe(false);
+    expect(servedByAuthPlane("/api/auth", "GET")).toBe(false);
+  });
+
+  it("matches one segment per route parameter", () => {
+    expect(servedByAuthPlane("/api/mcp-sessions/a/executions/b/c", "GET")).toBe(false);
+    expect(servedByAuthPlane("/api/org/domains/a/b", "DELETE")).toBe(false);
+  });
+
+  it("never overrides a Start-owned path", () => {
+    expect(servedByAuthPlane("/api/oauth/callback", "GET")).toBe(false);
+    expect(servedByAuthPlane("/api/sentry-tunnel", "POST")).toBe(false);
+    expect(servedByAuthPlane("/", "GET")).toBe(false);
+    expect(servedByAuthPlane("/mcp", "POST")).toBe(false);
   });
 });
