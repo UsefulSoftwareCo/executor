@@ -18,6 +18,7 @@ import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity } from "../src/target";
 import { visit } from "../src/surfaces/browser";
+import { verifyAdminInBrowser } from "./support/admin-mfa";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -220,6 +221,7 @@ scenario(
       await step("The browser session is switched to another organization", async () => {
         await setWorkosSessionCookie(page, target.baseUrl, sessionB);
         await visit(page, `/${orgB.slug}`);
+        await verifyAdminInBrowser(page, identity.credentials?.totpSecret);
         await expectOrgShell(page, orgB);
       });
 

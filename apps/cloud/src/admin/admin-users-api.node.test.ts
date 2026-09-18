@@ -135,7 +135,7 @@ const stubMirror = Layer.succeed(
 
 // Only session authentication is served; membership is read from the mirror,
 // so any other WorkOS call fails the test.
-const stubWorkOS = (userId: string) =>
+const stubWorkOS = (userId: string, adminVerified: boolean) =>
   Layer.succeed(
     WorkOSClient,
     new Proxy({} as WorkOSClientService, {
@@ -144,6 +144,7 @@ const stubWorkOS = (userId: string) =>
           return () =>
             Effect.succeed({
               userId,
+              adminVerified,
               email: `${userId}@placeholder.test`,
               organizationId: null,
             });
@@ -153,14 +154,20 @@ const stubWorkOS = (userId: string) =>
     }),
   );
 
-const authorizeAs = (userId: string) =>
+const authorizeAs = (userId: string, adminVerified = true) =>
   authorizeTenant(
     new Request("https://admin.invalid", {
       headers: { cookie: "wos-session=sealed", [ORG_SELECTOR_HEADER]: ORG },
     }),
   ).pipe(
     Effect.provide(
-      Layer.mergeAll(stubDirectory, stubApiKeys, stubUsers, stubWorkOS(userId), stubMirror),
+      Layer.mergeAll(
+        stubDirectory,
+        stubApiKeys,
+        stubUsers,
+        stubWorkOS(userId, adminVerified),
+        stubMirror,
+      ),
     ),
   );
 
@@ -169,6 +176,14 @@ describe("authorizeTenant · admin session", () => {
     Effect.gen(function* () {
       const tenant = yield* authorizeAs("user_admin");
       expect(tenant).toBe(ORG);
+    }),
+  );
+
+  it.effect("an admin without a second factor is forbidden", () =>
+    Effect.gen(function* () {
+      expect(yield* Effect.flip(authorizeAs("user_admin", false))).toBeInstanceOf(
+        AdminUsersForbidden,
+      );
     }),
   );
 

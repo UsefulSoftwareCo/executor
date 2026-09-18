@@ -6,6 +6,7 @@ import { authGateMiddleware } from "./auth/doc-gate";
 import { parseCookie } from "./auth/cookies";
 import { ORG_SELECTOR_HEADER } from "./auth/organization";
 import { loginPath } from "./auth/return-to";
+import { oauthAdminVerificationResponse } from "./auth/oauth-admin-verification";
 import { prepareMcpOrgScope } from "./mcp/mount";
 import {
   docsProxyMiddleware,
@@ -91,7 +92,10 @@ const appRequestMiddleware = createMiddleware({ type: "request" }).server(
     if (isAppOwnedPath(pathname)) {
       const scopedRequest =
         pathname === OAUTH_CALLBACK_PATH ? oauthCallbackOrgScopedRequest(request) : request;
-      return (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
+      const response = await (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
+      return pathname === OAUTH_CALLBACK_PATH
+        ? oauthAdminVerificationResponse(request, response)
+        : response;
     }
     return next();
   },

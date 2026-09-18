@@ -6,5 +6,6 @@ import type { JWTVerifyOptions } from "jose";
  * that live for several days.
  */
 export const workosAccessTokenOptions: JWTVerifyOptions = {
+  algorithms: ["RS256"],
   requiredClaims: ["exp", "iat"],
 };

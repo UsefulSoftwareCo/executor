@@ -203,7 +203,7 @@ export const AccountApi = HttpApiGroup.make("account")
     HttpApiEndpoint.post("createApiKey", "/account/api-keys", {
       payload: CreateApiKeyBody,
       success: CreatedApiKeyResponse,
-      error: [AccountError, AccountUnauthorized, AccountNoOrganization],
+      error: [AccountError, AccountUnauthorized, AccountNoOrganization, AccountForbidden],
     }),
   )
   .add(

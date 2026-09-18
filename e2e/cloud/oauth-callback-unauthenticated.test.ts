@@ -14,6 +14,7 @@ import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
+import { verifyAdminInBrowser } from "./support/admin-mfa";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -134,9 +135,22 @@ scenario(
         await page.waitForURL((url) => url.pathname === "/api/oauth/callback", {
           timeout: 30_000,
         });
-        await page.waitForFunction(() => document.body.innerText.includes("Connected"), null, {
-          timeout: 30_000,
-        });
+        await page.getByRole("heading", { name: "Verify admin access" }).waitFor();
+        expect(await page.locator("body").innerText()).not.toContain("Connected");
+      });
+
+      await step("Verify admin access and finish the pending connection", async () => {
+        const [verification] = await Promise.all([
+          page.context().waitForEvent("page"),
+          page.getByRole("link", { name: "Verify admin access", exact: true }).click(),
+        ]);
+        try {
+          await verifyAdminInBrowser(verification, identity.credentials?.totpSecret);
+        } finally {
+          await verification.close();
+        }
+        await page.getByRole("link", { name: "Continue connection" }).click();
+        await page.getByText("Connected", { exact: true }).waitFor();
       });
 
       const body = (await page.locator("body").textContent())?.trim() ?? "";

@@ -64,6 +64,13 @@ const handler = Effect.gen(function* () {
     });
   }
   const org = yield* resolveBillingOrganization(webRequest, session);
+  if (org.memberRole === "admin" && session.adminVerified !== true) {
+    return yield* new HttpResponseError({
+      status: 403,
+      code: "admin_mfa_required",
+      message: "Verify with your authenticator to continue as a workspace admin.",
+    });
+  }
 
   const url = new URL(webRequest.url);
   const body =

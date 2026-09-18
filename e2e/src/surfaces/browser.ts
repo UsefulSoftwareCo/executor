@@ -202,10 +202,13 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         await installRecordingUrlBar(context);
         if (identity.cookies?.length) {
           await context.addCookies(
-            identity.cookies.map((cookie) => ({
-              ...cookie,
-              url: target.baseUrl,
-            })),
+            identity.cookies.map((cookie) => {
+              const source = new URL(target.baseUrl);
+              // Chromium validates __Host- cookies against their source scheme,
+              // even on localhost where Secure cookies work over HTTP.
+              if (cookie.secure) source.protocol = "https:";
+              return { ...cookie, url: source.href };
+            }),
           );
         }
         const page = await context.newPage();

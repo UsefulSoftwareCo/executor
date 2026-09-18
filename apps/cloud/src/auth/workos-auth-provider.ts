@@ -343,6 +343,15 @@ export const resolveSessionPrincipal = (request: Request) =>
     }
     const org = yield* authorizeOrganizationSelector(session.userId, selector);
     if (!org) return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
+    // The shared executor API also exposes administrative workspace writes
+    // (integrations, policies and shared connections). Browser admins must
+    // verify before entering that plane, not only the account settings API.
+    if (org.memberRole === "admin" && session.adminVerified !== true) {
+      return yield* new NoOrganization({
+        code: "admin_mfa_required",
+        message: "Verify with your authenticator to continue as a workspace admin.",
+      });
+    }
     return {
       kind: "member",
       accountId: session.userId,

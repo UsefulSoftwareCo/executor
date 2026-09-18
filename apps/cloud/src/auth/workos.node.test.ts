@@ -211,6 +211,8 @@ describe("authenticateSealedSession", () => {
         organizationId: "org_test",
         sessionId: "session_valid",
         refreshedSession: undefined,
+        adminVerified: false,
+        adminVerificationExpiresAt: null,
       });
       expect(stub.requests()).toEqual([
         { method: "GET", path: `/sso/jwks/${CLIENT_ID}`, body: null },

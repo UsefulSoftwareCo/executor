@@ -115,6 +115,7 @@ export const authorizeTenant = (
     );
     if (!org) return yield* new AdminUsersForbidden();
     if (org.memberRole !== "admin") return yield* new AdminUsersForbidden();
+    if (session.adminVerified !== true) return yield* new AdminUsersForbidden();
     return org.id;
   });
 

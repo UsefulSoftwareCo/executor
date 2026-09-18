@@ -112,6 +112,10 @@ scenario(
       const names = (await page.context().cookies()).map((cookie) => cookie.name);
       expect(names, "the hint never outlives the session").not.toContain(HINT_COOKIE);
       expect(names, "the session itself is gone too").not.toContain("wos-session");
+      expect(names, "admin verification ends on logout").not.toContain("__Host-executor-admin-mfa");
+      expect(names, "unfinished admin challenges are cleared").not.toContain(
+        "__Host-executor-admin-challenge",
+      );
     });
   }),
 );

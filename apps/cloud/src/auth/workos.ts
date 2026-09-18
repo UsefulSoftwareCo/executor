@@ -16,6 +16,7 @@ import { decodeJwt, jwtVerify } from "jose";
 import { workosAccessTokenOptions } from "./access-token-options";
 import { JWKSInvalid, JWKSNoMatchingKey, JWKSTimeout } from "jose/errors";
 import { parseCookie } from "./cookies";
+import { ADMIN_MFA_COOKIE, readAdminMfaProof } from "./admin-mfa-proof";
 import { createCachedRemoteJWKSet, type CachedRemoteJWKSet } from "./jwks-cache";
 import {
   ServiceAdapterError,
@@ -431,7 +432,18 @@ const make = Effect.gen(function* () {
       tryPromiseService(() => fn(workos)),
     );
 
-  const authenticateSealedSession = (sessionData: string) =>
+  // MFA SDK errors can contain response details. Keep only the status before
+  // logging, so enrollment secrets and submitted codes cannot enter a cause.
+  const useMfa = <A>(op: string, fn: (wos: WorkOS) => Promise<A>) =>
+    tryPromiseService(() => fn(workos)).pipe(
+      Effect.mapError(workosErrorFromFailure),
+      Effect.tapError((error) =>
+        Effect.logWarning(`workos.${op} failed`, { status: error.status }),
+      ),
+      Effect.withSpan(`workos.${op}`),
+    );
+
+  const authenticateSealedSession = (sessionData: string, adminProof?: string) =>
     Effect.gen(function* () {
       if (!sessionData) return null;
 
@@ -447,6 +459,16 @@ const make = Effect.gen(function* () {
       );
 
       if (isLocalSessionValid(local)) {
+        const proof = yield* readAdminMfaProof(
+          cookiePassword,
+          {
+            userId: local.session.user.id,
+            sessionId: local.sessionId,
+          },
+          "verified",
+          adminProof,
+          Date.now(),
+        );
         return {
           userId: local.session.user.id,
           email: local.session.user.email,
@@ -455,6 +477,8 @@ const make = Effect.gen(function* () {
           avatarUrl: local.session.user.profilePictureUrl,
           organizationId: local.organizationId,
           sessionId: local.sessionId,
+          adminVerified: proof !== null,
+          adminVerificationExpiresAt: proof?.exp ?? null,
           refreshedSession: undefined as string | undefined,
         };
       }
@@ -469,6 +493,17 @@ const make = Effect.gen(function* () {
       if (!refreshed.authenticated || !("sealedSession" in refreshed) || !refreshed.sealedSession)
         return null;
 
+      const proof = yield* readAdminMfaProof(
+        cookiePassword,
+        {
+          userId: refreshed.user.id,
+          sessionId: refreshed.sessionId,
+        },
+        "verified",
+        adminProof,
+        Date.now(),
+      );
+
       return {
         userId: refreshed.user.id,
         email: refreshed.user.email,
@@ -477,11 +512,38 @@ const make = Effect.gen(function* () {
         avatarUrl: refreshed.user.profilePictureUrl,
         organizationId: refreshed.organizationId,
         sessionId: refreshed.sessionId,
+        adminVerified: proof !== null,
+        adminVerificationExpiresAt: proof?.exp ?? null,
         refreshedSession: refreshed.sealedSession,
       };
     });
 
   return {
+    /** List factors belonging to this user; callers cannot supply another user's factor. */
+    listMfaFactors: (userId: string) =>
+      useMfa("userManagement.listAuthFactors", (wos) =>
+        wos.userManagement
+          .listAuthFactors({ userId, limit: 100 })
+          .then((page) => page.autoPagination()),
+      ),
+    /** Begin AuthKit's user-bound TOTP enrollment. The secret is returned only to that user. */
+    enrollMfa: (userId: string, email: string) =>
+      useMfa("userManagement.enrollAuthFactor", (wos) =>
+        wos.userManagement.enrollAuthFactor({
+          userId,
+          type: "totp",
+          totpIssuer: "Executor",
+          totpUser: email,
+        }),
+      ),
+    /** Challenge an already resolved factor. */
+    challengeMfa: (authenticationFactorId: string) =>
+      useMfa("mfa.challengeFactor", (wos) => wos.mfa.challengeFactor({ authenticationFactorId })),
+    /** Verify a TOTP code with WorkOS; never log the code or factor secret. */
+    verifyMfa: (authenticationChallengeId: string, code: string) =>
+      useMfa("mfa.verifyChallenge", (wos) =>
+        wos.mfa.verifyChallenge({ authenticationChallengeId, code }),
+      ),
     getAuthorizationUrl: (redirectUri: string, state?: string) =>
       workos.userManagement.getAuthorizationUrl({
         provider: "authkit",
@@ -595,7 +657,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const sessionData = parseCookie(request.headers.get("cookie"), COOKIE_NAME);
         if (!sessionData) return null;
-        return yield* authenticateSealedSession(sessionData);
+        return yield* authenticateSealedSession(
+          sessionData,
+          parseCookie(request.headers.get("cookie"), ADMIN_MFA_COOKIE) ?? undefined,
+        );
       }),
 
     /**

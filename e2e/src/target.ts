@@ -21,9 +21,17 @@ export interface Identity {
   /** Headers that authenticate API requests (e.g. a session cookie). */
   readonly headers?: Record<string, string>;
   /** Cookies to inject into a browser context for a logged-in page. */
-  readonly cookies?: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+  readonly cookies?: ReadonlyArray<{
+    readonly name: string;
+    readonly value: string;
+    readonly secure?: boolean;
+  }>;
   /** Credentials for surfaces that sign in themselves (Better Auth, OAuth consent). */
-  readonly credentials?: { readonly email: string; readonly password: string };
+  readonly credentials?: {
+    readonly email: string;
+    readonly password: string;
+    readonly totpSecret?: string;
+  };
 }
 
 export interface Target {
@@ -37,7 +45,10 @@ export interface Target {
    * `org: false` yields an identity with no active organization (for flows
    * that create one, like onboarding / billing limits).
    */
-  readonly newIdentity: (options?: { readonly org?: boolean }) => Effect.Effect<Identity>;
+  readonly newIdentity: (options?: {
+    readonly org?: boolean;
+    readonly adminMfa?: boolean;
+  }) => Effect.Effect<Identity>;
   /** Headless OAuth consent for the MCP surface, when "mcp-oauth" is supported. */
   readonly mcpConsent?: (
     identity: Identity,

@@ -49,7 +49,11 @@ type OrgScoped<A, E = never> = Authed<A, AccountNoOrganization | E>;
 export interface AccountProviderShape {
   readonly me: (headers: AccountHeaders) => Authed<Me>;
   readonly listApiKeys: (headers: AccountHeaders) => OrgScoped<ApiKeys>;
-  readonly createApiKey: (headers: AccountHeaders, name: string) => OrgScoped<CreatedApiKey>;
+  /** Hosts may require additional verification before issuing a privileged user key. */
+  readonly createApiKey: (
+    headers: AccountHeaders,
+    name: string,
+  ) => OrgScoped<CreatedApiKey, AccountForbidden>;
   readonly revokeApiKey: (headers: AccountHeaders, apiKeyId: string) => OrgScoped<Success>;
   /** Org-owned keys: admin-gated, hence the `AccountForbidden` on both. */
   readonly listOrgApiKeys: (headers: AccountHeaders) => OrgScoped<OrgApiKeys, AccountForbidden>;

@@ -12,6 +12,7 @@ import { sessionFromSealed } from "../auth/middleware";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import { ORG_SELECTOR_HEADER, authorizeOrganizationSelector } from "../auth/organization";
 import { WorkOSClient } from "../auth/workos";
+import { ADMIN_MFA_COOKIE } from "../auth/admin-mfa-proof";
 import { DbService } from "../db/db";
 
 const unauthorized = () =>
@@ -41,7 +42,7 @@ const noOrganization = () =>
  */
 export class OrgMemberRole extends Context.Service<
   OrgMemberRole,
-  { readonly memberRole: "admin" | "member" }
+  { readonly memberRole: "admin" | "member"; readonly adminVerified?: boolean }
 >()("@executor-js/cloud/OrgMemberRole") {}
 
 const OrgAuthMiddleware = HttpRouter.middleware<{
@@ -55,7 +56,7 @@ const OrgAuthMiddleware = HttpRouter.middleware<{
         const request = yield* HttpServerRequest.HttpServerRequest;
         const cookieValue = request.cookies["wos-session"] ?? "";
         const result = yield* workos
-          .authenticateSealedSession(cookieValue)
+          .authenticateSealedSession(cookieValue, request.cookies[ADMIN_MFA_COOKIE])
           .pipe(Effect.orElseSucceed(() => null));
         if (!result) return unauthorized();
 
@@ -84,7 +85,10 @@ const OrgAuthMiddleware = HttpRouter.middleware<{
         return yield* Effect.provideContext(
           httpEffect,
           Context.make(AuthContext, auth).pipe(
-            Context.add(OrgMemberRole, { memberRole: org.memberRole }),
+            Context.add(OrgMemberRole, {
+              memberRole: org.memberRole,
+              adminVerified: result.adminVerified,
+            }),
           ),
         );
       }).pipe(Effect.provideContext(captured));

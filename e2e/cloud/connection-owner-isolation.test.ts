@@ -21,6 +21,8 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
+import { withRefreshedSession } from "./support/session";
+import { verifyAdmin } from "./support/admin-mfa";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -85,23 +87,6 @@ const postJson = (target: TargetShape, path: string, identity: Identity, body: u
     return response;
   });
 
-/** The identity re-bound to the refreshed session cookie a response set,
- *  scoped to `orgSelector` via the selector header (see switchOrg). */
-const withRefreshedSession = (
-  identity: Identity,
-  response: Response,
-  orgSelector: string,
-): Identity => {
-  const refreshed = (response.headers.getSetCookie?.() ?? [])
-    .find((header) => header.startsWith("wos-session="))
-    ?.split(";")[0];
-  if (!refreshed) throw new Error("response did not refresh the session cookie");
-  return {
-    ...identity,
-    headers: { cookie: refreshed, [ORG_SELECTOR_HEADER]: orgSelector },
-  };
-};
-
 /** The org selector this identity's requests carry — the same header the web
  *  client derives from the console URL (identities minted with an org carry
  *  it; org-scoped reads fail closed without one). */
@@ -130,7 +115,7 @@ const createAnotherOrg = (target: TargetShape, identity: Identity, name: string)
   Effect.gen(function* () {
     const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
     const created = (yield* Effect.promise(() => response.clone().json())) as { id: string };
-    return withRefreshedSession(identity, response, created.id);
+    return yield* verifyAdmin(target.baseUrl, withRefreshedSession(identity, response, created.id));
   });
 
 // `/api/auth/switch-organization` (session-cookie-based org switching) was

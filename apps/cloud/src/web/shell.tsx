@@ -1,4 +1,5 @@
 import type React from "react";
+import { Outlet } from "@tanstack/react-router";
 
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
 import { useAdminNavItems } from "@executor-js/react/multiplayer/use-admin-nav";
@@ -6,6 +7,7 @@ import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../auth/api";
 import { OrgMenuSlot } from "./components/org-menu-slot";
 import { SupportSlot } from "./components/support-slot";
+import { AdminVerification } from "./components/admin-verification";
 
 // ---------------------------------------------------------------------------
 // Cloud shell — the SHARED multiplayer shell, identical to self-host, with
@@ -53,7 +55,13 @@ export function Shell(props: { readonly content?: React.ReactNode }) {
       navItems={items}
       orgMenuSlot={<OrgMenuSlot />}
       supportSlot={<SupportSlot />}
-      content={props.content}
+      content={
+        props.content ?? (
+          <AdminVerification>
+            <Outlet />
+          </AdminVerification>
+        )
+      }
     />
   );
 }
