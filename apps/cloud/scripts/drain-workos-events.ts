@@ -26,6 +26,7 @@ import { WorkOS } from "@workos-inc/node";
 import { makeUserStore } from "../src/auth/user-store";
 import { replayWorkOsEvents, type WorkOsEventsSyncReport } from "../src/auth/workos-events-replay";
 import { makeWorkOsMirrorStore } from "../src/auth/workos-mirror-store";
+import { describeRefusedAttempt, waitForConnectionSlot } from "../src/db/too-many-connections";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -111,8 +112,21 @@ const drain = Effect.gen(function* () {
   return last;
 });
 
+// A full server refuses the connection with SQLSTATE 53300 when it is opened.
+// Open it first, waiting for a slot, rather than fail the deploy gate that
+// spawned this run (src/db/too-many-connections.ts); the mirror store's own
+// failures do not carry the driver code, so the wait cannot sit around the
+// drain itself.
+const connected = waitForConnectionSlot(sql, {
+  onRefused: (_failure, attempt) =>
+    console.log(`[drain-events] ${describeRefusedAttempt(attempt)}`),
+});
+
 const report = await Effect.runPromise(
-  drain.pipe(Effect.ensuring(Effect.promise(() => sql.end({ timeout: 5 })))),
+  connected.pipe(
+    Effect.andThen(drain),
+    Effect.ensuring(Effect.promise(() => sql.end({ timeout: 5 }))),
+  ),
 );
 
 if (report === null || report.stopped !== "drained") {
