@@ -103,6 +103,15 @@ export const mcpPresets: readonly McpPreset[] = [
     featured: true,
   },
   {
+    id: "search1api",
+    name: "Search1API",
+    summary: "Web search, news, crawl, sitemap, and trending via one hosted MCP.",
+    url: "https://mcp.search1api.com/mcp",
+    endpoint: "https://mcp.search1api.com/mcp",
+    icon: "https://s1.dev/logo.png",
+    featured: true,
+  },
+  {
     id: "neon",
     name: "Neon",
     summary: "Serverless Postgres — branches, queries, and management.",
