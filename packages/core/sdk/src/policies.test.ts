@@ -16,6 +16,7 @@ import { ElicitationResponse, type ElicitationHandler } from "./elicitation";
 import { createExecutor } from "./executor";
 import type { FumaDb } from "./fuma-runtime";
 import {
+  dynamicToolScopeForPattern,
   effectivePolicyFromSorted,
   isValidPattern,
   matchPattern,
@@ -105,6 +106,56 @@ describe("isValidPattern", () => {
     expect(isValidPattern("*.a")).toBe(false); // leading * still rejected
     expect(isValidPattern("a*")).toBe(false); // partial wildcard
     expect(isValidPattern("a.b*")).toBe(false); // partial wildcard
+  });
+});
+
+describe("dynamicToolScopeForPattern", () => {
+  it("reads the connection prefix out of subtree patterns", () => {
+    expect(dynamicToolScopeForPattern("github.org.main.*")).toEqual({
+      integration: "github",
+      owner: "org",
+      connection: "main",
+    });
+    expect(dynamicToolScopeForPattern("github.org.*")).toEqual({
+      integration: "github",
+      owner: "org",
+      connection: null,
+    });
+    expect(dynamicToolScopeForPattern("github.*")).toEqual({
+      integration: "github",
+      owner: null,
+      connection: null,
+    });
+  });
+
+  it("treats a mid-segment wildcard as any value for that position", () => {
+    expect(dynamicToolScopeForPattern("github.*.*.repos.list")).toEqual({
+      integration: "github",
+      owner: null,
+      connection: null,
+    });
+    expect(dynamicToolScopeForPattern("github.user.*.repos.*")).toEqual({
+      integration: "github",
+      owner: "user",
+      connection: null,
+    });
+  });
+
+  it("is unbounded for the universal pattern", () => {
+    expect(dynamicToolScopeForPattern("*")).toEqual({
+      integration: null,
+      owner: null,
+      connection: null,
+    });
+  });
+
+  it("yields no scope for patterns that can only reach static tools", () => {
+    // Exact ids shorter than a dynamic address.
+    expect(dynamicToolScopeForPattern("github")).toBeNull();
+    expect(dynamicToolScopeForPattern("github.org.main")).toBeNull();
+    // A literal owner that is neither org nor user is a static namespace.
+    expect(dynamicToolScopeForPattern("executor.coreTools.*")).toBeNull();
+    expect(dynamicToolScopeForPattern("executor.coreTools.connections.list")).toBeNull();
   });
 });
 
@@ -710,6 +761,100 @@ describe("active tool-policy provider", () => {
       expect(Result.isFailure(blocked)).toBe(true);
       if (!Result.isFailure(blocked)) return;
       expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
+    }),
+  );
+});
+
+describe("prepared tool policy provider with a dynamic scope", () => {
+  const scopedProviderPlugin = (
+    dynamicScope: readonly {
+      integration: string | null;
+      owner: string | null;
+      connection: string | null;
+    }[],
+  ) =>
+    definePlugin(() => ({
+      id: "scoped-policy-provider" as const,
+      storage: () => ({}),
+      toolPolicyProvider: () => ({
+        list: () => Effect.succeed([]),
+        // Approves everything it is asked about: only the scope decides what
+        // core reads, so anything missing from the list was never loaded.
+        prepare: () =>
+          Effect.succeed({
+            resolve: () => ({ action: "approve" as const, source: "user" as const, pattern: "*" }),
+            dynamicScope,
+          }),
+      }),
+    }))();
+
+  const setupScoped = (
+    dynamicScope: readonly {
+      integration: string | null;
+      owner: string | null;
+      connection: string | null;
+    }[],
+  ) =>
+    makeTestExecutor({
+      plugins: [policyTestPlugin(), scopedProviderPlugin(dynamicScope)] as const,
+    }).pipe(
+      Effect.tap((executor) =>
+        Effect.gen(function* () {
+          yield* executor.ptest.seed();
+          for (const integration of [VERCEL, GITHUB]) {
+            yield* executor.connections.create({
+              owner: "org",
+              name: CONN,
+              integration,
+              template: TEMPLATE,
+              value: "v",
+            });
+          }
+        }),
+      ),
+    );
+
+  const dynamicAddresses = (tools: readonly { address: unknown; static?: boolean }[]) =>
+    tools
+      .filter((tool) => !tool.static)
+      .map((tool) => String(tool.address))
+      .sort();
+
+  it.effect("restricts the list to the scoped connection", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupScoped([
+        { integration: String(VERCEL), owner: "org", connection: String(CONN) },
+      ]);
+      const tools = yield* executor.tools.list();
+      expect(dynamicAddresses(tools)).toEqual([
+        String(addr(VERCEL, "delete")),
+        String(addr(VERCEL, "deploy")),
+      ]);
+      const connections = yield* executor.connections.list();
+      expect(connections.map((connection) => String(connection.integration))).toEqual([
+        String(VERCEL),
+      ]);
+    }),
+  );
+
+  it.effect("a wildcard position widens the scope to every value", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupScoped([{ integration: null, owner: "org", connection: null }]);
+      const tools = yield* executor.tools.list();
+      expect(dynamicAddresses(tools)).toEqual([
+        String(addr(GITHUB, "list")),
+        String(addr(VERCEL, "delete")),
+        String(addr(VERCEL, "deploy")),
+      ]);
+    }),
+  );
+
+  it.effect("an empty scope reads no dynamic rows", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupScoped([]);
+      const tools = yield* executor.tools.list();
+      expect(dynamicAddresses(tools)).toEqual([]);
+      expect(yield* executor.connections.list()).toEqual([]);
     }),
   );
 });

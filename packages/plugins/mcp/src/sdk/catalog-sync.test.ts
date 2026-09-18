@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Option, Ref, Schema } from "effect";
+import { Deferred, Effect, Fiber, Option, Ref, Schedule, Schema } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -133,11 +133,13 @@ describe("MCP tool-catalog sync (end-to-end)", () => {
       }),
   );
 
-  it.effect("expired catalogs re-list on read once older than the freshness TTL", () =>
+  // Live clock: the rebuild is real I/O against the test server, so the poll
+  // must advance on wall time rather than the test clock.
+  it.live("expired catalogs re-list in the background once older than the freshness TTL", () =>
     Effect.gen(function* () {
       const mutable = makeMutableCatalogMcpServer();
       const server = yield* serveMcpServer(mutable.factory);
-      // Everything is instantly stale — every tools read re-lists.
+      // Everything is instantly stale — every tools read starts a re-list.
       const executor = yield* makeCatalogTestExecutor(server.url, { toolsSyncTtlMs: 0 });
 
       expect(toolNames(yield* executor.tools.list())).toContain(mutable.initialToolName);
@@ -145,7 +147,17 @@ describe("MCP tool-catalog sync (end-to-end)", () => {
       // Server-side change with no notification and no executor signal at all.
       mutable.renameTool();
 
-      const refreshed = toolNames(yield* executor.tools.list());
+      // A time-expired catalog is stale-but-working: the read answers from the
+      // persisted rows without waiting on the upstream listing, and a later
+      // read observes the rebuilt catalog.
+      const refreshed = yield* executor.tools.list().pipe(
+        Effect.map(toolNames),
+        Effect.repeat({
+          until: (names) => names.includes(mutable.renamedToolName),
+          schedule: Schedule.spaced("20 millis"),
+        }),
+        Effect.timeout("5 seconds"),
+      );
       expect(refreshed).toContain(mutable.renamedToolName);
       expect(refreshed).not.toContain(mutable.initialToolName);
     }),
