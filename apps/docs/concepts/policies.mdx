@@ -12,3 +12,22 @@ A **policy** controls what an agent can do with each tool:
 Policies start from a sensible default derived from the integration's spec. For example,
 read-only `GET` operations on an OpenAPI spec are allowed by default, while writes can be
 set to require approval. You can tune the policy for any tool at any time.
+
+## Matching tools with patterns
+
+Policy patterns match a tool's dotted address. You can target one tool, an integration, or
+tool names that share a generated prefix:
+
+- `*` matches every tool.
+- `github.*` matches the whole GitHub integration.
+- `github.*.*.repos.*` matches every tool in the `repos` group across connections.
+- `github.*.*.**.get*` matches tools whose final name segment starts with `get`, at any
+  depth in the integration's generated tool groups.
+
+A complete `*` in the middle of a pattern matches one address segment. A trailing complete
+`*` matches the remaining subtree. `**` matches zero or more segments, and a suffix wildcard
+such as `get*` matches characters within one segment without crossing a dot.
+
+Name-prefix patterns are case-sensitive and match the generated tool name, not the underlying
+HTTP method. An OpenAPI operation can use an `operationId` such as `listUsers` even when its
+method is `GET`. OpenAPI defaults still derive approval behavior from the actual HTTP method.
