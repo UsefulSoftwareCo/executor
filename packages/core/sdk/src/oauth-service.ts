@@ -782,9 +782,26 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // Caps on server-controlled discovery input — a hostile or buggy server must
   // not be able to hang `oauth.start` or overflow the authorize URL.
   const MAX_DISCOVERY_AUTH_SERVERS = 3; // AS-failover lists are tiny in practice
-  const MAX_DISCOVERED_SCOPES = 100; // far beyond any realistic authorization template
-  const capScopes = (scopes: readonly string[]): readonly string[] =>
-    dedupeScopes(scopes).slice(0, MAX_DISCOVERED_SCOPES);
+  // The cap is on the encoded `scope` parameter's length, not the scope
+  // count: the URL is what overflows, and a real resource can legitimately
+  // advertise well over a hundred fine-grained scopes (PostHog lists 150).
+  // Dropping any advertised scope silently mints a token the resource then
+  // rejects, so the budget is generous — 8 KiB leaves room for the rest of the
+  // authorize URL under the common 8-16 KiB request-line limits — and only an
+  // absurd list is truncated.
+  const MAX_DISCOVERED_SCOPE_CHARS = 8192;
+  const capScopes = (scopes: readonly string[]): readonly string[] => {
+    const unique = dedupeScopes(scopes);
+    let length = 0;
+    let count = 0;
+    for (const scope of unique) {
+      const next = length + scope.length + (count > 0 ? 1 : 0);
+      if (next > MAX_DISCOVERED_SCOPE_CHARS) break;
+      length = next;
+      count += 1;
+    }
+    return unique.slice(0, count);
+  };
 
   // Bound a whole discovery sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
   // fetches, each with its own request timeout). 30s is larger than a single

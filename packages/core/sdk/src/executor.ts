@@ -3605,7 +3605,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                           ? { tools_synced_at: Date.now() }
                           : {
                               tools_synced_at: Date.now(),
-                              last_health: health ?? toolSyncHealth(reason),
+                              // A plugin-supplied verdict (e.g. the MCP server
+                              // rejecting the token during discovery) is still
+                              // sync-stamped: mark it so credential-only health
+                              // checks cannot bury it under "healthy", and a
+                              // later successful sync clears it.
+                              last_health:
+                                health === undefined
+                                  ? toolSyncHealth(reason)
+                                  : { ...health, reason: health.reason ?? "tool_sync_failed" },
                               updated_at: new Date(),
                             },
                     })
@@ -5138,7 +5146,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<void> =>
       findConnectionRow(ref).pipe(
         Effect.flatMap((fresh) =>
-          fresh === null || oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
+          fresh === null ||
+          oauthReauthRequiredFromProviderState(fresh.provider_state) !== null ||
+          // A credential verdict cannot refute a failed tool sync; only a
+          // successful sync clears that record (see `isToolSyncHealth`).
+          isToolSyncHealth(Option.getOrNull(decodeLastHealth(fresh.last_health)))
             ? Effect.void
             : persistHealthResult(ref, fresh, result),
         ),
@@ -5241,6 +5253,17 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 // failure is the one real signal this path can produce, and it
                 // must not hide inside a green span.
                 oauthCredentialHealthWithoutProbe(connectionRow).pipe(
+                  // A resolvable token says nothing about whether the
+                  // upstream accepts it. When tool sync has already recorded
+                  // that it does not (a rejected discovery handshake, an
+                  // unreachable server), that verdict stands until a sync
+                  // succeeds — serving "healthy" here would hide a connection
+                  // that has no tools behind a green badge.
+                  Effect.map((result) =>
+                    result.status === "healthy" && previous !== null && isToolSyncHealth(previous)
+                      ? previous
+                      : result,
+                  ),
                   Effect.tap((result) => persistProbeHealthResult(ref, result)),
                   Effect.map((result) => ({
                     source: "credential_only" as const,
