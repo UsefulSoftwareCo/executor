@@ -882,7 +882,7 @@ type DcrStartArgs = {
  *  carries no probe result; the other two reasons always carry the probe that
  *  seeds the picker. */
 type AutomaticOAuthOutcome =
-  | { readonly kind: "started"; readonly flow: "cimd" | "dcr" }
+  | { readonly kind: "started"; readonly flow: "cimd" | "dcr" | "byo" }
   | { readonly kind: "popup-blocked" }
   /** The owning surface went away mid-flight (`isActive` turned false): the
    *  sequence stopped before its next side effect and released the window.
@@ -927,6 +927,8 @@ type RunAutomaticOAuthConnectDeps = {
 };
 
 type RunAutomaticOAuthConnectInput = {
+  /** Saved apps available for a fresh connection; omitted for reconnects. */
+  readonly registeredClients?: readonly OAuthClientSummary[];
   readonly discoveryUrl: string;
   /** The integration's genuine protected-resource URL (the MCP discovery URL),
    *  used as the RFC 8707 resource indicator when the server's PRM names no
@@ -1022,6 +1024,22 @@ export async function runAutomaticOAuthConnect(
         ? null
         : (probe.resource ?? input.storedResource)
       : (probe.resource ?? input.resourceFallback ?? null);
+  // A workspace app may have been registered outside this dialog. Once
+  // discovery establishes the exact endpoints, reuse it without a second
+  // click. Never select a near match or another owner's personal app.
+  const savedClient = input.registeredClients?.find(
+    (client) =>
+      client.origin.kind === "manual" &&
+      client.grant === "authorization_code" &&
+      (client.owner === input.owner || client.owner === "org") &&
+      client.authorizationUrl === probe.authorizationUrl &&
+      client.tokenUrl === probe.tokenUrl &&
+      (client.resource == null || client.resource === resource),
+  );
+  if (savedClient) {
+    deps.start({ client: savedClient.slug, owner: savedClient.owner, reservation });
+    return { kind: "started", flow: "byo" };
+  }
   if (probe.clientIdMetadataDocumentSupported === true) {
     const resolved = await resolveCimdClient(
       { createClient: deps.createCimdClient },
@@ -1788,7 +1806,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // DCR-capable (see `hasDcr`). When DCR-capable and not yet fallen back, we
   // skip the app picker entirely (Option A).
   const isDcr = !cimdActive && hasDcr(method);
-  const dcrActive = isDcr && !dcrFailed;
+  // Reuse an app explicitly registered for this integration. Discovery must
+  // not send its users through automatic registration again on every connect.
+  const hasSavedOAuthApp = clientSummaries.some(
+    (client) =>
+      client.grant === "authorization_code" &&
+      client.origin.kind === "manual" &&
+      client.origin.integration === integration,
+  );
+  const dcrActive = isDcr && !dcrFailed && !hasSavedOAuthApp;
   const automaticOAuthActive = cimdActive || dcrActive;
 
   // OAuth apps usable for this integration (user-owned first). Hooks run
@@ -2493,8 +2519,8 @@ function AddAccountModalView(props: AddAccountModalProps) {
               reservation: args.reservation,
               payload: {
                 client: args.client,
-                // DCR/CIMD mints the client under the connection owner, so the
-                // app and connection share one owner.
+                // Discovery may reuse a shared app for a Personal connection.
+                // Keep the app owner separate from the requested connection owner.
                 clientOwner: args.owner,
                 owner: dcrOwner,
                 name: request.connectionName,
@@ -2542,11 +2568,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
           // not, so pass the un-collapsed method value here.
           resourceFallback: requestMethod.oauth?.discoveryUrl,
           owner: dcrOwner,
-          // DCR slugs are server-keyed (Part A): the connect path no longer depends
-          // on the picker's app list, so it need not be threaded here.
           declaredScopes: requestMethod.oauth?.scopes,
           redirectUri: oauthCallbackUrl(),
           integration,
+          ...(reconnect ? {} : { registeredClients: clientSummaries }),
           cimd: {
             integrationName,
             clientIdMetadataDocumentUrl: oauthClientIdMetadataDocumentUrl(),
