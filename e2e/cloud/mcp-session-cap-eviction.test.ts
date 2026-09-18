@@ -22,9 +22,11 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Option, Schedule, Schema } from "effect";
 
+import { MAX_CONCURRENT_BUILDS } from "../../apps/cloud/src/mcp/session-build-semaphore";
 import { scenario } from "../src/scenario";
 import { Mcp, Target, Telemetry } from "../src/services";
 import type { Identity } from "../src/target";
+import { configuredMcpSessionTimeoutMs } from "../setup/mcp-session-timeouts";
 import { E2E_MCP_RESIDENT_RUNTIME_SOFT_CAP } from "../setup/resident-runtime-cap";
 
 const PROTOCOL_VERSION = "2025-03-26";
@@ -34,6 +36,55 @@ const JSON_AND_SSE = "application/json, text/event-stream";
 // are still incidentally resident when this file runs, enough of THESE
 // sessions cross it that at least one eviction targets a session opened here.
 const SESSIONS_TO_OPEN = E2E_MCP_RESIDENT_RUNTIME_SOFT_CAP + 10;
+
+// Every request below that can start a cold runtime build is held to the
+// isolate's own build width, so none of them ever waits in the FIFO queue at
+// apps/cloud/src/mcp/session-build-semaphore.ts. That is an `initialize`, a
+// keep-alive touch of a session the cap has evicted (the owner check
+// restores it before the request is forwarded), and a cleanup DELETE of a
+// session whose runtime was disposed (same restore, then the destroy).
+//
+// A build that does wait there is handed its slot from the releasing
+// session's request context, and in the CI runs that first failed this
+// scenario no build resumed that way finished: every queued init sat out the
+// queue's full 10s timeout, and the ones granted a slot were reset at the
+// 30s `blockConcurrencyWhile` limit. That is observed, most likely the
+// semaphore hand-off itself, and tracked separately in
+// https://github.com/UsefulSoftwareCo/executor/issues/2063. It is not what
+// this scenario pins, so the scenario stays out of the queue entirely: opens
+// and touches never overlap, the batch alternates a wave of one with a wave
+// of the other, and each wave is at most this wide.
+const COLD_BUILD_CONCURRENCY = MAX_CONCURRENT_BUILDS;
+
+// The cap only trips if the sessions opened here are still RESIDENT when the
+// next one is admitted. A session that reaches the target's idle timeout
+// first (MCP_SESSION_TIMEOUT_MS, squeezed to a few seconds for e2e) gives its
+// runtime back and leaves the count, and a batch that idles out as fast as it
+// is opened never reaches the cap at all — no eviction, nothing to assert on.
+// Open throughput is not something to rely on for that (34 opens took 3.5s
+// on a loaded CI runner, against a 3s window), so the batch keeps them
+// resident itself: after every wave of opens, every session opened so far is
+// touched with a `ping`, which marks it active and re-arms its idle alarm
+// through the owner check every request with a session id goes through. A
+// touch is a full authenticated request, so the touch wave is the slow half
+// of a tick, and one tick is the most any session goes untouched; the
+// scenario measures the longest one and prints it next to the window.
+//
+// Touching stops once this many sessions are open, which is before the cap
+// can evict any of THESE. Once an isolate is at the cap, every admission
+// evicts its least-recently-active resident. With M sessions left over from
+// earlier scenarios (older than these, so evicted first) the cap is reached
+// at admission cap − M + 1, admissions up to cap evict the M leftovers, and
+// admission cap + 1 is the first that can pick one of these — and it is the
+// very next open, landing while every session from the last touch wave is
+// fresh. Touching past that point would only trade one eviction for
+// another: a touch of a session the cap has just evicted restores it, and
+// that admission evicts the next candidate. A leftover that is NOT evictable
+// (a paused execution keeps its runtime resident) moves the first pick of
+// one of these earlier, into the touched phase; the next touch wave then
+// restores it, which is a cold build like any other, and is why touch waves
+// are held to the same width as open waves.
+const KEEP_RESIDENT_WHILE_OPENING = E2E_MCP_RESIDENT_RUNTIME_SOFT_CAP;
 
 const emailOf = (identity: Identity): string => identity.credentials?.email ?? identity.label;
 
@@ -189,6 +240,37 @@ const openSession = async (
   return sessionId;
 };
 
+/**
+ * The cheapest request that keeps a session resident: a JSON-RPC `ping`,
+ * answered by the MCP server's protocol layer without touching a tool. The
+ * idle alarm is re-armed by the owner check the router runs before any
+ * request with a session id is forwarded, so a served ping is all that is
+ * needed. The documented restart envelope is tolerated too — the platform
+ * reset the session's object underneath the batch, and it restores itself
+ * on its next request — the same transient `openSession` tolerates.
+ * Anything else is a real failure: it stops the keep-alive, which fails the
+ * scenario with it.
+ */
+const touchSession = async (
+  mcpUrl: string,
+  bearer: string,
+  sessionId: string,
+  id: number,
+): Promise<void> => {
+  const response = await postJson(
+    mcpUrl,
+    bearer,
+    { jsonrpc: "2.0" as const, id: `keep-alive-${id}`, method: "ping" },
+    sessionId,
+  );
+  const body = await response.text();
+  if (response.status === 200 || isRestartResponse(response.status, body)) return;
+  // oxlint-disable-next-line executor/no-error-constructor -- boundary: e2e keep-alive precondition.
+  throw new Error(
+    `keep-alive ping of ${sessionId} was not served: ${response.status} ${body.slice(0, 200)}`,
+  );
+};
+
 const executeBody = (id: string, code: string) => ({
   jsonrpc: "2.0" as const,
   id,
@@ -230,21 +312,63 @@ scenario(
     const openedSessionIds: string[] = [];
 
     const scenarioBody = Effect.gen(function* () {
-      // Open more sessions than the cap allows. Keep admission sequential:
-      // the cloud e2e database is one serialized PGlite instance, and this
-      // scenario exercises resident eviction rather than concurrent cold
-      // builds. None of the sessions run any work, so every one is immediately
-      // eviction-eligible — crossing the cap must pick at least one and tear it
-      // down through its own stub.
-      const sessionIds = yield* Effect.forEach(
-        Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index),
-        (index) =>
-          Effect.promise(() =>
-            openSession(target.mcpUrl, bearer, `session-${index}`, (sessionId) => {
-              openedSessionIds.push(sessionId);
+      const openWave = (wave: ReadonlyArray<number>) =>
+        Effect.forEach(
+          wave,
+          (index) =>
+            Effect.promise(() =>
+              openSession(target.mcpUrl, bearer, `session-${index}`, (sessionId) => {
+                openedSessionIds.push(sessionId);
+              }),
+            ),
+          { concurrency: COLD_BUILD_CONCURRENCY },
+        );
+      let touches = 0;
+      // `suspend`: the sessions to touch are whichever are open when the
+      // wave runs, not when this is built.
+      const touchEveryOpenSession = Effect.suspend(() =>
+        Effect.forEach(
+          [...openedSessionIds],
+          (sessionId) =>
+            Effect.promise(() => {
+              touches += 1;
+              return touchSession(target.mcpUrl, bearer, sessionId, touches);
             }),
-          ),
-        { concurrency: 1 },
+          { concurrency: COLD_BUILD_CONCURRENCY, discard: true },
+        ),
+      );
+
+      // Open more sessions than the cap allows. None of the sessions run any
+      // work, so every one is immediately eviction-eligible — crossing the cap
+      // must pick at least one and tear it down through its own stub.
+      const indices = Array.from({ length: SESSIONS_TO_OPEN }, (_, index) => index);
+      const sessionIds: string[] = [];
+
+      // Kept resident (see KEEP_RESIDENT_WHILE_OPENING): a wave of opens,
+      // then a wave of touches over everything open so far, and again.
+      let ticks = 0;
+      let longestTickMs = 0;
+      const keptStartedAt = Date.now();
+      for (let from = 0; from < KEEP_RESIDENT_WHILE_OPENING; from += COLD_BUILD_CONCURRENCY) {
+        const tickStartedAt = Date.now();
+        const to = Math.min(from + COLD_BUILD_CONCURRENCY, KEEP_RESIDENT_WHILE_OPENING);
+        sessionIds.push(...(yield* openWave(indices.slice(from, to))));
+        yield* touchEveryOpenSession;
+        ticks += 1;
+        longestTickMs = Math.max(longestTickMs, Date.now() - tickStartedAt);
+      }
+      const keptTookMs = Date.now() - keptStartedAt;
+
+      // Crossing the cap: the rest, untouched. The first of these admissions
+      // is the one that must evict a session opened above.
+      const crossingStartedAt = Date.now();
+      sessionIds.push(...(yield* openWave(indices.slice(KEEP_RESIDENT_WHILE_OPENING))));
+      const crossingTookMs = Date.now() - crossingStartedAt;
+
+      // Diagnostic only: the scenario no longer depends on the batch beating
+      // the idle window, but the figures show how much room the keep-alive had.
+      console.info(
+        `[cap-eviction] kept ${KEEP_RESIDENT_WHILE_OPENING} sessions resident through ${ticks} open+touch ticks in ${keptTookMs}ms (longest tick ${longestTickMs}ms against a ${configuredMcpSessionTimeoutMs()}ms idle window, ${touches} touches); the ${SESSIONS_TO_OPEN - KEEP_RESIDENT_WHILE_OPENING} opens that cross the cap took ${crossingTookMs}ms`,
       );
 
       expect(sessionIds.length, "every session opened").toBe(SESSIONS_TO_OPEN);
@@ -332,7 +456,11 @@ scenario(
                 });
                 await closed.text();
               }).pipe(Effect.ignore),
-            { concurrency: 8, discard: true },
+            // A DELETE of a session whose runtime was disposed in the meantime
+            // restores it before the destroy (the owner check runs first), so
+            // this is a wave of cold builds too — held to the same width as
+            // every other wave above (see COLD_BUILD_CONCURRENCY).
+            { concurrency: COLD_BUILD_CONCURRENCY, discard: true },
           ),
         ),
       ),
