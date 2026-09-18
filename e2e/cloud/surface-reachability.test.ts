@@ -41,9 +41,8 @@ scenario(
     // the ONLY thing that documents them — the routes serve either way, so a
     // group dropped from the `.add(...)` chain leaves a mounted, undocumented
     // plane and nothing else fails. Asserted against the SERVED spec rather
-    // than the module: cloud builds the same composition twice (here and in
-    // `extensions/docs.ts`) and only this one reaches the runtime, so importing
-    // either module could pass while the wire is wrong.
+    // than the module: the spec is built lazily on the first request, so
+    // importing the module could pass while the wire is wrong.
     expect(paths, "the account plane is documented").toContain("/api/account/me");
     expect(paths, "including the org-key surface the console reads").toContain(
       "/api/account/org-api-keys",
