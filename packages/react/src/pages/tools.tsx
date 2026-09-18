@@ -2,7 +2,11 @@ import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { ToolAddress, effectivePolicyFromSorted } from "@executor-js/sdk/shared";
+import {
+  ToolAddress,
+  effectivePolicyFromSorted,
+  type ToolPolicyAction,
+} from "@executor-js/sdk/shared";
 
 import { policiesOptimisticAtom, toolsAllAtom } from "../api/atoms";
 import { usePolicyActions } from "../hooks/use-policy-actions";
@@ -13,6 +17,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 
 // Dynamic tool policy patterns are derived from the connection-aware address.
 // Static tools (for example Executor's own tools) use their address directly.
@@ -38,6 +43,15 @@ export function ToolsPage() {
   const refreshTools = useAtomRefresh(toolsAllAtom);
   const policies = useAtomValue(policiesOptimisticAtom);
   const policyActions = usePolicyActions("org");
+  // Policies here are workspace rules, which the server refuses for non-admin
+  // members. Offer the menus only to those who can actually write them.
+  const canSetPolicy = useCanCreateWorkspaceConnections();
+  const onSetPolicy = canSetPolicy
+    ? (pattern: string, action: ToolPolicyAction) => void policyActions.set(pattern, action)
+    : undefined;
+  const onClearPolicy = canSetPolicy
+    ? (pattern: string, policyId?: string) => void policyActions.clear(pattern, policyId)
+    : undefined;
 
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
 
@@ -144,8 +158,8 @@ export function ToolsPage() {
                     tools={summaries}
                     selectedToolId={selectedToolId}
                     onSelect={setSelectedToolId}
-                    onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                    onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                    onSetPolicy={onSetPolicy}
+                    onClearPolicy={onClearPolicy}
                     policies={sortedPolicies}
                   />
                 </div>
@@ -156,10 +170,8 @@ export function ToolsPage() {
                       toolName={selectedTool.name}
                       staticTool={selection?.static}
                       policy={selectedTool.policy}
-                      onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                      onClearPolicy={(pattern, policyId) =>
-                        void policyActions.clear(pattern, policyId)
-                      }
+                      onSetPolicy={onSetPolicy}
+                      onClearPolicy={onClearPolicy}
                     />
                   ) : (
                     <ToolDetailEmpty hasTools={summaries.length > 0} />

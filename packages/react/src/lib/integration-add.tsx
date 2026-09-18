@@ -11,20 +11,14 @@ import { Link } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Schema from "effect/Schema";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { integrationsOptimisticAtom } from "../api/atoms";
-
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+import { messageFromExit } from "../api/error-reporting";
 
 /** The failed Exit's `message`, or `fallback` when the error carries none. */
-export const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
-  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
-    onNone: () => fallback,
-    onSome: ({ message }) => message,
-  });
+export const errorMessageFromExit: (exit: Exit.Exit<unknown, unknown>, fallback: string) => string =
+  messageFromExit;
 
 export const isIntegrationAlreadyExistsExit = (exit: Exit.Exit<unknown, unknown>): boolean =>
   Option.match(Exit.findErrorOption(exit), {

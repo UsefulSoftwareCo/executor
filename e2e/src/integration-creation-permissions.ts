@@ -108,6 +108,18 @@ export const integrationCreationPermissions = (admin: Identity, member: Identity
               expect(await action.isDisabled()).toBe(true);
             }
           });
+          await step("Member sees tool policies without a way to change them", async () => {
+            // Policies on the Tools page are workspace rules the server refuses
+            // for members, so the row menus and the detail badge menu stay off.
+            await visit(page, "/tools");
+            await page.getByRole("button").filter({ hasText: "executor" }).first().waitFor();
+            expect(
+              await page.getByRole("button", { name: /^Set policy/ }).count(),
+              "members get no policy menus on tool rows",
+            ).toBe(0);
+            await visit(page, `/integrations/${slug}`);
+            await page.getByRole("button", { name: "Add connection", exact: true }).waitFor();
+          });
           await step("Member can still add a personal connection", async () => {
             await page.getByRole("button", { name: "Add connection", exact: true }).click();
             const dialog = page.getByRole("dialog");

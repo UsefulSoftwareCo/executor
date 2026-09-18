@@ -13,6 +13,7 @@ import {
   effectivePolicyFromSorted,
   type Connection,
   type Owner,
+  type ToolPolicyAction,
 } from "@executor-js/sdk/shared";
 import {
   checkConnectionHealth,
@@ -46,6 +47,7 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useConnectionsHealth } from "../lib/use-connection-health";
+import { accountPolicyPattern } from "../lib/policy-pattern";
 import {
   integrationDetailInternalTabFromSearch,
   type IntegrationDetailInternalTab,
@@ -142,6 +144,16 @@ export function IntegrationDetailPage(props: {
   // Integrations are workspace-owned; the server refuses catalog mutations
   // (update/remove) from non-admin members, so disable the controls for them.
   const canMutateIntegration = useCanCreateWorkspaceConnections();
+  // Tool policies on this tab are workspace rules (`usePolicyActions("org")`),
+  // which the server refuses for non-admin members. Offer the menus only to
+  // those who can actually write them.
+  const canSetPolicy = canMutateIntegration;
+  const onSetPolicy = canSetPolicy
+    ? (pattern: string, action: ToolPolicyAction) => void policyActions.set(pattern, action)
+    : undefined;
+  const onClearPolicy = canSetPolicy
+    ? (pattern: string, policyId?: string) => void policyActions.clear(pattern, policyId)
+    : undefined;
   const canEdit = !isBuiltInIntegration && integrationData !== null;
   const canRefresh = integrationData?.canRefresh ?? false;
   const canRemove = integrationData?.canRemove ?? false;
@@ -301,6 +313,7 @@ export function IntegrationDetailPage(props: {
         policy: effectivePolicyFromSorted(matchId, policyList, t.requiresApproval),
         owner: t.owner,
         connection: t.connection,
+        integration: t.integration,
       };
     });
   }, [tools, policyList]);
@@ -620,8 +633,8 @@ export function IntegrationDetailPage(props: {
                       tools={integrationTools}
                       selectedToolId={selectedToolId}
                       onSelect={setSelectedToolId}
-                      onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                      onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                      onSetPolicy={onSetPolicy}
+                      onClearPolicy={onClearPolicy}
                       policies={sortedPolicies}
                       groupByConnection={!isBuiltInIntegration}
                       emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
@@ -636,9 +649,15 @@ export function IntegrationDetailPage(props: {
                         toolName={selectedTool.name}
                         staticTool={selection?.static}
                         policy={selectedTool.policy}
-                        onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                        onClearPolicy={(pattern, policyId) =>
-                          void policyActions.clear(pattern, policyId)
+                        onSetPolicy={onSetPolicy}
+                        onClearPolicy={onClearPolicy}
+                        // The header badge must write and look up the SAME
+                        // account-pinned pattern the tree row under this
+                        // account uses, or it cannot recognize its own rule.
+                        patternForDisplay={
+                          selection && !selection.static
+                            ? accountPolicyPattern(selection.owner, selection.connection)
+                            : undefined
                         }
                         {...(!selection?.static && selectedBareName
                           ? {

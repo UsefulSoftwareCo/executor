@@ -3,7 +3,7 @@ import { ChevronRightIcon, MoreHorizontalIcon, SearchIcon, XIcon } from "lucide-
 import type { EffectivePolicy, Owner, ToolPolicyAction } from "@executor-js/sdk/shared";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
-import { toPolicyPattern } from "../lib/policy-pattern";
+import { accountPolicyPattern, toPolicyPattern } from "../lib/policy-pattern";
 import { Badge } from "./badge";
 import { Button } from "./button";
 import { Input } from "./input";
@@ -297,7 +297,9 @@ export function ToolTree(props: {
    *  emit the tool's full dotted id; group rows emit `prefix.*`. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
-  /** Maps the displayed row path into the persisted policy pattern. */
+  /** Maps the displayed row path into the persisted policy pattern for the
+   *  flat tree. Ignored in the account-grouped view, where every row writes a
+   *  pattern pinned to its own account (`integration.<owner>.<conn>.<tool>`). */
   patternForDisplay?: (displayPattern: string) => string;
   /** Sorted user-authored policies (most-precedent first). Used to
    *  decide whether a node has its own exact-pattern user rule today
@@ -429,26 +431,55 @@ export function ToolTree(props: {
               : (props.emptyLabel ?? "No tools available")}
           </div>
         ) : groupByConnection ? (
-          accountGroups.map((group) => (
-            <section key={group.key}>
-              <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/30 bg-muted/40 px-3 py-1.5 backdrop-blur-sm">
-                {ownerDisplay.showOwnerLabels ? (
-                  <Badge variant="outline" className="shrink-0 text-[10px]">
-                    {ownerLabel(group.owner)}
-                  </Badge>
-                ) : null}
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-                  {group.integration && group.connection
-                    ? `${group.integration} / ${group.connection}`
-                    : group.connection || ownerDisplay.label(group.owner)}
-                </span>
-                <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                  {group.tools.length}
-                </span>
-              </header>
-              <ToolTreeBody key={group.key} tools={group.tools} {...bodyProps} />
-            </section>
-          ))
+          accountGroups.map((group) => {
+            // Rows inside an account section author rules for THAT account
+            // only: two connections of one integration are different
+            // credentials, so a rule set under one must not govern the other.
+            const accountPattern = accountPolicyPattern(group.owner, group.connection);
+            const wholeAccountPattern = accountPattern(`${group.integration}.*`);
+            const wholeAccountRule = exactPatterns.get(wholeAccountPattern);
+            const accountLabel =
+              group.integration && group.connection
+                ? `${group.integration} / ${group.connection}`
+                : group.connection || ownerDisplay.label(group.owner);
+            return (
+              <section key={group.key}>
+                <header className="group/tt-row sticky top-0 z-10 flex items-center gap-2 border-b border-border/30 bg-muted/40 px-3 py-1.5 backdrop-blur-sm">
+                  {ownerDisplay.showOwnerLabels ? (
+                    <Badge variant="outline" className="shrink-0 text-[10px]">
+                      {ownerLabel(group.owner)}
+                    </Badge>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+                    {accountLabel}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                    {group.tools.length}
+                  </span>
+                  {onSetPolicy && group.integration && group.connection ? (
+                    <PolicyActionMenu
+                      pattern={wholeAccountPattern}
+                      current={wholeAccountRule}
+                      onSet={onSetPolicy}
+                      onClear={onClearPolicy}
+                      triggerLabel={`Set policy for ${accountLabel}`}
+                      triggerClassName={
+                        wholeAccountRule
+                          ? undefined
+                          : "opacity-0 group-hover/tt-row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                      }
+                    />
+                  ) : null}
+                </header>
+                <ToolTreeBody
+                  key={group.key}
+                  tools={group.tools}
+                  {...bodyProps}
+                  patternForDisplay={accountPattern}
+                />
+              </section>
+            );
+          })
         ) : (
           <ToolTreeBody tools={filteredTools} {...bodyProps} />
         )}
