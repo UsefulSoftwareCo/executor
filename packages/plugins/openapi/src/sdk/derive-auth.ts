@@ -151,6 +151,7 @@ const oauthTemplateFromPreset = (
   tokenUrl: resolveOAuthUrl(preset.tokenUrl, baseUrl),
   resource: Option.getOrUndefined(preset.resource) ?? null,
   scopes: [...scopes],
+  ...(preset.discoveryUrl ? { discoveryUrl: preset.discoveryUrl } : {}),
   ...(preset.supportsClientIdMetadataDocument === true
     ? { supportsClientIdMetadataDocument: true }
     : {}),

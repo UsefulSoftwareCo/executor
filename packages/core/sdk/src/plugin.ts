@@ -50,7 +50,7 @@ import type {
   InvalidConnectionInputError,
   OrgWriteDeniedError,
 } from "./errors";
-import type { OAuthService } from "./oauth-client";
+import type { OAuthService, OAuthProbeResult, OAuthProbeError } from "./oauth-client";
 import type { CredentialProvider, ProviderEntry } from "./provider";
 import type { PluginStorageConfig, PluginStorageFacade } from "./plugin-storage";
 import type {
@@ -651,6 +651,8 @@ export type IntegrationPresetAuthentication =
       readonly resource?: string | null;
       readonly scopes: readonly string[];
       readonly supportsClientIdMetadataDocument?: boolean;
+      /** Endpoint to re-probe before choosing CIMD or dynamic registration. */
+      readonly discoveryUrl?: string;
     }
   | {
       readonly kind: "apiKey";
@@ -797,6 +799,14 @@ export interface PluginSpec<
 
   /** Core-dispatched integration configuration (beyond auth). */
   readonly integrationConfigure?: IntegrationConfigureDecl<TStore>;
+
+  /** Recover discovery for a legacy stored OAuth method at connect time.
+   *  Return null when ordinary URL discovery should handle the request. */
+  readonly recoverOAuthDiscovery?: (input: {
+    readonly ctx: PluginCtx<TStore>;
+    readonly integration: IntegrationRecord;
+    readonly template: AuthTemplateSlug;
+  }) => Effect.Effect<OAuthProbeResult | null, OAuthProbeError | StorageFailure>;
 
   /** Project this plugin's opaque integration config into catalog-visible
    *  declared auth methods. Synchronous and pure (the config is already loaded);

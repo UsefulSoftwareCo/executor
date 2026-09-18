@@ -420,7 +420,7 @@ describe("OpenAPI Plugin", () => {
         expect(oauth.flow).toBe("authorizationCode");
         expect(oauth.tokenUrl).toBe(`${server.baseUrl}/oauth/token/`);
         expect(Option.getOrNull(oauth.resource)).toBe(server.baseUrl);
-        expect(oauth.supportsClientIdMetadataDocument).toBe(true);
+        expect(oauth.discoveryUrl).toBe(server.baseUrl);
         expect(oauth.scopes).toEqual({ "project:read": "" });
 
         yield* executor.openapi.addSpec({
@@ -436,8 +436,7 @@ describe("OpenAPI Plugin", () => {
             ...(template.kind === "oauth2"
               ? {
                   resource: template.resource ?? null,
-                  supportsClientIdMetadataDocument:
-                    template.supportsClientIdMetadataDocument === true,
+                  discoveryUrl: template.discoveryUrl,
                 }
               : {}),
           })),
@@ -447,9 +446,60 @@ describe("OpenAPI Plugin", () => {
             slug: "oauth-DiscoveredOAuth2",
             kind: "oauth2",
             resource: server.baseUrl,
-            supportsClientIdMetadataDocument: true,
+            discoveryUrl: `${server.baseUrl}/`,
           },
         ]);
+      }),
+    ),
+  );
+
+  it.effect("getConfig preserves CIMD across edits while the deployment disables it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins: testPlugins() });
+        const slug = IntegrationSlug.make("cimd_api");
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: testApiSpecText() },
+          slug,
+          authenticationTemplate: [
+            apiKeyTemplate,
+            { ...oauthTemplate, supportsClientIdMetadataDocument: true },
+          ],
+        });
+        const enabledConfig = yield* executor.openapi.getConfig(slug);
+        const [, oauth] = enabledConfig?.authenticationTemplate ?? [];
+        expect(oauth).toMatchObject({ kind: "oauth2", supportsClientIdMetadataDocument: true });
+        yield* executor.close();
+
+        const disabled = yield* Effect.acquireRelease(
+          createExecutor({ ...config, oauthClientIdMetadataDocumentEnabled: false }),
+          (instance) => instance.close().pipe(Effect.orDie),
+        );
+        expect(yield* disabled.oauth.listClients()).toEqual([]);
+        expect((yield* disabled.integrations.get(slug))?.authMethods).toContainEqual(
+          expect.objectContaining({
+            kind: "oauth",
+            oauth: expect.objectContaining({ supportsClientIdMetadataDocument: false }),
+          }),
+        );
+        const editable = yield* disabled.openapi.getConfig(slug);
+        expect(editable).toEqual(enabledConfig);
+        yield* disabled.openapi.configure(slug, {
+          mode: "replace",
+          authenticationTemplate: editable?.authenticationTemplate?.filter(
+            (method) => method.kind === "oauth2",
+          ),
+        });
+        yield* disabled.close();
+
+        const reenabled = yield* Effect.acquireRelease(
+          createExecutor({ ...config, oauthClientIdMetadataDocumentEnabled: true }),
+          (instance) => instance.close().pipe(Effect.orDie),
+        );
+        expect(yield* reenabled.openapi.getConfig(slug)).toEqual({
+          ...enabledConfig,
+          authenticationTemplate: [oauth],
+        });
       }),
     ),
   );
