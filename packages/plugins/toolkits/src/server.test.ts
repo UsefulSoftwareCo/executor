@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Predicate, Result } from "effect";
-import { makeTestExecutor } from "@executor-js/sdk/testing";
+import { Effect, Predicate, Result, Schema } from "effect";
+import { createExecutor, definePlugin, tool, ToolAddress } from "@executor-js/sdk";
+import { makeTestExecutor, makeTestWorkspaceHarness } from "@executor-js/sdk/testing";
 
 import { toolkitsPlugin } from "./server";
 
@@ -197,6 +198,114 @@ describe("toolkitsPlugin", () => {
         rules.map((rule) => `${rule.pattern} ${rule.action}`),
         "policy listing agrees with toolkit enforcement",
       ).toContain("google_docs.org.* approve");
+    }),
+  );
+
+  it.effect("enforces workspace policies in a toolkit-scoped executor", () =>
+    Effect.gen(function* () {
+      const samplePlugin = definePlugin(() => ({
+        id: "sample" as const,
+        storage: () => ({}),
+        staticIntegrations: () => [
+          {
+            kind: "control" as const,
+            id: "sample.ctl",
+            name: "Sample Control",
+            tools: [
+              tool({
+                name: "readTool",
+                description: "read tool",
+                inputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+                ),
+                execute: () => Effect.succeed("read-data"),
+              }),
+              tool({
+                name: "deleteTool",
+                description: "delete tool",
+                inputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+                ),
+                execute: () => Effect.succeed("deleted"),
+              }),
+              tool({
+                name: "outsideTool",
+                description: "outside toolkit",
+                inputSchema: Schema.toStandardSchemaV1(
+                  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+                ),
+                execute: () => Effect.succeed("outside"),
+              }),
+            ],
+          },
+        ],
+      }))();
+      const harness = yield* makeTestWorkspaceHarness({
+        plugins: [toolkitsPlugin(), samplePlugin] as const,
+      });
+      const setup = harness.executor;
+      const toolkit = yield* setup.toolkits.create({ owner: "org", name: "Test Kit" });
+      yield* setup.toolkits.createConnection(toolkit.id, {
+        pattern: "sample.ctl.readTool",
+      });
+      yield* setup.toolkits.createConnection(toolkit.id, {
+        pattern: "sample.ctl.deleteTool",
+      });
+      yield* setup.toolkits.createPolicy(toolkit.id, {
+        pattern: "sample.ctl.readTool",
+        action: "approve",
+      });
+      yield* setup.policies.create({
+        owner: "org",
+        pattern: "sample.ctl.readTool",
+        action: "require_approval",
+      });
+      yield* setup.policies.create({
+        owner: "org",
+        pattern: "sample.ctl.deleteTool",
+        action: "block",
+      });
+
+      const scoped = yield* Effect.acquireRelease(
+        createExecutor({
+          ...harness.config,
+          plugins: [toolkitsPlugin({ activeToolkitSlug: toolkit.slug }), samplePlugin] as const,
+        }),
+        (executor) => executor.close().pipe(Effect.ignore),
+      );
+      const tools = yield* scoped.tools.list();
+      expect(tools.map((entry) => String(entry.address))).toEqual(["sample.ctl.readTool"]);
+      expect((yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.readTool"))).action).toBe(
+        "require_approval",
+      );
+      expect(
+        (yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.deleteTool"))).action,
+      ).toBe("block");
+      expect(
+        (yield* scoped.policies.resolve(ToolAddress.make("sample.ctl.outsideTool"))).action,
+      ).toBe("block");
+
+      let elicited = false;
+      expect(
+        yield* scoped.execute(
+          ToolAddress.make("sample.ctl.readTool"),
+          {},
+          {
+            onElicitation: () => {
+              elicited = true;
+              return Effect.succeed({ action: "accept" as const });
+            },
+          },
+        ),
+      ).toBe("read-data");
+      expect(elicited).toBe(true);
+
+      const blocked = yield* Effect.result(
+        scoped.execute(ToolAddress.make("sample.ctl.deleteTool"), {}),
+      );
+      expect(Result.isFailure(blocked)).toBe(true);
+      if (!Result.isFailure(blocked)) return;
+      expect(Predicate.isTagged("ToolBlockedError")(blocked.failure)).toBe(true);
     }),
   );
 });
