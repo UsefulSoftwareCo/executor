@@ -206,6 +206,37 @@ jobs:
         run: bunx --bun electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never --config electron-builder.config.ts
         working-directory: apps/desktop
 
+      # electron-updater installs from the zip, not the DMG, and Squirrel.Mac
+      # rejects it unless the extracted app passes codesign. 1.6.9 shipped a
+      # zip whose framework symlinks (Versions/Current -> A) had been expanded
+      # into copies by a 7-Zip upgrade inside electron-builder; the DMG was
+      # fine, every auto-update silently failed. Extract the zip the way
+      # Squirrel does and verify it before anything is uploaded.
+      - name: Verify mac update zip
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+        run: |
+          set -euo pipefail
+          zip="apps/desktop/dist/executor-desktop-mac-${{ matrix.arch }}.zip"
+          links=$(unzip -Z "$zip" | grep -c '^l' || true)
+          echo "symlink entries in $zip: $links"
+          if [ "$links" -eq 0 ]; then
+            echo "::error::$zip has no symlink entries; framework bundles were flattened and Squirrel.Mac will reject the update"
+            exit 1
+          fi
+          # Unsigned builds (forks, no CSC_LINK) cannot pass codesign; the
+          # symlink check above still catches the flattening on its own.
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "no signing certificate configured; skipping codesign verification"
+            exit 0
+          fi
+          tmp=$(mktemp -d)
+          ditto -x -k "$zip" "$tmp"
+          codesign --verify --deep --strict --verbose=1 "$tmp/Executor.app"
+          rm -rf "$tmp"
+
       # The two mac legs each emit a latest-mac.yml listing only their own
       # arch. Rename per-arch here; the release job merges them back into the
       # single latest-mac.yml electron-updater clients fetch. Without this,
