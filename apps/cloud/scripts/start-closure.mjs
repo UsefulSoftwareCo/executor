@@ -80,9 +80,23 @@ const name = (f) => relative(DIST, f);
 
 const startup = closure([ENTRY]);
 // The lazy server-graph entries Start pulls on first request.
-const startRoots = [...graph.get(ENTRY).dynamic].filter((f) =>
-  /(start|router|tanstack)/.test(name(f)),
+// `server-*.js` is the `@tanstack/react-start/server-entry` chunk. server.ts
+// imports it dynamically (so an isolate serving only /api or /mcp never
+// evaluates react-dom or the router), which makes it a ROOT of this closure
+// rather than a member of `startup` — and puts Start's own lazy `loadEntries`
+// imports one dynamic hop further from the entry. Both hops are followed here,
+// otherwise the page graph would read as ~0.8 MB instead of its real size.
+const startEntry = [...graph.get(ENTRY).dynamic].filter((f) =>
+  /\/server-[A-Za-z0-9_-]+\.js$/.test(f),
 );
+const lazyFromEntry = [
+  ...graph.get(ENTRY).dynamic,
+  ...startEntry.flatMap((f) => [...(graph.get(f)?.dynamic ?? [])]),
+];
+const startRoots = [
+  ...startEntry,
+  ...lazyFromEntry.filter((f) => /(start|router|tanstack)/.test(name(f))),
+];
 const start = closure(startRoots);
 const appRoots = [...graph.get(ENTRY).dynamic].filter((f) => /\/app-[A-Za-z0-9_-]+\.js$/.test(f));
 const app = closure([ENTRY, ...appRoots]);

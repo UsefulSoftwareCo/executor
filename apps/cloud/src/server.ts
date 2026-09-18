@@ -1,5 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
-import { SpanKind, SpanStatusCode, context, trace, type SpanContext } from "@opentelemetry/api";
+import {
+  SpanKind,
+  SpanStatusCode,
+  context,
+  trace,
+  type Span,
+  type SpanContext,
+} from "@opentelemetry/api";
 import {
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_RESPONSE_STATUS_CODE,
@@ -8,16 +15,13 @@ import {
   ATTR_URL_SCHEME,
 } from "@opentelemetry/semantic-conventions";
 import * as Sentry from "@sentry/cloudflare";
-import handler from "@tanstack/react-start/server-entry";
 
 import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
-import { runWorkOsEventsSync } from "./auth/workos-events-runner";
-import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
-import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
+import { parseTraceparent } from "./mcp/traceparent";
 import {
   cloudSentryOptions,
   captureCause,
@@ -33,6 +37,49 @@ import { flushTracerProvider, installTracerProvider } from "./observability/tele
 // client inside the DO isolate, which plain `Sentry.captureException` cannot
 // do on its own). OTEL is installed through Effect layers (observability/telemetry),
 // not a global fetch wrapper.
+//
+// This one class is the last heavy STATIC edge out of the Worker entry, and it
+// is deliberate. Cloudflare requires a DO class to be a top-level export, so
+// the only way to defer the module is the lazy-shim pattern used for
+// `ExecutionRateLimiterDO` below: a plain `DurableObject` subclass that
+// dynamically imports the real class and forwards every entry point to a real
+// instance built from the same ctx/env. That is safe for a two-method counter.
+// It is NOT safe here, and the reason is the size of the surface that would
+// have to be forwarded by hand:
+//
+//   - the native handlers (`fetch`, `alarm`, `webSocketMessage`,
+//     `webSocketClose`, `webSocketError`);
+//   - partyserver's `setName`, which `getAgentByName` RPCs on the stub before
+//     returning it, so missing it breaks EVERY session lookup;
+//   - roughly fifteen internal, `@internal`-marked RPC methods the agents SDK
+//     calls straight on the stub from the Worker isolate
+//     (`getInitializeRequest`, `setInitializeRequest`, `getStreamRequestIds`,
+//     `setStreamRequestIds`, `deleteStreamRequestIds`,
+//     `getStaleEpochStreamRequestIds`, `getUndeliveredStreamIds`,
+//     `markStreamUndelivered`, `getStreamForRequestId`, `getWebSocket`,
+//     `getConnections`, `getSessionId`, `onSSEMcpMessage`, `handleMcpMessage`,
+//     `_cf_scheduleDestroy`, `_cf_initAsFacet`, `__unsafe_ensureInitialized`);
+//   - this app's own RPC surface (`validateMcpSessionOwner`,
+//     `requestCapEviction`, `getPausedExecutionForApproval`,
+//     `resumeExecutionForApproval`, `resumeExecutionForModel`).
+//
+// That list is not a public contract. A missed or newly added method fails at
+// the CALL SITE with "not a function", in production, on one MCP code path —
+// nothing here or in the type checker would catch it, because stub calls are
+// dynamic. And `transport: "streamable-http"` still bridges through a
+// hibernatable WebSocket into the DO (the agents SDK fetches the DO with an
+// `Upgrade: websocket` header), so the shim would also sit on the hibernation
+// wake path.
+//
+// Measured trade: making this lazy takes the startup closure from 5.25 MB to
+// 4.20 MB (`node scripts/start-closure.mjs dist/server`) — 1.05 MB, well short
+// of the ~2 MB it was expected to be, because most of the DO's dependencies are
+// shared chunks the entry reaches by other static edges anyway. Deferring the
+// MCP *handler* below already removes the part that can be removed safely. If
+// the remaining 1.05 MB is worth having, the structural fix is to move the
+// session DO to its own Worker script (`durable_objects.bindings[].script_name`)
+// rather than to hand-maintain a mirror of another package's internal RPC
+// surface.
 // ---------------------------------------------------------------------------
 
 export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
@@ -51,7 +98,40 @@ export class McpSessionDO extends DurableObject {}
 // Per-org execution rate-limit counter DO (abuse backstop; migration v3,
 // `EXECUTION_RATE_LIMITER` binding). Plain counter, no Sentry wrapper needed:
 // its callers already fail open and report errors themselves.
-export { ExecutionRateLimiterDO } from "./engine/execution-rate-limit";
+//
+// Exported as a LAZY SHIM rather than a re-export. Cloudflare requires a DO
+// class to be a top-level export of the entry module, and a static re-export
+// pulls the whole `engine/execution-rate-limit` chunk (~416 KB after Rollup
+// co-locates autumn-js with it) into every cold isolate's startup closure —
+// including the overwhelming majority that never touch this counter. The real
+// class is a two-entry-point counter (`increment` RPC and the purge `alarm`)
+// over `ctx.storage`, with only one in-memory field, so delegating to a real
+// instance built from the SAME ctx/env is exactly equivalent: the instance is
+// memoized per DO instance, which is the same lifetime the field had before.
+let executionRateLimiterModule: Promise<typeof import("./engine/execution-rate-limit")> | undefined;
+
+export class ExecutionRateLimiterDO extends DurableObject<Env> {
+  private real:
+    | Promise<InstanceType<typeof import("./engine/execution-rate-limit").ExecutionRateLimiterDO>>
+    | undefined;
+
+  private delegate() {
+    executionRateLimiterModule ??= import("./engine/execution-rate-limit");
+    this.real ??= executionRateLimiterModule.then(
+      (module) => new module.ExecutionRateLimiterDO(this.ctx, this.env),
+    );
+    return this.real;
+  }
+
+  /** Add one execution to `windowId`'s counter and return the new count. */
+  async increment(windowId: number): Promise<number> {
+    return (await this.delegate()).increment(windowId);
+  }
+
+  override async alarm(): Promise<void> {
+    await (await this.delegate()).alarm();
+  }
+}
 
 export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
@@ -64,6 +144,13 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // previously emitted by `@microlabs/otel-cf-workers` and lost in the alchemy
 // migration — without the OTel-SDK version-conflict that package would now
 // drag in (it pins `@opentelemetry/otlp-* ^0.200.0`, we ship ^0.214.0).
+//
+// Almost nothing is reachable from this entry by a STATIC import any more. The
+// Start server entry, the Effect app plane, the MCP agent handler, the rate-limit
+// counter DO and the WorkOS events cron runner are all behind dynamic imports
+// and memoized per isolate, so a cold isolate evaluates only the code the path
+// it is about to serve actually needs. The MCP session DO is the one deliberate
+// exception (see the note on its export above).
 //
 // App-owned paths (/api/* and /.well-known/* — see app-paths.ts) get their
 // `http.server` span from Effect's HttpMiddleware tracer. `/mcp` is dispatched
@@ -78,23 +165,41 @@ export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execut
 // until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-const rawFetchHandler = handler.fetch as (
+// The Start server entry is imported LAZILY, memoized per isolate. Statically
+// it added ~832 KB (react-dom, the router and their transitive graph) to the
+// startup closure of EVERY cold isolate — including the many that only ever
+// serve `/api` or `/mcp` and return long before `fetchHandler` is reached.
+// The module still resolves on the first page request, so the work is moved,
+// not removed; it is just no longer charged to isolates that never page-serve.
+type StartFetchHandler = (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
 
+let startServerEntry: Promise<StartFetchHandler> | undefined;
+
+const loadStartFetchHandler = (): Promise<StartFetchHandler> => {
+  startServerEntry ??= import("@tanstack/react-start/server-entry").then(
+    (module) => module.default.fetch as StartFetchHandler,
+  );
+  return startServerEntry;
+};
+
 /**
  * Every entry into TanStack Start goes through here so `startGraphEntered`
  * reflects whether this isolate has already paid the lazy `loadEntries`
- * import — the cost that dominates a cold page request.
+ * import — the cost that dominates a cold page request. The flag is still set
+ * synchronously on entry, before the server-entry import is awaited, so its
+ * meaning ("something has driven Start in this isolate") is unchanged.
  */
-const fetchHandler = (
+const fetchHandler = async (
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-): Response | Promise<Response> => {
+): Promise<Response> => {
   markStartGraphEntered();
+  const rawFetchHandler = await loadStartFetchHandler();
   return rawFetchHandler(request, env, ctx);
 };
 
@@ -162,7 +267,22 @@ const traceCloudMcpRequest = async (
   );
 };
 
-const mcpAgentHandler = makeCloudMcpAgentHandler();
+// Built on the first /mcp request and memoized per isolate. Constructing it
+// eagerly at module scope meant every cold isolate — including page- and
+// API-only ones — evaluated the agents SDK, the MCP SDK and the session DO's
+// whole dependency graph before it could answer anything.
+type CloudMcpAgentHandler = ReturnType<
+  typeof import("./mcp/agent-handler").makeCloudMcpAgentHandler
+>;
+
+let mcpAgentHandler: Promise<CloudMcpAgentHandler> | undefined;
+
+const getMcpAgentHandler = (): Promise<CloudMcpAgentHandler> => {
+  mcpAgentHandler ??= import("./mcp/agent-handler").then((module) =>
+    module.makeCloudMcpAgentHandler(),
+  );
+  return mcpAgentHandler;
+};
 
 // ---------------------------------------------------------------------------
 // Isolate lifecycle signals
@@ -258,6 +378,37 @@ const getAppPlane = async (): Promise<NonNullable<typeof appPlane>> => {
   return appPlane;
 };
 
+/**
+ * `getAppPlane()` with the cost of its first evaluation recorded on the
+ * dispatch span as `executor.dispatch.graph_import_ms`.
+ *
+ * Why the throwaway cache lookup: workerd FREEZES `Date.now()` until the
+ * isolate performs real I/O, so a measurement taken across purely synchronous
+ * module evaluation reads 0 and the whole cold app-graph cost silently lands on
+ * whatever span happens to straddle the NEXT await that does I/O. The Sep 2026
+ * investigation chased exactly that ghost: seconds of cold graph evaluation
+ * were being attributed to `workos.session.local_verify`, the first I/O in an
+ * authenticated request. One trivial cache probe before the import unfreezes
+ * the clock so both this attribute and the isolate's cold cost become visible.
+ *
+ * It is done ONLY on a cold app-plane dispatch (once per isolate), so the warm
+ * path — every subsequent request — pays nothing.
+ */
+const measuredAppPlane = async (
+  span: Span,
+  cold: boolean,
+): Promise<NonNullable<typeof appPlane>> => {
+  if (!cold) return getAppPlane();
+  // `caches.default` is a Workers extension the ambient `CacheStorage` type
+  // does not carry; the lookup is a miss by construction and nothing is stored.
+  const workerCaches = caches as CacheStorage & { readonly default: Cache };
+  await workerCaches.default.match(new Request("https://executor.internal/clock"));
+  const startedAt = Date.now();
+  const plane = await getAppPlane();
+  span.setAttribute("executor.dispatch.graph_import_ms", Date.now() - startedAt);
+  return plane;
+};
+
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
     isolateRequestSeq += 1;
@@ -302,8 +453,8 @@ const cloudflareHandler: ExportedHandler<Env> = {
       // THE `http.server` span for MCP traffic, and its context is stamped onto
       // the forwarded traceparent so the agent handler and session DO parent
       // under it instead of exporting orphaned roots.
-      return traceCloudMcpRequest(forwarded, env, ctx, (tracedRequest) =>
-        Promise.resolve(mcpAgentHandler(tracedRequest, env, ctx)),
+      return traceCloudMcpRequest(forwarded, env, ctx, async (tracedRequest) =>
+        (await getMcpAgentHandler())(tracedRequest, env, ctx),
       );
     }
     const tracingInstalled = installTracerProvider();
@@ -350,12 +501,15 @@ const cloudflareHandler: ExportedHandler<Env> = {
           // Effect graph's first evaluation in this isolate.
           const appPlaneRequest = servedByAppPlane(url.pathname, request.method);
           span.setAttribute("executor.dispatch.plane", appPlaneRequest ? "app" : "start");
+          const appGraphCold = appPlaneRequest && !appGraphEntered;
           if (appPlaneRequest) span.setAttribute("executor.app_graph.entered", appGraphEntered);
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
           try {
             const traced = withTraceparent(request, span.spanContext());
             const response = appPlaneRequest
-              ? await (await getAppPlane()).handler(prepareMcpOrgScope(traced))
+              ? await (
+                  await measuredAppPlane(span, appGraphCold)
+                ).handler(prepareMcpOrgScope(traced))
               : await fetchHandler(traced, env, ctx);
             span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
             return response;
@@ -443,8 +597,12 @@ const cloudflareHandler: ExportedHandler<Env> = {
   // here as on the fetch path — a scheduled invocation may be the isolate's
   // first — and flushed past the pass so the run's spans export before the
   // isolate goes idle.
+  // The runner is imported here rather than at module scope: it drags the
+  // WorkOS node SDK, postgres, drizzle and the DB schema (~412 KB) into the
+  // startup closure of every cold isolate, and only the cron path ever calls it.
   scheduled: async (_controller, _env, ctx) => {
     installTracerProvider();
+    const { runWorkOsEventsSync } = await import("./auth/workos-events-runner");
     await runWorkOsEventsSync();
     ctx.waitUntil(flushTracerProvider());
   },
