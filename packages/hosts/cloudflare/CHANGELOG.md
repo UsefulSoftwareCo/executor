@@ -1,5 +1,19 @@
 # @executor-js/cloudflare
 
+## 0.0.51
+
+### Patch Changes
+
+- [#1976](https://github.com/UsefulSoftwareCo/executor/pull/1976) [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc) Thanks [@SunkenInTime](https://github.com/SunkenInTime)! - Carry an approval's persistence choice through elicitation, so Codex Computer Use stops asking to use the same app on every call.
+
+  Computer Use offers `persist: ["session", "always"]` in the prompt's terms and remembers the app only when the answer names one. Executor dropped the offer on the way in (the terms projection kept strings only) and the choice on the way out (every adapter rebuilt the reply from `action` and `content`), so each accept was one-time. `ElicitationResponse` now has `meta.persist`; the MCP plugin, the app-server bridge, and the MCP host pass it through; the model-mode `resume` tool and the browser approval page let the approver pick from the offered scopes. Nothing is chosen automatically: a bare accept still approves once.
+
+- Updated dependencies [[`d873caf`](https://github.com/UsefulSoftwareCo/executor/commit/d873caf6fb3aa7408270b42aaad77f53cf9ec090), [`89b0f8d`](https://github.com/UsefulSoftwareCo/executor/commit/89b0f8d74cfb7d6a839bf08a267d892fb0cc676e), [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979), [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`f8cfa5f`](https://github.com/UsefulSoftwareCo/executor/commit/f8cfa5f5f475c6b9c14143663ed5861bec8f74af), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/api@1.4.72
+  - @executor-js/execution@1.6.9
+  - @executor-js/sdk@1.6.9
+  - @executor-js/host-mcp@1.4.4
+
 ## 0.0.50
 
 ### Patch Changes

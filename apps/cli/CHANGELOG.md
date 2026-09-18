@@ -1,5 +1,53 @@
 # executor
 
+## 1.6.9
+
+### Patch Changes
+
+- [#1901](https://github.com/UsefulSoftwareCo/executor/pull/1901) [`de13821`](https://github.com/UsefulSoftwareCo/executor/commit/de13821e4efd3f571ae7f41d46f74d761fae8988) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Prevent deleted artifacts from briefly reappearing after returning to the artifact gallery.
+
+- [#1915](https://github.com/UsefulSoftwareCo/executor/pull/1915) [`5c1d1b4`](https://github.com/UsefulSoftwareCo/executor/commit/5c1d1b4f71be30b5d78d98de10111841d7da4a81) Thanks [@baggiiiie](https://github.com/baggiiiie)! - **Fix: links in generated artifacts (`<a target="_blank">`) did nothing when clicked.** The sandbox iframe deliberately has no `allow-popups`, so the browser blocked the new browsing context and the click went nowhere. A trusted user click is now relayed across the frame boundary to the host's `openLink` capability — guarded by a per-render nonce so generated code cannot forge or observe it — and the host opens only `http`/`https` URLs.
+
+- [#1884](https://github.com/UsefulSoftwareCo/executor/pull/1884) [`3eea03b`](https://github.com/UsefulSoftwareCo/executor/commit/3eea03b580c48ea3d01dd916acea71c0cd45a7cc) Thanks [@GijungKim](https://github.com/GijungKim)! - Render artifacts that call integrations or tools with hyphenated slugs.
+
+- [#1943](https://github.com/UsefulSoftwareCo/executor/pull/1943) [`b5d53cb`](https://github.com/UsefulSoftwareCo/executor/commit/b5d53cbebb6cee98172650c17df81614c6271387) Thanks [@baggiiiie](https://github.com/baggiiiie)! - **Fix: `show-artifact` now returns the saved component source to MCP clients that cannot render Apps.** Agents can read the current source and make targeted edits instead of receiving only a link to the artifact.
+
+- [#1967](https://github.com/UsefulSoftwareCo/executor/pull/1967) [`bfc46e5`](https://github.com/UsefulSoftwareCo/executor/commit/bfc46e5620905a25d5dda6f07d829b5a8cabf309) Thanks [@utpalsinghdev](https://github.com/utpalsinghdev)! - Pin CLI browser approval links to `EXECUTOR_WEB_BASE_URL` so a TLS reverse proxy no longer returns an unreachable `http://` URL.
+
+- [#1976](https://github.com/UsefulSoftwareCo/executor/pull/1976) [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc) Thanks [@SunkenInTime](https://github.com/SunkenInTime)! - Carry an approval's persistence choice through elicitation, so Codex Computer Use stops asking to use the same app on every call.
+
+  Computer Use offers `persist: ["session", "always"]` in the prompt's terms and remembers the app only when the answer names one. Executor dropped the offer on the way in (the terms projection kept strings only) and the choice on the way out (every adapter rebuilt the reply from `action` and `content`), so each accept was one-time. `ElicitationResponse` now has `meta.persist`; the MCP plugin, the app-server bridge, and the MCP host pass it through; the model-mode `resume` tool and the browser approval page let the approver pick from the offered scopes. Nothing is chosen automatically: a bare accept still approves once.
+
+- [#1977](https://github.com/UsefulSoftwareCo/executor/pull/1977) [`6870f38`](https://github.com/UsefulSoftwareCo/executor/commit/6870f38438e0729aaf6594f66afa828d118fb13c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Compile `describe.tool` previews against only the definitions a tool references, drop the compiler's per-call retained graph, and fall back to `unknown` for schemas over a node limit. Describing a tool from a large OpenAPI spec no longer burns seconds of CPU or leaks memory in the shared session isolate.
+
+- [#1980](https://github.com/UsefulSoftwareCo/executor/pull/1980) [`b961092`](https://github.com/UsefulSoftwareCo/executor/commit/b961092443435e9cc0796626436f2cc2a8001b3b) Thanks [@daviesayo](https://github.com/daviesayo)! - Return a tool's declared annotations from `tools.schema` and `describe.tool`. Code inside `execute` can now read `requiresApproval`, `approvalDescription` and `mayElicit` without parsing the tool's prose description.
+
+- [#1978](https://github.com/UsefulSoftwareCo/executor/pull/1978) [`f1d95f2`](https://github.com/UsefulSoftwareCo/executor/commit/f1d95f2b657316180992d5a67c24b7b76dc2b0f1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Report an MCP `execute` call that dies with a session reset as a JSON-RPC error instead of a silently closed stream. The front worker answers outstanding request ids when the session socket closes abnormally or a response deadline passes, and a rebuilt session answers ids stranded by a previous incarnation on the next stream. The plain memory-limit reset is now classified as transient.
+
+- [#2016](https://github.com/UsefulSoftwareCo/executor/pull/2016) [`84620aa`](https://github.com/UsefulSoftwareCo/executor/commit/84620aa96ae2b855bbba97d3b4121a1a41f6f4e1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: an MCP server refusing a tool call with a 4xx HTTP response (for example Stripe's `422` when `stripe_context` is missing) surfaced as `Internal tool error [id]`.** When the body is a JSON object naming the problem, the call now returns a typed `mcp_tool_error` failure with the server's message and status, so the model can fix the arguments instead of reading an outage.
+
+- [#2014](https://github.com/UsefulSoftwareCo/executor/pull/2014) [`f94e5e0`](https://github.com/UsefulSoftwareCo/executor/commit/f94e5e0320c2a472367d4506663d779348877f6c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Name the MCP SDK rejection (error class and code) in the `Internal tool error` defect log, so an opaque MCP failure can be diagnosed from the trace instead of only naming the tool that failed.
+
+- [#2012](https://github.com/UsefulSoftwareCo/executor/pull/2012) [`5b5db98`](https://github.com/UsefulSoftwareCo/executor/commit/5b5db98b1a2751be424e82ba9b8753fa8f855097) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: an MCP server refusing a tool call with a JSON-RPC error (for example `-32602 Invalid params`) surfaced as `Internal tool error [id]`.** The server's answer is for the caller, so it now comes back as a typed `mcp_tool_error` failure carrying the server's message and JSON-RPC code, and the model can correct the arguments instead of reading an outage.
+
+- [#1942](https://github.com/UsefulSoftwareCo/executor/pull/1942) [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add a search and invoke MCP mode (`?mode=passthrough`, `executor mcp --mode passthrough`). Search returns bounded pages of matching tool IDs and input schemas. Invoke validates arguments and runs the selected tool, with native client approval and workspace blocks enforced. The MCP catalog stays at two tools regardless of integration count.
+
+- [#1971](https://github.com/UsefulSoftwareCo/executor/pull/1971) [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979) Thanks [@Adityakk9031](https://github.com/Adityakk9031)! - Shut down scoped executors and tool subprocess resources upon MCP session eviction and disposal in the in-process session store.
+
+- [#1960](https://github.com/UsefulSoftwareCo/executor/pull/1960) [`d64639b`](https://github.com/UsefulSoftwareCo/executor/commit/d64639b1a50d2d292235aff8f727ca11fe9e43a6) Thanks [@baggiiiie](https://github.com/baggiiiie)! - OpenAPI tools that cannot reach the upstream server now return an `upstream_unreachable` error instead of `Internal tool error [id]`. The message names the integration and origin that could not be reached, `details` carries the sanitized `host` and errno-style `code` (`ECONNREFUSED`, `ENOTFOUND`, …), and the failure is logged with the same classification.
+
+- [#1963](https://github.com/UsefulSoftwareCo/executor/pull/1963) [`eaa1f3a`](https://github.com/UsefulSoftwareCo/executor/commit/eaa1f3a57ffff88aede8e83783ea7ed4471aec1f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Bundle the Geist and Geist Mono fonts with the console instead of loading them from Google Fonts. The UI no longer stays blank when a self-hosted deployment cannot reach fonts.googleapis.com.
+
+- [#1987](https://github.com/UsefulSoftwareCo/executor/pull/1987) [`347537c`](https://github.com/UsefulSoftwareCo/executor/commit/347537cdd65b2adec0b38b0b98ef764a7c98d279) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Hide the self-hosted Admin area from non-admin members and refuse direct access before member details or invite controls are rendered.
+
+- [#1897](https://github.com/UsefulSoftwareCo/executor/pull/1897) [`f1930dd`](https://github.com/UsefulSoftwareCo/executor/commit/f1930ddbe4fd18d75ce4f67b56200037ec4d6f65) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Prevent the empty Toolkits page from scrolling past its visible add cards.
+
+- Updated dependencies [[`d873caf`](https://github.com/UsefulSoftwareCo/executor/commit/d873caf6fb3aa7408270b42aaad77f53cf9ec090), [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979), [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`f8cfa5f`](https://github.com/UsefulSoftwareCo/executor/commit/f8cfa5f5f475c6b9c14143663ed5861bec8f74af), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/api@1.4.72
+  - @executor-js/sdk@1.6.9
+  - @executor-js/local@1.6.9
+  - @executor-js/runtime-quickjs@1.6.9
+
 ## 1.6.8
 
 ### Patch Changes

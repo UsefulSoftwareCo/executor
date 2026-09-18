@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/api",
-  "version": "1.4.71",
+  "version": "1.4.72",
   "private": true,
   "type": "module",
   "exports": {

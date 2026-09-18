@@ -1,5 +1,43 @@
 # @executor-js/api
 
+## 1.4.72
+
+### Patch Changes
+
+- [#1974](https://github.com/UsefulSoftwareCo/executor/pull/1974) [`d873caf`](https://github.com/UsefulSoftwareCo/executor/commit/d873caf6fb3aa7408270b42aaad77f53cf9ec090) Thanks [@baggiiiie](https://github.com/baggiiiie)! - Advertise refresh-token support in OAuth client ID metadata documents.
+
+  OAuth providers may reject the `offline_access` scope when the client's
+  metadata declares only the authorization-code grant. Hosted and local client
+  metadata now declare both `authorization_code` and `refresh_token`, matching
+  Executor's dynamic client registration behavior.
+
+- [#1976](https://github.com/UsefulSoftwareCo/executor/pull/1976) [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc) Thanks [@SunkenInTime](https://github.com/SunkenInTime)! - Carry an approval's persistence choice through elicitation, so Codex Computer Use stops asking to use the same app on every call.
+
+  Computer Use offers `persist: ["session", "always"]` in the prompt's terms and remembers the app only when the answer names one. Executor dropped the offer on the way in (the terms projection kept strings only) and the choice on the way out (every adapter rebuilt the reply from `action` and `content`), so each accept was one-time. `ElicitationResponse` now has `meta.persist`; the MCP plugin, the app-server bridge, and the MCP host pass it through; the model-mode `resume` tool and the browser approval page let the approver pick from the offered scopes. Nothing is chosen automatically: a bare accept still approves once.
+
+- [#1971](https://github.com/UsefulSoftwareCo/executor/pull/1971) [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979) Thanks [@Adityakk9031](https://github.com/Adityakk9031)! - Shut down scoped executors and tool subprocess resources upon MCP session eviction and disposal in the in-process session store.
+
+- [#2026](https://github.com/UsefulSoftwareCo/executor/pull/2026) [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Cloud now authorizes every protected request against the local membership mirror through the shared `MemberDirectory` seam: the per-request org membership check, the admin gates on the account and admin planes, the org switcher's organization list, and the free-organization limit all read the mirror instead of calling WorkOS. WorkOS is now a write target and an event source only. The seam gains `membershipsOf(accountId)` and `membershipById(organizationId, membershipId)` on both hosts.
+
+  The mirror is trusted only while it is **ready**: the backfill has written every organization and the Events reconciler has drained the stream within the last ten minutes (both recorded on the `workos_sync` row). Until then the membership check falls back to WorkOS, exactly as before, so a member the backfill has not written yet is not locked out and a member revoked while the reconciler was down is not let in. The deploy runs `scripts/ensure-workos-mirror-ready.ts` after the migrations: it runs the backfill if needed, drains the events stream itself if the reconciler has not recently (so the gate never waits on a cron this same deploy ships), and fails the deploy if the mirror is still not ready. An organization the mirror does not hold at all (one that predates the mirror and nobody has signed in to since) is resolved from WorkOS on demand for a caller WorkOS confirms as its member, so CLI and MCP tokens naming such an organization are not refused. Deleting an organization now cancels billing before deleting the WorkOS organization, and a retry after a partial deletion is admitted from the mirror even while the mirror is not ready.
+
+  **Ops step (cloud):** add the `WORKOS_API_KEY` secret to the `production` GitHub environment so the deploy gate can run the backfill.
+
+- [#2025](https://github.com/UsefulSoftwareCo/executor/pull/2025) [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Member lists, the admin users page, and seat counts on cloud now read from the local membership mirror through the shared `MemberDirectory` seam instead of fanning out one WorkOS read per member. The admin users page gains an email/name search.
+
+  **Deploy prerequisite (cloud):** `bun run --cwd apps/cloud db:backfill-workos-mirror:prod` must complete before this build is deployed, and its printed membership count should match WorkOS. Until the backfill has stamped the mirror's marker, seat reporting to Autumn is skipped with a warning (never a partial count) and member lists show only members who have signed in since the mirror shipped.
+
+- [#2028](https://github.com/UsefulSoftwareCo/executor/pull/2028) [`f8cfa5f`](https://github.com/UsefulSoftwareCo/executor/commit/f8cfa5f5f475c6b9c14143663ed5861bec8f74af) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Keep request resources alive until background OAuth tool discovery finishes, so slow cloud connections can publish their tools after the callback returns.
+
+- [#2000](https://github.com/UsefulSoftwareCo/executor/pull/2000) [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Redact redirect, referrer, trace-state, and MCP session headers from outbound HTTP traces.
+
+  Allow hosts to require HTTPS for outbound requests and reject redirects to plaintext endpoints. Executor Cloud enables this policy. Explicit private-network development access remains available.
+
+- Updated dependencies [[`89b0f8d`](https://github.com/UsefulSoftwareCo/executor/commit/89b0f8d74cfb7d6a839bf08a267d892fb0cc676e), [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/execution@1.6.9
+  - @executor-js/sdk@1.6.9
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.71
 
 ### Patch Changes

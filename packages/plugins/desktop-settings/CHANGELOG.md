@@ -1,5 +1,12 @@
 # @executor-js/plugin-desktop-settings
 
+## 1.6.9
+
+### Patch Changes
+
+- Updated dependencies [[`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/sdk@1.6.9
+
 ## 1.6.8
 
 ### Patch Changes

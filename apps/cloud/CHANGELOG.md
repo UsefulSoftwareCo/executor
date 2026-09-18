@@ -1,5 +1,58 @@
 # @executor-js/cloud
 
+## 1.4.70
+
+### Patch Changes
+
+- [#2026](https://github.com/UsefulSoftwareCo/executor/pull/2026) [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Cloud now authorizes every protected request against the local membership mirror through the shared `MemberDirectory` seam: the per-request org membership check, the admin gates on the account and admin planes, the org switcher's organization list, and the free-organization limit all read the mirror instead of calling WorkOS. WorkOS is now a write target and an event source only. The seam gains `membershipsOf(accountId)` and `membershipById(organizationId, membershipId)` on both hosts.
+
+  The mirror is trusted only while it is **ready**: the backfill has written every organization and the Events reconciler has drained the stream within the last ten minutes (both recorded on the `workos_sync` row). Until then the membership check falls back to WorkOS, exactly as before, so a member the backfill has not written yet is not locked out and a member revoked while the reconciler was down is not let in. The deploy runs `scripts/ensure-workos-mirror-ready.ts` after the migrations: it runs the backfill if needed, drains the events stream itself if the reconciler has not recently (so the gate never waits on a cron this same deploy ships), and fails the deploy if the mirror is still not ready. An organization the mirror does not hold at all (one that predates the mirror and nobody has signed in to since) is resolved from WorkOS on demand for a caller WorkOS confirms as its member, so CLI and MCP tokens naming such an organization are not refused. Deleting an organization now cancels billing before deleting the WorkOS organization, and a retry after a partial deletion is admitted from the mirror even while the mirror is not ready.
+
+  **Ops step (cloud):** add the `WORKOS_API_KEY` secret to the `production` GitHub environment so the deploy gate can run the backfill.
+
+- [#2025](https://github.com/UsefulSoftwareCo/executor/pull/2025) [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Member lists, the admin users page, and seat counts on cloud now read from the local membership mirror through the shared `MemberDirectory` seam instead of fanning out one WorkOS read per member. The admin users page gains an email/name search.
+
+  **Deploy prerequisite (cloud):** `bun run --cwd apps/cloud db:backfill-workos-mirror:prod` must complete before this build is deployed, and its printed membership count should match WorkOS. Until the backfill has stamped the mirror's marker, seat reporting to Autumn is skipped with a warning (never a partial count) and member lists show only members who have signed in since the mirror shipped.
+
+- [#2024](https://github.com/UsefulSoftwareCo/executor/pull/2024) [`a97a20c`](https://github.com/UsefulSoftwareCo/executor/commit/a97a20cc848b69dc13759824c6229dcc4766fbf3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - The cloud membership mirror is now reconciled from the WorkOS Events API: an every-minute cron replays user, organization-membership, and organization events from a persisted cursor, so changes made in the WorkOS dashboard (a removed member, a role edit, a profile update) reach the mirror without anyone signing in. A signed webhook at `/api/webhooks/workos` pokes the same reconciler so those changes land in seconds, and `bun run --cwd apps/cloud db:drain-workos-events:prod` runs the same replay out-of-band until the stream is drained.
+
+  **Ops steps (cloud):** set the webhook signing secret with `wrangler secret put WORKOS_WEBHOOK_SECRET`, then register `https://executor.sh/api/webhooks/workos` as a webhook endpoint in the WorkOS dashboard for the `user.*`, `organization_membership.*`, `organization.updated`, and `organization.deleted` events. Until the secret is set the route answers 503 and the cron alone keeps the mirror current.
+
+- [#2031](https://github.com/UsefulSoftwareCo/executor/pull/2031) [`a72e51d`](https://github.com/UsefulSoftwareCo/executor/commit/a72e51d138da2e274d397b7f3ed63840c8efb90c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - `authorizeOrganization` now reads the local membership mirror unconditionally: the per-request readiness check (`MirrorReadiness`) and its live WorkOS `listUserMemberships` fallback are gone from the request path entirely. The backfill is complete and permanent, and an organization that predates the mirror is still covered by the existing on-demand scan (`ensureOrganizationBackfilled`). A stalled reconciler is now an operational alert instead of a per-request fallback: after each run, the cron checks the mirror's `drained_at` heartbeat and, if it has fallen behind the lag budget, logs a structured error and reports it to Sentry. The deploy gate (`scripts/ensure-workos-mirror-ready.ts`) is unchanged — it still refuses to ship while the mirror is unready — and `drained_at` keeps being written by every reconciler run.
+
+- [#2023](https://github.com/UsefulSoftwareCo/executor/pull/2023) [`9c42444`](https://github.com/UsefulSoftwareCo/executor/commit/9c4244443466fed9365713caf9372b3404df7c6a) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Restart hosted invitation logins that return without state, while keeping authorization codes bound to the browser that started the login.
+
+- [#1886](https://github.com/UsefulSoftwareCo/executor/pull/1886) [`5ecb881`](https://github.com/UsefulSoftwareCo/executor/commit/5ecb8812287c96b8ea4c3bf33f3c1ee34badb1df) Thanks [@ra-co88](https://github.com/ra-co88)! - fix: make login CSRF state mandatory in the WorkOS callback
+
+  The callback previously skipped its CSRF check whenever the redirect carried
+  no `state` value ("some WorkOS-initiated redirects don't include one"). That
+  bypass let an attacker complete their own OAuth round-trip and redirect a
+  victim's browser through the callback with the attacker's `code` and no
+  `state`, silently signing the victim into the attacker's account (login CSRF).
+
+  The check is now unconditional: a callback without a state matching the
+  `wos-login-state` cookie set on `/login` is rejected with 400. This is a
+  breaking change for any client relying on the undocumented no-state entry
+  path; server-initiated flows that cannot carry state must be redesigned with
+  a signed nonce instead of re-adding the bypass.
+
+- Updated dependencies [[`d873caf`](https://github.com/UsefulSoftwareCo/executor/commit/d873caf6fb3aa7408270b42aaad77f53cf9ec090), [`89b0f8d`](https://github.com/UsefulSoftwareCo/executor/commit/89b0f8d74cfb7d6a839bf08a267d892fb0cc676e), [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`55a8b5e`](https://github.com/UsefulSoftwareCo/executor/commit/55a8b5eaea88c20fa5c5f1852262db613b8ddb9f), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`0e9d800`](https://github.com/UsefulSoftwareCo/executor/commit/0e9d8004e2f1b35ce948b382bb97c58ebf177911), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979), [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`f8cfa5f`](https://github.com/UsefulSoftwareCo/executor/commit/f8cfa5f5f475c6b9c14143663ed5861bec8f74af), [`d64639b`](https://github.com/UsefulSoftwareCo/executor/commit/d64639b1a50d2d292235aff8f727ca11fe9e43a6), [`e9055c1`](https://github.com/UsefulSoftwareCo/executor/commit/e9055c13bf73bc1860c8eded542fe566b51c3784), [`1f67d83`](https://github.com/UsefulSoftwareCo/executor/commit/1f67d83609b13a73d3dc8d630f48c8f54a02e6ca), [`905e097`](https://github.com/UsefulSoftwareCo/executor/commit/905e0972614aed5a3bb279b51dc060f87f892d75), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/api@1.4.72
+  - @executor-js/execution@1.6.9
+  - @executor-js/sdk@1.6.9
+  - @executor-js/plugin-mcp@1.6.9
+  - @executor-js/react@1.4.72
+  - @executor-js/cloudflare@0.0.51
+  - @executor-js/plugin-openapi@1.6.9
+  - @executor-js/plugin-graphql@1.6.9
+  - @executor-js/plugin-toolkits@1.5.44
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.20
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/vite-plugin@0.0.69
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/runtime-quickjs@1.6.9
+
 ## 1.4.69
 
 ### Patch Changes
