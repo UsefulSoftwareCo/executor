@@ -14,6 +14,7 @@ import { LibsqlDialect, type LibsqlDialectConfig } from "@libsql/kysely-libsql";
 import { Context } from "effect";
 
 import { loadConfig } from "../config";
+import { clientIpAddressOptions } from "./client-ip";
 import { seedOrgAndAdmin } from "./seed";
 import { consumeInviteCode, ensureInviteCodeTable, findRedeemableCode } from "./invites";
 import { isAdmitted, isOAuthCallback, ssoProviderConfig } from "./sso";
@@ -129,7 +130,17 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
     // pinned to config.webBaseUrl.
     baseURL: config.webBaseUrl,
     trustedOrigins: [...config.trustedOrigins],
-    advanced: { useSecureCookies: !hasInsecureTrustedOrigin },
+    advanced: {
+      useSecureCookies: !hasInsecureTrustedOrigin,
+      // Where the rate limiter (and the session's recorded address) reads the
+      // client IP. Better Auth only ever looks at headers, so app.ts stamps the
+      // socket peer onto CLIENT_IP_HEADER before the request gets here (see
+      // ./client-ip); a configured reverse proxy's header is consulted first.
+      // `trustedProxies` lets Better Auth strip known hops from a forwarded
+      // chain; the stamper has already dropped the proxy header on any
+      // connection that did not come from one of those addresses.
+      ipAddress: clientIpAddressOptions(config.trustedProxy),
+    },
     // Better Auth's own limiter is on in production and off in development.
     // Only an explicit opt-out is passed through, so that environment default
     // stays in charge everywhere else.

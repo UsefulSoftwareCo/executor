@@ -9,6 +9,8 @@ import {
   shouldWarnMissingPublicOrigin,
 } from "@executor-js/sdk/public-origin";
 
+import { CLIENT_IP_HEADER, parseIpRange } from "./auth/client-ip";
+
 // ---------------------------------------------------------------------------
 // Self-host server config — a single typed surface parsed from the
 // environment. Slice 1 keeps this a plain loader with safe defaults; it can
@@ -38,6 +40,20 @@ export interface SsoConfig {
   readonly allowedDomains: readonly string[];
 }
 
+/**
+ * The reverse proxy in front of the self-host, when there is one: the header
+ * it sets to the real client IP and the addresses it connects from. Better
+ * Auth's rate limiter keys on that IP; without this it keys on the socket peer,
+ * which behind a proxy is the proxy itself (one shared bucket for everyone).
+ * Present only when the operator configured both variables together.
+ */
+export interface TrustedProxyConfig {
+  /** Lowercased header name, e.g. `cf-connecting-ip` or `x-real-ip`. */
+  readonly header: string;
+  /** IP addresses or CIDR ranges the proxy connects from. */
+  readonly proxies: readonly string[];
+}
+
 export interface SelfHostConfig {
   /** Bind address. Defaults to loopback. */
   readonly host: string;
@@ -57,12 +73,14 @@ export interface SelfHostConfig {
   /**
    * Whether Better Auth rate-limits its own endpoints (sign-in and friends).
    * Better Auth turns this on in production and keys the limit on the client
-   * IP it reads from a trusted proxy header. With no such header every caller
-   * shares one bucket, so an operator who rate-limits upstream, or an
-   * automated suite that signs in far faster than a person, turns it off with
-   * `EXECUTOR_DISABLE_AUTH_RATE_LIMIT=true`.
+   * IP: the socket peer the server stamps on every request, or the header a
+   * configured trusted proxy sets (see `trustedProxy`). An operator who
+   * rate-limits upstream, or an automated suite that signs in far faster than
+   * a person, turns it off with `EXECUTOR_DISABLE_AUTH_RATE_LIMIT=true`.
    */
   readonly authRateLimit: boolean;
+  /** Reverse proxy that asserts the client IP, or undefined when exposed directly. */
+  readonly trustedProxy: TrustedProxyConfig | undefined;
   // Better Auth session secret. Always resolved (env, else generated + persisted
   // under the data dir) so a single-container deploy boots with no env; the auth
   // layer still validates an explicitly-set env secret is long enough.
@@ -197,6 +215,7 @@ export const loadConfig = (): SelfHostConfig => {
     trustedOrigins: resolveTrustedOrigins(webBaseUrl),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
     authRateLimit: process.env.EXECUTOR_DISABLE_AUTH_RATE_LIMIT !== "true",
+    trustedProxy: resolveTrustedProxy(),
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
@@ -264,6 +283,50 @@ const resolveSso = (): SsoConfig | undefined => {
     process.env.EXECUTOR_SSO_PROVIDER_NAME?.trim() ||
     providerId.charAt(0).toUpperCase() + providerId.slice(1);
   return { providerId, providerName, discoveryUrl, clientId, clientSecret, allowedDomains };
+};
+
+// EXECUTOR_TRUSTED_PROXY_HEADER + EXECUTOR_TRUSTED_PROXIES — the reverse proxy
+// that asserts the real client IP. The two are refused unless set together
+// (same posture as resolveSso): a header with no proxy addresses would be
+// honoured from anyone who can reach the container, and addresses with no
+// header name nothing. Each address must be an IP or CIDR range — Better Auth
+// would only log and skip a malformed entry, which quietly turns "trust the
+// proxy" into "trust nobody" and pools every user into one bucket again.
+const HEADER_NAME_PATTERN = /^[a-z0-9_-]+$/;
+
+const resolveTrustedProxy = (): TrustedProxyConfig | undefined => {
+  const header = process.env.EXECUTOR_TRUSTED_PROXY_HEADER?.trim().toLowerCase() ?? "";
+  const proxies = (process.env.EXECUTOR_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (!header && proxies.length === 0) return undefined;
+  if (!header || proxies.length === 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a half-configured trusted proxy
+    throw new Error(
+      "EXECUTOR_TRUSTED_PROXY_HEADER and EXECUTOR_TRUSTED_PROXIES must be set together (the header the proxy sets to the client IP, and the addresses the proxy connects from)",
+    );
+  }
+  if (!HEADER_NAME_PATTERN.test(header)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_TRUSTED_PROXY_HEADER ${JSON.stringify(header)} is not an HTTP header name (e.g. "cf-connecting-ip" or "x-real-ip")`,
+    );
+  }
+  if (header === CLIENT_IP_HEADER) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the stamped header is overwritten on every request, so naming it here can never read a proxy value
+    throw new Error(
+      `EXECUTOR_TRUSTED_PROXY_HEADER must not be ${JSON.stringify(CLIENT_IP_HEADER)}: the server overwrites that header with the socket address on every request`,
+    );
+  }
+  const invalid = proxies.filter((entry) => parseIpRange(entry) === undefined);
+  if (invalid.length > 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_TRUSTED_PROXIES contains ${invalid.map((entry) => JSON.stringify(entry)).join(", ")}; each entry must be an IP address or CIDR range (e.g. "172.18.0.2" or "172.18.0.0/24")`,
+    );
+  }
+  return { header, proxies };
 };
 
 // A malformed value is refused rather than silently ignored: an operator who

@@ -1,5 +1,5 @@
 import { HttpApiSwagger } from "effect/unstable/httpapi";
-import { HttpEffect, HttpRouter } from "effect/unstable/http";
+import { HttpEffect, HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 
 import {
@@ -12,6 +12,7 @@ import {
 import { runSqliteDataMigrations } from "@executor-js/sdk";
 
 import { resolveAuthProviders } from "./auth";
+import { makeClientIpStamper } from "./auth/client-ip";
 import { selfHostDataMigrations } from "./db/data-migrations";
 import { makeSelfHostAdminApiLayer } from "./admin/handlers";
 import { makeSelfHostAdminUsersApiLayer } from "./admin/admin-users-api";
@@ -76,6 +77,20 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   const { identityLayer, memberDirectoryLayer, authHandler, betterAuth } =
     await resolveAuthProviders(dbHandle);
 
+  // Better Auth keys its rate limiter on a header, never on the socket. Stamp
+  // the TCP peer address onto the web request right before Better Auth reads
+  // it (this is the one place that has both the Effect request, which knows
+  // the peer, and the web handler). Done here rather than in serve.ts's
+  // middleware because `fromWebHandler` hands Better Auth the original Bun
+  // `Request`, so Effect-level header rewrites never reach it.
+  const stampClientIp = makeClientIpStamper(config.trustedProxy);
+  const authRoute = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    return yield* HttpEffect.fromWebHandler((web) =>
+      authHandler(stampClientIp(web, request.remoteAddress)),
+    );
+  });
+
   // ---- the in-process MCP serving seams (+ shutdown hook) ----------------
   const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config);
 
@@ -121,7 +136,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // (web/chromeless/device-page.tsx).
         HttpRouter.add("GET", "/api/auth/cli-login", cliLoginHandler),
         // Better Auth owns the rest of /api/auth/*, the full path reaches it.
-        HttpRouter.add("*", "/api/auth/*", HttpEffect.fromWebHandler(authHandler)),
+        HttpRouter.add("*", "/api/auth/*", authRoute),
         // Browser approval of paused MCP executions: the console resume page
         // reads paused detail (GET) and records the decision (POST .../resume),
         // session-cookie-gated, delegating to the in-process MCP store.
