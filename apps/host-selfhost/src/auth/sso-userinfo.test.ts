@@ -169,21 +169,17 @@ test("maps name and picture from a complete ID token", async () => {
   expect(requests).toEqual([]);
 });
 
-test("falls back to UserInfo when the ID token payload is malformed", async () => {
+// A supplied ID token that cannot be read is declined; only an absent one is
+// resolved through UserInfo alone.
+test("declines a supplied ID token whose payload is not JSON", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
-  const requests = await withFetch(
-    [
-      { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } },
-      { ok: true, body: { sub: "alice", email: "alice@example.com", email_verified: true } },
-    ],
-    async () => {
-      await expect(
-        getUserInfo({ idToken: "header.!!not-json!!.signature", accessToken: "access-token" }),
-      ).resolves.toMatchObject({ id: "alice", emailVerified: true });
-    },
-  );
+  const requests = await withFetch([], async () => {
+    await expect(
+      getUserInfo({ idToken: "header.!!not-json!!.signature", accessToken: "access-token" }),
+    ).resolves.toBeNull();
+  });
 
-  expect(requests).toHaveLength(2);
+  expect(requests).toEqual([]);
 });
 
 test("returns null for a thin ID token with no access token to spend", async () => {
@@ -237,37 +233,39 @@ test("returns null when UserInfo fails or omits sub or email", async () => {
 });
 
 // Network and decoding failures at either external boundary must decline the
-// profile like a non-OK response, rather than reject the OAuth callback.
+// profile like a non-OK response, rather than reject the OAuth callback. Each
+// case gets fresh responses, and the rejections are created only when fetch is
+// called, so no case is satisfied by a body an earlier case already consumed.
 test("returns null when UserInfo fetch or JSON parsing rejects", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
   const tokens = {
     idToken: jwt({ sub: "alice", email: "alice@example.com" }),
     accessToken: "access-token",
   };
-  const discovery = new Response(
-    JSON.stringify({ userinfo_endpoint: "https://idp.example/userinfo" }),
-  );
+  const discovery = () =>
+    new Response(JSON.stringify({ userinfo_endpoint: "https://idp.example/userinfo" }));
   // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test-only mock of a third-party response JSON boundary
-  const invalidJson = { ok: true, json: () => Promise.reject(new Error("invalid JSON")) };
+  const invalidJson = () => ({ ok: true, json: () => Promise.reject(new Error("invalid JSON")) });
   // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test-only mock of an unavailable third-party request boundary
   const offline = () => Promise.reject(new Error("offline"));
 
-  for (const responses of [
-    [offline()],
-    [invalidJson],
-    [discovery, offline()],
-    [discovery, invalidJson],
-  ]) {
+  for (const [responses, calls] of [
+    [[offline], 1],
+    [[invalidJson], 1],
+    [[discovery, offline], 2],
+    [[discovery, invalidJson], 2],
+  ] as const) {
     const fetch = vi.fn();
-    for (const response of responses) fetch.mockImplementationOnce(() => response);
+    for (const response of responses) fetch.mockImplementationOnce(response);
     vi.stubGlobal("fetch", fetch);
     await expect(getUserInfo(tokens)).resolves.toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(calls);
     vi.unstubAllGlobals();
   }
 });
 
-// The claim is only worth resolving because the admission gate reads it: a thin
-// token that used to arrive without `email_verified` was refused at the door.
+// Admission requires a verified email, so a thin ID token is admitted only once
+// UserInfo has supplied the claim, and refused when UserInfo does not.
 test("resolves a thin ID token into an admitted user at the gate", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
   await withFetch(
@@ -327,9 +325,9 @@ test("resolves through UserInfo when the callback carries no ID token at all", a
   expect(requests).toHaveLength(2);
 });
 
-// A JWT with no payload segment at all, as distinct from a payload that is not
-// JSON: both must degrade to the UserInfo lookup rather than throw.
-test("falls back to UserInfo when the ID token has no payload segment", async () => {
+// An empty ID token is an absent one; a token with no payload segment is a
+// supplied token that cannot be read, and is declined without a lookup.
+test("resolves an empty ID token through UserInfo and declines one with no payload", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
   const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
   const profile = {
@@ -337,19 +335,24 @@ test("falls back to UserInfo when the ID token has no payload segment", async ()
     body: { sub: "alice", email: "alice@example.com", email_verified: true },
   };
 
-  for (const idToken of ["", "no-periods-at-all", "header..signature"]) {
-    const requests = await withFetch([discovery, profile], async () => {
-      await expect(getUserInfo({ idToken, accessToken: "access-token" })).resolves.toMatchObject({
-        id: "alice",
-        emailVerified: true,
-      });
+  const resolved = await withFetch([discovery, profile], async () => {
+    await expect(getUserInfo({ idToken: "", accessToken: "access-token" })).resolves.toMatchObject({
+      id: "alice",
+      emailVerified: true,
     });
-    expect(requests).toHaveLength(2);
+  });
+  expect(resolved).toHaveLength(2);
+
+  for (const idToken of ["no-periods-at-all", "header..signature"]) {
+    const requests = await withFetch([], async () => {
+      await expect(getUserInfo({ idToken, accessToken: "access-token" })).resolves.toBeNull();
+    });
+    expect(requests).toEqual([]);
   }
 });
 
-// `sub` alone is not enough to skip UserInfo, and an empty-string email is
-// falsy-but-present — it must not be accepted as the address to admit.
+// An omitted or empty email must trigger UserInfo resolution rather than be
+// returned as an identity.
 test("falls back to UserInfo when the ID token omits or empties email", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
   const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
@@ -361,7 +364,6 @@ test("falls back to UserInfo when the ID token omits or empties email", async ()
   for (const claims of [
     { sub: "alice", email_verified: true },
     { sub: "alice", email: "", email_verified: true },
-    { email: "alice@example.com", email_verified: true },
   ]) {
     const requests = await withFetch([discovery, profile], async () => {
       await expect(
@@ -372,8 +374,93 @@ test("falls back to UserInfo when the ID token omits or empties email", async ()
   }
 });
 
-// A `null` claim is present-but-not-a-positive-assertion. It short-circuits the
-// UserInfo lookup (it is not `undefined`), so the gate is what must refuse it.
+// An ID token identifies a subject or it identifies nothing: without a `sub`
+// there is no identity for UserInfo claims to be matched against.
+test("declines an ID token without a subject", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+
+  for (const claims of [
+    { email: "alice@example.com", email_verified: true },
+    { sub: "", email: "alice@example.com", email_verified: true },
+    { sub: 42, email: "alice@example.com", email_verified: true },
+  ]) {
+    const requests = await withFetch([], async () => {
+      await expect(
+        getUserInfo({ idToken: jwt(claims), accessToken: "access-token" }),
+      ).resolves.toBeNull();
+    });
+    expect(requests).toEqual([]);
+  }
+});
+
+// UserInfo claims describe the ID token's subject or they describe nobody:
+// a profile for a different subject must not be used.
+test("rejects a UserInfo profile whose subject differs from the ID token subject", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+  const requests = await withFetch(
+    [
+      { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } },
+      { ok: true, body: { sub: "bob", email: "bob@example.com", email_verified: true } },
+    ],
+    async () => {
+      await expect(
+        getUserInfo({
+          idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+          accessToken: "access-token",
+        }),
+      ).resolves.toBeNull();
+    },
+  );
+
+  expect(requests).toHaveLength(2);
+});
+
+// `emailVerified` is a boolean whatever the IdP sent: only a literal `true`
+// verifies, and a non-string subject or email is no identity.
+test("treats wrongly typed claims as unverified or absent", async () => {
+  const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
+
+  const stringClaim = await withFetch([], async () => {
+    await expect(
+      getUserInfo({
+        idToken: jwt({ sub: "alice", email: "alice@example.com", email_verified: "true" }),
+        accessToken: "access-token",
+      }),
+    ).resolves.toMatchObject({ id: "alice", emailVerified: false });
+  });
+  expect(stringClaim).toEqual([]);
+
+  const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
+  const tokens = {
+    idToken: jwt({ sub: "alice", email: "alice@example.com" }),
+    accessToken: "access-token",
+  };
+
+  await withFetch(
+    [
+      discovery,
+      { ok: true, body: { sub: "alice", email: "alice@example.com", email_verified: 1 } },
+    ],
+    async () => {
+      await expect(getUserInfo(tokens)).resolves.toMatchObject({
+        id: "alice",
+        emailVerified: false,
+      });
+    },
+  );
+
+  for (const body of [
+    { sub: 42, email: "alice@example.com", email_verified: true },
+    { sub: "alice", email: { address: "alice@example.com" }, email_verified: true },
+  ]) {
+    await withFetch([discovery, { ok: true, body }], async () => {
+      await expect(getUserInfo(tokens)).resolves.toBeNull();
+    });
+  }
+});
+
+// A `null` claim is present but not a positive assertion: it ends the lookup
+// as an unverified email, and the gate refuses it.
 test("never admits a null email_verified from either claim source", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
 
@@ -382,7 +469,7 @@ test("never admits a null email_verified from either claim source", async () => 
       idToken: jwt({ sub: "alice", email: "alice@example.com", email_verified: null }),
       accessToken: "access-token",
     });
-    expect(user).toMatchObject({ id: "alice", emailVerified: null });
+    expect(user).toMatchObject({ id: "alice", emailVerified: false });
     expect(
       isAdmitted(sso, { email: user!.email, emailVerified: user!.emailVerified === true }),
     ).toBe(false);
@@ -407,26 +494,10 @@ test("never admits a null email_verified from either claim source", async () => 
   );
 });
 
-// Both guards on the ID-token shortcut are truthiness checks, so a claim that
-// is present but empty must not be mistaken for a supplied one: `sub: ""` has
-// to reach UserInfo, and an empty access token is no token to spend.
-test("treats empty-string sub and access token as absent, not supplied", async () => {
+// An empty access token is no token to spend: a thin ID token with nothing to
+// present to UserInfo resolves to no profile.
+test("treats an empty access token as absent", async () => {
   const getUserInfo = ssoProviderConfig(sso).getUserInfo!;
-  const discovery = { ok: true, body: { userinfo_endpoint: "https://idp.example/userinfo" } };
-  const profile = {
-    ok: true,
-    body: { sub: "alice", email: "alice@example.com", email_verified: true },
-  };
-
-  const resolved = await withFetch([discovery, profile], async () => {
-    await expect(
-      getUserInfo({
-        idToken: jwt({ sub: "", email: "alice@example.com", email_verified: true }),
-        accessToken: "access-token",
-      }),
-    ).resolves.toMatchObject({ id: "alice", emailVerified: true });
-  });
-  expect(resolved).toHaveLength(2);
 
   const skipped = await withFetch([], async () => {
     await expect(

@@ -10,13 +10,17 @@ type OidcClaims = {
   readonly picture?: string;
 };
 
+// The IdP's JSON is cast, not validated, so a claim is usable only when it is
+// a non-empty string.
+const claimString = (value: string | undefined): string | null =>
+  typeof value === "string" && value.length > 0 ? value : null;
+
 // Decode the claims payload only. The genericOAuth plugin already receives the
 // ID token from its validated OAuth callback; this is not token validation.
-const decodeIdTokenClaims = (idToken: string | undefined): OidcClaims | null => {
-  if (!idToken) return null;
+const decodeIdTokenClaims = (idToken: string): OidcClaims | null => {
   const payload = idToken.split(".")[1];
   if (!payload) return null;
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a malformed third-party JWT payload must become an absent optional claim, not fail the OAuth callback
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a malformed third-party JWT payload must decline the profile, not fail the OAuth callback
   try {
     // oxlint-disable-next-line executor/no-json-parse -- boundary: genericOAuth provides a validated JWT; only its optional claims payload is decoded here
     return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as OidcClaims;
@@ -25,21 +29,27 @@ const decodeIdTokenClaims = (idToken: string | undefined): OidcClaims | null => 
   }
 };
 
-// OIDC permits email claims to be supplied only by the UserInfo endpoint. The
-// genericOAuth default stops at an ID token that has `sub` and `email`, even
-// when it omits `email_verified`; resolve discovery here so those thin tokens
-// can obtain the claim that the SSO admission gate requires.
+// An ID token whose email claims are incomplete is resolved through UserInfo,
+// because admission requires a verified email. A supplied ID token must carry
+// a subject, and UserInfo claims are used only when their subject matches it.
 export const ssoUserInfo = async (discoveryUrl: string, tokens: OAuthTokens) => {
-  const idTokenClaims = decodeIdTokenClaims(tokens.idToken);
-  if (idTokenClaims?.sub && idTokenClaims.email && idTokenClaims.email_verified !== undefined) {
-    return {
-      ...idTokenClaims,
-      id: idTokenClaims.sub,
-      email: idTokenClaims.email,
-      emailVerified: idTokenClaims.email_verified,
-      name: idTokenClaims.name,
-      image: idTokenClaims.picture,
-    };
+  let idSub: string | null = null;
+  if (tokens.idToken) {
+    const claims = decodeIdTokenClaims(tokens.idToken);
+    const sub = claims === null ? null : claimString(claims.sub);
+    if (claims === null || sub === null) return null;
+    idSub = sub;
+    const email = claimString(claims.email);
+    if (email !== null && claims.email_verified !== undefined) {
+      return {
+        ...claims,
+        id: sub,
+        email,
+        emailVerified: claims.email_verified === true,
+        name: claims.name,
+        image: claims.picture,
+      };
+    }
   }
 
   if (!tokens.accessToken) return null;
@@ -55,13 +65,16 @@ export const ssoUserInfo = async (discoveryUrl: string, tokens: OAuthTokens) => 
     });
     if (!profileResponse.ok) return null;
     const profile = (await profileResponse.json()) as OidcClaims;
-    if (!profile.sub || !profile.email) return null;
+    const sub = claimString(profile.sub);
+    const email = claimString(profile.email);
+    if (sub === null || email === null) return null;
+    if (idSub !== null && sub !== idSub) return null;
 
     return {
       ...profile,
-      id: profile.sub,
-      email: profile.email,
-      emailVerified: profile.email_verified ?? false,
+      id: sub,
+      email,
+      emailVerified: profile.email_verified === true,
       name: profile.name,
       image: profile.picture,
     };
