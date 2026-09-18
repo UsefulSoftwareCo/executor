@@ -137,4 +137,36 @@ describe("classifyProbeResponse", () => {
       );
     }
   });
+
+  // A scope shortfall authenticated: the credential works, the grant is
+  // narrower than this operation needs, and the remedy is a NEW CONSENT — which
+  // the connection's `missingOAuthScopes` already offers. Reporting it as
+  // `expired` told the user the connection was dead and sent them through a
+  // reconnect that could not widen the grant.
+  it("classifies an RFC 6750 insufficient_scope challenge as degraded", () => {
+    expect(
+      classifyProbeResponse(403, undefined, {
+        "www-authenticate": 'Bearer error="insufficient_scope", scope="read write"',
+      }),
+    ).toBe("degraded");
+  });
+
+  it("classifies a body-named insufficient_scope as degraded", () => {
+    expect(classifyProbeResponse(403, { error: "insufficient_scope" })).toBe("degraded");
+    expect(
+      classifyProbeResponse(403, {
+        error: { code: 403, details: [{ reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" }] },
+      }),
+    ).toBe("degraded");
+  });
+
+  it("keeps the configuration carve-out ahead of the scope one", () => {
+    expect(
+      classifyProbeResponse(
+        403,
+        { error: { errors: [{ reason: "accessNotConfigured" }], code: 403 } },
+        { "www-authenticate": 'Bearer error="insufficient_scope"' },
+      ),
+    ).toBe("misconfigured");
+  });
 });

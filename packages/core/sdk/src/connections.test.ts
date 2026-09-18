@@ -2575,6 +2575,11 @@ const makeHealthHarness = (options?: {
    *  `counters.probes`, so a Deferred-gated probe lets a test hold every
    *  in-flight health check open and count how many actually started. */
   readonly probe?: Effect.Effect<typeof HealthCheckResult.Type, unknown>;
+  /** Answer `unknown` when core passes no declared spec, the way the protocol
+   *  plugins do: they have no operation to dial, so core falls back to the
+   *  credential-only verdict. Without this the harness plugin answers every
+   *  check, and the fallback is unreachable. */
+  readonly declineWithoutSpec?: boolean;
 }) => {
   const counters = { probes: 0, resolves: 0 };
   const hooks = {
@@ -2660,9 +2665,16 @@ const makeHealthHarness = (options?: {
           ? ToolResult.fail({ code: "upstream_error", message: "boom" })
           : { ran: toolRow.name, value: credential.value },
       ),
-    checkHealth: () =>
+    checkHealth: ({ spec }) =>
       Effect.suspend(() => {
         counters.probes += 1;
+        if (options?.declineWithoutSpec === true && spec === undefined) {
+          return Effect.succeed({
+            status: "unknown" as const,
+            checkedAt: Date.now(),
+            detail: "No health check configured.",
+          });
+        }
         return (
           options?.probe ??
           Effect.succeed({ status: "healthy" as const, checkedAt: Date.now(), detail: "probe ok" })
@@ -3298,12 +3310,15 @@ describe("credential-only health path", () => {
       // parallel suite load the forked checks may not have finished their row
       // loads yet, and the counter reads 0.
       const entered = yield* Deferred.make<void>();
-      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness();
-      // No declared probe spec + an OAuth client on the row routes checkHealth
-      // down the credential-only path: the verdict is "the credential
-      // resolved", produced without invoking the plugin probe. That path runs
-      // behind the same in-flight gate as probing, so concurrent checks must
-      // collapse to ONE resolution.
+      const { executor, counters, stamp, persisted, hooks } = yield* makeHealthHarness({
+        declineWithoutSpec: true,
+      });
+      // No declared probe spec + an OAuth client on the row: the plugin is
+      // asked first, declines for want of an operation to dial, and core falls
+      // back to the credential-only verdict — "the credential resolved",
+      // produced from the SAME resolution the plugin's probe used, so nothing
+      // refreshes twice. That path runs behind the same in-flight gate as
+      // probing, so concurrent checks must collapse to ONE resolution.
       yield* stamp({ oauth_client: "acme", expires_at: null });
       hooks.onResolve = Deferred.succeed(entered, void 0).pipe(
         Effect.andThen(Deferred.await(gate)),
@@ -3329,7 +3344,10 @@ describe("credential-only health path", () => {
       expect(first.status).toBe("healthy");
       expect(second.status).toBe("healthy");
       expect(counters.resolves).toBe(1);
-      expect(counters.probes).toBe(0);
+      // Both checks shared ONE gate entry, so the plugin was asked once and
+      // declined once; the verdict both callers received is the fallback.
+      expect(counters.probes).toBe(1);
+      expect(first.detail).toBe("Credential resolved (no probe configured).");
 
       const row = yield* persisted();
       expect(row?.lastHealth?.status).toBe("healthy");

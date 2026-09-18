@@ -1781,6 +1781,48 @@ describe("refreshAccessToken", () => {
       expect(isPermanentTokenRejection(error)).toBe(false);
     }),
   );
+
+  // A 4xx that describes THIS MINUTE rather than this grant must stay
+  // retryable: the identical request can succeed moments later. 429 is the
+  // authorization server asking us to come back, 408 is its own request
+  // timeout, 425 is a transport-level replay refusal. Reading any of them as
+  // definitive ended connections permanently on one rate-limited minute — and
+  // rate limiting is likelier the more refreshers race for one grant.
+  for (const status of [408, 425, 429] as const) {
+    it.effect(`keeps a ${status} response transient`, () =>
+      withTokenEndpoint(
+        () => HttpServerResponse.text("slow down", { status }),
+        ({ tokenUrl }) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+            );
+            expect(error.status).toBe(status);
+            expect(error.error).toBeUndefined();
+            expect(isPermanentTokenRejection(error)).toBe(false);
+          }),
+      ),
+    );
+  }
+
+  // The definitive 4xx stay definitive: §5.2 mandates 400 for a grant the AS
+  // will not honour, and a token endpoint answering 404 does not start
+  // existing on the next attempt.
+  for (const status of [400, 404] as const) {
+    it.effect(`keeps a text/plain ${status} response definitive`, () =>
+      withTokenEndpoint(
+        () => HttpServerResponse.text("your session has expired", { status }),
+        ({ tokenUrl }) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              refreshAccessToken({ tokenUrl, clientId: "cid", refreshToken: "old" }),
+            );
+            expect(error.status).toBe(status);
+            expect(isPermanentTokenRejection(error)).toBe(true);
+          }),
+      ),
+    );
+  }
 });
 
 describe("shouldRefreshToken", () => {

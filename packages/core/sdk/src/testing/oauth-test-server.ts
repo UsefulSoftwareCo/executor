@@ -512,6 +512,9 @@ const SUPPORTED_SUBJECT_TOKEN_TYPES = new Set([
 const JwksUriMetadata = Schema.Struct({ jwks_uri: Schema.String });
 const decodeJwksUriMetadata = Schema.decodeUnknownOption(JwksUriMetadata);
 
+/** One JSON-RPC frame off the `/mcp` resource endpoint's body. */
+const decodeMcpResourceFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
 /** Resolve a trusted IdP's signing keys the way a Resource Authorization Server
  *  does: read its RFC 8414 metadata, follow `jwks_uri`, fetch the key set. Any
  *  failure yields `None`, which the caller reports as `invalid_grant` — the
@@ -1076,10 +1079,44 @@ export const serveOAuthTestServer = (
               },
             );
           }
+          // A minimal but honest MCP resource server. The old canned reply used
+          // a FIXED json-rpc id and answered notifications too, so a client
+          // that completed the handshake waited forever for its `tools/list`
+          // response: every catalog sync and every liveness probe against this
+          // endpoint timed out at the discovery deadline. Answer the request's
+          // OWN id, answer `tools/list` with an empty catalog, and stay silent
+          // for notifications, which is the protocol.
+          const frame = Option.getOrUndefined(decodeMcpResourceFrame(body));
+          const frameIsRecord = frame !== null && typeof frame === "object";
+          const frameRecord = frameIsRecord ? (frame as Record<string, unknown>) : {};
+          const frameMethod =
+            typeof frameRecord["method"] === "string" ? frameRecord["method"] : "";
+          const hasId = "id" in frameRecord && frameRecord["id"] !== undefined;
+          if (!hasId) {
+            // Accepted with no body: a notification has no reply.
+            return HttpServerResponse.empty({ status: 202 });
+          }
+          const params =
+            frameRecord["params"] !== null && typeof frameRecord["params"] === "object"
+              ? (frameRecord["params"] as Record<string, unknown>)
+              : {};
+          const reply =
+            frameMethod === "tools/list"
+              ? { tools: [] }
+              : frameMethod === "initialize"
+                ? {
+                    protocolVersion:
+                      typeof params["protocolVersion"] === "string"
+                        ? params["protocolVersion"]
+                        : "2025-06-18",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "oauth-test-server", version: "0.0.0" },
+                  }
+                : {};
           return jsonResponse(200, {
             jsonrpc: "2.0",
-            id: 1,
-            result: { protocolVersion: "2025-06-18", capabilities: {} },
+            id: frameRecord["id"],
+            result: reply,
           });
         }
 

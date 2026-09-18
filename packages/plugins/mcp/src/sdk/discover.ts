@@ -5,7 +5,11 @@
 import { Duration, Effect, Option, Predicate, Schema } from "effect";
 
 import { hasNestedOAuthReauthorization, type McpConnection, type McpConnector } from "./connection";
-import { McpToolDiscoveryError } from "./errors";
+import {
+  type McpConnectionError,
+  type McpOAuthReauthorizationRequired,
+  McpToolDiscoveryError,
+} from "./errors";
 import { createMcpConnector, type ConnectorInput } from "./connection";
 import { httpStatusFromCause } from "./http-status";
 import {
@@ -29,7 +33,8 @@ const MAX_LIST_TOOLS_PAGES = 100;
 // (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) at a slightly longer
 // bound since a real handshake + listTools round-trip is heavier than the
 // shape probe's single unauth POST.
-const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
+/** The shared deadline for one discovery: dial plus list. */
+export const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
 
 // Teardown is best-effort and paid for by the request that performed discovery.
 // A remote transport may accept close and then never settle, so use the same
@@ -160,6 +165,70 @@ export const discoverToolsFromInput = (
     }),
   );
 
+/** Turn a connection failure into the discovery failure every caller of this
+ *  module handles. A caller that takes its connection from the invocation pool
+ *  meets the raw connector errors itself (the pool dials, this module only
+ *  lists), so the mapping is shared. Preserves the handshake HTTP status and a
+ *  connect-level timeout, which the liveness health check classifies on. */
+export const connectionFailureToDiscoveryError = (
+  failure: McpConnectionError | McpOAuthReauthorizationRequired,
+): McpToolDiscoveryError => {
+  const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
+    ? failure.httpStatus
+    : undefined;
+  const reauthorizationRequired = Predicate.isTagged(failure, "McpOAuthReauthorizationRequired");
+  const timedOut =
+    Predicate.isTagged(failure, "McpConnectionError") && failure.failureKind === "timeout";
+  return new McpToolDiscoveryError({
+    stage: "connect",
+    message: `Failed connecting to MCP server: ${failure.message}`,
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(reauthorizationRequired ? { reauthorizationRequired: true } : {}),
+    ...(timedOut ? { timedOut } : {}),
+  });
+};
+
+/** Bound a discovery step with the shared deadline and the shared timeout
+ *  error, so every path answers a wedged server identically — and every path is
+ *  bounded: the pool's own dial has no deadline, so a pooled caller must wrap
+ *  the whole lease. On timeout the lease releases and the pool closes the
+ *  connection, so nothing is left behind. */
+export const withDiscoveryTimeout = <A, E>(
+  effect: Effect.Effect<A, E>,
+  timeoutMs: number,
+): Effect.Effect<A, E | McpToolDiscoveryError> =>
+  effect.pipe(
+    Effect.timeoutOrElse({
+      duration: Duration.millis(timeoutMs),
+      orElse: () =>
+        Effect.fail(
+          new McpToolDiscoveryError({
+            stage: "connect",
+            message: `MCP discovery timed out after ${timeoutMs}ms`,
+            timedOut: true,
+          }),
+        ),
+    }),
+  );
+
+/** The listing half of discovery, over a connection the caller owns.
+ *  `discoverTools` dials, lists, and closes; a caller holding a pool lease must
+ *  not close it. Same listing work and deadline, no teardown. */
+export const discoverToolsFromConnection = (
+  connection: McpConnection,
+  timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
+): Effect.Effect<McpToolManifest, McpToolDiscoveryError> =>
+  withDiscoveryTimeout(
+    Effect.gen(function* () {
+      // Decline elicitation explicitly; see the same call in `discoverTools`.
+      connection.client.setRequestHandler("elicitation/create", () =>
+        Promise.resolve({ action: "decline" }),
+      );
+      return yield* listAllTools(connection);
+    }),
+    timeoutMs,
+  );
+
 /**
  * Connect to an MCP server and discover all available tools.
  * Returns the parsed manifest containing server metadata and tool entries.
@@ -184,68 +253,34 @@ export const discoverTools = (
   connector: McpConnector,
   timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
 ): Effect.Effect<McpToolManifest, McpToolDiscoveryError> =>
-  Effect.uninterruptibleMask((restore) =>
-    Effect.gen(function* () {
-      // Acquire connection
-      const connection = yield* restore(
-        connector.pipe(
-          Effect.mapError((failure) => {
-            // Preserve the handshake HTTP status (401/403 = auth wall) and a
-            // connect-level timeout so the liveness health check can classify
-            // structurally — dropping `failureKind: "timeout"` here is what
-            // made a timed-out handshake read as a generic probe failure.
-            const httpStatus = Predicate.isTagged(failure, "McpConnectionError")
-              ? failure.httpStatus
-              : undefined;
-            const reauthorizationRequired = Predicate.isTagged(
-              failure,
-              "McpOAuthReauthorizationRequired",
-            );
-            const timedOut =
-              Predicate.isTagged(failure, "McpConnectionError") &&
-              failure.failureKind === "timeout";
-            return new McpToolDiscoveryError({
-              stage: "connect",
-              message: `Failed connecting to MCP server: ${failure.message}`,
-              ...(httpStatus !== undefined ? { httpStatus } : {}),
-              ...(reauthorizationRequired ? { reauthorizationRequired: true } : {}),
-              ...(timedOut ? { timedOut } : {}),
-            });
-          }),
-        ),
-      );
+  withDiscoveryTimeout(
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        // Acquire connection
+        const connection = yield* restore(
+          connector.pipe(Effect.mapError(connectionFailureToDiscoveryError)),
+        );
 
-      // The connection advertises the elicitation capability (connection.ts),
-      // so a server may elicit mid-listTools — the Codex desktop plugins do
-      // this for first-use approvals. Discovery has no user to route the
-      // request to (unlike the invoke path's bridge in invoke.ts), and a
-      // handler-less request would surface as a method-not-found error on the
-      // server's side of an otherwise healthy sync. Decline explicitly: the
-      // server completes the list with whatever it allows unapproved.
-      connection.client.setRequestHandler("elicitation/create", () =>
-        Promise.resolve({ action: "decline" }),
-      );
+        // The connection advertises the elicitation capability (connection.ts),
+        // so a server may elicit mid-listTools — the Codex desktop plugins do
+        // this for first-use approvals. Discovery has no user to route the
+        // request to (unlike the invoke path's bridge in invoke.ts), and a
+        // handler-less request would surface as a method-not-found error on the
+        // server's side of an otherwise healthy sync. Decline explicitly: the
+        // server completes the list with whatever it allows unapproved.
+        connection.client.setRequestHandler("elicitation/create", () =>
+          Promise.resolve({ action: "decline" }),
+        );
 
-      const manifest = yield* restore(listAllTools(connection)).pipe(
-        Effect.onExit(() => closeConnection(connection)),
-      );
+        const manifest = yield* restore(listAllTools(connection)).pipe(
+          Effect.onExit(() => closeConnection(connection)),
+        );
 
-      return manifest;
-    }),
-  ).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.millis(timeoutMs),
-      orElse: () =>
-        Effect.fail(
-          new McpToolDiscoveryError({
-            stage: "connect",
-            message: `MCP discovery timed out after ${timeoutMs}ms`,
-            timedOut: true,
-          }),
-        ),
-    }),
+        return manifest;
+      }),
+    ),
+    timeoutMs,
   );
-
 const closeConnection = (connection: {
   readonly close: () => Promise<void>;
 }): Effect.Effect<void, never> =>

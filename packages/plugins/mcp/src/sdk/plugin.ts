@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Result, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
@@ -46,7 +46,13 @@ import {
 import type { CodexPluginEntry } from "./codex-plugins";
 import { createMcpConnector, type ConnectorInput, type McpConnector } from "./connection";
 import { createMcpConnectionPool } from "./connection-pool";
-import { discoverToolsFromInput } from "./discover";
+import {
+  connectionFailureToDiscoveryError,
+  DEFAULT_DISCOVER_TIMEOUT,
+  discoverToolsFromConnection,
+  discoverToolsFromInput,
+  withDiscoveryTimeout,
+} from "./discover";
 import {
   McpConnectionError,
   type McpConnectionFailureKind,
@@ -1969,7 +1975,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             }
           }
         }
-        const connector = yield* buildConnectorInput(
+        const connectorInput = yield* buildConnectorInput(
           parsed,
           credential.values,
           credential.template === null ? null : String(credential.template),
@@ -1977,7 +1983,49 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           options?.httpClientLayer ?? ctx.httpClientLayer,
         );
 
-        return yield* discoverToolsFromInput(connector).pipe(
+        // Take the invocation pool's lease when this connection is poolable, so
+        // the probe reuses the session or child process tool calls already hold.
+        // A fresh dial starts a second child on a stdio server, and the common
+        // local servers permit one instance only (Chrome DevTools MCP,
+        // Playwright MCP, `docker run -i`) — the probe then failed a live,
+        // serving server, once per page mount. The key matches the invoke
+        // path's, which is what makes the lease hit the same entry.
+        const poolKey = isPoolableConnectorInput(connectorInput)
+          ? yield* connectionPoolKey(
+              connectorInput,
+              String(credential.template),
+              credential.values,
+              {
+                owner: String(credential.owner),
+                connection: String(credential.connection),
+              },
+            )
+          : undefined;
+        const discovery: Effect.Effect<void, McpToolDiscoveryError> =
+          poolKey === undefined
+            ? Effect.asVoid(discoverToolsFromInput(connectorInput))
+            : // The whole lease is bounded: the pool's own dial has no
+              // deadline.
+              withDiscoveryTimeout(
+                connectionPool.withConnection(
+                  poolKey,
+                  createMcpConnector(connectorInput),
+                  (connection) => discoverToolsFromConnection(connection),
+                ),
+                Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
+              ).pipe(
+                Effect.asVoid,
+                // The pool dials, so the raw connector failures surface here
+                // instead of inside `discoverTools`; map them through the same
+                // classification that path uses.
+                Effect.mapError((error) =>
+                  Predicate.isTagged(error, "McpToolDiscoveryError")
+                    ? error
+                    : connectionFailureToDiscoveryError(error),
+                ),
+              );
+
+        return yield* discovery.pipe(
           Effect.map(
             () =>
               ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,

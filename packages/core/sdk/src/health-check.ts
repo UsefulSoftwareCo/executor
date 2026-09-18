@@ -17,6 +17,8 @@
 
 import { Schema } from "effect";
 
+import { detectInsufficientScope } from "./insufficient-scope";
+
 // ---------------------------------------------------------------------------
 // Status: the five states a connection can be in. `expired` is the one this
 // whole feature exists for (Google's 7-day dev-token revocation): the credential
@@ -241,17 +243,25 @@ const errorReasonMarkers = (body: unknown): string[] => {
   return markers;
 };
 
-/** Classify a probe response from its status AND body. Everything is
- *  `classifyHttpStatus` except one carve-out: a 403 whose error body carries a
- *  known configuration reason (Google `accessNotConfigured` /
- *  `SERVICE_DISABLED`) is `misconfigured`, not `expired`: the credential
- *  authenticated; the upstream API is disabled in the OAuth client's project,
- *  and only enabling it there (not reconnecting) fixes it. */
-export const classifyProbeResponse = (status: number, body: unknown): HealthStatus => {
+/** Classify a probe response from its status, body, and (optionally) headers.
+ *  Everything is `classifyHttpStatus` except two 403 carve-outs, both of which
+ *  authenticated: a known configuration reason (Google `accessNotConfigured` /
+ *  `SERVICE_DISABLED`) is `misconfigured`, and a scope shortfall (RFC 6750
+ *  `insufficient_scope`) is `degraded` — the remedy is a new consent, not a
+ *  reconnect, so `expired` would send the user through a flow that cannot fix
+ *  it. */
+export const classifyProbeResponse = (
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): HealthStatus => {
   const byStatus = classifyHttpStatus(status);
   if (status !== 403 || byStatus !== "expired") return byStatus;
-  return errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))
-    ? "misconfigured"
+  if (errorReasonMarkers(body).some((reason) => CONFIGURATION_403_REASONS.has(reason))) {
+    return "misconfigured";
+  }
+  return detectInsufficientScope({ body, ...(headers === undefined ? {} : { headers }) }) !== null
+    ? "degraded"
     : "expired";
 };
 

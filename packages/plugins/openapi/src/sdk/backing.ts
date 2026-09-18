@@ -1013,8 +1013,14 @@ export const checkHealthOpenApi = (input: {
     }
 
     // Body-aware: a configuration 403 (Google accessNotConfigured /
-    // SERVICE_DISABLED) reads misconfigured, not expired.
-    const status = classifyProbeResponse(probe.result.status, probe.result.error);
+    // SERVICE_DISABLED) reads misconfigured, and a scope shortfall reads
+    // degraded, not expired — both authenticated, and neither is fixed by a
+    // reconnect.
+    const status = classifyProbeResponse(
+      probe.result.status,
+      probe.result.error,
+      probe.result.headers,
+    );
     const rawIdentity =
       status === "healthy" ? extractIdentity(probe.result.data, spec.identityField) : undefined;
     // The identity is read straight off the raw body, so unlike the sample it
