@@ -156,7 +156,7 @@ const resolveToolkitPolicy = (
 const toolMatchId = (tool: ToolRow): string =>
   tool.static ? String(tool.address) : String(tool.address).replace(/^tools\./, "");
 
-const toolCanAppearInToolkit = (toolkit: ToolkitResponse, tool: ToolRow): boolean =>
+export const toolCanAppearInToolkit = (toolkit: ToolkitResponse, tool: ToolRow): boolean =>
   toolkit.owner === "user" || tool.static === true || tool.owner !== "user";
 
 const toolkitUrlFor = (orgSlug: string | undefined, slug: string): string => {
@@ -670,7 +670,7 @@ function ToolkitGrid(props: {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="w-full space-y-7 px-4 py-4" style={toolkitGridContainerStyle}>
           <ToolkitSection
-            owner="org"
+            owner="user"
             showOwnerLabels={false}
             toolkits={props.toolkits}
             onCreate={props.onCreate}
