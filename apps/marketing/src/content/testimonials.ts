@@ -86,6 +86,12 @@ export const testimonials: readonly Testimonial[] = [
     text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
   },
   {
+    handle: "hegargarcia",
+    name: "Hegar",
+    id: "2100634018836292051",
+    text: "holy shit this is so good! takes a little to setup but this is the right primitive for MCPs! just the facts you can hook up different Google accounts and it’s just mile better than any of the labs or harness out there 😭",
+  },
+  {
     handle: "thesherlocker",
     name: "Sherlock",
     id: "2100071527811354813",

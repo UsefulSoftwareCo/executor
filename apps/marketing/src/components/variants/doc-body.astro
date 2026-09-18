@@ -1,32 +1,19 @@
 ---
 // Document-style homepage body. Reads like a short paper about the product:
 // one modest headline, plain first-person prose, six beats separated by
-// hairlines, the two demos kept as numbered figures, and one way to start.
+// hairlines, the two demos kept as numbered figures, and one door in: Cloud,
+// with a setup prompt for visitors who already have an agent open.
 // Sits inside the rail layout; the rail's "On this page" list points at the
 // section ids below.
 import { AnimatedBeamDemo } from "../animated-beam-demo";
 import { ContextBloatDemo } from "../context-bloat-demo";
-import { setupPrompt } from "../../content/site-copy";
 import Testimonials from "./testimonials.astro";
+import IntroSteps from "./intro-steps.astro";
+import CopyPrompt from "./copy-prompt.astro";
 import "../../styles/variants/doc.css";
 // Avatar goes through Vite so it ships as a hashed asset; new /public files
 // are not picked up by the deploy pipeline.
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
-// Brand marks for the hover reveals in the intro steps.
-const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-const logo = (name: string): string => {
-  const hit = Object.entries(logos).find(([k]) => k.endsWith(`/${name}.svg`));
-  if (!hit) throw new Error(`missing logo ${name}`);
-  return hit[1];
-};
-const toolLogos = ["github", "linear", "sentry", "stripe", "notion", "slack", "jira", "gmail"];
-const agentLogos = ["claude", "codex", "cursor", "chatgpt", "gemini", "hermes", "copilot", "windsurf", "opencode", "zed", "grok"];
-// The three marks on the copy button; the full list would crowd it.
-const agentLogosShort = ["claude", "codex", "cursor"];
 const X_URL = "https://x.com/RhysSullivan";
 
 interface Props {
@@ -39,91 +26,15 @@ const { gh } = Astro.props;
   {/* ── Intro ── */}
     <header class="doc__intro">
       <h1 class="doc__title">Executor is an MCP gateway.</h1>
-      <ol class="doc__steps">
-        <li>
-          <span class="doc__num">01</span>
-          <span>
-            Connect{" "}
-            <span class="doc__pop" tabindex="0">
-              <span class="doc__pop-word">everything</span>
-              <span class="doc__pop-panel" aria-hidden="true" inert>
-                {toolLogos.map((n, i) => (
-                  <span class="doc__pop-tile" style={`--i:${i}`}><img src={logo(n)} alt="" width="18" height="18" /></span>
-                ))}
-                <span class="doc__pop-pill" style={`--i:${toolLogos.length}`}>any OpenAPI, GraphQL, or MCP</span>
-              </span>
-            </span>
-            {" "}to Executor.
-          </span>
-        </li>
-        <li>
-          <span class="doc__num">02</span>
-          <span>
-            Give{" "}
-            <span class="doc__pop" tabindex="0">
-              <span class="doc__pop-word">your agent</span>
-              <span class="doc__pop-panel" aria-hidden="true" inert>
-                {agentLogos.map((n, i) => (
-                  <span class="doc__pop-tile" style={`--i:${i}`}><img src={logo(n)} alt="" width="18" height="18" /></span>
-                ))}
-                <span class="doc__pop-pill" style={`--i:${agentLogos.length}`}>any MCP client</span>
-              </span>
-            </span>
-            {" "}the Executor tool.
-          </span>
-        </li>
-        <li>
-          <span class="doc__num">03</span>
-          <span>That's it.{" "}<a href="#install">Get started.</a></span>
-        </li>
-      </ol>
-      <p class="doc__subhead">One MCP. All your accounts.</p>
-      <div class="doc__tabs" role="tablist" aria-label="How to run Executor">
-        <button type="button" role="tab" aria-selected="true" data-doc-tab="cloud">Cloud</button>
-        <button type="button" role="tab" aria-selected="false" data-doc-tab="local">Desktop / CLI</button>
-        <button type="button" role="tab" aria-selected="false" data-doc-tab="self">Self-hosted</button>
+      <IntroSteps />
+      <p class="doc__subhead">One MCP. All your accounts. Free for up to three people.</p>
+      <div class="doc__actions">
+        <a href="/cloud" class="btn-primary">Start on Cloud</a>
+        <CopyPrompt />
       </div>
-      <div class="doc__tabpanes">
-        <div role="tabpanel" data-doc-pane="cloud">
-          <p>Sign in, point your agent at one URL, done. Free for up to three people and 100,000 executions a month.</p>
-          <div class="doc__actions"><a href="/cloud" class="btn-primary">Start on Cloud</a><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
-          <span class="doc__copy-logos" aria-hidden="true">
-            {agentLogosShort.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
-          </span>
-          <span>Copy setup prompt</span>
-          <span class="copy-icons" aria-hidden="true">
-            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
-            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
-          </span>
-        </button></div>
-        </div>
-        <div role="tabpanel" data-doc-pane="local" data-inactive aria-hidden="true" inert>
-          <p>Nothing leaves your machine. A desktop app for Mac, Windows, and Linux, or a CLI that runs in the background. Same local endpoint either way.</p>
-          <div class="doc__actions"><span class="doc__dl" data-download>
-              <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-primary">Download for Mac</a>
-              <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="btn-primary">Download for Mac (Intel)</a>
-              <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="btn-primary">Download for Windows</a>
-              <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="btn-primary">Download for Linux</a>
-              <details class="download-other doc__dl-other hidden" data-download-other>
-                <summary>Other platforms ▾</summary>
-                <div class="download-other-list" data-download-other-list></div>
-              </details>
-            </span><code class="doc__cmd">npm i -g executor</code><button type="button" class="btn-secondary copy-btn doc__copy" data-copy={setupPrompt} data-event="marketing_setup_prompt_copied">
-          <span class="doc__copy-logos" aria-hidden="true">
-            {agentLogosShort.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
-          </span>
-          <span>Copy setup prompt</span>
-          <span class="copy-icons" aria-hidden="true">
-            <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
-            <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
-          </span>
-        </button></div>
-        </div>
-        <div role="tabpanel" data-doc-pane="self" data-inactive aria-hidden="true" inert>
-          <p>One Docker image on your own box. It is the same code Cloud runs.</p>
-          <div class="doc__actions"><a href="https://executor.sh/docs/hosted/docker" class="btn-primary">Self-hosting docs</a><a href={gh} class="btn-secondary">Source on GitHub</a></div>
-        </div>
-      </div>
+      <p class="doc__subhead doc__subhead--fine">
+        Rather keep it on your machine? <a href="#install">Desktop, CLI, or self-hosted ↓</a>
+      </p>
     </header>
 
     <figure class="doc__fig doc__fig--hero">
@@ -304,29 +215,6 @@ const { gh } = Astro.props;
     </p>
   </section>
 </article>
-
-<script>
-  for (const list of document.querySelectorAll<HTMLElement>(".doc__tabs")) {
-    const root = list.parentElement!;
-    list.addEventListener("click", (e) => {
-      const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-doc-tab]");
-      if (!tab) return;
-      const key = tab.dataset.docTab;
-      for (const t of list.querySelectorAll<HTMLElement>("[data-doc-tab]")) {
-        t.setAttribute("aria-selected", String(t === tab));
-      }
-      for (const p of root.querySelectorAll<HTMLElement>("[data-doc-pane]")) {
-        const off = p.dataset.docPane !== key;
-        p.toggleAttribute("data-inactive", off);
-        p.toggleAttribute("inert", off);
-        p.setAttribute("aria-hidden", String(off));
-        for (const el of p.querySelectorAll<HTMLElement>("a, button")) {
-          el.tabIndex = off ? -1 : 0;
-        }
-      }
-    });
-  }
-</script>
 
 <script>
   // Show one download button for the visitor's OS and tuck the rest behind
