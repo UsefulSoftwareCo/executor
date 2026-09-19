@@ -1117,16 +1117,74 @@ const stripIdToken = async (response: Response): Promise<StrippedTokenResponse> 
   };
 };
 
+const SlackGrant = Schema.Struct({
+  access_token: Schema.optional(Schema.String),
+  token_type: Schema.optional(Schema.Literals(["bot", "user", "Bearer", "bearer"])),
+  refresh_token: Schema.optional(Schema.String),
+  expires_in: Schema.optional(Schema.Number),
+  scope: Schema.optional(Schema.String),
+});
+const decodeSlackEnvelope = Schema.decodeUnknownOption(
+  Schema.Struct({
+    ...SlackGrant.fields,
+    ok: Schema.Literal(true),
+    authed_user: Schema.optional(SlackGrant),
+  }),
+);
+
+/** Slack's `bot` and `user` values identify the account, not an HTTP auth
+ * scheme. Project its successful envelope to an RFC 6749 bearer grant before
+ * oauth4webapi validates it. User-only grants may live entirely in authed_user;
+ * never replace a populated top-level grant with another account's grant. */
+const normalizeSlackTokenEnvelope = async (response: Response): Promise<Response> => {
+  const decoded = decodeSlackEnvelope(await safeJsonFromResponse(response));
+  if (Option.isNone(decoded)) return response;
+  const envelope = decoded.value;
+  const user = envelope.authed_user;
+  const grant =
+    user?.access_token !== undefined &&
+    (envelope.access_token === undefined || !envelope.scope?.trim())
+      ? user
+      : envelope;
+  // Standard bearer responses may also contain `ok: true`. Preserve their
+  // scopes and provider metadata; only Slack's actor token types need adapting.
+  if (
+    grant.access_token === undefined ||
+    (grant.token_type !== "bot" && grant.token_type !== "user")
+  ) {
+    return response;
+  }
+  const scope = grant.scope
+    ?.split(/[\s,]+/)
+    .filter(Boolean)
+    .join(" ");
+  return new Response(
+    JSON.stringify({
+      access_token: grant.access_token,
+      token_type: "Bearer",
+      refresh_token: grant.refresh_token,
+      expires_in: grant.expires_in,
+      ...(scope ? { scope } : {}),
+    }),
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    },
+  );
+};
+
 const processTokenEndpointResponse = async (
   as: oauth.AuthorizationServer,
   client: oauth.Client,
   response: Response,
 ): Promise<OAuth2TokenResponse> => {
   const stripped = await stripIdToken(response);
-  const providerUserGrant = await nestedAuthedUserGrant(stripped.response);
+  const normalizedResponse = await normalizeSlackTokenEnvelope(stripped.response);
+  const providerUserGrant = await nestedAuthedUserGrant(normalizedResponse);
   const parsed = tokenResponseFrom(
     as,
-    await oauth.processGenericTokenEndpointResponse(as, client, stripped.response),
+    await oauth.processGenericTokenEndpointResponse(as, client, normalizedResponse),
   );
   const token =
     parsed.scope === undefined && providerUserGrant !== undefined
@@ -1442,7 +1500,7 @@ export const refreshAccessToken = (
         const result = await oauth.processRefreshTokenResponse(
           as,
           client,
-          (await stripIdToken(response)).response,
+          await normalizeSlackTokenEnvelope((await stripIdToken(response)).response),
         );
         return tokenResponseFrom(as, result);
       },

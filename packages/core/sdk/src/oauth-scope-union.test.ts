@@ -713,13 +713,42 @@ describe("oauth.start integration-driven scopes", () => {
       ),
   );
 
-  it.effect("(j) caps server-advertised resource scopes so the authorize URL stays bounded", () =>
+  it.effect("(j) requests every advertised scope of a large but realistic resource list", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // A hostile/buggy server advertises far more scopes than any real
-        // template. Discovery caps the request at 100 so the authorize URL
-        // cannot be blown up.
-        const manyScopes = Array.from({ length: 200 }, (_, i) => `scope:${i}`);
+        // A fine-grained resource can legitimately advertise well over a
+        // hundred scopes (PostHog lists 150). Dropping any of them mints a
+        // token the resource rejects, so the whole list must be requested.
+        const manyScopes = Array.from(
+          { length: 150 },
+          (_, i) => `resource_${i}:${i % 2 === 0 ? "read" : "write"}`,
+        );
+        const server = yield* serveMetadataServer({ prm: { scopesSupported: manyScopes } });
+        const executor = yield* setupMcpScopeClient(server);
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(manyScopes);
+      }),
+    ),
+  );
+
+  it.effect("(j2) caps server-advertised resource scopes so the authorize URL stays bounded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A hostile/buggy server advertises an absurd list. Discovery keeps
+        // the longest leading prefix whose joined `scope` value fits the
+        // 8 KiB budget so the authorize URL cannot be blown up.
+        const manyScopes = Array.from({ length: 2000 }, (_, i) => `scope:${i}`);
         const server = yield* serveMetadataServer({ prm: { scopesSupported: manyScopes } });
         const executor = yield* setupMcpScopeClient(server);
 
@@ -735,8 +764,10 @@ describe("oauth.start integration-driven scopes", () => {
         if (started.status !== "redirect") return;
 
         const requested = scopesFromAuthorizeUrl(started.authorizationUrl);
-        expect(requested.length).toBe(100);
-        expect(requested).toEqual(manyScopes.slice(0, 100));
+        expect(requested.length).toBeLessThan(manyScopes.length);
+        expect(requested).toEqual(manyScopes.slice(0, requested.length));
+        expect(requested.join(" ").length).toBeLessThanOrEqual(8192);
+        expect([...requested, manyScopes[requested.length]].join(" ").length).toBeGreaterThan(8192);
       }),
     ),
   );

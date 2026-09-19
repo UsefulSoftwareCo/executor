@@ -6,6 +6,7 @@ import { BookOpen, Command, ExternalLink, PlusIcon } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
+import { WorkspaceAdminHint } from "../components/workspace-admin-hint";
 import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import { SidebarUpdateCard } from "../components/update-card";
@@ -25,6 +26,7 @@ import { CommandPalette } from "../components/command-palette";
 import { Wordmark } from "../components/wordmark";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
+import { useCanCreateWorkspaceConnections } from "./use-admin-nav";
 
 // ---------------------------------------------------------------------------
 // Shared multiplayer shell (cloud + self-host).
@@ -352,6 +354,7 @@ function SidebarContent(
   },
 ) {
   const plugins = useClientPlugins();
+  const canCreateIntegration = useCanCreateWorkspaceConnections();
   const pluginNavItems = plugins.flatMap((plugin) =>
     (plugin.pages ?? []).flatMap((page) =>
       page.nav
@@ -386,17 +389,20 @@ function SidebarContent(
 
         <div className="mt-5 mb-1 flex items-center justify-between px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
           <span>Integrations</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Browse integrations"
-            title="Browse integrations"
-            onClick={props.onOpenIntegrationConnect}
-            className="-my-1 text-muted-foreground hover:bg-sidebar-active/60 hover:text-foreground"
-          >
-            <PlusIcon className="size-3.5" />
-          </Button>
+          <WorkspaceAdminHint allowed={canCreateIntegration}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              disabled={!canCreateIntegration}
+              aria-label="Browse integrations"
+              title="Browse integrations"
+              onClick={props.onOpenIntegrationConnect}
+              className="-my-1 text-muted-foreground hover:bg-sidebar-active/60 hover:text-foreground"
+            >
+              <PlusIcon className="size-3.5" />
+            </Button>
+          </WorkspaceAdminHint>
         </div>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />

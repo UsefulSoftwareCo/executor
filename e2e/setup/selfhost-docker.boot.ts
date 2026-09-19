@@ -108,6 +108,11 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     // test servers and points the instance at them.
     "-e",
     "EXECUTOR_ALLOW_LOCAL_NETWORK=true",
+    // The production image runs Better Auth's rate limiter. It sees no proxy
+    // header here, so it pools every caller into one bucket of three sign-ins
+    // per ten seconds, and this suite signs in from 100+ files at once.
+    "-e",
+    "EXECUTOR_DISABLE_AUTH_RATE_LIMIT=true",
     options.image,
   ];
   log(options.logFile, `docker ${args.join(" ")}`);

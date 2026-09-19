@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -806,17 +807,11 @@ const registerIpcHandlers = () => {
     // Outside a packaged build there is no real bundle to swap, and quitting
     // would tear down the e2e harness — reflect "installing" so the renderer
     // can prove the wiring instead.
-    if (!app.isPackaged) {
-      setUpdateStatus({ state: "installing", version });
-      return;
-    }
-    // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle, matching
-    // the native dialog's restart path.
-    stopSupervisedMonitor();
-    if (connection) {
-      await stopConnection(connection);
-      connection = null;
-    }
+    setUpdateStatus({ state: "installing", version });
+    if (!app.isPackaged) return;
+    // Squirrel.Mac only validates the staged bundle now; the sidecar is torn
+    // down in 'before-quit-for-update' once it has accepted the update, so a
+    // rejected zip leaves the app usable and surfaces via the 'error' handler.
     autoUpdater.quitAndInstall(false, true);
   });
   // Crash-screen last resort for damaged state: confirm, move the data dir
@@ -937,13 +932,7 @@ const promptInstallUpdate = async (version: string) => {
       cancelId: 1,
     });
     if (response.response === 0) {
-      // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle. A
-      // supervised daemon is left running — it's independent of this bundle.
-      stopSupervisedMonitor();
-      if (connection) {
-        await stopConnection(connection);
-        connection = null;
-      }
+      setUpdateStatus({ state: "installing", version });
       autoUpdater.quitAndInstall(false, true);
       return;
     }
@@ -963,6 +952,18 @@ const setupAutoUpdater = () => {
   autoUpdater.logger = log;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
+  // Fired by Electron's native updater once Squirrel.Mac has downloaded and
+  // validated the bundle and is about to quit for the swap. Stop a spawned
+  // sidecar here rather than before quitAndInstall: if Squirrel rejects the
+  // update (bad signature, corrupt zip) nothing has been torn down. A
+  // supervised daemon is left running — it's independent of this bundle.
+  nativeAutoUpdater.on("before-quit-for-update", () => {
+    stopSupervisedMonitor();
+    if (connection) {
+      void stopConnection(connection);
+      connection = null;
+    }
+  });
 
   autoUpdater.on("update-available", (info: UpdateInfo) => {
     pendingUpdateVersion = info.version;

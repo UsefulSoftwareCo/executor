@@ -4,18 +4,23 @@
 // the category (group) row menu writes a subtree rule. The product promises
 // under test:
 //
-//   1. Both menus surface the REAL stored pattern (connection-wildcarded
-//      `integration.*.*.tool`) before anything is written.
+//   1. Both menus surface the REAL stored pattern (pinned to the account the
+//      row sits under, `integration.<owner>.<connection>.tool`) before
+//      anything is written.
 //   2. A leaf rule and a category rule coexist: the more specific leaf rule
 //      keeps precedence over the later category rule, which covers the rest
 //      of its group.
-//   3. Rules are connection-agnostic: set from one account's section, they
-//      govern the other account's rows too, and the menu there shows the
-//      active rule with a Clear option.
-//   4. The tool detail header's policy badge is the same authoring surface:
+//   3. Rules are account-scoped: set from one account's section, they leave
+//      the other account's rows untouched. Two connections of one
+//      integration are different credentials (a bot token and a user token),
+//      so blocking a tool on one must not block it on the other.
+//   4. The account header has its own menu that rules the whole connection
+//      (`integration.<owner>.<connection>.*`), recognizes its rule, and
+//      clears it.
+//   5. The tool detail header's policy badge is the same authoring surface:
 //      it writes the same stored pattern, recognizes its own rule afterward
 //      (the Clear affordance), and Clear really removes the rule.
-//   5. The rules materialize as manageable rows on /policies and persist
+//   6. The rules materialize as manageable rows on /policies and persist
 //      server-side with exactly the owner/pattern/action the UI promised.
 import { randomBytes } from "node:crypto";
 
@@ -83,11 +88,12 @@ scenario(
     const beta = ConnectionName.make(`beta${suffix}`);
     const accounts = [alpha, beta] as const;
 
-    // The UI hides owner/connection segments; a rule authored on a node is
-    // stored connection-wildcarded so it spans every account.
-    const leafPattern = `${integration}.*.*.records.create`;
-    const categoryPattern = `${integration}.*.*.records.*`;
-    const listLeafPattern = `${integration}.*.*.records.list`;
+    // The UI hides owner/connection segments in the row labels, but a rule
+    // authored under an account section is stored pinned to that account.
+    const leafPattern = `${integration}.org.${alpha}.records.create`;
+    const categoryPattern = `${integration}.org.${alpha}.records.*`;
+    const listLeafPattern = `${integration}.org.${alpha}.records.list`;
+    const betaAccountPattern = `${integration}.org.${beta}.*`;
 
     // Selfhost scenarios share one workspace — remove everything this one
     // made (policies, connections, the integration) even on failure.
@@ -159,6 +165,14 @@ scenario(
             .getByRole("button")
             .filter({ hasText: leaf })
             .getByLabel(label, { exact: true });
+        // Wait until a leaf's indicator with this label is gone (after a clear).
+        const expectNoIndicator = async (connection: string, leaf: string, label: string) => {
+          await expect
+            .poll(() => leafIndicator(connection, leaf, label).count(), {
+              message: `${connection} ${leaf} still shows "${label}"`,
+            })
+            .toBe(0);
+        };
         const internalError = JSON.stringify({ _tag: "InternalError", traceId: "policy-write" });
 
         await step("Open the integration's Tools tab", async () => {
@@ -254,25 +268,58 @@ scenario(
           },
         );
 
-        await step("The same rules govern the second account's rows", async () => {
+        await step("The second account's rows are untouched", async () => {
           await closedGroup(beta, integration).click();
           await closedGroup(beta, "records").click();
-          await leafIndicator(beta, "create", `Blocked (matched ${leafPattern})`).waitFor();
-          await leafIndicator(
-            beta,
-            "list",
-            `Require approval (matched ${categoryPattern})`,
-          ).waitFor();
+          await sectionFor(beta).getByRole("button").filter({ hasText: "create" }).waitFor();
+          expect(
+            await leafIndicator(beta, "create", `Blocked (matched ${leafPattern})`).count(),
+            "a rule set under one account does not block the same tool on another",
+          ).toBe(0);
+          expect(
+            await leafIndicator(
+              beta,
+              "list",
+              `Require approval (matched ${categoryPattern})`,
+            ).count(),
+            "a category rule set under one account does not reach another account",
+          ).toBe(0);
         });
 
         await step("Reopening the menu offers to clear the active rule", async () => {
-          await policyMenuFor(beta, `${integration}.records.create`).click();
+          await policyMenuFor(alpha, `${integration}.records.create`).click();
           await page.getByRole("menuitem", { name: "Clear" }).waitFor();
           await page.keyboard.press("Escape");
         });
 
+        await step("The account header blocks the whole second connection", async () => {
+          const headerMenu = sectionFor(beta).getByRole("button", {
+            name: `Set policy for ${integration} / ${beta}`,
+            exact: true,
+          });
+          await headerMenu.click();
+          // The header menu is headed by the whole-account pattern it will store.
+          await page.getByText(betaAccountPattern, { exact: true }).waitFor();
+          await page.getByRole("menuitem", { name: "Block" }).click();
+          await leafIndicator(beta, "create", `Blocked (matched ${betaAccountPattern})`).waitFor();
+          await leafIndicator(beta, "list", `Blocked (matched ${betaAccountPattern})`).waitFor();
+          // The first account is not affected by the second account's rule.
+          await leafIndicator(alpha, "create", `Blocked (matched ${leafPattern})`).waitFor();
+        });
+
+        await step("The account header recognizes its rule and Clear removes it", async () => {
+          const headerMenu = sectionFor(beta).getByRole("button", {
+            name: `Set policy for ${integration} / ${beta}`,
+            exact: true,
+          });
+          await headerMenu.click();
+          await page.getByRole("menuitem", { name: "Clear" }).click();
+          await sectionFor(beta).getByRole("button").filter({ hasText: "create" }).waitFor();
+          await expectNoIndicator(beta, "create", `Blocked (matched ${betaAccountPattern})`);
+        });
+
         await step("Open the tool detail for records.list", async () => {
-          await sectionFor(beta).getByRole("button").filter({ hasText: "list" }).click();
+          await sectionFor(alpha).getByRole("button").filter({ hasText: "list" }).click();
           // The header badge reflects the inherited category rule.
           await page.getByRole("button", { name: `Matched policy: ${categoryPattern}` }).waitFor();
         });

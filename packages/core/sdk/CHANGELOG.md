@@ -1,5 +1,35 @@
 # @executor-js/sdk
 
+## 1.6.10
+
+## 1.6.9
+
+### Patch Changes
+
+- [#1976](https://github.com/UsefulSoftwareCo/executor/pull/1976) [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc) Thanks [@SunkenInTime](https://github.com/SunkenInTime)! - Carry an approval's persistence choice through elicitation, so Codex Computer Use stops asking to use the same app on every call.
+
+  Computer Use offers `persist: ["session", "always"]` in the prompt's terms and remembers the app only when the answer names one. Executor dropped the offer on the way in (the terms projection kept strings only) and the choice on the way out (every adapter rebuilt the reply from `action` and `content`), so each accept was one-time. `ElicitationResponse` now has `meta.persist`; the MCP plugin, the app-server bridge, and the MCP host pass it through; the model-mode `resume` tool and the browser approval page let the approver pick from the offered scopes. Nothing is chosen automatically: a bare accept still approves once.
+
+- [#1898](https://github.com/UsefulSoftwareCo/executor/pull/1898) [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f) Thanks [@LloydVickeryASI](https://github.com/LloydVickeryASI)! - Send HubSpot optional permissions in `optional_scope` for workspace OAuth clients so accounts can connect without optional product features.
+
+- [#1942](https://github.com/UsefulSoftwareCo/executor/pull/1942) [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Add a search and invoke MCP mode (`?mode=passthrough`, `executor mcp --mode passthrough`). Search returns bounded pages of matching tool IDs and input schemas. Invoke validates arguments and runs the selected tool, with native client approval and workspace blocks enforced. The MCP catalog stays at two tools regardless of integration count.
+
+- [#2025](https://github.com/UsefulSoftwareCo/executor/pull/2025) [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Member lists, the admin users page, and seat counts on cloud now read from the local membership mirror through the shared `MemberDirectory` seam instead of fanning out one WorkOS read per member. The admin users page gains an email/name search.
+
+  **Deploy prerequisite (cloud):** `bun run --cwd apps/cloud db:backfill-workos-mirror:prod` must complete before this build is deployed, and its printed membership count should match WorkOS. Until the backfill has stamped the mirror's marker, seat reporting to Autumn is skipped with a warning (never a partial count) and member lists show only members who have signed in since the mirror shipped.
+
+- [#1982](https://github.com/UsefulSoftwareCo/executor/pull/1982) [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa) Thanks [@mmarabel](https://github.com/mmarabel)! - Retry a refresh-token grant without `scope` when the authorization server refuses the echoed grant with `invalid_scope`. Railway answers a scope-bearing refresh with "refresh token missing requested scope" even though echoing the granted scope is legal under RFC 6749 §6, so a connection whose refresh token was still live failed every call as `oauth_refresh_failed` and only a hand re-authorization recovered it.
+
+- [#1991](https://github.com/UsefulSoftwareCo/executor/pull/1991) [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Removing an integration now drops every member's connections and tools under it, not only the remover's own. Tool and connection listings no longer serve rows whose integration is gone from the catalog, invoking such a tool reports the missing integration, and `oauth.start` refuses an unknown integration before creating a session.
+
+- [#2032](https://github.com/UsefulSoftwareCo/executor/pull/2032) [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86) Thanks [@SwedishChef1](https://github.com/SwedishChef1)! - Treat an explicit dynamic-client redirect URI as authoritative when selecting a reusable OAuth client. Legacy clients with no recorded redirect now remain available to existing connections while a new client is registered for the explicit callback; callers that rely on Executor's configured default retain the previous compatibility behavior.
+
+- [#2000](https://github.com/UsefulSoftwareCo/executor/pull/2000) [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Redact redirect, referrer, trace-state, and MCP session headers from outbound HTTP traces.
+
+  Allow hosts to require HTTPS for outbound requests and reject redirects to plaintext endpoints. Executor Cloud enables this policy. Explicit private-network development access remains available.
+
+- [#1951](https://github.com/UsefulSoftwareCo/executor/pull/1951) [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c) Thanks [@nidhi-singh02](https://github.com/nidhi-singh02)! - Keep Vercel MCP connections renewable by requesting the provider's `offline_access` lifecycle scope during registration and authorization.
+
 ## 1.6.8
 
 ### Patch Changes

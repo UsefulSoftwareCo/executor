@@ -89,14 +89,17 @@ export const planDownloadedUpdate = (input: DownloadedUpdateInput): DownloadedUp
   };
 };
 
+// Any state that names a version is an update in flight, including a staged
+// ("downloaded") or installing one: Squirrel.Mac validates the bundle only when
+// the install starts, so a rejected zip surfaces as an error *after* the card
+// already offered "Restart to update". Dropping that error left the card
+// unchanged and the click looked like a no-op.
 export const statusAfterUpdateError = (
   status: DesktopUpdateStatus,
   message: string,
 ): DesktopUpdateStatus => {
-  if (status.state === "available" || status.state === "downloading" || status.state === "error") {
-    return { state: "error", version: status.version, message };
-  }
-  return status;
+  if (status.state === "idle") return status;
+  return { state: "error", version: status.version, message };
 };
 
 export const planFatalAutoInstallOnQuit = (input: {

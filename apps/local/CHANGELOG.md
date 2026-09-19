@@ -1,5 +1,59 @@
 # @executor-js/local
 
+## 1.6.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.10
+  - @executor-js/runtime-quickjs@1.6.10
+  - @executor-js/execution@1.6.10
+  - @executor-js/config@1.6.10
+  - @executor-js/plugin-file-secrets@1.6.10
+  - @executor-js/plugin-graphql@1.6.10
+  - @executor-js/plugin-keychain@1.6.10
+  - @executor-js/plugin-mcp@1.6.10
+  - @executor-js/plugin-onepassword@1.6.10
+  - @executor-js/plugin-openapi@1.6.10
+  - @executor-js/plugin-example@1.6.10
+  - @executor-js/plugin-desktop-settings@1.6.10
+  - @executor-js/app@1.4.4
+  - @executor-js/analytics@0.1.17
+  - @executor-js/api@1.4.73
+  - @executor-js/vite-plugin@0.0.70
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.21
+  - @executor-js/plugin-provider-service-split@0.0.24
+  - @executor-js/plugin-toolkits@1.5.45
+  - @executor-js/react@1.4.73
+
+## 1.6.9
+
+### Patch Changes
+
+- Updated dependencies [[`d873caf`](https://github.com/UsefulSoftwareCo/executor/commit/d873caf6fb3aa7408270b42aaad77f53cf9ec090), [`89b0f8d`](https://github.com/UsefulSoftwareCo/executor/commit/89b0f8d74cfb7d6a839bf08a267d892fb0cc676e), [`40b2f2e`](https://github.com/UsefulSoftwareCo/executor/commit/40b2f2e38d642843eb7c984c020117e0db52acfc), [`55a8b5e`](https://github.com/UsefulSoftwareCo/executor/commit/55a8b5eaea88c20fa5c5f1852262db613b8ddb9f), [`65d939e`](https://github.com/UsefulSoftwareCo/executor/commit/65d939ebab6f77a00a3435fe3575399cd1cd3b7f), [`0e9d800`](https://github.com/UsefulSoftwareCo/executor/commit/0e9d8004e2f1b35ce948b382bb97c58ebf177911), [`3c263d7`](https://github.com/UsefulSoftwareCo/executor/commit/3c263d7580d1d9302a1dc5d63f2fab253fd409c2), [`61f71c5`](https://github.com/UsefulSoftwareCo/executor/commit/61f71c56fe799b6e0faa2b2f82a91f631bc6a979), [`a6cdcf1`](https://github.com/UsefulSoftwareCo/executor/commit/a6cdcf1ccfae22e7d3378908c095e5c847c70f90), [`be77521`](https://github.com/UsefulSoftwareCo/executor/commit/be775216cccddac6002b1f9442b3c8151e4f6063), [`f8cfa5f`](https://github.com/UsefulSoftwareCo/executor/commit/f8cfa5f5f475c6b9c14143663ed5861bec8f74af), [`d64639b`](https://github.com/UsefulSoftwareCo/executor/commit/d64639b1a50d2d292235aff8f727ca11fe9e43a6), [`e9055c1`](https://github.com/UsefulSoftwareCo/executor/commit/e9055c13bf73bc1860c8eded542fe566b51c3784), [`1f67d83`](https://github.com/UsefulSoftwareCo/executor/commit/1f67d83609b13a73d3dc8d630f48c8f54a02e6ca), [`905e097`](https://github.com/UsefulSoftwareCo/executor/commit/905e0972614aed5a3bb279b51dc060f87f892d75), [`cc0fd8f`](https://github.com/UsefulSoftwareCo/executor/commit/cc0fd8f6099f3d05c73a285ef14932c01ac212fa), [`85cf428`](https://github.com/UsefulSoftwareCo/executor/commit/85cf428905bbd73257fb3c3be5c89e762bf79377), [`38a7725`](https://github.com/UsefulSoftwareCo/executor/commit/38a7725876bcc9c8adeea9c7efbd190c121d3b86), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`3fd28a5`](https://github.com/UsefulSoftwareCo/executor/commit/3fd28a51fabb0fc96d0bf83408021e7cbca70bfe), [`929b233`](https://github.com/UsefulSoftwareCo/executor/commit/929b2338f225b3f80190ac7a6fe1f2473650c58c)]:
+  - @executor-js/api@1.4.72
+  - @executor-js/execution@1.6.9
+  - @executor-js/sdk@1.6.9
+  - @executor-js/plugin-mcp@1.6.9
+  - @executor-js/react@1.4.72
+  - @executor-js/plugin-openapi@1.6.9
+  - @executor-js/plugin-graphql@1.6.9
+  - @executor-js/plugin-onepassword@1.6.9
+  - @executor-js/plugin-toolkits@1.5.44
+  - @executor-js/analytics@0.1.16
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.20
+  - @executor-js/app@1.4.4
+  - @executor-js/config@1.6.9
+  - @executor-js/vite-plugin@0.0.69
+  - @executor-js/plugin-desktop-settings@1.6.9
+  - @executor-js/plugin-example@1.6.9
+  - @executor-js/plugin-file-secrets@1.6.9
+  - @executor-js/plugin-keychain@1.6.9
+  - @executor-js/plugin-provider-service-split@0.0.23
+  - @executor-js/runtime-quickjs@1.6.9
+
 ## 1.6.8
 
 ### Patch Changes

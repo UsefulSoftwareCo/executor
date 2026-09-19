@@ -1,0 +1,36 @@
+---
+// The "Copy setup prompt" button: a dashed ghost button beside the primary,
+// carrying the three agent marks. Copies `setupPrompt`; the click handler
+// lives in pages/index.astro.
+import { setupPrompt } from "../../content/site-copy";
+
+const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+const logo = (name: string): string => {
+  const hit = Object.entries(logos).find(([k]) => k.endsWith(`/${name}.svg`));
+  if (!hit) throw new Error(`missing logo ${name}`);
+  return hit[1];
+};
+const marks = ["claude", "codex", "cursor"];
+
+
+---
+
+<button
+  type="button"
+  class="btn-ghost copy-btn doc__copy"
+  data-copy={setupPrompt}
+  data-event="marketing_setup_prompt_copied"
+>
+  <span class="doc__copy-logos" aria-hidden="true">
+    {marks.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
+  </span>
+  <span>Copy setup prompt</span>
+  <span class="copy-icons" aria-hidden="true">
+    <svg class="copy-icon-copy" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+    <svg class="copy-icon-check" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+  </span>
+</button>

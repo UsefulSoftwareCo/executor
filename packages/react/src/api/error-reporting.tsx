@@ -21,8 +21,17 @@ class FrontendHandledError extends Data.TaggedError("FrontendHandledError")<{
   readonly context: FrontendErrorContext;
 }> {}
 
-const ErrorMessage = Schema.Struct({ message: Schema.String });
-const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+// Effect's tagged error classes (`Schema.TaggedErrorClass`) often declare no
+// `message` field and expose it as a prototype getter instead, so a struct
+// decode — which only sees own properties — would miss the very sentence the
+// server wrote for the user. Read the property directly.
+const decodeErrorMessage = (value: unknown): Option.Option<{ readonly message: string }> => {
+  if (typeof value !== "object" || value === null) return Option.none();
+  const message: unknown = Reflect.get(value, "message");
+  return typeof message === "string" && message.length > 0
+    ? Option.some({ message })
+    : Option.none();
+};
 
 const TaggedValue = Schema.Struct({ _tag: Schema.String });
 const decodeTaggedValue = Schema.decodeUnknownOption(TaggedValue);

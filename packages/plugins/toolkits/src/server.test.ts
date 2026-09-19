@@ -132,6 +132,50 @@ describe("toolkitsPlugin", () => {
     }),
   );
 
+  it.effect("prepares a dynamic scope from the toolkit's access patterns", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+      });
+
+      const orgKit = yield* executor.toolkits.create({ owner: "org", name: "Org Kit" });
+      for (const pattern of [
+        "github.org.main.*",
+        "slack.*",
+        "linear.*.*.issues.list",
+        "github.user.alice.*",
+        "executor.coreTools.*",
+      ]) {
+        yield* executor.toolkits.createConnection(orgKit.id, { pattern });
+      }
+      const prepared = yield* executor.toolkits.preparePolicyResolverForSlug(orgKit.slug);
+      // An org toolkit never reaches personal rows: unowned prefixes pin to
+      // org, user-only prefixes drop, and static-only patterns contribute none.
+      const byIntegration = (
+        a: { integration: string | null },
+        b: { integration: string | null },
+      ) => String(a.integration).localeCompare(String(b.integration));
+      expect([...(prepared.dynamicScope ?? [])].sort(byIntegration)).toEqual([
+        { integration: "github", owner: "org", connection: "main" },
+        { integration: "linear", owner: "org", connection: null },
+        { integration: "slack", owner: "org", connection: null },
+      ]);
+      expect(prepared.resolve({ toolId: "github.org.main.repos.list" }).action).toBe("approve");
+      expect(prepared.resolve({ toolId: "github.user.alice.repos.list" }).action).toBe("block");
+
+      const personalKit = yield* executor.toolkits.create({ owner: "user", name: "Me Kit" });
+      yield* executor.toolkits.createConnection(personalKit.id, { pattern: "github.user.alice.*" });
+      const personal = yield* executor.toolkits.preparePolicyResolverForSlug(personalKit.slug);
+      expect(personal.dynamicScope).toEqual([
+        { integration: "github", owner: "user", connection: "alice" },
+      ]);
+
+      const missing = yield* executor.toolkits.preparePolicyResolverForSlug("no-such-kit");
+      expect(missing.dynamicScope).toEqual([]);
+      expect(missing.resolve({ toolId: "github.org.main.repos.list" }).action).toBe("block");
+    }),
+  );
+
   it.effect("treats a persisted connection-root approve as an access policy", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

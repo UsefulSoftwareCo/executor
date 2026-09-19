@@ -133,75 +133,31 @@
 .rail--b .rail__link[aria-current="page"]::before {
   opacity: 1;
 }
-.rail--b .rail__cta {
+/* ── Quiet rail meta: star count and YC as text lines, not boxes ── */
+.rail--b .rail__meta {
   display: grid;
-  gap: 8px;
+  gap: 4px;
   margin-top: 16px;
-  --rail-box-h: 36px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-rule);
 }
-/* One stack, one button language: same height, width, radius, hairline
-   border, and sans label. The primary is filled ink; the others are quiet. */
-.rail--b .rail__box {
+.rail--b .rail__meta-line {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
-  height: var(--rail-box-h);
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 12px;
-  border: 1px solid var(--color-rule-strong);
-  border-radius: 6px;
-  background: var(--color-surface);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-ink);
-  overflow: hidden;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
-}
-.rail--b .rail__box:hover {
-  border-color: var(--color-ink);
-}
-.rail--b .rail__box--primary {
-  background: var(--color-ink);
-  border-color: var(--color-ink);
-  color: var(--color-surface);
-}
-.rail--b .rail__box--primary:hover {
-  background: #1f1f24;
-}
-/* Star pill: same box, sans label, count in mono like the app's metadata. */
-.rail--b .rail__box.gh-star {
-  color: var(--color-ink);
-}
-.rail--b .rail__box.gh-star .gh-star__ico {
-  width: 12px;
-  height: 12px;
-}
-.rail--b .rail__box.gh-star .gh-star__n {
-  font-family: var(--font-mono);
-  font-weight: 400;
-  font-size: 12px;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
   color: var(--color-ink-3);
-  border-left: 1px solid var(--color-rule);
-  padding-left: 8px;
-  margin-left: 1px;
+  line-height: 1.6;
 }
-/* The YC badge is a rounded cream card at 350x125; letting it fill the box
-   edge to edge keeps the badge's own corners hidden behind ours. */
-.rail--b .rail__box--yc {
-  padding: 0;
-  background: #f6f6ef;
+.rail--b .rail__meta-line:hover {
+  color: var(--color-ink);
 }
-.rail--b .rail__box--yc img {
-  height: 100%;
-  width: auto;
-  display: block;
+.rail--b .rail__meta-n {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
 }
+
 .rail--b .rail__toc {
   gap: 8px;
 }
@@ -314,8 +270,7 @@
   .rail .rail__foot,
   .rail .rail__contact,
   .rail .rail__secondary,
-  .rail .gh-star,
-  .rail .rail__box--yc {
+  .rail .rail__meta {
     display: none;
   }
   .rail .rail__stack {
@@ -336,16 +291,6 @@
   }
   .rail .rail__link::before {
     display: none;
-  }
-  .rail .rail__cta {
-    display: block;
-    margin-top: 0;
-  }
-  .rail--b .rail__box--primary {
-    width: auto;
-    height: 32px;
-    padding: 0 12px;
-    font-size: 13px;
   }
 }
 @media (max-width: 479.98px) {

@@ -1,4 +1,4 @@
-import { matchPattern } from "@executor-js/sdk/shared";
+import { matchPattern, type Owner } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Policy pattern bridge.
@@ -29,3 +29,29 @@ export const toPolicyPattern = (displayPattern: string): string => {
 };
 
 export { matchPattern };
+
+// ---------------------------------------------------------------------------
+// Account-scoped bridge.
+//
+// The account-grouped Tools tab shows the same tool once per connection. A
+// rule authored from a row inside one account's section must govern THAT
+// account only — a Slack bot connection and a Slack user connection are
+// different credentials with different capabilities, and blocking a tool on
+// one must not silently block it on the other. So instead of wildcarding the
+// owner + connection segments, fill them in: `integration.<owner>.<conn>.<tool>`.
+// `integration.*` becomes the whole-account subtree
+// `integration.<owner>.<conn>.*`. Apply the returned mapper at both the site
+// that BUILDS a pattern and the site that LOOKS UP the exact rule, exactly as
+// with `toPolicyPattern`.
+// ---------------------------------------------------------------------------
+
+export const accountPolicyPattern =
+  (owner: Owner, connection: string) =>
+  (displayPattern: string): string => {
+    if (displayPattern === "*") return "*";
+    const firstDot = displayPattern.indexOf(".");
+    if (firstDot === -1) return `${displayPattern}.${owner}.${connection}.*`;
+    const integration = displayPattern.slice(0, firstDot);
+    const rest = displayPattern.slice(firstDot + 1);
+    return `${integration}.${owner}.${connection}.${rest}`;
+  };

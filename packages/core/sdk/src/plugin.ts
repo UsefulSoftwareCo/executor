@@ -55,6 +55,7 @@ import type { CredentialProvider, ProviderEntry } from "./provider";
 import type { PluginStorageConfig, PluginStorageFacade } from "./plugin-storage";
 import type {
   CreateToolPolicyInput,
+  DynamicToolScope,
   EffectivePolicy,
   RemoveToolPolicyInput,
   ToolPolicy,
@@ -131,13 +132,25 @@ export interface ToolPolicyProvider {
    * requests), so caching on it would serve stale policy state. Each operation
    * gets a fresh snapshot.
    */
-  readonly prepare?: () => Effect.Effect<
-    (input: {
-      readonly toolId: string;
-      readonly defaultRequiresApproval?: boolean;
-    }) => EffectivePolicy,
-    StorageFailure
-  >;
+  readonly prepare?: () => Effect.Effect<PreparedToolPolicy, StorageFailure>;
+}
+
+/** What `ToolPolicyProvider.prepare` hands core for one operation. */
+export interface PreparedToolPolicy {
+  /** Pure resolver over the snapshot `prepare` fetched. */
+  readonly resolve: (input: {
+    readonly toolId: string;
+    readonly defaultRequiresApproval?: boolean;
+  }) => EffectivePolicy;
+  /**
+   * The dynamic-tool prefixes this policy source can ever approve. When set,
+   * core restricts the tool rows it loads on a list to these prefixes instead
+   * of reading the whole catalog and blocking most of it in memory — the read
+   * then scales with the allowlist, not the workspace. An empty array means no
+   * dynamic tool is reachable. Omit when the source is not an allowlist (any
+   * row may be approved) so core keeps the unrestricted read.
+   */
+  readonly dynamicScope?: readonly DynamicToolScope[];
 }
 
 // ---------------------------------------------------------------------------

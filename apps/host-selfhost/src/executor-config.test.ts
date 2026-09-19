@@ -9,6 +9,8 @@ const TTL_ENV_NAME = "EXECUTOR_TOOLS_SYNC_TTL_MS";
 const originalValue = process.env[ENV_NAME];
 const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
+const RATE_LIMIT_ENV_NAME = "EXECUTOR_DISABLE_AUTH_RATE_LIMIT";
+const originalRateLimit = process.env[RATE_LIMIT_ENV_NAME];
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
@@ -29,6 +31,11 @@ afterEach(() => {
     delete process.env[TTL_ENV_NAME];
   } else {
     process.env[TTL_ENV_NAME] = originalTtl;
+  }
+  if (originalRateLimit === undefined) {
+    delete process.env[RATE_LIMIT_ENV_NAME];
+  } else {
+    process.env[RATE_LIMIT_ENV_NAME] = originalRateLimit;
   }
 });
 
@@ -111,4 +118,16 @@ test.each(["abc", "60_000", "1.5", "1e3ms", "NaN", "Infinity", "9007199254740993
 test("a negative tools-sync TTL refuses to boot", () => {
   process.env[TTL_ENV_NAME] = "-1";
   expect(() => loadConfig()).toThrow(/must not be negative/);
+});
+
+test("auth rate limiting stays on unless the opt-out is exactly true", () => {
+  delete process.env[RATE_LIMIT_ENV_NAME];
+  expect(loadConfig().authRateLimit).toBe(true);
+  process.env[RATE_LIMIT_ENV_NAME] = "TRUE";
+  expect(loadConfig().authRateLimit).toBe(true);
+});
+
+test("auth rate limiting is off when the opt-out is exactly true", () => {
+  process.env[RATE_LIMIT_ENV_NAME] = "true";
+  expect(loadConfig().authRateLimit).toBe(false);
 });

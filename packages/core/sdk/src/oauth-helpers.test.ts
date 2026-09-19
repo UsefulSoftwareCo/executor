@@ -621,6 +621,7 @@ describe("exchangeAuthorizationCode", () => {
   it.effect("uses nested granted scopes for Slack-style user token responses", () =>
     withTokenEndpoint(
       tokenResponse({
+        ok: true,
         access_token: "xoxp-user-token",
         token_type: "Bearer",
         scope: "",
@@ -1837,4 +1838,156 @@ describe("OAuth2Error tagging", () => {
       cause: { foo: 1 },
     });
   });
+});
+
+// Slack labels bearer credentials by actor type. The same envelope is used
+// during authorization-code exchange and refresh-token rotation.
+describe("Provider token envelopes", () => {
+  const grants = [
+    {
+      label: "standard bearer response with ok metadata",
+      body: {
+        ok: true,
+        access_token: "provider-token",
+        token_type: "Bearer",
+        scope: "scope,with-comma other.scope",
+      },
+      expected: {
+        access_token: "provider-token",
+        token_type: "bearer",
+        scope: "scope,with-comma other.scope",
+      },
+    },
+    {
+      // https://docs.slack.dev/reference/methods/oauth.v2.access/
+      // A single response can contain two distinct accounts and refresh tokens.
+      label: "Slack bot and user response",
+      body: {
+        ok: true,
+        access_token: "bot-token",
+        token_type: "bot",
+        scope: "commands,incoming-webhook",
+        expires_in: 43200,
+        refresh_token: "bot-refresh",
+        authed_user: {
+          access_token: "user-token",
+          token_type: "user",
+          scope: "chat:write",
+          expires_in: 43200,
+          refresh_token: "user-refresh",
+        },
+      },
+      expected: {
+        access_token: "bot-token",
+        token_type: "bearer",
+        scope: "commands incoming-webhook",
+        expires_in: 43200,
+        refresh_token: "bot-refresh",
+      },
+    },
+    {
+      label: "bot",
+      body: {
+        ok: true,
+        access_token: "bot-token",
+        token_type: "bot",
+        scope: "channels:read,chat:write",
+        refresh_token: "bot-refresh",
+        expires_in: 3600,
+      },
+      expected: {
+        access_token: "bot-token",
+        token_type: "bearer",
+        scope: "channels:read chat:write",
+        refresh_token: "bot-refresh",
+        expires_in: 3600,
+      },
+    },
+    {
+      label: "user",
+      body: {
+        ok: true,
+        access_token: "user-token",
+        token_type: "user",
+        scope: "users:read,users:read.email",
+        refresh_token: "user-refresh",
+        expires_in: 3600,
+      },
+      expected: {
+        access_token: "user-token",
+        token_type: "bearer",
+        scope: "users:read users:read.email",
+        refresh_token: "user-refresh",
+        expires_in: 3600,
+      },
+    },
+    {
+      label: "nested user",
+      body: {
+        ok: true,
+        authed_user: {
+          access_token: "nested-user-token",
+          token_type: "user",
+          scope: "users:read,chat:write",
+          refresh_token: "nested-refresh",
+          expires_in: 3600,
+        },
+      },
+      expected: {
+        access_token: "nested-user-token",
+        token_type: "bearer",
+        scope: "users:read chat:write",
+        refresh_token: "nested-refresh",
+        expires_in: 3600,
+      },
+    },
+  ];
+  for (const grant of grants) {
+    it.effect(`exchanges a ${grant.label} grant`, () =>
+      withTokenEndpoint(tokenResponse(grant.body), ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* exchangeAuthorizationCode({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "secret",
+            redirectUrl: "https://app.example/callback",
+            codeVerifier: "verifier",
+            code: "code",
+          });
+          expect(result).toMatchObject(grant.expected);
+        }),
+      ),
+    );
+    it.effect(`refreshes a ${grant.label} grant`, () =>
+      withTokenEndpoint(tokenResponse(grant.body), ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* refreshAccessToken({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "secret",
+            refreshToken: "old-refresh",
+          });
+          expect(result).toMatchObject(grant.expected);
+        }),
+      ),
+    );
+  }
+  it.effect("still rejects unsupported token types in an otherwise successful envelope", () =>
+    withTokenEndpoint(
+      tokenResponse({ ok: true, access_token: "token", token_type: "mac" }),
+      ({ tokenUrl }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            exchangeAuthorizationCode({
+              tokenUrl,
+              clientId: "cid",
+              redirectUrl: "https://app.example/callback",
+              codeVerifier: "verifier",
+              code: "code",
+            }),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+        }),
+    ),
+  );
 });
