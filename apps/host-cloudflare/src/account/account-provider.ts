@@ -17,10 +17,8 @@ import type { CloudflareConfig } from "../config";
 // uses), reading the `Cf-Access-Jwt-Assertion` header off the request.
 //
 // Single-tenant + Access-managed: members, roles, and API keys live in
-// Cloudflare Access, NOT in the app. The shell hides the API-keys footer and
-// shows no members page, so those methods are never reached from the UI; they
-// return empty (reads) or a clear "managed by Cloudflare Access" error (writes)
-// to satisfy the provider shape.
+// Cloudflare Access, not in the app. `listMembers` exposes the current principal
+// for console role checks; unsupported reads are empty and writes fail.
 // ---------------------------------------------------------------------------
 
 const NOT_IN_APP = "Managed by Cloudflare Access, not in the app.";
@@ -66,7 +64,28 @@ export const cloudflareAccountProvider = (
     listOrgApiKeys: () => Effect.succeed({ apiKeys: [] }),
     createOrgApiKey: () => forbiddenWrite,
     revokeOrgApiKey: () => forbiddenWrite,
-    listMembers: () => Effect.succeed({ members: [] }),
+    listMembers: (headers) =>
+      principalFrom(headers).pipe(
+        Effect.map((principal) =>
+          principal
+            ? {
+                members: [
+                  {
+                    id: principal.accountId,
+                    userId: principal.accountId,
+                    email: principal.email,
+                    name: principal.name,
+                    avatarUrl: principal.avatarUrl,
+                    role: principal.orgRole ?? "member",
+                    status: "active",
+                    lastActiveAt: null,
+                    isCurrentUser: true,
+                  },
+                ],
+              }
+            : { members: [] },
+        ),
+      ),
     listRoles: () => Effect.succeed({ roles: [] }),
     inviteMember: () => forbiddenWrite,
     removeMember: () => forbiddenWrite,
