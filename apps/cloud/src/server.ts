@@ -243,19 +243,64 @@ const markStartGraphEntered = (): void => {
 // `servedByAppPlane` (./app-paths) decides which paths qualify — two under
 // `/api` are claimed by Start's middleware first and must keep their old route.
 
-// Instantiated on the first request that needs it and memoized per isolate,
-// mirroring `start.ts`'s `getApp`. The import stays dynamic so an isolate that
-// only serves pages or proxies never evaluates the app graph at all.
-let appPlane: ReturnType<typeof import("./app").cloudApiHandler> | undefined;
+// Instantiated once per isolate and memoized as a promise, mirroring
+// `start.ts`'s `getApp`. The import stays dynamic so the Worker's static
+// startup closure does not include the app graph; the promise memo means a
+// pre-warm and a real request racing on a fresh isolate share one import.
+type AppPlane = ReturnType<typeof import("./app").cloudApiHandler>;
+let appPlanePromise: Promise<AppPlane> | undefined;
 let appGraphEntered = false;
 
-const getAppPlane = async (): Promise<NonNullable<typeof appPlane>> => {
-  if (appPlane === undefined) {
-    const { cloudApiHandler } = await import("./app");
-    appPlane = cloudApiHandler();
-    appGraphEntered = true;
+const getAppPlane = (): Promise<AppPlane> => {
+  if (appPlanePromise === undefined) {
+    appPlanePromise = import("./app").then(
+      ({ cloudApiHandler }) => {
+        const plane = cloudApiHandler();
+        appGraphEntered = true;
+        return plane;
+      },
+      (cause: unknown) => {
+        // Do not memoize a failure: the next request re-imports, as the
+        // un-memoized version did, instead of failing every request after.
+        appPlanePromise = undefined;
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: re-raise the import failure to the awaiting request
+        throw cause;
+      },
+    );
   }
-  return appPlane;
+  return appPlanePromise;
+};
+
+// ---------------------------------------------------------------------------
+// Pre-warming the app plane.
+// ---------------------------------------------------------------------------
+//
+// Measured on production 2026-09-18: 30% of `/api/*` dispatches landed on an
+// isolate that had not yet evaluated the app graph, and paid ~2s (p50) for it
+// against ~100ms warm. Only 43% of those isolates were under 5s old. The rest
+// had been alive for seconds to minutes serving `/mcp`, discovery documents,
+// or proxies, none of which enter the app graph, so the dashboard's first
+// call was the one that paid. Isolates live about a minute at the median, so
+// there is rarely a second dashboard request to benefit.
+//
+// So any request that does NOT need the app plane starts its import in the
+// background. The request itself returns as before; the import runs under
+// `waitUntil`, so the isolate stays up until it finishes. A dashboard call
+// arriving afterwards finds the graph evaluated. The truly fresh isolate
+// (first request IS a dashboard call) still pays; that cost is the graph's
+// evaluation itself, addressed separately.
+//
+// Failure is swallowed on purpose: a pre-warm that fails must not fail the
+// request that triggered it, and the next real app-plane request re-imports
+// through the same memo and surfaces the error where it belongs.
+const prewarmAppPlane = (ctx: ExecutionContext): void => {
+  if (appGraphEntered) return;
+  ctx.waitUntil(
+    getAppPlane().then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
 };
 
 const cloudflareHandler: ExportedHandler<Env> = {
@@ -266,6 +311,12 @@ const cloudflareHandler: ExportedHandler<Env> = {
     // import loads the entire React + Effect server graph and can take seconds
     // on a cold isolate. Classify and service-bind marketing at the Worker
     // entry, before telemetry or fetchHandler touches that graph.
+    // Everything that returns before the app-plane dispatch below leaves the
+    // graph unevaluated for the next request; warm it in the background.
+    if (!servedByAppPlane(new URL(request.url).pathname, request.method)) {
+      prewarmAppPlane(ctx);
+    }
+
     const marketingRequest = marketingProxyRequest(request);
     const marketing: Fetcher | undefined = env.MARKETING;
     if (marketingRequest && marketing) return marketing.fetch(marketingRequest);
@@ -445,6 +496,9 @@ const cloudflareHandler: ExportedHandler<Env> = {
   // isolate goes idle.
   scheduled: async (_controller, _env, ctx) => {
     installTracerProvider();
+    // The cron fires every minute, often on an isolate that has served no
+    // dashboard request yet: the cheapest pre-warm there is.
+    prewarmAppPlane(ctx);
     await runWorkOsEventsSync();
     ctx.waitUntil(flushTracerProvider());
   },
