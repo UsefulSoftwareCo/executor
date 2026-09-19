@@ -157,6 +157,7 @@ import {
   isUnboundedDynamicToolScope,
   isValidPattern,
   matchPattern,
+  normalizePolicyPattern,
   positionForNewPattern,
   resolveEffectivePolicy,
   rowToToolPolicy,
@@ -6047,9 +6048,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const ownerRankForRow = (row: { readonly owner: string }): number =>
       row.owner === "user" ? 0 : 1;
 
-    // Tool policies gate by tool identity (`<integration>.<tool>`), independent of
-    // which connection serves it; the org/user split is handled by owner-scoped
-    // policy rows + ownerRank, not the match pattern.
+    // Dynamic (connection-backed) tools are keyed by their full four-segment
+    // address, `<integration>.<owner>.<connection>.<tool>` — the owner
+    // segment is load-bearing: a connection's (integration, name) is only
+    // unique per owner, so two different connections can share a name.
+    // Patterns written without an owner segment are backfilled by
+    // `normalizePolicyPattern` at create/update time, not here.
     const normalizedPolicyId = (tool: Tool): string =>
       tool.static
         ? String(tool.address)
@@ -6089,6 +6093,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             try: () => ownedKeys(input.owner),
             catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
           });
+          // Patterns written in the documented (pre-owner) 3-segment shape
+          // are one segment short of the matcher's 4-segment dynamic tool
+          // id and can never match — see `normalizePolicyPattern`.
+          const pattern = normalizePolicyPattern(input.pattern);
           const existing = yield* core.findMany("tool_policy", {
             where: byOwner(input.owner),
           });
@@ -6096,7 +6104,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // rule), not top-of-list: a client that omits position — the UI when
           // its policy list is stale, the API, an agent tool — must not have its
           // broad rule silently shadow an existing narrow one.
-          const position = input.position ?? positionForNewPattern(input.pattern, existing);
+          const position = input.position ?? positionForNewPattern(pattern, existing);
           const id = PolicyId.make(
             `pol_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
           );
@@ -6106,7 +6114,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             owner: keys.owner,
             subject: keys.subject,
             id: String(id),
-            pattern: input.pattern,
+            pattern,
             action: input.action,
             position,
             created_at: now,
@@ -6137,7 +6145,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           const set: Record<string, unknown> = { updated_at: new Date() };
-          if (input.pattern !== undefined) set.pattern = input.pattern;
+          if (input.pattern !== undefined) set.pattern = normalizePolicyPattern(input.pattern);
           if (input.action !== undefined) set.action = input.action;
           if (input.position !== undefined) set.position = input.position;
           yield* core.updateMany("tool_policy", { where, set });
