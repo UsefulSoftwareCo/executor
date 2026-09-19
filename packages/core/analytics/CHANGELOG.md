@@ -1,5 +1,12 @@
 # @executor-js/analytics
 
+## 0.1.18
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/execution@1.6.11
+
 ## 0.1.17
 
 ### Patch Changes
