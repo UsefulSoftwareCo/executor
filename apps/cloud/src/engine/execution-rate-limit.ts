@@ -3,7 +3,8 @@
 //
 // The balance gate (execution-gate.ts) depends on Autumn and fails open, so a
 // billing outage plus runaway automation could still run unbounded executions.
-// This limiter counts `execute` calls per organization in a fixed hourly
+// This limiter counts `execute` calls (and `resume` continuations — each one
+// is fresh work, see execution-gate.ts) per organization in a fixed hourly
 // window, backed by a minimal counter Durable Object (cross-session state:
 // each MCP session lives in its own DO instance, so an in-memory counter
 // would be per-session and trivially bypassed by opening more sessions).
