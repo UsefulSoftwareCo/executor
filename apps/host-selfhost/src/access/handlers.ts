@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
-import { Effect, Layer, Predicate, Schema } from "effect";
+import { Effect, Layer, Option, Predicate, Schema } from "effect";
 
 import {
   AccessError,
@@ -73,37 +73,109 @@ const requireSameOrigin = (headers: Headers, allowedOrigins: ReadonlySet<string>
 
 // What the adapter hands back is untyped, so each row is decoded at this
 // boundary; extra columns (tokens, secrets) are dropped by construction.
-const Timestamp = Schema.Union([Schema.Date, Schema.String, Schema.Number]);
-const TokenRow = Schema.Struct({
+//
+// Every field that may be absent is `Absent(...)`, not `NullishOr(...)`: in
+// Effect v4 `NullishOr` accepts a null or undefined VALUE but still requires
+// the KEY, and Better Auth omits empty columns (a session with no recorded IP
+// has no `ipAddress` key at all) — which failed the whole list in production.
+//
+// Timestamps come back as a Date, an ISO string or epoch ms depending on the
+// driver and on which Better Auth version wrote the row; `toMs` reads all of
+// them, so the schema does not pretend to know which.
+const Absent = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
+const Timestamp = Schema.Unknown;
+export const TokenRow = Schema.Struct({
   clientId: Schema.String,
-  createdAt: Schema.NullishOr(Timestamp),
-  accessTokenExpiresAt: Schema.NullishOr(Timestamp),
-  refreshTokenExpiresAt: Schema.NullishOr(Timestamp),
+  createdAt: Absent(Timestamp),
+  accessTokenExpiresAt: Absent(Timestamp),
+  refreshTokenExpiresAt: Absent(Timestamp),
 });
-const ConsentRow = Schema.Struct({ clientId: Schema.String });
-const ApplicationRow = Schema.Struct({
+export const ConsentRow = Schema.Struct({ clientId: Schema.String });
+export const ApplicationRow = Schema.Struct({
   clientId: Schema.String,
-  name: Schema.NullishOr(Schema.String),
-  createdAt: Schema.NullishOr(Timestamp),
+  name: Absent(Schema.String),
+  createdAt: Absent(Timestamp),
 });
-const SessionRow = Schema.Struct({
+export const SessionRow = Schema.Struct({
   id: Schema.String,
   token: Schema.String,
-  createdAt: Timestamp,
-  updatedAt: Timestamp,
-  expiresAt: Timestamp,
-  userAgent: Schema.NullishOr(Schema.String),
-  ipAddress: Schema.NullishOr(Schema.String),
+  createdAt: Absent(Timestamp),
+  updatedAt: Absent(Timestamp),
+  expiresAt: Absent(Timestamp),
+  userAgent: Absent(Schema.String),
+  ipAddress: Absent(Schema.String),
 });
 
-const decodeTokens = Schema.decodeUnknownEffect(Schema.Array(TokenRow));
-const decodeConsents = Schema.decodeUnknownEffect(Schema.Array(ConsentRow));
-const decodeApplications = Schema.decodeUnknownEffect(Schema.Array(ApplicationRow));
-const decodeSessions = Schema.decodeUnknownEffect(Schema.Array(SessionRow));
+/**
+ * A row's field TYPES, never its values — what a skipped row is logged as.
+ * These rows hold session tokens and OAuth tokens, so a diagnostic that
+ * printed a value would be a leak; one that prints `{ token: "string" }` is
+ * enough to see why a row did not decode.
+ */
+const shapeOf = (row: unknown): unknown => {
+  if (row === null || typeof row !== "object") return row === null ? "null" : typeof row;
+  if (Array.isArray(row)) return `array(${row.length})`;
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [
+      key,
+      value === null
+        ? "null"
+        : value instanceof Date
+          ? Number.isNaN(value.getTime())
+            ? "invalid-date"
+            : "date"
+          : Array.isArray(value)
+            ? "array"
+            : typeof value,
+    ]),
+  );
+};
 
-const toMs = (value: Date | string | number | null | undefined): number | null => {
-  if (value == null) return null;
-  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+/**
+ * Decode a list row by row. One row this code cannot read must not blank the
+ * whole page — the credential it describes is still worth listing the rest
+ * around — so it is skipped and logged by shape instead of failing the read.
+ * Only a result that is not a list at all fails.
+ */
+const decodeRows =
+  <A>(decodeRow: (row: unknown) => Option.Option<A>, op: string) =>
+  (raw: unknown): Effect.Effect<readonly A[], AccessError> =>
+    Effect.gen(function* () {
+      if (!Array.isArray(raw)) {
+        yield* Effect.logWarning("connected clients: expected a list").pipe(
+          Effect.annotateLogs({ op, got: shapeOf(raw) }),
+        );
+        return yield* new AccessError({ message: `Unreadable rows (${op})` });
+      }
+      const rows: A[] = [];
+      for (const row of raw) {
+        const decoded = decodeRow(row);
+        if (Option.isSome(decoded)) {
+          rows.push(decoded.value);
+        } else {
+          yield* Effect.logWarning("connected clients: skipped an unreadable row").pipe(
+            Effect.annotateLogs({ op, shape: shapeOf(row) }),
+          );
+        }
+      }
+      return rows;
+    });
+
+const decodeTokens = decodeRows(Schema.decodeUnknownOption(TokenRow), "oauthAccessToken");
+const decodeConsents = decodeRows(Schema.decodeUnknownOption(ConsentRow), "oauthConsent");
+const decodeApplications = decodeRows(
+  Schema.decodeUnknownOption(ApplicationRow),
+  "oauthApplication",
+);
+const decodeSessions = decodeRows(Schema.decodeUnknownOption(SessionRow), "session");
+
+const toMs = (value: unknown): number | null => {
+  const ms =
+    value instanceof Date
+      ? value.getTime()
+      : typeof value === "string" || typeof value === "number"
+        ? new Date(value).getTime()
+        : Number.NaN;
   return Number.isNaN(ms) ? null : ms;
 };
 
@@ -129,18 +201,16 @@ const adapterOf = Effect.gen(function* () {
 const read = <A>(op: string, run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: () => new AccessError({ message: `Failed to ${op}` }) });
 
-const undecodable = (op: string) => () => new AccessError({ message: `Unreadable rows (${op})` });
-
 /** The MCP OAuth clients holding a token or a consent for this user. */
 const listOAuthClients = (adapter: Adapter, userId: string, now: number) =>
   Effect.gen(function* () {
     const byUser = [{ field: "userId", value: userId }];
     const tokens = yield* read("list OAuth tokens", () =>
       adapter.findMany({ model: "oauthAccessToken", where: byUser, limit: ROW_LIMIT }),
-    ).pipe(Effect.flatMap(decodeTokens), Effect.mapError(undecodable("oauthAccessToken")));
+    ).pipe(Effect.flatMap(decodeTokens));
     const consents = yield* read("list OAuth consents", () =>
       adapter.findMany({ model: "oauthConsent", where: byUser, limit: ROW_LIMIT }),
-    ).pipe(Effect.flatMap(decodeConsents), Effect.mapError(undecodable("oauthConsent")));
+    ).pipe(Effect.flatMap(decodeConsents));
 
     const clientIds = [...new Set([...tokens, ...consents].map((row) => row.clientId))];
     if (clientIds.length === 0) return [];
@@ -150,7 +220,7 @@ const listOAuthClients = (adapter: Adapter, userId: string, now: number) =>
         where: [{ field: "clientId", operator: "in", value: clientIds }],
         limit: clientIds.length,
       }),
-    ).pipe(Effect.flatMap(decodeApplications), Effect.mapError(undecodable("oauthApplication")));
+    ).pipe(Effect.flatMap(decodeApplications));
     const appById = new Map(applications.map((app) => [app.clientId, app]));
 
     const entries = clientIds.map((clientId): typeof OAuthClientEntry.Type => {
@@ -174,13 +244,20 @@ const listOAuthClients = (adapter: Adapter, userId: string, now: number) =>
     return entries.sort((a, b) => (b.lastAuthorizedAt ?? 0) - (a.lastAuthorizedAt ?? 0));
   });
 
-const listSessions = (headers: Headers, caller: Caller, now: number) =>
+/** The caller's session rows, straight from the adapter — the same read path
+ *  as the OAuth rows, so the two lists agree on what a row looks like. */
+const sessionRowsOf = (adapter: Adapter, userId: string) =>
+  read("list sessions", () =>
+    adapter.findMany({
+      model: "session",
+      where: [{ field: "userId", value: userId }],
+      limit: ROW_LIMIT,
+    }),
+  ).pipe(Effect.flatMap(decodeSessions));
+
+const listSessions = (adapter: Adapter, caller: Caller, now: number) =>
   Effect.gen(function* () {
-    const { auth } = yield* BetterAuth;
-    const sessions = yield* read("list sessions", () => auth.api.listSessions({ headers })).pipe(
-      Effect.flatMap(decodeSessions),
-      Effect.mapError(undecodable("session")),
-    );
+    const sessions = yield* sessionRowsOf(adapter, caller.userId);
     return sessions
       .map((session): typeof SessionEntry.Type => ({
         id: session.id,
@@ -206,7 +283,7 @@ const makeAccessHandlers = (allowedOrigins: ReadonlySet<string>) =>
           const now = Date.now();
           return {
             oauthClients: yield* listOAuthClients(adapter, caller.userId, now),
-            sessions: yield* listSessions(headers, caller, now),
+            sessions: yield* listSessions(adapter, caller, now),
           };
         }),
       )
@@ -246,11 +323,10 @@ const makeAccessHandlers = (allowedOrigins: ReadonlySet<string>) =>
             });
           }
           const { auth } = yield* BetterAuth;
+          const adapter = yield* adapterOf;
           // Better Auth revokes by token and checks ownership itself; the id →
-          // token lookup happens here, server-side, over the caller's own list.
-          const sessions = yield* read("list sessions", () =>
-            auth.api.listSessions({ headers }),
-          ).pipe(Effect.flatMap(decodeSessions), Effect.mapError(undecodable("session")));
+          // token lookup happens here, server-side, over the caller's own rows.
+          const sessions = yield* sessionRowsOf(adapter, caller.userId);
           const target = sessions.find((session) => session.id === params.sessionId);
           if (!target) return yield* new AccessNotFound();
           yield* read("revoke session", () =>
