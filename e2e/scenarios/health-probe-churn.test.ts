@@ -208,8 +208,14 @@ scenario(
         const health: string[] = [];
         const lists: string[] = [];
         let aborted = 0;
+        // Only THIS scenario's connections count. Targets that share one org
+        // across scenarios (selfhost) can carry rows another scenario left
+        // behind, and those revalidate too; they are not ours to bound.
+        const seededSlugs = new Set(seeded.map(({ slug }) => String(slug)));
         const isHealth = (method: string, url: string) =>
-          method === "POST" && url.includes("/api/connections/") && url.includes("/health");
+          method === "POST" &&
+          url.includes("/health") &&
+          [...seededSlugs].some((slug) => url.includes(`/api/connections/org/${slug}/`));
         const isList = (method: string, url: string) =>
           method === "GET" && /\/api\/connections(\?|$)/.test(url);
         page.on("request", (request) => {
