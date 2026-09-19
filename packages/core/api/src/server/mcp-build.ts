@@ -15,7 +15,12 @@ import {
 import { ErrorCapture } from "../observability";
 import { CodeExecutorProvider, EngineDecorator, makeExecutionStack } from "./execution-stack";
 import { DbProvider } from "./executor-fuma-db";
-import { HostConfig, PluginsProvider, RequestOrgSlug } from "./scoped-executor";
+import {
+  HostConfig,
+  PluginsProvider,
+  provideRequestCaller,
+  RequestOrgSlug,
+} from "./scoped-executor";
 
 // ---------------------------------------------------------------------------
 // Shared in-process MCP host helpers.
@@ -64,6 +69,10 @@ export const makeMcpBuildServer =
       principal.organizationSlug !== undefined
         ? Effect.provideService(RequestOrgSlug, { slug: principal.organizationSlug })
         : (effect) => effect,
+      // The credential that opened this MCP session (an OAuth client, an API
+      // key), stamped on every tool call it makes. A session is built once per
+      // connection, so this is the client for the session's whole life.
+      provideRequestCaller(principal),
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap(({ engine, executor, webBaseUrl }) =>

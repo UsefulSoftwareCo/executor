@@ -13,6 +13,7 @@ export {
   OAuthHandlers,
   PoliciesHandlers,
   ArtifactsHandlers,
+  ToolCallsHandlers,
   ExecutionsHandlers,
 } from "./handlers";
 export {
@@ -85,10 +86,14 @@ export {
   PluginsProvider,
   RequestWebOrigin,
   RequestOrgSlug,
+  RequestCaller,
+  provideRequestCaller,
+  type CallerSource,
   type HostConfigShape,
   type PluginsProviderShape,
   type RequestWebOriginShape,
   type RequestOrgSlugShape,
+  type RequestCallerShape,
 } from "./server/scoped-executor";
 export { collectTables } from "@executor-js/sdk";
 export {
@@ -102,6 +107,7 @@ export {
   authContextFromPlatform,
   isPlatformPrincipal,
   type Principal,
+  type PrincipalCredential,
   type PlatformPrincipal,
   type ResolvedPrincipal,
   type IdentityProviderShape,

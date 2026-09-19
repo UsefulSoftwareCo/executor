@@ -13,6 +13,7 @@ import {
 
 import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth } from "../auth/better-auth";
+import { makeCredentialNames } from "../auth/credential-names";
 import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
 // ---------------------------------------------------------------------------
@@ -200,6 +201,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
 
       // Resolved once; `internalAdapter.findUserById` enriches an OAuth userId.
       const context = yield* Effect.promise(() => auth.$context);
+      const credentialNames = makeCredentialNames(auth);
 
       /** Enrich a bare OAuth `userId` into the full provider-neutral principal. */
       const principalFromUserId = (userId: string): Effect.Effect<Principal | null> =>
@@ -250,7 +252,19 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
           // GOTCHA: getMcpSession does NOT validate accessTokenExpiresAt — an
           // expired token still resolves. Reject it here.
           if (new Date(session.accessTokenExpiresAt).getTime() < Date.now()) return null;
-          return yield* principalFromUserId(session.userId);
+          const principal = yield* principalFromUserId(session.userId);
+          if (!principal) return null;
+          // The token row names the OAuth client that holds it; its registered
+          // name ("Claude Code", "Cursor") is what the tool call log shows.
+          const clientId = typeof session.clientId === "string" ? session.clientId : null;
+          return {
+            ...principal,
+            credential: {
+              kind: "oauth_client",
+              id: clientId,
+              name: clientId === null ? null : yield* credentialNames.oauthClientName(clientId),
+            },
+          } satisfies Principal;
         }).pipe(Effect.orElseSucceed(() => null));
 
       /** (b) The existing cookie / bearer-session / x-api-key path. The fallback's
