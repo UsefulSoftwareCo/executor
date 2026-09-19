@@ -8,6 +8,7 @@ import type { Integration } from "@executor-js/sdk";
 import {
   integrationsOptimisticAtom,
   TOOL_CALLS_PAGE_SIZE,
+  toolCallClientsAtom,
   toolCallsPageAtom,
   toolCallsPageKey,
   type ToolCallOutcomeFilter,
@@ -41,6 +42,8 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 // made, so nothing upstream ever saw them.
 // ---------------------------------------------------------------------------
 
+type ClientKind = "api_key" | "oauth_client" | "session" | "cli";
+
 type ToolCallRow = {
   readonly id: string;
   readonly address: string;
@@ -51,8 +54,26 @@ type ToolCallRow = {
   readonly errorMessage: string | null;
   readonly policyAction: string | null;
   readonly durationMs: number;
+  readonly actorLabel: string | null;
+  readonly client: {
+    readonly kind: ClientKind;
+    readonly id: string | null;
+    readonly name: string | null;
+  } | null;
   readonly createdAt: number;
 };
+
+/** How the client authenticated, in a word a reader recognises. */
+const CLIENT_KIND_LABEL: Record<ClientKind, string> = {
+  api_key: "API key",
+  oauth_client: "OAuth",
+  session: "Browser",
+  cli: "CLI",
+};
+
+/** The client's own name when it has one, else what kind of credential it was. */
+const clientLabel = (client: NonNullable<ToolCallRow["client"]>): string =>
+  client.name ?? CLIENT_KIND_LABEL[client.kind];
 
 const OUTCOME_VARIANT = {
   ok: "secondary",
@@ -120,24 +141,45 @@ const useIntegrationOptions = () => {
 
 /** Sentinel for "no integration filter" — Select cannot carry an empty value. */
 const ALL_INTEGRATIONS = "__all__";
+/** Same, for the client filter. */
+const ALL_CLIENTS = "__all_clients__";
+
+/** The clients the log has seen, as filter entries. Only named clients can be
+ *  filtered on — the filter matches by name, one agent across registrations. */
+const useClientOptions = () => {
+  const clients = useAtomValue(toolCallClientsAtom);
+  const rows = Option.getOrElse(
+    AsyncResult.value(clients),
+    (): readonly { readonly kind: ClientKind; readonly name: string | null }[] => [],
+  );
+  const seen = new Set<string>();
+  return rows.flatMap((client) => {
+    if (client.name === null || seen.has(client.name)) return [];
+    seen.add(client.name);
+    return [{ name: client.name, kind: client.kind }];
+  });
+};
 
 export function ActivityPage() {
   useExecutorDocumentTitle("Activity");
   const [offset, setOffset] = useState(0);
   const [outcome, setOutcome] = useState<ToolCallOutcomeFilter>("all");
   const [integration, setIntegration] = useState("");
+  const [client, setClient] = useState("");
   const [search, setSearch] = useState("");
   const integrationOptions = useIntegrationOptions();
+  const clientOptions = useClientOptions();
   // Defer the query, not the keystroke: the input stays snappy while the
   // request only fires for the settled value.
   const deferredSearch = useDeferredValue(search.trim());
-  const key = toolCallsPageKey({ offset, outcome, integration, search: deferredSearch });
+  const key = toolCallsPageKey({ offset, outcome, integration, client, search: deferredSearch });
   const calls = useAtomValue(toolCallsPageAtom(key));
   const refresh = useAtomRefresh(toolCallsPageAtom(key));
 
   const setFilter = (next: {
     outcome?: ToolCallOutcomeFilter;
     integration?: string;
+    client?: string;
     search?: string;
   }) => {
     // A new filter is a new list; page 1 is the only offset that means
@@ -145,6 +187,7 @@ export function ActivityPage() {
     setOffset(0);
     if (next.outcome !== undefined) setOutcome(next.outcome);
     if (next.integration !== undefined) setIntegration(next.integration);
+    if (next.client !== undefined) setClient(next.client);
     if (next.search !== undefined) setSearch(next.search);
   };
 
@@ -192,6 +235,27 @@ export function ActivityPage() {
               ))}
             </SelectContent>
           </Select>
+          <Select
+            value={client === "" ? ALL_CLIENTS : client}
+            onValueChange={(value) => setFilter({ client: value === ALL_CLIENTS ? "" : value })}
+          >
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue placeholder="All clients" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_CLIENTS}>All clients</SelectItem>
+              {clientOptions.map((option) => (
+                <SelectItem key={option.name} value={option.name}>
+                  <span className="flex items-center gap-2">
+                    {option.name}
+                    <span className="text-xs text-muted-foreground">
+                      {CLIENT_KIND_LABEL[option.kind]}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Input
             type="text"
             value={search}
@@ -218,7 +282,9 @@ export function ActivityPage() {
               <ActivityTable
                 calls={rows}
                 onFirstPage={offset === 0}
-                filtered={outcome !== "all" || integration !== "" || deferredSearch !== ""}
+                filtered={
+                  outcome !== "all" || integration !== "" || client !== "" || deferredSearch !== ""
+                }
               />
               {(hasNext || offset > 0) && (
                 <div className="mt-4 flex items-center justify-between">
@@ -285,12 +351,17 @@ function ActivityTable({
     );
   }
 
+  // On a single-member instance every row names the same person, which is
+  // noise; the member is only worth showing once a page holds more than one.
+  const showActor = new Set(calls.map((call) => call.actorLabel).filter(Boolean)).size > 1;
+
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead>When</TableHead>
           <TableHead>Tool</TableHead>
+          <TableHead>Client</TableHead>
           <TableHead>Outcome</TableHead>
           <TableHead>Detail</TableHead>
           <TableHead className="text-right">Duration</TableHead>
@@ -306,6 +377,26 @@ function ActivityTable({
               <span className="font-medium">{call.tool ?? call.address}</span>
               {call.integration ? (
                 <span className="ml-2 text-muted-foreground">{call.integration}</span>
+              ) : null}
+            </TableCell>
+            <TableCell
+              className="whitespace-nowrap"
+              title={call.actorLabel ? `Run by ${call.actorLabel}` : undefined}
+            >
+              {call.client ? (
+                <>
+                  <span>{clientLabel(call.client)}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {CLIENT_KIND_LABEL[call.client.kind]}
+                  </span>
+                </>
+              ) : (
+                // Recorded before the client was kept, or by a host that
+                // cannot tell.
+                <span className="text-muted-foreground">—</span>
+              )}
+              {showActor && call.actorLabel ? (
+                <div className="text-xs text-muted-foreground">{call.actorLabel}</div>
               ) : null}
             </TableCell>
             <TableCell>

@@ -229,17 +229,26 @@ export { sanitizeArtifactPreviewMarkup, ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./
 // Tool call log — the audit trail behind `executor.toolCalls`.
 export {
   clampToolCallLimit,
+  cleanToolCallLabel,
+  isToolCallClientKind,
   rowToToolCall,
   toolCallArgKeys,
   toolCallOutcome,
   TOOL_CALL_ARG_KEY_LIMIT,
   TOOL_CALL_ARG_KEY_MAX_LENGTH,
+  TOOL_CALL_CLIENT_KINDS,
+  TOOL_CALL_CLIENTS_WINDOW,
+  TOOL_CALL_LABEL_LIMIT,
   TOOL_CALL_LIST_DEFAULT_LIMIT,
   TOOL_CALL_LIST_MAX_LIMIT,
   TOOL_CALL_MESSAGE_LIMIT,
   type ListToolCallsInput,
   type PruneToolCallsInput,
   type ToolCall,
+  type ToolCallCaller,
+  type ToolCallClient,
+  type ToolCallClientKind,
+  type ToolCallClientSummary,
   type ToolCallOutcomeSummary,
 } from "./tool-call-log";
 

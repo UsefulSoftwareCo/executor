@@ -208,5 +208,45 @@ test("MCP OAuth opaque-bearer flow authenticates /mcp end-to-end", async () => {
     }),
   );
   expect(init.status).toBe(200);
-  expect(init.headers.get("mcp-session-id")).not.toBe(null);
+  const sessionId = init.headers.get("mcp-session-id");
+  expect(sessionId).not.toBe(null);
+
+  // 5. A tool call over that session is recorded under the OAuth client that
+  // made it — by the name it registered — so the audit shows which agent ran
+  // it, not only which member.
+  const mcpPost = (body: unknown) =>
+    handler(
+      new Request(`${BASE}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-session-id": sessionId ?? "",
+          "mcp-protocol-version": "2025-03-26",
+        },
+        body: JSON.stringify(body),
+      }),
+    );
+  await (await mcpPost({ jsonrpc: "2.0", method: "notifications/initialized" })).text();
+  const call = await mcpPost({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "execute",
+      arguments: { code: "return await tools.executor.coreTools.policies.list({})" },
+    },
+  });
+  expect(call.status).toBe(200);
+  await call.text();
+
+  const log = await handler(new Request(`${BASE}/api/tool-calls`, { headers: { cookie } }));
+  expect(log.status).toBe(200);
+  const rows = (await log.json()) as readonly { readonly client: unknown }[];
+  expect(rows.map((row) => row.client)).toContainEqual({
+    kind: "oauth_client",
+    id: clientId,
+    name: "test-client",
+  });
 });

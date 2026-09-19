@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import type { ToolCall } from "@executor-js/sdk";
+import type { ToolCall, ToolCallClientSummary } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -20,26 +20,47 @@ const toResponse = (call: ToolCall) => ({
   policyPattern: call.policyPattern,
   durationMs: call.durationMs,
   argKeys: call.argKeys,
+  actor: call.actor,
+  actorLabel: call.actorLabel,
+  client: call.client,
   createdAt: call.createdAt.getTime(),
 });
 
+const toClientResponse = (client: ToolCallClientSummary) => ({
+  kind: client.kind,
+  name: client.name,
+  calls: client.calls,
+  lastCallAt: client.lastCallAt.getTime(),
+});
+
 export const ToolCallsHandlers = HttpApiBuilder.group(ExecutorApi, "toolCalls", (handlers) =>
-  handlers.handle("list", ({ query }) =>
-    capture(
-      Effect.gen(function* () {
-        const executor = yield* ExecutorService;
-        const calls = yield* executor.toolCalls.list({
-          integration: query.integration,
-          connection: query.connection,
-          outcome: query.outcome,
-          // Epoch ms on the wire; the executor filters on a Date.
-          since: query.since === undefined ? undefined : new Date(query.since),
-          limit: query.limit,
-          offset: query.offset,
-          search: query.search,
-        });
-        return calls.map(toResponse);
-      }),
+  handlers
+    .handle("list", ({ query }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const calls = yield* executor.toolCalls.list({
+            integration: query.integration,
+            connection: query.connection,
+            outcome: query.outcome,
+            // Epoch ms on the wire; the executor filters on a Date.
+            since: query.since === undefined ? undefined : new Date(query.since),
+            limit: query.limit,
+            offset: query.offset,
+            search: query.search,
+            clientName: query.client,
+          });
+          return calls.map(toResponse);
+        }),
+      ),
+    )
+    .handle("clients", () =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const clients = yield* executor.toolCalls.clients();
+          return clients.map(toClientResponse);
+        }),
+      ),
     ),
-  ),
 );

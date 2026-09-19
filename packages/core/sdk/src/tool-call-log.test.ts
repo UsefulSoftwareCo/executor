@@ -22,11 +22,14 @@ import { makeTestExecutor } from "./testing";
 import { ToolResult } from "./tool-result";
 import {
   clampToolCallLimit,
+  cleanToolCallLabel,
   toolCallArgKeys,
   toolCallOutcome,
   TOOL_CALL_ARG_KEY_LIMIT,
+  TOOL_CALL_LABEL_LIMIT,
   TOOL_CALL_LIST_DEFAULT_LIMIT,
   TOOL_CALL_LIST_MAX_LIMIT,
+  type ToolCallCaller,
 } from "./tool-call-log";
 
 // ---------------------------------------------------------------------------
@@ -147,6 +150,30 @@ describe("toolCallArgKeys", () => {
   });
 });
 
+describe("cleanToolCallLabel", () => {
+  it("keeps an ordinary label as it is", () => {
+    expect(cleanToolCallLabel("Claude Code (executor)")).toBe("Claude Code (executor)");
+  });
+
+  it("strips control characters and collapses whitespace", () => {
+    // An OAuth client names itself at registration: the label is whatever it
+    // sent, and it is rendered in the console.
+    expect(cleanToolCallLabel("Evil\x00Client\n\t  name\x1b[31m")).toBe("Evil Client name [31m");
+  });
+
+  it("bounds a label a client made too long", () => {
+    const label = cleanToolCallLabel("x".repeat(500));
+    expect(label).toHaveLength(TOOL_CALL_LABEL_LIMIT + 1);
+    expect(label?.endsWith("…")).toBe(true);
+  });
+
+  it("has nothing to say about an absent or blank label", () => {
+    expect(cleanToolCallLabel(null)).toBeNull();
+    expect(cleanToolCallLabel(undefined)).toBeNull();
+    expect(cleanToolCallLabel(" \n\t ")).toBeNull();
+  });
+});
+
 describe("clampToolCallLimit", () => {
   it("defaults, floors and caps", () => {
     expect(clampToolCallLimit(undefined)).toBe(TOOL_CALL_LIST_DEFAULT_LIMIT);
@@ -206,8 +233,11 @@ const logTestPlugin = definePlugin(() => ({
 const decliningHandler: ElicitationHandler = () =>
   Effect.succeed(ElicitationResponse.make({ action: "decline" }));
 
-const setupExecutor = () =>
-  makeTestExecutor({ plugins: [logTestPlugin()] as const }).pipe(
+const setupExecutor = (caller?: ToolCallCaller) =>
+  makeTestExecutor({
+    plugins: [logTestPlugin()] as const,
+    ...(caller === undefined ? {} : { caller }),
+  }).pipe(
     Effect.tap((executor) =>
       Effect.gen(function* () {
         yield* executor.logtest.seed();
@@ -295,6 +325,80 @@ describe("executor.toolCalls", () => {
       const [call] = yield* executor.toolCalls.list();
       expect(call?.outcome).toBe("declined");
       expect(call?.errorCode).toBe("approval_declined");
+    }),
+  );
+
+  it.effect("records which client made the call, as the host named it", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor({
+        kind: "oauth_client",
+        id: "client_abc123",
+        name: "Claude Code (executor)",
+        actorLabel: "owner@example.com",
+      });
+      yield* executor.execute(addr("get"), {});
+
+      const [call] = yield* executor.toolCalls.list();
+      expect(call?.client).toEqual({
+        kind: "oauth_client",
+        id: "client_abc123",
+        name: "Claude Code (executor)",
+      });
+      expect(call?.actorLabel).toBe("owner@example.com");
+    }),
+  );
+
+  it.effect("keeps the member behind a call on an org connection", () =>
+    Effect.gen(function* () {
+      // The connection in `setupExecutor` is org-owned, so the row files under
+      // the org (subject "") — the tier alone no longer says who ran it.
+      const executor = yield* setupExecutor();
+      yield* executor.execute(addr("get"), {});
+
+      const [call] = yield* executor.toolCalls.list();
+      expect(call?.owner).toBe("org");
+      expect(call?.actor).toBe("test-subject");
+    }),
+  );
+
+  it.effect("records no client when the host did not say", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      yield* executor.execute(addr("get"), {});
+
+      const [call] = yield* executor.toolCalls.list();
+      expect(call?.client).toBeNull();
+      expect(call?.actorLabel).toBeNull();
+    }),
+  );
+
+  it.effect("cleans a client's self-chosen name before storing it", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor({
+        kind: "oauth_client",
+        id: "client_x",
+        name: `<script>\x00${"a".repeat(400)}`,
+      });
+      yield* executor.execute(addr("get"), {});
+
+      const [call] = yield* executor.toolCalls.list();
+      expect(call?.client?.name).not.toContain("\x00");
+      expect(call?.client?.name?.length).toBeLessThanOrEqual(TOOL_CALL_LABEL_LIMIT + 1);
+    }),
+  );
+
+  it.effect("filters by client name and lists the clients it has seen", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor({ kind: "api_key", id: "key_1", name: "jean-mcp" });
+      yield* executor.execute(addr("get"), {});
+      yield* executor.execute(addr("missing"), {});
+
+      expect(yield* executor.toolCalls.list({ clientName: "jean-mcp" })).toHaveLength(2);
+      expect(yield* executor.toolCalls.list({ clientName: "Cursor" })).toHaveLength(0);
+
+      const clients = yield* executor.toolCalls.clients();
+      expect(clients).toHaveLength(1);
+      expect(clients[0]).toMatchObject({ kind: "api_key", name: "jean-mcp", calls: 2 });
     }),
   );
 

@@ -1,5 +1,5 @@
 {
-  "id": "661ccd08-9062-4b66-a2ae-fb1ac91979b3",
+  "id": "9fe4b072-0e39-4a7c-903a-e7d44c64401d",
   "prevId": "88f2845b-be28-4ad3-92b2-2cac819478e5",
   "version": "7",
   "dialect": "postgresql",
@@ -1711,6 +1711,36 @@
         "arg_keys": {
           "name": "arg_keys",
           "type": "json",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor": {
+          "name": "actor",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor_label": {
+          "name": "actor_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_kind": {
+          "name": "client_kind",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_name": {
+          "name": "client_name",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

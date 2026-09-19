@@ -26,6 +26,83 @@ import { isToolResult } from "./tool-result";
 import type { Owner } from "./ids";
 import type { ToolCallLogRow, ToolCallOutcome } from "./core-schema";
 
+/**
+ * How the caller authenticated, as far as the host could tell:
+ *
+ *   - `api_key`      a personal API key presented as a bearer token
+ *   - `oauth_client` an MCP client that signed in over OAuth (Claude Code,
+ *                    Cursor, Codex, …) — named by its own registration
+ *   - `session`      the browser console, on the signed-in user's cookie
+ *   - `cli`          a CLI login (device authorization) bearer session
+ */
+export type ToolCallClientKind = "api_key" | "oauth_client" | "session" | "cli";
+
+export const TOOL_CALL_CLIENT_KINDS = [
+  "api_key",
+  "oauth_client",
+  "session",
+  "cli",
+] as const satisfies readonly ToolCallClientKind[];
+
+/**
+ * Who is calling, handed to the executor by the host — the only layer that
+ * sees the credential. Stamped onto every audit row the executor writes, so a
+ * row answers "which agent did this" and not just "which user".
+ */
+export interface ToolCallCaller {
+  readonly kind: ToolCallClientKind;
+  /** The credential's own id (API key id, OAuth client id); null when the
+   *  credential has none worth keeping (a browser session). */
+  readonly id: string | null;
+  /** Human label: the API key's name, the OAuth client's registered name. */
+  readonly name: string | null;
+  /** The acting member as a human reads it (email, else display name). */
+  readonly actorLabel?: string | null;
+}
+
+/** The client behind a recorded call. */
+export interface ToolCallClient {
+  readonly kind: ToolCallClientKind;
+  readonly id: string | null;
+  readonly name: string | null;
+}
+
+/** One distinct client seen in the log, for a filter or a report. */
+export interface ToolCallClientSummary {
+  readonly kind: ToolCallClientKind;
+  readonly name: string | null;
+  readonly calls: number;
+  readonly lastCallAt: Date;
+}
+
+/** How many of the newest calls `toolCalls.clients()` looks at. A client with
+ *  no call in that window is not one a filter needs to offer. */
+export const TOOL_CALL_CLIENTS_WINDOW = 5000;
+
+/** Longest label kept. An OAuth client names itself at registration, so this
+ *  is caller-controlled text and is bounded like any other. */
+export const TOOL_CALL_LABEL_LIMIT = 80;
+
+// oxlint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHARACTERS = /[\x00-\x1f\x7f-\x9f]/g;
+
+/**
+ * Clean a label before it is stored: collapse whitespace, drop control
+ * characters, bound the length. An OAuth `client_name` is whatever the client
+ * registered, and it ends up rendered in the console.
+ */
+export const cleanToolCallLabel = (value: string | null | undefined): string | null => {
+  if (value == null) return null;
+  const cleaned = value.replace(CONTROL_CHARACTERS, " ").replace(/\s+/g, " ").trim();
+  if (cleaned.length === 0) return null;
+  return cleaned.length > TOOL_CALL_LABEL_LIMIT
+    ? `${cleaned.slice(0, TOOL_CALL_LABEL_LIMIT)}…`
+    : cleaned;
+};
+
+export const isToolCallClientKind = (value: unknown): value is ToolCallClientKind =>
+  value === "api_key" || value === "oauth_client" || value === "session" || value === "cli";
+
 /** One recorded call, as callers read it back. */
 export interface ToolCall {
   readonly id: string;
@@ -45,6 +122,13 @@ export interface ToolCall {
   readonly durationMs: number;
   /** Top-level argument names, never their values. */
   readonly argKeys: readonly string[] | null;
+  /** The member who ran the call (subject id), even when the row is owned by
+   *  the org. Null for rows written before this was recorded. */
+  readonly actor: string | null;
+  readonly actorLabel: string | null;
+  /** The credential the call came in on. Null for rows written before this
+   *  was recorded, or by a host that does not say. */
+  readonly client: ToolCallClient | null;
   readonly createdAt: Date;
 }
 
@@ -62,6 +146,10 @@ export interface ListToolCallsInput {
   /** Substring match on the address as called — the one free-text field a row
    *  has that is safe to search: this file wrote it, not an upstream. */
   readonly search?: string;
+  /** Only calls that came in on a client with this name ("Claude Code"). By
+   *  name, not id: one client re-registers under a new id, and the question
+   *  is what the agent did, not which registration it used. */
+  readonly clientName?: string;
 }
 
 export interface PruneToolCallsInput {
@@ -242,5 +330,14 @@ export const rowToToolCall = (row: ToolCallLogRow): ToolCall => ({
   policyPattern: row.policy_pattern == null ? null : String(row.policy_pattern),
   durationMs: Number(row.duration_ms ?? 0),
   argKeys: decodeArgKeys(row.arg_keys),
+  actor: row.actor == null || row.actor === "" ? null : String(row.actor),
+  actorLabel: row.actor_label == null ? null : String(row.actor_label),
+  client: isToolCallClientKind(row.client_kind)
+    ? {
+        kind: row.client_kind,
+        id: row.client_id == null ? null : String(row.client_id),
+        name: row.client_name == null ? null : String(row.client_name),
+      }
+    : null,
   createdAt: row.created_at instanceof Date ? row.created_at : new Date(String(row.created_at)),
 });

@@ -35,12 +35,17 @@ import { makeFumaBlobStore, pluginBlobStore, type BlobStore, type OwnerPartition
 import { makePendingApprovalStore, type PendingApprovalStore } from "./pending-approval";
 import {
   clampToolCallLimit,
+  cleanToolCallLabel,
+  isToolCallClientKind,
+  TOOL_CALL_CLIENTS_WINDOW,
   rowToToolCall,
   toolCallArgKeys,
   toolCallOutcome,
   type ListToolCallsInput,
   type PruneToolCallsInput,
   type ToolCall,
+  type ToolCallCaller,
+  type ToolCallClientSummary,
 } from "./tool-call-log";
 import { coreToolsPlugin } from "./core-tools";
 import type {
@@ -522,6 +527,9 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     ) => Effect.Effect<readonly ToolCall[], StorageFailure>;
     /** Drop rows older than `before`. Retention is the host's policy to set. */
     readonly prune: (input: PruneToolCallsInput) => Effect.Effect<void, StorageFailure>;
+    /** The distinct clients seen in the visible log, most recently active
+     *  first — the choices for a "which agent" filter. */
+    readonly clients: () => Effect.Effect<readonly ToolCallClientSummary[], StorageFailure>;
   };
 
   readonly artifacts: {
@@ -875,6 +883,14 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * like `platformView`'s blanket `writes: "denied"`.
    */
   readonly orgWrites?: OrgWriteAccess | "request";
+  /**
+   * Which credential this executor acts for — an API key, an OAuth-connected
+   * MCP client, the browser console. Stamped onto every tool call log row, so
+   * the audit answers "which agent" and not only "which user". Only the host
+   * sees the credential, so only the host can say; omit it and rows record
+   * the member alone.
+   */
+  readonly caller?: ToolCallCaller;
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -1942,6 +1958,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const tenant = String(config.tenant);
     const subject = config.subject != null ? String(config.subject) : null;
+    // Who is calling, as the host resolved it (see ExecutorConfig.caller).
+    const caller = config.caller;
 
     const ownerBinding: OwnerBinding = {
       tenant: config.tenant,
@@ -6307,6 +6325,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           policy_pattern: policy?.pattern ?? null,
           duration_ms: durationMs,
           arg_keys: toolCallArgKeys(args),
+          // The member who ran it, even when the row files under the org.
+          actor: subject,
+          actor_label: cleanToolCallLabel(caller?.actorLabel),
+          client_kind: caller?.kind ?? null,
+          client_id: caller ? cleanToolCallLabel(caller.id) : null,
+          client_name: caller ? cleanToolCallLabel(caller.name) : null,
           created_at: new Date(),
         });
       });
@@ -6341,6 +6365,47 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         where: (b: AnyCb) => b("created_at", "<", input.before),
       });
 
+    /**
+     * The distinct clients behind the visible log, most recently active first.
+     *
+     * Grouped in memory over a bounded newest-first window rather than with a
+     * GROUP BY: the storage layer has no aggregate query, and a client that
+     * made no call in the last `TOOL_CALL_CLIENTS_WINDOW` calls is not one a
+     * filter needs to offer. Grouped by (kind, name), not id — one client
+     * re-registers under a new OAuth id, and the reader wants the agent.
+     */
+    const toolCallLogClients = (): Effect.Effect<
+      readonly ToolCallClientSummary[],
+      StorageFailure
+    > =>
+      core
+        .findMany("tool_call_log", {
+          where: (b: AnyCb) => b("client_kind", "is not", null),
+          orderBy: [["created_at", "desc"]],
+          limit: TOOL_CALL_CLIENTS_WINDOW,
+          select: ["client_kind", "client_name", "created_at"],
+        })
+        .pipe(
+          Effect.map((rows) => {
+            const byClient = new Map<string, ToolCallClientSummary>();
+            for (const row of rows) {
+              if (!isToolCallClientKind(row.client_kind)) continue;
+              const name = row.client_name == null ? null : String(row.client_name);
+              const key = `${row.client_kind}:${name ?? ""}`;
+              const at =
+                row.created_at instanceof Date ? row.created_at : new Date(String(row.created_at));
+              const seen = byClient.get(key);
+              byClient.set(
+                key,
+                seen
+                  ? { ...seen, calls: seen.calls + 1 }
+                  : { kind: row.client_kind, name, calls: 1, lastCallAt: at },
+              );
+            }
+            return [...byClient.values()];
+          }),
+        );
+
     const toolCallLogWhere = (input?: ListToolCallsInput): CoreWhere | undefined => {
       const clauses: readonly ((b: AnyCb) => Condition)[] = [
         ...(input?.integration ? [(b: AnyCb) => b("integration", "=", input.integration!)] : []),
@@ -6350,6 +6415,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         ...(input?.connection ? [(b: AnyCb) => b("connection", "=", input.connection!)] : []),
         ...(input?.outcome ? [(b: AnyCb) => b("outcome", "=", input.outcome!)] : []),
         ...(input?.since ? [(b: AnyCb) => b("created_at", ">=", input.since!)] : []),
+        ...(input?.clientName ? [(b: AnyCb) => b("client_name", "=", input.clientName!)] : []),
       ];
       if (clauses.length === 0) return undefined;
       return (b: AnyCb) =>
@@ -7489,7 +7555,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         resolve: policiesResolve,
       },
       ...(admin ? { admin } : {}),
-      toolCalls: { list: toolCallLogList, prune: toolCallLogPrune },
+      toolCalls: { list: toolCallLogList, prune: toolCallLogPrune, clients: toolCallLogClients },
       artifacts: {
         list: artifactsList,
         get: artifactsGet,

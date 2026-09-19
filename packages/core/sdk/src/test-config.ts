@@ -139,6 +139,8 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
    *  with no role model. */
   readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
   readonly waitUntil?: ExecutorConfig<TPlugins>["waitUntil"];
+  /** The credential the executor acts for (see `ExecutorConfig.caller`). */
+  readonly caller?: ExecutorConfig<TPlugins>["caller"];
 };
 
 export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = readonly []>(
@@ -183,6 +185,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     firstPartyOAuthClients: options?.firstPartyOAuthClients,
     enterpriseManagedRollout: options?.enterpriseManagedRollout,
     waitUntil: options?.waitUntil,
+    ...(options?.caller === undefined ? {} : { caller: options.caller }),
   };
 };
 

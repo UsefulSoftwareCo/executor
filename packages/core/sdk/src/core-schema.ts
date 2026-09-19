@@ -419,6 +419,22 @@ export const coreTables = defineTables({
       duration_ms: bigintColumn("duration_ms"),
       // Top-level argument names only — never their values.
       arg_keys: nullableJsonColumn("arg_keys"),
+      // WHO ran the call, independent of the tier the row files under. A call
+      // on an org connection is owned by the org (subject "") so the whole
+      // workspace reads it — which on its own loses the member behind it.
+      // `actor` keeps that member's subject id; `actor_label` the name the
+      // host resolved (email, else display name), so a report reads without a
+      // user lookup. Null for a subject-less (platform) executor.
+      actor: nullableKeyColumn("actor"),
+      actor_label: nullableTextColumn("actor_label"),
+      // WHICH credential the caller presented — see ToolCallClientKind.
+      // `client_id` is the credential's own id (the API key id, the OAuth
+      // client id), `client_name` its human label ("jean-mcp", "Claude
+      // Code"). Only the host sees the credential, so the host stamps these;
+      // null when it did not say (older rows, hosts without the seam).
+      client_kind: nullableKeyColumn("client_kind"),
+      client_id: nullableKeyColumn("client_id"),
+      client_name: nullableTextColumn("client_name"),
       created_at: dateColumn("created_at"),
     },
     // The conventional owned-table key. Note what it does NOT do: a subject's

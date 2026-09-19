@@ -244,6 +244,11 @@ export const tool_call_log = pgTable(
     policy_pattern: text("policy_pattern"),
     duration_ms: bigint("duration_ms", { mode: "bigint" }).notNull(),
     arg_keys: json("arg_keys"),
+    actor: varchar("actor", { length: 255 }),
+    actor_label: text("actor_label"),
+    client_kind: varchar("client_kind", { length: 255 }),
+    client_id: varchar("client_id", { length: 255 }),
+    client_name: text("client_name"),
     created_at: timestamp("created_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
       .primaryKey()
