@@ -25,6 +25,33 @@ export const displayName = () =>
       ? "Windows Credential Manager"
       : "Desktop Keyring";
 
+/**
+ * Why the keychain may or may not be usable as the DEFAULT credential store.
+ *
+ * Platform truth, encoded: on macOS/Windows the OS keychain is a durable,
+ * persistent store. On Linux, `isSupportedPlatform()` is true but the
+ * backing secret-service daemon may be absent (WSL2, headless CI,
+ * containers) — in those environments the keyring degrades to an in-memory
+ * keyring that a stop/recreate wipes, while only EXECUTOR_DATA_DIR is
+ * persisted. The host (apps/local) uses this to decide whether keychain or
+ * the file store should be the default for minted OAuth tokens.
+ */
+export type KeychainAvailability =
+  | { readonly kind: "persistent"; readonly name: string }
+  | { readonly kind: "ephemeral-or-unavailable"; readonly name: string };
+
+export const describeKeychainAvailability = (): KeychainAvailability => {
+  const name = displayName();
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return { kind: "persistent", name };
+  }
+  // Linux: the platform probe (write+delete sentinel) decides at plugin
+  // registration time whether a real secret-service backend is reachable.
+  // We cannot know here; the probe result is authoritative. Report the
+  // platform capability honestly and let the probe's reachable flag decide.
+  return { kind: "ephemeral-or-unavailable", name };
+};
+
 export const resolveServiceName = (explicit?: string): string =>
   explicit?.trim() || process.env[SERVICE_NAME_ENV]?.trim() || DEFAULT_SERVICE_NAME;
 
