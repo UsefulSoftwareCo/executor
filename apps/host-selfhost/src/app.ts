@@ -13,6 +13,7 @@ import { runSqliteDataMigrations } from "@executor-js/sdk";
 
 import { resolveAuthProviders } from "./auth";
 import { selfHostDataMigrations } from "./db/data-migrations";
+import { makeSelfHostAccessApiLayer } from "./access/handlers";
 import { makeSelfHostAdminApiLayer } from "./admin/handlers";
 import { makeSelfHostAdminUsersApiLayer } from "./admin/admin-users-api";
 import { makeSelfHostSystemApiLayer } from "./system/handlers";
@@ -128,6 +129,13 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(mcp.approvalHandler)),
         // App-local admin (invite-code) API, served under /api/admin/*.
         makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        // Connected clients (/api/access/*): the signed-in user's own MCP OAuth
+        // clients and browser sessions, with revoke. Browser-session only.
+        makeSelfHostAccessApiLayer({
+          betterAuth,
+          mountPrefix: "/api",
+          trustedOrigins: [config.webBaseUrl, ...config.trustedOrigins],
+        }),
         // Tenant-wide admin users API (/api/admin/users*): the owner's view of
         // who uses this instance and what they've connected. Owner/admin-gated,
         // same as the invite routes above.
