@@ -141,8 +141,17 @@ const matchers: Record<SchemaType, (schema: JSONSchema) => boolean> = {
     }
     return "enum" in schema;
   },
-  UNNAMED_SCHEMA() {
-    return false; // Explicitly handled as the default case
+  UNNAMED_SCHEMA(schema) {
+    // Sibling object keywords still constrain a composed schema. `$id` schemas
+    // already join the composition through NAMED_SCHEMA; match inline ones here
+    // so the parser builds the same intersection. Type arrays are handled by
+    // UNION, which applies the object keywords to each member itself.
+    return (
+      !("$id" in schema) &&
+      (schema.type === undefined || schema.type === "object") &&
+      ("allOf" in schema || "anyOf" in schema || "oneOf" in schema) &&
+      ("properties" in schema || "patternProperties" in schema)
+    );
   },
   UNTYPED_ARRAY(schema) {
     return schema.type === "array" && !("items" in schema);
