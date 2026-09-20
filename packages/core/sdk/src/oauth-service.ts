@@ -50,6 +50,7 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   firstPartyOAuthClientAllowsScopes,
+  firstPartyOAuthClientAllowsIntegration,
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
   parseStoredTokenEndpointAuthMethod,
@@ -1559,6 +1560,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         origin: {
           kind: "first_party",
           ...(config.integrations !== undefined ? { integrations: config.integrations } : {}),
+          ...(config.allowedIntegrations !== undefined
+            ? { allowedIntegrations: config.allowedIntegrations }
+            : {}),
           ...(config.allowedScopes !== undefined ? { allowedScopes: config.allowedScopes } : {}),
         },
       }));
@@ -1742,6 +1746,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           message: `OAuth client not found: ${input.client}`,
         });
       }
+      const firstParty = firstPartyFlow ? firstPartyBySlug.get(String(input.client)) : undefined;
+      // Check before scope discovery, any provider request, or session creation.
+      // A shared endpoint does not imply the host app supports this integration.
+      if (
+        firstParty !== undefined &&
+        !firstPartyOAuthClientAllowsIntegration(firstParty, input.integration)
+      ) {
+        return yield* new OAuthStartError({
+          message: `The built-in OAuth app is not enabled for integration ${input.integration}. Choose another OAuth app.`,
+        });
+      }
 
       // Normalize the name the same way the mint stores it, so the free-name
       // guard below compares against the exact stored form.
@@ -1786,7 +1801,6 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               }),
           ),
         );
-      const firstParty = firstPartyFlow ? firstPartyBySlug.get(String(input.client)) : undefined;
       const requestedScopes =
         scopePolicy.kind === "discover"
           ? yield* (() => {
@@ -2219,9 +2233,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         const firstParty = firstPartyBySlug.get(String(session.clientSlug));
         if (
           firstParty !== undefined &&
-          firstParty.allowedScopes !== undefined &&
-          (session.requestedScopes === null ||
-            !firstPartyOAuthClientAllowsScopes(firstParty, session.requestedScopes))
+          (!firstPartyOAuthClientAllowsIntegration(firstParty, session.integration) ||
+            (firstParty.allowedScopes !== undefined &&
+              (session.requestedScopes === null ||
+                !firstPartyOAuthClientAllowsScopes(firstParty, session.requestedScopes))))
         ) {
           return yield* new OAuthCompleteError({
             message: `The built-in OAuth app is no longer enabled for integration ${session.integration}; restart the flow.`,

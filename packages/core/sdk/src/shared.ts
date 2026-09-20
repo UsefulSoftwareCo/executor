@@ -151,6 +151,7 @@ export {
 export {
   FIRST_PARTY_OAUTH_CLIENT_PREFIX,
   firstPartyOAuthClientSlug,
+  firstPartyOAuthClientAllowsIntegration,
   isFirstPartyOAuthClientSlug,
   SubjectTokenTypeSchema,
   DEFAULT_SUBJECT_TOKEN_TYPE,

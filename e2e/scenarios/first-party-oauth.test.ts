@@ -26,7 +26,7 @@ import {
 
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
-import { visit } from "../src/surfaces/browser";
+import { hydrated, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -115,7 +115,10 @@ scenario(
 
       // 2. A start through the first-party slug builds GitHub's authorize URL
       //    from the config identity and this platform's served callback.
-      const integration = IntegrationSlug.make(unique("fpgh"));
+      const integration = IntegrationSlug.make("github_rest");
+      yield* Effect.addFinalizer(() =>
+        client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
+      );
       yield* client.openapi.addSpec({
         payload: { ...githubShapedIntegrationSpec, slug: integration },
       });
@@ -164,6 +167,64 @@ scenario(
       expect(survivors[0]?.clientId, "the impostor never shadowed the host's app").toBe(
         "e2e-first-party-github",
       );
+    }),
+  ),
+);
+
+scenario(
+  "First-party OAuth · a shared GitHub endpoint cannot bypass the integration policy",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      if (target.name !== "cloud") return;
+      const browser = yield* Browser;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+      const integration = IntegrationSlug.make(unique("github_com"));
+      yield* Effect.addFinalizer(() =>
+        client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
+      );
+      yield* client.openapi.addSpec({
+        payload: { ...githubShapedIntegrationSpec, slug: integration },
+      });
+
+      const clients = yield* client.oauth.listClients();
+      const firstParty = clients.find(
+        (candidate) => String(candidate.slug) === "first-party:github",
+      );
+      expect(firstParty?.origin).toMatchObject({
+        kind: "first_party",
+        allowedIntegrations: ["github_rest"],
+      });
+      const blocked = yield* client.oauth
+        .start({
+          payload: {
+            client: OAuthClientSlug.make("first-party:github"),
+            clientOwner: "org",
+            owner: "org",
+            name: ConnectionName.make("blocked"),
+            integration,
+            template: AuthTemplateSlug.make("oauth"),
+          },
+        })
+        .pipe(Effect.flip);
+      expect(blocked).toMatchObject({
+        message: `The built-in OAuth app is not enabled for integration ${integration}. Choose another OAuth app.`,
+      });
+      expect(yield* client.connections.list({ query: { integration } })).toEqual([]);
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Open another integration sharing GitHub's OAuth endpoints", async () => {
+          await visit(page, `/integrations/${integration}?addAccount=1`);
+          await hydrated(page);
+          await page.getByRole("button", { name: "Register app", exact: true }).waitFor();
+          expect(
+            await page.getByRole("button", { name: "Connect with OAuth", exact: true }).isEnabled(),
+          ).toBe(false);
+        });
+      });
     }),
   ),
 );

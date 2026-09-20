@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
 import type * as Tracer from "effect/Tracer";
+import { createExecutor } from "./executor";
 
 import {
   AuthTemplateSlug,
@@ -14,6 +15,7 @@ import {
   firstPartyOAuthClientSlug,
   type FirstPartyOAuthClientConfig,
   type OAuthStartError,
+  type OAuthCompleteError,
 } from "./oauth-client";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
@@ -111,6 +113,113 @@ const firstPartyClientFor = (server: {
 });
 
 describe("first-party oauth clients", () => {
+  // These guards run before contacting a provider; no upstream server is needed.
+  const policyClient = firstPartyClientFor({
+    authorizationEndpoint: "https://oauth.example.invalid/authorize",
+    tokenEndpoint: "https://oauth.example.invalid/token",
+  });
+
+  for (const allowedIntegrations of [[], [IntegrationSlug.make("another_api")]]) {
+    it.effect(`rejects an integration outside policy ${JSON.stringify(allowedIntegrations)}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            plugins,
+            firstPartyOAuthClients: [{ ...policyClient, allowedIntegrations }],
+          });
+          yield* executor.acme.seed();
+          const error = yield* executor.oauth
+            .start({
+              owner: "org",
+              clientOwner: "org",
+              client: FIRST_PARTY,
+              integration: INTEG,
+              template: TEMPLATE,
+              name: ConnectionName.make("blocked"),
+            })
+            .pipe(Effect.flip);
+          expect(Predicate.isTagged("OAuthStartError")(error)).toBe(true);
+          const startError = error as OAuthStartError;
+          expect(startError.message).toContain("Choose another OAuth app");
+          expect(yield* Effect.promise(() => config.db.findMany("oauth_session", {}))).toEqual([]);
+          expect(yield* executor.connections.list()).toEqual([]);
+        }),
+      ),
+    );
+  }
+
+  for (const allowedIntegrations of [undefined, [INTEG]]) {
+    it.effect(
+      `allows authorization with integration policy ${JSON.stringify(allowedIntegrations)}`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { executor } = yield* makeTestWorkspaceHarness({
+              plugins,
+              firstPartyOAuthClients: [{ ...policyClient, integrations: [], allowedIntegrations }],
+            });
+            yield* executor.acme.seed();
+            const started = yield* executor.oauth.start({
+              owner: "org",
+              clientOwner: "org",
+              client: FIRST_PARTY,
+              integration: INTEG,
+              template: TEMPLATE,
+              name: ConnectionName.make("allowed"),
+            });
+            expect(started.status).toBe("redirect");
+            const listed = yield* executor.oauth.listClients();
+            expect(listed[0]?.origin).toEqual({
+              kind: "first_party",
+              integrations: [],
+              ...(allowedIntegrations === undefined ? {} : { allowedIntegrations }),
+            });
+          }),
+        ),
+    );
+  }
+
+  it.effect("rejects an in-flight callback after the host restricts the integration", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, config } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [policyClient],
+        });
+        yield* executor.acme.seed();
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          clientOwner: "org",
+          client: FIRST_PARTY,
+          integration: INTEG,
+          template: TEMPLATE,
+          name: ConnectionName.make("in-flight"),
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const restricted = yield* Effect.acquireRelease(
+          createExecutor({
+            ...config,
+            firstPartyOAuthClients: [{ ...policyClient, allowedIntegrations: [] }],
+          }),
+          (instance) => instance.close().pipe(Effect.ignore),
+        );
+        const error = yield* restricted.oauth
+          .complete({
+            state: started.state,
+            code: "must-not-be-redeemed",
+          })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged("OAuthCompleteError")(error)).toBe(true);
+        const completeError = error as OAuthCompleteError;
+        expect(completeError.restartRequired).toBe(true);
+        expect(completeError.message).toContain("no longer enabled for integration acme");
+        expect(yield* restricted.connections.list()).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect(
     "start → complete through a config-declared client mints an executable connection",
     () => {

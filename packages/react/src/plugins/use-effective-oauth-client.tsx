@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import {
   OAuthClientSlug,
+  firstPartyOAuthClientAllowsIntegration,
   type IntegrationSlug,
   type OAuthClientOrigin,
   type Owner,
@@ -201,6 +202,8 @@ export function selectClientsForEndpoints(
   const manual = all.filter(
     (app) =>
       !isDcrClient(app) &&
+      (app.origin.kind !== "first_party" ||
+        firstPartyOAuthClientAllowsIntegration(app.origin, endpoints.integration)) &&
       firstPartyClientAllowsScopes(app, endpoints.scopes, endpoints.discoversScopes === true),
   );
 

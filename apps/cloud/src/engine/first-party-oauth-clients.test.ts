@@ -77,6 +77,10 @@ describe("cloud first-party OAuth clients", () => {
       tokenEndpointAuthMethod: "basic",
       allowedScopes: expect.arrayContaining(["folder_metadata:read", "folders:read"]),
     });
+    expect(byName.get("github")).toMatchObject({
+      allowedIntegrations: ["github_rest"],
+      authorizationScopes: [],
+    });
     expect(byName.get("hubspot")).toMatchObject({
       tokenUrl: "https://api.hubapi.com/oauth/v3/token",
       authorizationExtraParams: {

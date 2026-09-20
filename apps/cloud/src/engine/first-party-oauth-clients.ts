@@ -270,6 +270,9 @@ export const firstPartyOAuthClientsFor = (
       env.FIRST_PARTY_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize",
     tokenUrl: env.FIRST_PARTY_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
     integrations: [IntegrationSlug.make("github_rest")],
+    // Sharing github.com OAuth endpoints must not offer this app to GitHub
+    // MCP or custom integrations whose capabilities have not been configured.
+    allowedIntegrations: [IntegrationSlug.make("github_rest")],
     // GitHub App user access tokens do not use classic OAuth scopes; their
     // capabilities come from the app's registered permissions.
     authorizationScopes: [],

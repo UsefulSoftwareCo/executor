@@ -165,6 +165,9 @@ export type OAuthClientOrigin =
        *  one Google app deliberately backs gmail, calendar, drive, …. */
       readonly kind: "first_party";
       readonly integrations?: readonly IntegrationSlug[];
+      /** Host-enforced integration allow-list, independent of picker ranking.
+       *  Omitted permits any integration; an empty list permits none. */
+      readonly allowedIntegrations?: readonly IntegrationSlug[];
       /** OAuth scopes this deployment permits the app to request. Omitted means
        *  the provider app is unrestricted; present means every requested scope
        *  must be in this set. This is public policy metadata, not a secret. */
@@ -206,6 +209,12 @@ export interface FirstPartyOAuthClientConfig {
    *  exact-match default for those integrations. Endpoint-host matching still
    *  applies when omitted. */
   readonly integrations?: readonly IntegrationSlug[];
+  /** Integrations permitted to start or complete authorization through this
+   *  app. Unlike `integrations`, this is an authorization boundary, not a
+   *  ranking hint. Omit for provider-wide clients; an empty list denies all
+   *  new authorizations. Existing credentials remain usable and refreshable.
+   *  Slugs are exact: custom or renamed integrations must be listed too. */
+  readonly allowedIntegrations?: readonly IntegrationSlug[];
   /** Scopes sent on the provider authorization request instead of the
    *  integration-declared set. Use an empty array for providers such as
    *  GitHub Apps, whose capabilities are configured on the app and whose OAuth
@@ -271,6 +280,15 @@ export const firstPartyOAuthClientAllowsScopes = (
   const allowed = new Set(config.allowedScopes);
   return requestedScopes.every((scope) => allowed.has(scope));
 };
+
+/** An explicit integration policy fails closed when the picker has not yet
+ *  resolved the integration. Omitted policies retain provider-wide matching. */
+export const firstPartyOAuthClientAllowsIntegration = (
+  config: Pick<FirstPartyOAuthClientConfig, "allowedIntegrations">,
+  integration: IntegrationSlug | undefined,
+): boolean =>
+  config.allowedIntegrations === undefined ||
+  (integration !== undefined && config.allowedIntegrations.includes(integration));
 
 export type CreateOAuthClientInput = OAuthClient & {
   /** Stored-row origins only — `first_party` is config-declared, never created

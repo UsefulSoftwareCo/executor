@@ -38,6 +38,81 @@ const spotify = app("spotify-app", {
 });
 
 describe("selectClientsForEndpoints", () => {
+  const restrictedGitHub = app("first-party:github", {
+    owner: "org",
+    authorizationUrl: "https://github.com/login/oauth/authorize",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    origin: {
+      kind: "first_party",
+      integrations: [IntegrationSlug.make("github_rest")],
+      allowedIntegrations: [IntegrationSlug.make("github_rest")],
+    },
+  });
+
+  for (const endpoints of [
+    { tokenUrl: restrictedGitHub.tokenUrl, integration: IntegrationSlug.make("github_com") },
+    { tokenUrl: "https://api.github.com/token", integration: IntegrationSlug.make("github_com") },
+    { integration: IntegrationSlug.make("github_com") },
+    { tokenUrl: restrictedGitHub.tokenUrl },
+  ]) {
+    it(`hides a restricted app from every picker tier for ${JSON.stringify(endpoints)}`, () => {
+      const result = selectClientsForEndpoints([restrictedGitHub], endpoints);
+      expect(result.matched).toEqual([]);
+      expect(result.nearMatches).toEqual([]);
+      expect(result.unmatched).toEqual([]);
+    });
+  }
+
+  it("keeps supported first-party and manual apps available", () => {
+    const byo = app("byo-github", {
+      authorizationUrl: restrictedGitHub.authorizationUrl,
+      tokenUrl: restrictedGitHub.tokenUrl,
+    });
+    const endpoints = { tokenUrl: restrictedGitHub.tokenUrl };
+    expect(
+      selectClientsForEndpoints([restrictedGitHub, byo], {
+        ...endpoints,
+        integration: IntegrationSlug.make("github_rest"),
+      }).matched,
+    ).toEqual([restrictedGitHub, byo]);
+    expect(
+      selectClientsForEndpoints([restrictedGitHub, byo], {
+        ...endpoints,
+        integration: IntegrationSlug.make("github_com"),
+      }).matched,
+    ).toEqual([byo]);
+  });
+
+  it("preserves host matching when only a ranking hint is configured", () => {
+    const unrestricted = {
+      ...restrictedGitHub,
+      origin: { kind: "first_party" as const, integrations: [IntegrationSlug.make("github_rest")] },
+    };
+    expect(
+      selectClientsForEndpoints([unrestricted], {
+        tokenUrl: unrestricted.tokenUrl,
+        integration: IntegrationSlug.make("custom_github"),
+      }).matched,
+    ).toEqual([unrestricted]);
+  });
+
+  it("an empty integration policy overrides recorded intent", () => {
+    expect(
+      selectClientsForEndpoints(
+        [
+          {
+            ...restrictedGitHub,
+            origin: { ...restrictedGitHub.origin, kind: "first_party", allowedIntegrations: [] },
+          },
+        ],
+        {
+          tokenUrl: restrictedGitHub.tokenUrl,
+          integration: IntegrationSlug.make("github_rest"),
+        },
+      ).matched,
+    ).toEqual([]);
+  });
+
   it("excludes unrelated providers and reports no match (drives the register CTA)", () => {
     // Integration declares Google's split authorize/token roots; only the
     // Spotify app is registered → nothing matches.
