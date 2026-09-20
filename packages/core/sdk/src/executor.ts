@@ -3410,9 +3410,40 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // left behind become orphans: invisible in the catalog, yet still
           // listed to agents and still targetable by reconnect.
           const where = (b: AnyCb) => b("integration", "=", String(slug));
+          // Read the doomed connections BEFORE the cascade destroys them. A
+          // minted item id carries a per-attempt uuid recorded nowhere but the
+          // row (`credentialAttemptItemId`), so the moment the row is gone the
+          // id of the secret it minted is unreconstructible and that secret is
+          // stranded in the provider for good.
+          //
+          // Through `cascadeCore`, the handle doing the DELETE below, and this
+          // adds NO reach. `ownedExecutorTable` feeds one `ownerVisibility`
+          // condition to both `onRead` and `onDelete` (`core-schema.ts`), so
+          // the same context and the same predicate return exactly the rows the
+          // next statement destroys and never one more; reading rows in order
+          // to destroy them cannot expose anything the destruction does not
+          // already reach. The bound `core` handle is the unsafe option here,
+          // not the safe one: it sees only the remover's own rows, so every
+          // other member's credential would be silently left behind — which is
+          // the bulk half of the leak this closes.
+          const doomed = yield* cascadeCore.findMany("connection", { where });
           yield* cascadeCore.deleteMany("tool", { where });
           yield* cascadeCore.deleteMany("definition", { where });
           yield* cascadeCore.deleteMany("connection", { where });
+          // Then delete what those connections minted, after the OUTERMOST
+          // commit. Same reasoning as `connections.remove`, whose
+          // `deleteMintedCredentials` this reuses unchanged: a provider does
+          // not enlist in this transaction, so deleting inside it would let a
+          // rollback restore every row with its secret already destroyed.
+          //
+          // One residual limit, inherited rather than introduced: the alias
+          // hold-back inside `deleteMintedCredentials` reads through the bound
+          // handle, so an item that a SURVIVING connection of ANOTHER subject
+          // references is invisible to it and is deleted with the rest. Closing
+          // that would mean reading other subjects' credential ids OUTSIDE the
+          // set being destroyed — a read wider than the delete, and a worse
+          // defect than the narrow one it would fix.
+          yield* afterCommit(Effect.forEach(doomed, deleteMintedCredentials, { discard: true }));
           return existing.plugin_id;
         }),
       ).pipe(
