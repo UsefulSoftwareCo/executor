@@ -30,7 +30,7 @@ export const isAppOwnedPath = (pathname: string) =>
 //
 //   POST /api/sentry-tunnel  - `sentryTunnelMiddleware` forwards the envelope
 //                              to Sentry; the app has no such route.
-//   /api/oauth/callback      - `oauthCallbackSignInMiddleware` redirects a
+//   /api/oauth/{callback,setup} - `oauthBrowserSignInMiddleware` redirects a
 //                              signed-out visitor to /login, and start.ts
 //                              rewrites the org-scoped `state` before handing
 //                              off. Routing it early would drop both.
@@ -41,7 +41,10 @@ export const isAppOwnedPath = (pathname: string) =>
 // ---------------------------------------------------------------------------
 
 export const isStartOwnedApiPath = (pathname: string, method: string): boolean =>
-  (pathname === "/api/sentry-tunnel" && method === "POST") || pathname === "/api/oauth/callback";
+  (pathname === "/api/sentry-tunnel" && method === "POST") || isOAuthBrowserPath(pathname);
+
+export const isOAuthBrowserPath = (pathname: string): boolean =>
+  pathname === "/api/oauth/callback" || pathname === "/api/oauth/setup";
 
 export const servedByAppPlane = (pathname: string, method: string): boolean =>
   isApiPath(pathname) && !isStartOwnedApiPath(pathname, method);

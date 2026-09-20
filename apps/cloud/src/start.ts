@@ -1,7 +1,7 @@
 import { createMiddleware, createStart } from "@tanstack/react-start";
 import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
-import { isAppOwnedPath } from "./app-paths";
+import { isAppOwnedPath, isOAuthBrowserPath } from "./app-paths";
 import { authGateMiddleware } from "./auth/doc-gate";
 import { parseCookie } from "./auth/cookies";
 import { ORG_SELECTOR_HEADER } from "./auth/organization";
@@ -48,9 +48,8 @@ const getApp = async (): Promise<NonNullable<typeof app>> =>
   (app ??= (await import("./app")).cloudApiHandler());
 
 const SESSION_COOKIE = "wos-session";
-const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
-const oauthCallbackOrgScopedRequest = (request: Request): Request => {
+const oauthBrowserOrgScopedRequest = (request: Request): Request => {
   const url = new URL(request.url);
   const callbackState = decodeOAuthCallbackState(url.searchParams.get("state"));
   if (callbackState === null) return request;
@@ -61,12 +60,9 @@ const oauthCallbackOrgScopedRequest = (request: Request): Request => {
   return new Request(rewritten, { headers });
 };
 
-const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).server(
+const oauthBrowserSignInMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
-    if (
-      pathname !== OAUTH_CALLBACK_PATH ||
-      (request.method !== "GET" && request.method !== "HEAD")
-    ) {
+    if (!isOAuthBrowserPath(pathname) || (request.method !== "GET" && request.method !== "HEAD")) {
       return next();
     }
     const sealed = parseCookie(request.headers.get("cookie"), SESSION_COOKIE);
@@ -89,8 +85,9 @@ const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).serv
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
   async ({ pathname, request, next }) => {
     if (isAppOwnedPath(pathname)) {
-      const scopedRequest =
-        pathname === OAUTH_CALLBACK_PATH ? oauthCallbackOrgScopedRequest(request) : request;
+      const scopedRequest = isOAuthBrowserPath(pathname)
+        ? oauthBrowserOrgScopedRequest(request)
+        : request;
       return (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
     }
     return next();
@@ -113,7 +110,7 @@ export const startInstance = createStart(() => ({
     docsProxyMiddleware,
     sentryTunnelMiddleware,
     posthogProxyMiddleware,
-    oauthCallbackSignInMiddleware,
+    oauthBrowserSignInMiddleware,
     appRequestMiddleware,
     authGateMiddleware,
   ],

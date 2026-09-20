@@ -78,6 +78,10 @@ describe("app-plane dispatch", () => {
     expect(servedByAppPlane("/api/oauth/callback", "POST")).toBe(false);
   });
 
+  it("leaves OAuth setup to Start for sign-in and organization selection", () => {
+    expect(servedByAppPlane("/api/oauth/setup", "GET")).toBe(false);
+  });
+
   const appPlane = [
     "/api/connections",
     "/api/tools",

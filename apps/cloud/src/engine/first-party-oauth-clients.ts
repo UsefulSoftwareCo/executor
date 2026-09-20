@@ -30,6 +30,7 @@ export interface FirstPartyOAuthClientEnv {
   readonly FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
   readonly FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
   readonly FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+  readonly FIRST_PARTY_GITHUB_INSTALLATION_URL?: string;
   readonly FIRST_PARTY_GITLAB_CLIENT_ID?: string;
   readonly FIRST_PARTY_GITLAB_CLIENT_SECRET?: string;
   readonly FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
@@ -269,6 +270,15 @@ export const firstPartyOAuthClientsFor = (
     authorizationUrl:
       env.FIRST_PARTY_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize",
     tokenUrl: env.FIRST_PARTY_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
+    authorizationSetup: {
+      title: "Connect GitHub",
+      description:
+        "Install the GitHub App on your account or organization and choose the repositories Executor can access. Authorizing your account alone does not grant private repository access. Organization access may require an owner's approval.",
+      actionLabel: "Install or configure GitHub App",
+      actionUrl:
+        env.FIRST_PARTY_GITHUB_INSTALLATION_URL ??
+        "https://github.com/apps/executor-sh/installations/new",
+    },
     integrations: [IntegrationSlug.make("github_rest")],
     // GitHub App user access tokens do not use classic OAuth scopes; their
     // capabilities come from the app's registered permissions.

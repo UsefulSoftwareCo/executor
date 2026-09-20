@@ -11,6 +11,7 @@ import { HttpServerResponse } from "effect/unstable/http";
 import { Effect, Option, Schema } from "effect";
 
 import { runOAuthCallback, type PopupErrorMessage } from "../oauth-popup";
+import { oauthSetupDocument, oauthSetupUnavailableDocument } from "../oauth-setup";
 import {
   OAUTH_POPUP_MESSAGE_TYPE,
   OAuthCompleteError,
@@ -20,6 +21,7 @@ import {
   OAuthState,
   type Connection,
   type ConnectResult,
+  decodeOAuthCallbackState,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
@@ -171,6 +173,29 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
           });
           return startResultToResponse(result);
         }),
+      ),
+    )
+    .handle("setup", ({ query }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const state = decodeOAuthCallbackState(query.state)?.state ?? query.state;
+          const setup = yield* executor.oauth.getSetup(OAuthState.make(state));
+          return HttpServerResponse.text(oauthSetupDocument(setup), {
+            contentType: "text/html; charset=utf-8",
+            headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+          });
+        }).pipe(
+          Effect.catchTag("OAuthSessionNotFoundError", () =>
+            Effect.succeed(
+              HttpServerResponse.text(oauthSetupUnavailableDocument(), {
+                contentType: "text/html; charset=utf-8",
+                status: 410,
+                headers: { "cache-control": "no-store" },
+              }),
+            ),
+          ),
+        ),
       ),
     )
     .handle("complete", ({ payload }) =>

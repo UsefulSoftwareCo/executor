@@ -4,11 +4,9 @@
 //
 //   1. Listing: `oauth.listClients` surfaces `first-party:github` with a
 //      `first_party` origin and its public client id — no create call ever ran.
-//   2. Flow: `oauth.start` through the first-party slug redirects to the
-//      provider's authorize endpoint carrying the env-configured client id and
-//      this platform's `/api/oauth/callback` — proof the config-resolved
-//      identity (not a stored row) drives the flow. The redirect is asserted,
-//      never followed: github.com is not visited.
+//   2. Flow: the returned URL opens installation guidance, then preserves the
+//      original provider authorization URL, PKCE and organization routing.
+//      GitHub's links are checked without contacting the live provider.
 //   3. Guardrails: the reserved `first-party:` namespace is rejected by
 //      createClient, so no org can shadow the host's app with its own row.
 import { randomBytes } from "node:crypto";
@@ -93,7 +91,7 @@ const googleShapedIntegrationSpec = (scopes: readonly string[]) => ({
 });
 
 scenario(
-  "First-party OAuth · the host-declared GitHub app is listed and drives the authorize redirect",
+  "First-party OAuth · GitHub setup includes installation before authorization",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -103,6 +101,7 @@ scenario(
       // their own OAuth apps through its existing registration flow.
       if (target.name !== "cloud") return;
       const { client: makeApiClient } = yield* Api;
+      const browser = yield* Browser;
       const identity = yield* target.newIdentity();
       const client = yield* makeApiClient(api, identity);
 
@@ -116,6 +115,9 @@ scenario(
       // 2. A start through the first-party slug builds GitHub's authorize URL
       //    from the config identity and this platform's served callback.
       const integration = IntegrationSlug.make(unique("fpgh"));
+      yield* Effect.addFinalizer(() =>
+        client.openapi.removeSpec({ params: { slug: integration } }).pipe(Effect.ignore),
+      );
       yield* client.openapi.addSpec({
         payload: { ...githubShapedIntegrationSpec, slug: integration },
       });
@@ -129,16 +131,67 @@ scenario(
           template: AuthTemplateSlug.make("oauth"),
         },
       });
-      expect(started.status, "oauth.start redirects to the provider").toBe("redirect");
-      const authorizationUrl = started.status === "redirect" ? started.authorizationUrl : "";
-      const authorize = new URL(authorizationUrl);
-      expect(authorize.origin + authorize.pathname).toBe(
-        "https://github.com/login/oauth/authorize",
+      expect(started.status, "oauth.start opens setup").toBe("redirect");
+      if (started.status !== "redirect") return yield* Effect.die("expected redirect");
+      yield* Effect.addFinalizer(() =>
+        client.oauth.cancel({ payload: { state: started.state } }).pipe(Effect.ignore),
       );
-      expect(authorize.searchParams.get("client_id")).toBe("e2e-first-party-github");
-      expect(authorize.searchParams.get("redirect_uri")).toBe(
-        new URL("/api/oauth/callback", target.baseUrl).toString(),
+      const setupUrl = new URL(started.authorizationUrl);
+      expect(setupUrl.origin + setupUrl.pathname).toBe(
+        new URL("/api/oauth/setup", target.baseUrl).toString(),
       );
+      // A URL supplied by a caller must never replace the saved continuation.
+      setupUrl.searchParams.set("authorization_url", "https://example.invalid/phishing");
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Open GitHub setup and find repository installation", async () => {
+          const response = await page.goto(setupUrl.toString());
+          expect(response?.status()).toBe(200);
+          expect(response?.headers()["cache-control"]).toBe("no-store");
+          await page.getByRole("heading", { name: "Connect GitHub", exact: true }).waitFor();
+          const install = page.getByRole("link", { name: "Install or configure GitHub App" });
+          expect(await install.getAttribute("href")).toBe(
+            "https://github.com/apps/executor-sh/installations/new",
+          );
+          expect(await install.getAttribute("target")).toBe("_blank");
+          const authorize = new URL(
+            (await page
+              .getByRole("link", { name: "Continue to authorization" })
+              .getAttribute("href"))!,
+          );
+          expect(authorize.origin + authorize.pathname).toBe(
+            "https://github.com/login/oauth/authorize",
+          );
+          expect(authorize.searchParams.get("client_id")).toBe("e2e-first-party-github");
+          expect(authorize.searchParams.get("redirect_uri")).toBe(
+            new URL("/api/oauth/callback", target.baseUrl).toString(),
+          );
+          expect(authorize.searchParams.get("state")).toBe(setupUrl.searchParams.get("state"));
+          expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+          expect(authorize.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+          expect(authorize.searchParams.has("scope")).toBe(false);
+        });
+        await step("Read setup in light mode", async () => {
+          await page.emulateMedia({ colorScheme: "light" });
+        });
+        await step("Choose access on a narrow screen", async () => {
+          await page.setViewportSize({ width: 390, height: 844 });
+          expect(
+            await page.locator("body").evaluate((body) => body.scrollWidth <= window.innerWidth),
+          ).toBe(true);
+        });
+        await step("Read setup in dark mode on a narrow screen", async () => {
+          await page.emulateMedia({ colorScheme: "dark" });
+        });
+        await step("Cancel setup and reopen the expired link", async () => {
+          await Effect.runPromise(client.oauth.cancel({ payload: { state: started.state } }));
+          const response = await page.goto(setupUrl.toString());
+          expect(response?.status()).toBe(410);
+          await page.getByRole("heading", { name: "Connection setup unavailable" }).waitFor();
+          expect(await page.getByRole("link", { name: "Continue to authorization" }).count()).toBe(
+            0,
+          );
+        });
+      });
 
       // 3. The reserved namespace cannot be shadowed by a stored row. The
       //    server rejects with a StorageError, which the HTTP edge scrubs to an
