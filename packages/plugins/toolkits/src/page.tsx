@@ -1415,7 +1415,7 @@ export function ToolkitsPage(props: PluginPageProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {selectedToolkitSlug === null ? (
-        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur-sm">
+        <div className="shrink-0 border-b border-border bg-background/95 px-4 py-3 backdrop-blur-sm">
           <div className="flex min-w-0 items-center gap-3">
             <h1 className="truncate text-sm font-semibold text-foreground">Toolkits</h1>
             {AsyncResult.isSuccess(toolkits) && (
@@ -1424,6 +1424,13 @@ export function ToolkitsPage(props: PluginPageProps) {
               </span>
             )}
           </div>
+          {/* Every other console page says what it is for in a line under its
+              title; this one had only the title, which left the feature to be
+              guessed at from an empty grid. */}
+          <p className="mt-0.5 max-w-3xl text-xs text-muted-foreground">
+            A named set of tools with its own MCP endpoint. Point an agent at a toolkit and it sees
+            only those tools, under the toolkit&apos;s own policies and connections.
+          </p>
         </div>
       ) : null}
 
