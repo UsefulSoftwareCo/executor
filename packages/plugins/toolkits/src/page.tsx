@@ -618,6 +618,9 @@ function AddToolkitCard(props: { owner: Owner; showOwnerLabels: boolean; onClick
 function ToolkitSection(props: {
   owner: Owner;
   title?: string;
+  /** Who a toolkit on this shelf belongs to — the same distinction, and the
+   *  same words, the connection owner picker uses. */
+  subtitle?: string;
   showOwnerLabels: boolean;
   toolkits: readonly ToolkitResponse[];
   onCreate: (input: { owner: Owner; name: string }) => Promise<void>;
@@ -632,6 +635,9 @@ function ToolkitSection(props: {
           <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             {props.title}
           </h2>
+          {props.subtitle ? (
+            <p className="mt-1 text-xs text-muted-foreground">{props.subtitle}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -687,6 +693,7 @@ function ToolkitGrid(props: {
           owner="org"
           showOwnerLabels
           title="Workspace"
+          subtitle="Shared with everyone in this workspace."
           toolkits={workspaceToolkits}
           onCreate={props.onCreate}
         />
@@ -694,6 +701,7 @@ function ToolkitGrid(props: {
           owner="user"
           showOwnerLabels
           title="Personal"
+          subtitle="Saved only for your account."
           toolkits={personalToolkits}
           onCreate={props.onCreate}
         />
