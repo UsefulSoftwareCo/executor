@@ -20,7 +20,7 @@ describe("OAuth setup document", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("?state=a&amp;client_id=b");
     expect(html).toContain('name="referrer" content="no-referrer"');
-    expect(html).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(html).toMatch(/target="_blank"\s+rel="noopener noreferrer"/);
   });
 
   it("refuses executable or malformed link targets", () => {

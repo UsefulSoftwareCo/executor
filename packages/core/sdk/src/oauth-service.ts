@@ -2088,6 +2088,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
 
+      // Build before persisting: setup must resume this exact authorization
+      // request, including its PKCE challenge and organization-scoped state.
       const authorizationUrl = yield* Effect.try({
         try: () =>
           buildAuthorizationUrl({
