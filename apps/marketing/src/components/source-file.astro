@@ -1,0 +1,24 @@
+---
+import type { appFiles } from "../content/app-structure";
+interface Props {
+  file: (typeof appFiles)[number];
+}
+const { file } = Astro.props;
+const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+const active = file.path === "index.ts";
+const symbol = file.language === "md" ? "M↓" : file.language === "json" ? "{}" : file.language === "html" || file.language === "tsx" ? "<>" : "TS";
+---
+<li>
+  <button
+    type="button"
+    data-open-file={file.path}
+    aria-pressed={active}
+    class="group flex min-h-9 w-full cursor-pointer items-center gap-2.5 rounded-[5px] px-2.5 text-left text-[13px] text-[#666] transition-colors hover:bg-[#f0f0f0] hover:text-[#222] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#888] aria-pressed:bg-[#ededed] aria-pressed:text-[#171717]"
+  >
+    <span aria-hidden="true" class:list={[
+      "w-4 shrink-0 text-center font-mono text-[10px] font-medium tracking-[-0.07em]",
+      file.language === "ts" ? "text-[#5987b3]" : file.language === "tsx" ? "text-[#5c989e]" : "text-[#929292]",
+    ]}>{symbol}</span>
+    <span class="truncate font-mono text-[12px] tracking-[-0.015em]">{name}</span>
+  </button>
+</li>

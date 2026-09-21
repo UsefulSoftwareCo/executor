@@ -1,10 +1,13 @@
 ---
-// The existing document layout, with apps and deployment as the main story.
+// Start with a useful tool, then reveal the software an agent can build around it.
 import Testimonials from "./testimonials.astro";
-import IntroSteps from "./intro-steps.astro";
 import CopyPrompt from "./copy-prompt.astro";
-import { tagline, appDefinition } from "../../content/site-copy";
-import { AgentReuse, ChatThreadComposer } from "../app-visuals";
+import { tagline, introduction, homepageStory, appDefinition } from "../../content/site-copy";
+import AppStartingPoints from "../app-starting-points.astro";
+import CustomTool from "../custom-tool.astro";
+import { DailyBriefDemo } from "../daily-brief-demo";
+import AppStructure from "../app-structure.astro";
+import { appStructure } from "../../content/app-structure";
 import { AppPieces } from "../app-pieces";
 // Avatar goes through Vite so it ships as a hashed asset; new /public files
 // are not picked up by the deploy pipeline.
@@ -21,9 +24,9 @@ const { gh } = Astro.props;
   {/* ── Intro ── */}
     <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
       <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{tagline}</h1>
-      <IntroSteps />
+      <p class="mb-6 max-w-[48ch] text-[18px] leading-[1.65] tracking-[-0.01em] text-[#777] max-[719.98px]:text-[17px] max-[1023.98px]:mx-auto">{introduction}</p>
       <div class="doc__actions flex flex-wrap items-center gap-[0.6rem_0.9rem] mb-[1.1rem] max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[1023.98px]:justify-center">
-        <a href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Deploy an app</a>
+        <a href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
         <CopyPrompt />
       </div>
       <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink">
@@ -31,30 +34,46 @@ const { gh } = Astro.props;
       </p>
     </header>
 
+  <section id="connect" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.start.title}</h2>
+    <p>{homepageStory.start.body}</p>
+    <AppStartingPoints />
+  </section>
+
+  <section id="mission" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.build.title}</h2>
+    <p>{homepageStory.build.body}</p>
+    <CustomTool />
+  </section>
+
+  <section id="automate" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.automate.title}</h2>
+    <p>{homepageStory.automate.body}</p>
+    <div class="doc__fig--wide max-w-225"><DailyBriefDemo client:visible /></div>
+  </section>
+
   <section id="apps" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Small tools can become whole apps.</h2>
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.apps.title}</h2>
     <p>{appDefinition}</p>
     <AppPieces client:visible />
   </section>
 
-  <section id="mission" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Everything’s an app.</h2>
-    <p>Customization is a prompt away.</p>
-    <ChatThreadComposer client:load />
+  <section id="agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{appStructure.title}</h2>
+    <p>{appStructure.subtitle}</p>
+    <AppStructure />
   </section>
 
-  <section id="agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Different agents. Same apps.</h2>
-    <p>Build with Claude. Use it from Codex, Cursor, or your next agent.</p>
-    <AgentReuse />
+  <section id="your-agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.extend.title}</h2>
+    <p>{homepageStory.extend.body}</p>
   </section>
 
   {/* ── 04 Run it ── */}
   <section id="install" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Run it where you want</h2>
     <p>
-      Deploy an app to use your tools from wherever your agent runs. You can also
-      run Executor on your own machine or server.
+      Use Executor Cloud, or run the same setup on your own machine or server.
     </p>
     <div class="doc__ways [&_li]:grid [&_li]:grid-cols-[2.5rem_1fr] [&_li]:gap-[0.5rem] [&_li]:py-[0.85rem] [&_li]:px-0 [&_li]:border-t [&_li]:border-t-rule [&_li]:text-[15.5px] [&_li]:leading-[1.55] [&_li]:[color:var(--color-ink-2)] [&_li:last-child]:border-b [&_li:last-child]:border-b-rule [&_strong]:text-ink [&_strong]:font-semibold [&_a]:ml-[0.4rem] [&_code]:ml-[0.4rem] [&_code]:font-mono [&_code]:text-[12.5px] [&_code]:[background:var(--color-surface-2)] [&_code]:border [&_code]:border-rule [&_code]:rounded-[5px] [&_code]:py-[0.1rem] [&_code]:px-[0.4rem] [&_code]:text-ink grid gap-0.25 bg-rule border border-rule rounded-[12px] overflow-hidden mt-[1.25rem] min-[720px]:grid-cols-2 max-[719.98px]:grid-cols-[1fr]">
       <div class="doc__way doc__way--rec relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface before:[content:''] before:absolute before:inset-[0_0_auto_0] before:h-0.5 before:bg-ink">

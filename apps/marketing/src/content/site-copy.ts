@@ -9,19 +9,19 @@
 
 /**
  * Copied by the hero CTA and served verbatim at `/setup-prompt.md`.
- * Guides a coding agent through building and deploying a first app.
+ * Helps an agent turn the user's need into a small, useful Executor app.
  */
-export const setupPrompt = `Help me build and deploy my first app to Executor.
+export const setupPrompt = `Help me build something useful with Executor.
 
-Executor is a cloud for personal software: a place to deploy apps for agents. An app can start as an MCP server, a custom tool, or a skill. Add approval rules, caching, a UI, webhooks, or cron jobs as needed.
+Executor is a place to deploy software that my agents and I can use: custom tools, skills, automations, and apps with saved data and a UI. An existing MCP or API can be a starting point, or you can write the code for something new.
 
-Ask what I want my agent to do. Start as simply as possible: add an existing MCP server, write a skill, or build a custom tool. Do not add features I do not need.
+Ask what I want to do. Start with the smallest useful version. Explain what it will do before building it.
 
 Help me sign in at https://executor.sh/login and connect Executor to you over MCP. If your client needs a restart to load its tools, tell me and wait until they are available.
 
-Read Executor's app-authoring guide through its skills tool before building. Check what this Executor host supports. Use its management tools to deploy the app, connect the required accounts through the secure connection flow, and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
+Read Executor's app-authoring guide through its skills tool. Check what this Executor host supports. Use its management tools to build and deploy the app. Connect any required accounts through the secure connection flow and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
 
-Start with one useful app. Explain what it can read or change, and ask before actions that send, delete, or publish anything. Verify it with a safe call. Keep the source so we can change it later.
+Explain what the app can read or change, and ask before actions that send, delete, or publish anything. Verify the result with a safe call. Keep its source so I can ask you or another agent to change it later. Add features only when they serve the task I asked for.
 
 Docs: https://executor.sh/docs`;
 
@@ -29,25 +29,41 @@ Docs: https://executor.sh/docs`;
 export const GITHUB_URL = "https://github.com/UsefulSoftwareCo/executor";
 
 /** One-line description of the product, used as the Markdown tagline. */
-export const tagline = "The cloud for agent apps.";
+export const tagline = "Built by your agents. Run by Executor.";
 
 /** Shared introduction for the landing page and its Markdown representation. */
 export const introduction =
-  "Deploy personal software for your agents. Start with an MCP server, a tool, or a skill.";
+  "Bring your own agents. Build tools, automations, and apps once. Run them on Executor and use them across all your agents.";
+
+/** Introduce personal software through a familiar starting point and a growing app. */
+export const homepageStory = {
+  start: {
+    title: "Start with something useful.",
+    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Start small. You can change it as you go.",
+  },
+  build: {
+    title: "Ask for what you actually need.",
+    body: "Your software can work around your life. Combine services, add your own logic, and turn a repeated request into a tool all your agents can use.",
+    prompt:
+      "Pull together my signups and open issues. Give my agents one way to check what's changed.",
+  },
+  automate: {
+    title: "Let it keep working.",
+    body: "Give that tool a schedule. Keep a history of what it finds. Add a page you can open. Executor runs the app, even after the conversation ends.",
+    prompt: "Run this every weekday at 9. Save the results and build me a page to read them.",
+  },
+  apps: {
+    title: "That's an Executor app.",
+    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
+  },
+  extend: {
+    title: "Not an agent.",
+    body: "Make the agents you already use more capable. Give them shared tools, automations, and apps that run on Executor.",
+  },
+} as const;
 
 /** Plain definition shared by the illustrated section and Markdown overview. */
-export const appDefinition =
-  "Start with one useful thing. Add more tools, skills, or a UI as your needs grow.";
-
-/** Simple starting points and optional extensions shared across page formats. */
-export const mission = [
-  "Add the Axiom MCP. Add the PostHog MCP. Each is an app, ready for your agent to use.",
-  "Start as simple as you want. Add custom approval rules to an MCP server. Cache the results you use often. Give it a UI. It is still the same app.",
-  "Just want to teach your agent how to do something? Start with a skill. Add tools or scheduled work when you need them.",
-];
-
-/** Optional additions to an MCP app, shown as composable pieces. */
-export const appExtensions = ["Approval rules", "Caching", "A UI"];
+export const appDefinition = homepageStory.apps.body;
 
 /** Capabilities an app can include, with tools first. */
 export const appParts = [

@@ -8,12 +8,12 @@ import {
   pricingTiers,
   tagline,
   introduction,
-  mission,
+  homepageStory,
   appParts,
   appDefinition,
-  appExtensions,
 } from "../content/site-copy";
 import { testimonials } from "../content/testimonials";
+import { appStructure } from "../content/app-structure";
 
 // ---------------------------------------------------------------------------
 // `/index.md` — the homepage as Markdown, for agents.
@@ -63,30 +63,45 @@ const body = `# Executor
 
 ${machineSummaries.map(([label, href]) => `- [${label}](${href})`).join("\n")}
 
-## Everything’s an app
-
 ${introduction}
 
-${mission.join("\n\n")}
+## ${homepageStory.start.title}
 
-MCP server + ${appExtensions.join(" + ")}
+${homepageStory.start.body}
 
-## How it works
+Start with an existing MCP or API, a skill, or custom code written by your agent.
 
-1. Pick something you want your agent to do.
-2. Bring a tool or have your agent build one.
-3. Use it from all of your agents.
+## ${homepageStory.build.title}
 
-## Small tools can become whole apps.
+${homepageStory.build.body}
+
+Example: "${homepageStory.build.prompt}" Your agent builds a reusable tool that combines PostHog and GitHub.
+
+## ${homepageStory.automate.title}
+
+${homepageStory.automate.body}
+
+Example: "${homepageStory.automate.prompt}"
+
+## ${homepageStory.apps.title}
 
 ${appDefinition}
 
 ${appParts.map(({ title, body }) => `- **${title}:** ${body}`).join("\n")}
 
-## Different agents. Same apps.
+## ${appStructure.title}
 
-Build with Claude. Use it from Codex, Cursor, or your next agent.
-Your apps, connected accounts, and rules stay in Executor when you switch agents.
+${appStructure.subtitle}
+
+${appStructure.files.map(({ path, description }) => `- **${path}:** ${description}`).join("\n")}
+
+${appStructure.note}
+
+${appStructure.caption}
+
+## ${homepageStory.extend.title}
+
+${homepageStory.extend.body}
 
 ## Deployment
 
