@@ -36,10 +36,13 @@ live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`.
+`.github/workflows/ci.yml` runs only on manual dispatch.
 It has read-only repository permissions, uses no secrets, and cancels an
 earlier run on the same ref. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
+
+Continuous deployment runs separately on every push to `main`; it does not
+wait for the CI workflow.
 
 GitHub-hosted `ubuntu-24.04` runners run four jobs:
 
