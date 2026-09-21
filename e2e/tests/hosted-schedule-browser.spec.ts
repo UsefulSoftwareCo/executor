@@ -15,6 +15,170 @@ import { always } from "apps/operations/approval";
 const send = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
 export default defineApp({ accounts: {} }, async () => ({  mutations: { send }, schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (it) => {
+  it.effect(scenarios.scheduleLoading.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          browser = yield* Browser,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Schedule layout ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: source }],
+        });
+        expect(deployed.status).toBe(200);
+        const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        const paths = [actors.organization.id, actors.organization.slug].map(
+          (organization) => `/api/organizations/${organization}/apps/${app.id}`,
+        );
+        const frame = (title: string) =>
+          browser.use(`Measure the ${title} subhead`, (page) =>
+            page
+              .getByRole("heading", { name: title, exact: true, level: 2, includeHidden: true })
+              .evaluate((heading) => {
+                const header = heading.closest("header");
+                if (!header) throw new Error("Missing app tab subhead");
+                const { x, y, width, height } = header.getBoundingClientRect();
+                const style = getComputedStyle(heading);
+                return {
+                  x,
+                  y,
+                  width,
+                  height,
+                  fontSize: style.fontSize,
+                  fontWeight: style.fontWeight,
+                };
+              }),
+          );
+        yield* browser.login(actors.owner);
+        for (const viewport of [
+          { width: 1440, height: 900 },
+          { width: 390, height: 844 },
+        ]) {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
+              yield* browser.use("Open the reference tab", (page) =>
+                page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
+              );
+              yield* browser.use("The reference subhead is visible", (page) =>
+                page.getByRole("heading", { name: "Overview", exact: true, level: 2 }).waitFor(),
+              );
+              const reference = yield* frame("Overview");
+              const metadata = yield* holdQuery(paths, "continue", { allRequests: true });
+              const settings = yield* holdQuery(
+                paths.map((path) => `${path}/schedules`),
+                "continue",
+                { allRequests: true },
+              );
+              const definitions = yield* holdQuery(
+                paths.map((path) => `${path}/schedules/definitions`),
+                "continue",
+                { allRequests: true },
+              );
+              yield* browser.use("Open Schedules with its reads held", (page) =>
+                page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
+              );
+              yield* metadata.requested;
+              expect(
+                yield* browser.use("Schedules has a subhead before metadata arrives", (page) =>
+                  page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
+                ),
+              ).toBe(1);
+              expect(yield* frame("Schedules")).toEqual(reference);
+              yield* browser.checkpoint(`${viewport.width} schedules metadata pending`);
+              yield* metadata.release;
+              yield* settings.requested;
+              // Discovery must start while settings is still held, rather than forming a waterfall.
+              yield* definitions.requested;
+              expect(yield* frame("Schedules")).toEqual(reference);
+              expect(
+                yield* browser.use("Schedules never shows the inventory skeleton", (page) =>
+                  page.locator(".loading-rows").count(),
+                ),
+              ).toBe(0);
+              const introduction = yield* browser.use("Measure the schedule introduction", (page) =>
+                page
+                  .getByText(
+                    "Schedules run with this app’s selected accounts. New schedules start paused.",
+                    { exact: true },
+                  )
+                  .boundingBox(),
+              );
+              yield* browser.checkpoint(`${viewport.width} schedules settings pending`);
+              yield* settings.release;
+              yield* browser.use("Discovery keeps the same neutral loading state", (page) =>
+                page.getByRole("status", { name: "Loading schedules", exact: true }).waitFor(),
+              );
+              expect(yield* frame("Schedules")).toEqual(reference);
+              yield* browser.checkpoint(`${viewport.width} schedules discovery pending`);
+              yield* definitions.release;
+              yield* browser.use("Declared schedules arrive", (page) =>
+                page.getByRole("heading", { name: "digest", exact: true }).waitFor(),
+              );
+              expect(yield* frame("Schedules")).toEqual(reference);
+              expect(
+                yield* browser.use("The introduction stays in place", (page) =>
+                  page
+                    .getByText(
+                      "Schedules run with this app’s selected accounts. New schedules start paused.",
+                      { exact: true },
+                    )
+                    .boundingBox(),
+                ),
+              ).toEqual(introduction);
+              yield* browser.use("Schedule controls fit the viewport", (page) =>
+                page.getByRole("button", { name: "Enable", exact: true }).waitFor(),
+              );
+              expect(
+                yield* browser.use("The schedule tab does not overflow horizontally", (page) =>
+                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+                ),
+              ).toBe(true);
+              yield* browser.checkpoint(`${viewport.width} schedules loaded`);
+              yield* browser.use("Open schedule approvals before a refresh", (page) =>
+                page.getByRole("combobox", { name: "Approvals for digest", exact: true }).click(),
+              );
+              const refresh = yield* holdQuery(
+                paths.map((path) => `${path}/schedules`),
+                "fail",
+              );
+              yield* refreshVisiblePage;
+              yield* refresh.requested;
+              yield* refresh.release;
+              yield* browser.use("A settings refresh failure is visible", (page) =>
+                page.getByText("Unable to complete this request", { exact: true }).waitFor(),
+              );
+              expect(yield* frame("Schedules")).toEqual(reference);
+              expect(
+                yield* browser.use("The open approvals menu survives a refresh failure", (page) =>
+                  page.getByRole("option", { name: "Browser approvals", exact: true }).isVisible(),
+                ),
+              ).toBe(true);
+              yield* browser.checkpoint(`${viewport.width} schedules refresh failure`);
+              yield* browser.use("Close the approvals menu", (page) =>
+                page.keyboard.press("Escape"),
+              );
+              yield* browser.use("Retry saved schedule settings", (page) =>
+                page.getByRole("button", { name: "Retry", exact: true }).click(),
+              );
+              yield* browser.use("Settings recover without replacing the tab", (page) =>
+                page
+                  .getByText("Unable to complete this request", { exact: true })
+                  .waitFor({ state: "hidden" }),
+              );
+              expect(yield* frame("Schedules")).toEqual(reference);
+            }),
+          );
+        }
+      }),
+    ),
+  );
+
   it.effect(scenarios.scheduleDiscoveryStates.title, (context) =>
     withCase(
       context,
@@ -53,7 +217,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
         );
         yield* failed.requested;
         yield* browser.use("Definition discovery is loading", (page) =>
-          page.getByText("Loading schedule definitions…", { exact: true }).waitFor(),
+          page.getByRole("status", { name: "Loading schedules", exact: true }).waitFor(),
         );
         yield* noFalseEmpty("Initial loading");
         yield* failed.release;
@@ -102,6 +266,11 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
         yield* browser.use("Successful discovery can report an empty list", (page) =>
           page.getByText("This app has no schedules.", { exact: true }).waitFor(),
         );
+        expect(
+          yield* browser.use("An empty schedule list retains the subhead", (page) =>
+            page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
+          ),
+        ).toBe(1);
         yield* browser.checkpoint("Confirmed empty schedule list");
       }),
     ),

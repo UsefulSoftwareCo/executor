@@ -7,12 +7,13 @@ import {
   type AppSchedule,
   type ScheduleSettings,
 } from "@executor-js/sdk";
-import { useState, type ComponentType } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import type { ScheduleBindings, ScheduleControls } from "../../contracts/schedules.ts";
 import { QueryView, useDashboard, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
+import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import {
   Select,
   SelectContent,
@@ -45,22 +46,66 @@ export function AppSchedules<E>({
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
+  const discovery = useQuery(bindings.definitions);
   return (
-    <QueryView query={bindings.settings} Failure={Failure}>
-      {(saved) => <ScheduleList saved={saved} bindings={bindings} Failure={Failure} />}
-    </QueryView>
+    <SchedulesLayout>
+      <QueryView query={bindings.settings} Failure={Failure} pending={<SchedulesPending />}>
+        {(saved) => (
+          <ScheduleList saved={saved} discovery={discovery} bindings={bindings} Failure={Failure} />
+        )}
+      </QueryView>
+    </SchedulesLayout>
   );
 }
+
+/** Metadata and schedule reads share one frame and a neutral loading state. */
+export function AppSchedulesLoading() {
+  return (
+    <SchedulesLayout>
+      <SchedulesPending />
+    </SchedulesLayout>
+  );
+}
+
+function SchedulesLayout({ children }: { readonly children: ReactNode }) {
+  return (
+    <section className="w-full">
+      <AppSectionHeader>
+        <AppSectionTitle>Schedules</AppSectionTitle>
+      </AppSectionHeader>
+      <div className="space-y-4 p-7 max-[740px]:p-4">
+        <p className="text-sm text-muted-foreground">
+          Schedules run with this app’s selected accounts. New schedules start paused.
+        </p>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function SchedulesPending() {
+  return (
+    <div
+      className="rounded-lg border p-6 text-sm text-muted-foreground"
+      role="status"
+      aria-label="Loading schedules"
+    >
+      Loading schedules…
+    </div>
+  );
+}
+
 function ScheduleList<E>({
   saved,
+  discovery,
   bindings,
   Failure,
 }: {
   readonly saved: readonly ScheduleSettings[];
+  readonly discovery: ReturnType<typeof useQuery<readonly AppSchedule[], E>>;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
-  const discovery = useQuery(bindings.definitions);
   const rows = new Map<string, Row>();
   for (const setting of saved)
     rows.set(setting.name, {
@@ -80,11 +125,7 @@ function ScheduleList<E>({
   const discoveryView = AsyncResult.match(discovery.result, {
     onInitial: () => ({
       error: null,
-      empty: (
-        <div className="rounded-lg border p-6 text-sm text-muted-foreground" role="status">
-          Loading schedule definitions…
-        </div>
-      ),
+      empty: <SchedulesPending />,
     }),
     onSuccess: () => ({
       error: null,
@@ -100,10 +141,7 @@ function ScheduleList<E>({
     }),
   });
   return (
-    <section className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        Schedules run with this app’s selected accounts. New schedules start paused.
-      </p>
+    <div className="space-y-4">
       {discoveryView.error}
       {rows.size === 0 ? (
         discoveryView.empty
@@ -115,7 +153,7 @@ function ScheduleList<E>({
               <div key={row.name} className="flex flex-wrap items-center justify-between gap-4 p-4">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-sm font-medium break-words">{row.name}</h2>
+                    <h3 className="text-sm font-medium break-words">{row.name}</h3>
                     <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">
                       {row.settings?.activeRun
                         ? "Run active"
@@ -138,7 +176,7 @@ function ScheduleList<E>({
             ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -155,7 +193,7 @@ function DiscoveryFailure<E>({
     return (
       <Alert className="flex flex-wrap items-center justify-between gap-4 p-6">
         <div>
-          <h2 className="text-sm font-medium">Choose accounts to load schedules</h2>
+          <h3 className="text-sm font-medium">Choose accounts to load schedules</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             This app needs an account selected before its schedules can load.
           </p>

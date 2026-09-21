@@ -5,6 +5,7 @@ import type { App } from "@executor-js/sdk";
 import type { AppView } from "../../contracts/dashboard.ts";
 import { Skeleton } from "../components/skeleton.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
+import { AppSchedulesLoading } from "./schedules.tsx";
 import { SourceBrowserLoading } from "./source-browser.tsx";
 import { ToolBrowserLoading } from "./tools.tsx";
 import { Empty } from "./common.tsx";
@@ -310,11 +311,7 @@ export function AppDetailLoading({
     case "accounts":
       return <AppAccountsLoading app={app} />;
     case "schedules":
-      return (
-        <div className="rounded-lg border p-6 text-sm text-muted-foreground" role="status">
-          Loading schedules…
-        </div>
-      );
+      return <AppSchedulesLoading />;
     case "tools":
       return <ToolBrowserLoading selected={selectedTool} />;
     case "source":

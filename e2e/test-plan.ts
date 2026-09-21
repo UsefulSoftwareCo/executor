@@ -431,6 +431,16 @@ export const scenarios = {
       local: na("The shared schedule view is exercised through the hosted API."),
     },
   },
+
+  scheduleLoading: {
+    file: "hosted-schedule-browser.spec.ts",
+    title: "schedule tab keeps its subhead through metadata, settings and discovery loading",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("The shared schedule view is exercised through the hosted API."),
+    },
+  },
   scheduleAccountSetup: {
     file: "hosted-schedule-browser.spec.ts",
     title: "schedule discovery offers account setup without a false empty result",
