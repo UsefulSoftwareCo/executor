@@ -99,10 +99,6 @@ ${appStructure.note}
 
 ${appStructure.caption}
 
-## ${homepageStory.extend.title}
-
-${homepageStory.extend.body}
-
 ## Deployment
 
 Deploy your app as one project. Executor builds and hosts it, connects the accounts

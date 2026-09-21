@@ -43,7 +43,7 @@ export const homepageStory = {
   },
   build: {
     title: "Ask for what you actually need.",
-    body: "Your software can work around your life. Combine services, add your own logic, and turn a repeated request into a tool all your agents can use.",
+    body: "Executor is not an agent. It’s a place for your agent to build and run software.",
     prompt:
       "Pull together my signups and open issues. Give my agents one way to check what's changed.",
   },
@@ -55,10 +55,6 @@ export const homepageStory = {
   apps: {
     title: "That's an Executor app.",
     body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
-  },
-  extend: {
-    title: "Not an agent.",
-    body: "Make the agents you already use more capable. Give them shared tools, automations, and apps that run on Executor.",
   },
 } as const;
 
