@@ -280,6 +280,26 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appUiFailures: {
+    file: "app-ui-failures.spec.ts",
+    title: "private app failures stay visible and recover without losing drafts",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app deployment and browser authentication."),
+    },
+  },
+  appUiFailureTelemetry: {
+    file: "app-ui-failures.spec.ts",
+    title: "private app crash reports reach the host collector before authored telemetry starts",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud exports to the configured remote collector, not the local Motel query endpoint.",
+      ),
+      local: na("This scenario uses hosted app deployment and browser authentication."),
+    },
+  },
   executorKeyAccount: {
     file: "executor-key-account.spec.ts",
     title: "Executor upserts and selects the managed user API key account",

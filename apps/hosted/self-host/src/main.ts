@@ -159,6 +159,8 @@ export const selfHostRoutes = Effect.gen(function* () {
     HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
     HttpRouter.add("GET", "/_executor/auth/browser.js", appSignInScript()),
     HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
+    HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
+    HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
     HttpRouter.add("GET", "/_executor/*", notFound),
     HttpRouter.add("GET", "/api/*", notFound),
     HttpRouter.add("GET", "/mcp/*", notFound),

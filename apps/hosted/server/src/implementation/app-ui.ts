@@ -21,6 +21,7 @@ import {
   UiUnauthorized,
 } from "apps/ui/contracts";
 import { appAsset, appDocument } from "apps/ui/serving";
+import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { Clock, Effect, Option, Redacted, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -385,5 +386,12 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
         );
     }),
   );
-  return { appAuth, dashboard, calls, page, asset, originAccess, sessionAccess };
+  const telemetry = (signal: "traces" | "logs") =>
+    authorize.pipe(
+      Effect.flatMap(({ app }) =>
+        receiveBrowserTelemetry(signal, app.activeDeployment ?? undefined),
+      ),
+      htmlFailure,
+    );
+  return { appAuth, dashboard, calls, page, asset, originAccess, sessionAccess, telemetry };
 };

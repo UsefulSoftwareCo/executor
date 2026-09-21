@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { UiForbidden, type AppUiAsset } from "../contracts/ui.ts";
 import { appPrivateHeaders } from "./ui-auth.ts";
+import { appFailureBootstrap } from "./ui-errors.ts";
 
 /** Render an authorized deployment. Host-owned markup may add local-only deployment watching. */
 export const appDocument = <E, R>(options: {
@@ -39,7 +40,7 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${options.head ?? ""}`;
+    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${options.head ?? ""}`;
     return HttpServerResponse.text(
       new TextDecoder().decode(document.body).replace("<!--executor-ui-->", boot),
       { contentType: "text/html", headers: appPrivateHeaders },
