@@ -827,7 +827,7 @@ const formatResumeApprovalRequired = (input: {
   },
 });
 
-const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
+export const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   const correlationId = newCorrelationId();
   const defect = Cause.findDefect(cause);
   const nativeElicitationFailed =
