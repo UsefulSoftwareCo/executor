@@ -66,6 +66,18 @@ limits. Browser login tests still exercise the actual password form.
 
 ## Targets and shared behavior
 
+The self-host release-image check runs against a prebuilt Docker image, outside
+the source-server targets. It covers first-admin setup, an npm-dependent app,
+tool execution, and retained login/app execution after a container restart:
+
+```sh
+EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \
+  bunx --no-install vitest run --config e2e/docker-release.config.ts
+```
+
+Use `amd64` when checking that image architecture. The scenario creates and
+removes its own container and volume. It does not publish the image.
+
 | Command                 | Target                                                          | Current coverage                                              |
 | ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
 | `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, Motel |

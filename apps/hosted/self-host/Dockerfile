@@ -6,12 +6,13 @@ COPY tsconfig.json ./
 COPY packages ./packages
 COPY apps ./apps
 COPY playground ./playground
+COPY e2e/viewer/package.json ./e2e/viewer/package.json
 RUN bun install --frozen-lockfile --filter @executor-js/hosted-self-host --filter @executor-js/hosted-self-host-web --filter @executor-js/telemetry
 RUN bun run --cwd packages/telemetry build:motel
 RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd apps/hosted/self-host build
 FROM node:24.14.0-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production EXECUTOR_ENVIRONMENT=self-host HOST=0.0.0.0 PORT=4400 DASHBOARD_DIR=/app/web EXECUTOR_DATA_DIR=/app/data
 WORKDIR /app
 # Keep workspace packages and the compiler available for app deployment at runtime.
