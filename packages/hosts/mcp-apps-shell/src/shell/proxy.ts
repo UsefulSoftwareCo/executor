@@ -142,7 +142,22 @@ async function resolveToolResult(
     return resolveToolResult(app, resumed, requestTrustedInteraction);
   }
 
-  return unwrapResult(structured) ?? parseTextContent(result);
+  const value = unwrapResult(structured) ?? parseTextContent(result);
+
+  const failure = toolCallFailure(value);
+  if (failure !== null) throw new Error(failure);
+
+  return value;
+}
+
+function toolCallFailure(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { ok, error } = value as { ok?: unknown; error?: unknown };
+  if (ok !== false) return null;
+  const { message, code } = (error ?? {}) as { message?: unknown; code?: unknown };
+  if (typeof message === "string" && message.length > 0) return message;
+  if (typeof code === "string" && code.length > 0) return code;
+  return "Tool call failed";
 }
 
 function parseTrustedInteraction(
