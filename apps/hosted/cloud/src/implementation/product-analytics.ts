@@ -1,4 +1,6 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
+import { heroPreviewCookie, readHeroVisitor } from "@executor-js/marketing/experiments";
+import { evaluateHeroFlag } from "./hero-experiment.ts";
 import { FeedbackUnavailable, type Feedback } from "../contracts/feedback.ts";
 import type { Executor } from "@executor-js/sdk/core";
 import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
@@ -24,7 +26,9 @@ type EventName =
   | "tool_execution_completed"
   | "account_connected"
   | "app_deployed"
-  | "feedback_submitted";
+  | "feedback_submitted"
+  | "cloud_signup_completed"
+  | "$identify";
 type Properties = Readonly<Record<string, string | number | boolean>>;
 interface Event {
   readonly event: EventName;
@@ -41,6 +45,29 @@ const Analytics = Context.Reference<{
     submit: () => Effect.fail(new FeedbackUnavailable()),
   }),
 });
+
+/** Called only after Better Auth creates a new verified user, never on returning sign-in. */
+export const recordCloudSignup = (userId: string) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const cookies = request.headers.cookie ?? "";
+    const preview = cookies.split(";").some((part) => part.trim() === `${heroPreviewCookie}=1`);
+    const visitor = preview ? undefined : readHeroVisitor(cookies);
+    const analytics = yield* Analytics;
+    if (visitor !== undefined)
+      analytics.add({
+        event: "$identify",
+        distinct_id: userId,
+        timestamp: new Date().toISOString(),
+        properties: { $anon_distinct_id: visitor },
+      });
+    analytics.add({
+      event: "cloud_signup_completed",
+      distinct_id: userId,
+      timestamp: new Date().toISOString(),
+      properties: {},
+    });
+  });
 
 /** Submit only the declared feedback text, with identity derived from the authenticated request. */
 export const submitFeedback = (feedback: Feedback) =>
@@ -86,7 +113,7 @@ const record = (event: EventName, properties: Properties) =>
   });
 
 /** Drain one bounded batch through the owning request's Alchemy finalizer. */
-const withProductAnalytics = <A, E, R>(
+export const withProductAnalytics = <A, E, R>(
   handler: Effect.Effect<A, E, R>,
   settings: Effect.Effect<Settings | undefined>,
 ) =>
@@ -109,7 +136,7 @@ const withProductAnalytics = <A, E, R>(
                   environment: config.environment,
                   release: config.release,
                   executor_test: config.environment.startsWith("test-"),
-                  $process_person_profile: false,
+                  $process_person_profile: event.event === "$identify",
                 },
               })),
             }),
@@ -262,6 +289,10 @@ export const cloudAnalytics = Effect.gen(function* () {
   );
   return {
     proxy: postHogProxy(settings),
+    hero: (visitor: string) =>
+      Effect.flatMap(settings, (config) =>
+        config === undefined ? Effect.succeed(undefined) : evaluateHeroFlag(config, visitor),
+      ),
     wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) => withProductAnalytics(handler, settings),
   };
 });

@@ -1,8 +1,10 @@
 ---
 // Start with a useful tool, then reveal the software an agent can build around it.
 import Testimonials from "./testimonials.astro";
+import IntroSteps from "./intro-steps.astro";
+import { heroHeadlines, heroVariants, type HeroVariant } from "../../content/hero-experiment";
 import CopyPrompt from "./copy-prompt.astro";
-import { tagline, introduction, homepageStory, appDefinition } from "../../content/site-copy";
+import { introduction, homepageStory, appDefinition } from "../../content/site-copy";
 import AppStartingPoints from "../app-starting-points.astro";
 import CustomTool from "../custom-tool.astro";
 import { DailyBriefDemo } from "../daily-brief-demo";
@@ -16,17 +18,20 @@ const X_URL = "https://x.com/RhysSullivan";
 
 interface Props {
   gh: string;
+  variant?: HeroVariant;
 }
-const { gh } = Astro.props;
+const { gh, variant = heroVariants[0] } = Astro.props;
 ---
 
 <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
   {/* ── Intro ── */}
-    <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
-      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{tagline}</h1>
+    <header data-hero-variant={variant.id} class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
+      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{heroHeadlines[variant.headline]}</h1>
+      {variant.steps === "intent" ? (
       <p class="mb-6 max-w-[48ch] text-[18px] leading-[1.65] tracking-[-0.01em] text-[#777] max-[719.98px]:text-[17px] max-[1023.98px]:mx-auto">{introduction}</p>
+      ) : <IntroSteps variant="build" />}
       <div class="doc__actions flex flex-wrap items-center gap-[0.6rem_0.9rem] mb-[1.1rem] max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[1023.98px]:justify-center">
-        <a href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
+        <a data-hero-cta href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
         <CopyPrompt />
       </div>
       <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink">

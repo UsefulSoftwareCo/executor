@@ -1,4 +1,9 @@
 /** Cloud sign-in policy; self-hosted deployments do not need these OAuth credentials. */
+import {
+  heroCookieName,
+  heroPreviewCookie,
+  heroVisitorCookie,
+} from "@executor-js/marketing/experiments";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions } from "@executor-js/hosted-server";
@@ -123,6 +128,7 @@ export const cloudAuthOptions = (
   ipAddressHeaders: string[],
   send: SendAuthEmail,
   billing?: CloudBillingHooks,
+  onSignup?: (userId: string) => Promise<void>,
 ) => {
   const base = authOptions(settings, ipAddressHeaders);
   return {
@@ -131,8 +137,9 @@ export const cloudAuthOptions = (
     databaseHooks: {
       user: {
         create: {
-          after: (user, context) =>
-            Effect.runPromise(
+          after: async (user, context) => {
+            if (user.emailVerified && onSignup !== undefined) await onSignup(user.id);
+            return Effect.runPromise(
               Effect.sync(() => {
                 // Only a new email-code account is offered a passkey. Social sign-ins
                 // already have a fast path, and existing-user sign-ins never
@@ -143,11 +150,24 @@ export const cloudAuthOptions = (
                   secure: new URL(settings.url).protocol === "https:",
                 });
               }),
-            ),
+            );
+          },
         },
       },
       session: {
         create: {
+          // Consume anonymous attribution on every successful sign-in, including
+          // returning users. It must never be linked to a second account later.
+          after: async (_session, context) => {
+            if (!context) return;
+            for (const name of [heroVisitorCookie, heroCookieName, heroPreviewCookie])
+              context.setCookie(name, "", {
+                path: "/",
+                maxAge: 0,
+                sameSite: "lax",
+                secure: new URL(settings.url).protocol === "https:",
+              });
+          },
           before: async (session, context) => {
             if (!context) throw new APIError("UNAUTHORIZED");
             const user = await context.context.internalAdapter.findUserById(session.userId);

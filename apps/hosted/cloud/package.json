@@ -26,6 +26,7 @@
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",
+    "@executor-js/marketing": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",

@@ -4,6 +4,8 @@ import { APIError } from "better-auth/api";
 import { OrganizationId } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
+import { clearHeroIdentityOnSignOut } from "../implementation/hero-experiment.ts";
+import { recordCloudSignup } from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 /** Native Alchemy auth binding, shared by the HTTP Worker and MCP session objects. */
 import {
@@ -42,45 +44,53 @@ export const cloudAuth = (send: SendAuthEmail) =>
       >;
       readonly signal: AbortSignal;
     }>();
-    const runBilling = <A, E>(effect: Effect.Effect<A, E>) => {
+    const runCallback = <A, E>(
+      effect: Effect.Effect<A, E, HttpServerRequest.HttpServerRequest>,
+    ) => {
       const current = callbacks.getStore();
       if (current === undefined)
         return Promise.reject(
           new APIError("SERVICE_UNAVAILABLE", {
-            message: "Billing is unavailable outside an auth request.",
+            message: "Auth callbacks are unavailable outside an auth request.",
           }),
         );
       return Effect.runPromise(effect.pipe(Effect.provideContext(current.context)), {
         signal: current.signal,
       });
     };
-    const options = cloudAuthOptions(settings, ["cf-connecting-ip"], send, {
-      memberLimit: (id) =>
-        runBilling(
-          Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
-            Effect.flatMap(meter.memberLimit),
-            Effect.mapError(
-              () =>
-                new APIError("SERVICE_UNAVAILABLE", {
-                  message: "We could not check your member allowance. Try again.",
-                }),
+    const options = cloudAuthOptions(
+      settings,
+      ["cf-connecting-ip"],
+      send,
+      {
+        memberLimit: (id) =>
+          runCallback(
+            Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
+              Effect.flatMap(meter.memberLimit),
+              Effect.mapError(
+                () =>
+                  new APIError("SERVICE_UNAVAILABLE", {
+                    message: "We could not check your member allowance. Try again.",
+                  }),
+              ),
+              Effect.scoped,
             ),
-            Effect.scoped,
           ),
-        ),
-      syncSeats: (id) =>
-        runBilling(
-          Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
-            Effect.flatMap(meter.syncSeats),
-            // Membership has already committed. Do not turn a provider outage into a failed membership write.
-            // The scheduled authoritative recount repairs this without replaying the user's action.
-            Effect.catch(() =>
-              Effect.logError("Billing seat sync failed; scheduled reconciliation will retry"),
+        syncSeats: (id) =>
+          runCallback(
+            Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
+              Effect.flatMap(meter.syncSeats),
+              // Membership has already committed. Do not turn a provider outage into a failed membership write.
+              // The scheduled authoritative recount repairs this without replaying the user's action.
+              Effect.catch(() =>
+                Effect.logError("Billing seat sync failed; scheduled reconciliation will retry"),
+              ),
+              Effect.scoped,
             ),
-            Effect.scoped,
           ),
-        ),
-    });
+      },
+      (userId) => runCallback(recordCloudSignup(userId)),
+    );
     const auth = yield* BetterAuth({
       ...options,
       // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
@@ -246,6 +256,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
         ).pipe(Effect.flatten),
     );
     const handler = requestHandler.pipe(
+      Effect.flatMap(clearHeroIdentityOnSignOut),
       Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
     );
     return {

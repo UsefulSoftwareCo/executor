@@ -54,6 +54,8 @@ export const startCloudEnvironment = (input: {
       ALCHEMY_HOME: `${directory}/alchemy-home`,
       NODE_ENV: "development",
       VITE_UI_OBSERVE: input.observeUI ? "1" : "0",
+      // Local artifact addresses need an account-shaped ID, never a real cloud credential.
+      CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: input.origin,
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),

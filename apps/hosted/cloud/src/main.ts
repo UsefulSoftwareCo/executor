@@ -206,7 +206,7 @@ export default Api.make(
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
       browserTelemetry.pipe(HttpRouter.provideRequest(auth.identity)),
-      HttpRouter.add("GET", "/", homepage(auth.cookiePrefix)),
+      HttpRouter.add("GET", "/", homepage(auth.cookiePrefix, analytics.hero)),
       HttpRouter.add("*", "/api/webhooks/:appId/:subscriptionId", hostedWebhookCallback).pipe(
         HttpRouter.provideRequest(executor),
       ),

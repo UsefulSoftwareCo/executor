@@ -183,6 +183,11 @@ export const scenarios = {
     title: "Last active organization survives entry and rename while stale destinations recover",
     targets: cloudOnboarding,
   },
+  heroExperiments: {
+    file: "hero-experiments.spec.ts",
+    title: "Hero experiments render stable HTML and isolate previews",
+    targets: cloudOnboarding,
+  },
   signInEntry: {
     file: "sign-in-entry.spec.ts",
     title: "First sign-in resolves the organization before entering the dashboard",

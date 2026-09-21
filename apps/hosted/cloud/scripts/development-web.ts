@@ -23,7 +23,7 @@ export const developmentRoutes = (
     HttpRouter.add(
       "GET",
       "/",
-      homepageResponse(cookiePrefix, marketing.document, dashboard.document),
+      homepageResponse(cookiePrefix, marketing.experiment, dashboard.document),
     ),
     HttpRouter.add("GET", "/home", marketing.document),
     ...marketing.paths.map((path) => HttpRouter.add("GET", path, marketing.asset)),

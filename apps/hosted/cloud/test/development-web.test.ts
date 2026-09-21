@@ -1,20 +1,55 @@
 /** Native routes and a real Vite fallback exercise marketing, private redirects, assets and API proxying. */
+import {
+  heroExperiment,
+  heroVariants,
+  heroDocument,
+  readHeroAssignment,
+  readHeroVisitor,
+} from "@executor-js/marketing/experiments";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { developmentDashboard } from "../src/implementation/development-web.ts";
 import { developmentRoutes } from "../scripts/development-web.ts";
+import { evaluateHeroFlag } from "../src/implementation/hero-experiment.ts";
 import { marketingFiles } from "../src/implementation/marketing.ts";
 
 test(
   "cloud dev keeps native homepage/marketing routes ahead of Vite and API proxy",
   { timeout: 60_000 },
   async () => {
-    const backend = createServer((request, response) => {
+    let flagValue: string | false = "outcome-build";
+    let flagStatus = 200;
+    const evaluatedVisitors: string[] = [];
+    const backend = createServer(async (request, response) => {
+      if (request.url === "/flags?v=2") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const input = Schema.decodeUnknownSync(
+          Schema.fromJsonString(
+            Schema.Struct({ api_key: Schema.String, distinct_id: Schema.String }),
+          ),
+        )(body);
+        assert.equal(input.api_key, "synthetic-ingestion-token");
+        evaluatedVisitors.push(input.distinct_id);
+        response.writeHead(flagStatus, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            flags: {
+              [heroExperiment.id]: {
+                enabled: flagValue !== false,
+                ...(flagValue === false ? {} : { variant: flagValue }),
+              },
+            },
+            errorsWhileComputingFlags: false,
+          }),
+        );
+        return;
+      }
       response.writeHead(request.url === "/api/check" ? 200 : 404, {
         "content-type": "application/json",
       });
@@ -49,6 +84,11 @@ test(
             yield* fs.writeFileString(path.join(publicRoot, "index.html"), "<h1>Marketing</h1>");
             yield* fs.writeFileString(path.join(publicRoot, "about.html"), "<h1>About</h1>");
             yield* fs.writeFileString(path.join(publicRoot, "images/logo.svg"), "<svg></svg>");
+            for (const variant of heroVariants) {
+              const entry = path.join(publicRoot, heroDocument(variant).slice(1));
+              yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
+              yield* fs.writeFileString(entry, `<h1>Marketing ${variant.id}</h1>`);
+            }
             const socket = createServer();
             const hmrSocket = createServer();
             yield* Layer.build(
@@ -67,7 +107,15 @@ test(
                   hmrSocket,
                   new URL(origin),
                 );
-                const marketing = yield* marketingFiles(publicRoot);
+                const marketing = yield* marketingFiles(publicRoot, (visitor) =>
+                  evaluateHeroFlag(
+                    {
+                      token: "synthetic-ingestion-token",
+                      host: `http://127.0.0.1:${backendAddress.port}`,
+                    },
+                    visitor,
+                  ),
+                );
                 return developmentRoutes(marketing, dashboard, "executor-cloud-dev");
               }),
             );
@@ -89,6 +137,101 @@ test(
                 assert.equal(page.status, 200);
                 assert.match(await page.text(), /Marketing/);
               }
+              const first = await fetch(origin);
+              const firstBody = await first.text();
+              const assignmentCookie = first.headers
+                .getSetCookie()
+                .find((cookie) => cookie.startsWith("executor_hero="));
+              assert.ok(assignmentCookie);
+              const assignment = readHeroAssignment(assignmentCookie);
+              assert.ok(assignment);
+              assert.ok(firstBody.includes(assignment.variant));
+              const cookie = first.headers
+                .getSetCookie()
+                .map((value) => value.split(";")[0])
+                .join("; ");
+              assert.ok(cookie);
+              const repeated = await fetch(origin, { headers: { cookie } });
+              assert.equal(await repeated.text(), firstBody);
+              assert.equal(repeated.headers.get("cache-control"), "private, no-store");
+              assert.equal(repeated.headers.get("vary"), "Cookie");
+              assert.equal(readHeroVisitor(cookie), assignment.visitor);
+              assert.equal(
+                evaluatedVisitors.at(-1),
+                assignment.visitor,
+                "Both evaluations use the same native PostHog identity",
+              );
+              const beforePreview = evaluatedVisitors.length;
+              for (const variant of heroVariants) {
+                const preview: Response = await fetch(`${origin}/?hero=${variant.id}`, {
+                  headers: { cookie },
+                });
+                assert.equal(preview.status, 200);
+                assert.ok((await preview.text()).includes(variant.id));
+                assert.equal(preview.headers.get("x-robots-tag"), "noindex");
+                assert.ok(
+                  !preview.headers
+                    .getSetCookie()
+                    .some((value) => value.startsWith("executor_hero=")),
+                );
+              }
+              assert.equal(
+                evaluatedVisitors.length,
+                beforePreview,
+                "Previews never evaluate the live flag",
+              );
+              flagValue = "category-build";
+              const changed = await fetch(origin, { headers: { cookie } });
+              assert.match(
+                await changed.text(),
+                /category-build/,
+                "PostHog's response wins over the old assignment cookie",
+              );
+              flagValue = "control";
+              const nativeControl: Response = await fetch(origin, { headers: { cookie } });
+              assert.equal(await nativeControl.text(), "<h1>Marketing category-intent</h1>");
+              assert.equal(
+                readHeroAssignment(nativeControl.headers.getSetCookie().join("; "))?.variant,
+                "control",
+                "A native control assignment stays in the experiment",
+              );
+              flagValue = false;
+              const disabled = await fetch(origin, { headers: { cookie } });
+              assert.equal(await disabled.text(), "<h1>Marketing</h1>");
+              assert.ok(
+                disabled.headers
+                  .getSetCookie()
+                  .some(
+                    (value) => value.startsWith("executor_hero=") && value.includes("Max-Age=0"),
+                  ),
+                "Disabled flags cannot count a control exposure",
+              );
+              flagValue = "unknown-variant";
+              assert.equal(
+                await (await fetch(origin, { headers: { cookie } })).text(),
+                "<h1>Marketing</h1>",
+              );
+              flagStatus = 503;
+              assert.equal(
+                await (await fetch(origin, { headers: { cookie } })).text(),
+                "<h1>Marketing</h1>",
+              );
+              flagStatus = 200;
+              flagValue = "outcome-build";
+              const invalidPreview = await fetch(`${origin}/?hero=../../../dashboard`);
+              assert.equal(invalidPreview.status, 400);
+              const bot = await fetch(origin, { headers: { "user-agent": "Googlebot" } });
+              assert.equal(await bot.text(), "<h1>Marketing</h1>");
+              assert.equal(bot.headers.get("set-cookie"), null);
+              const malformed = await fetch(origin, {
+                headers: { cookie: "executor_hero=%broken" },
+              });
+              assert.equal(malformed.status, 200);
+              assert.ok(
+                malformed.headers
+                  .getSetCookie()
+                  .some((value) => value.startsWith("executor_hero=")),
+              );
               const privatePage = await fetch(origin, {
                 redirect: "manual",
                 headers: { cookie: "executor-cloud-dev.session_token=synthetic" },

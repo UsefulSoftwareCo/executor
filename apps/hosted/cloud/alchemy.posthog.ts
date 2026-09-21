@@ -15,6 +15,11 @@ import {
   PostHogInsight,
   postHogReportProviders,
 } from "./src/infrastructure/posthog-reports.ts";
+import {
+  heroExperimentDefinition,
+  PostHogHeroExperiment,
+  postHogExperimentProvider,
+} from "./src/infrastructure/posthog-experiment.ts";
 import { stackState } from "./src/infrastructure/state.ts";
 import { cloudOrigin } from "./src/infrastructure/stage.ts";
 
@@ -22,7 +27,12 @@ export default Alchemy.Stack(
   "executor-next-posthog",
   {
     providers: postHogProviderCredentials(
-      Layer.mergeAll(postHogProjectProvider(), postHogReportProviders(), RandomProvider()),
+      Layer.mergeAll(
+        postHogProjectProvider(),
+        postHogReportProviders(),
+        postHogExperimentProvider(),
+        RandomProvider(),
+      ),
     ),
     state: stackState,
   },
@@ -66,9 +76,14 @@ export default Alchemy.Stack(
         },
       }).pipe(retain());
     }
+    const hero = yield* PostHogHeroExperiment("HeroExperiment", {
+      projectId: project.id,
+      definition: heroExperimentDefinition,
+    }).pipe(retain());
     return {
       proxyPath: proxy.text.pipe(Output.map((value) => `/api/${Redacted.value(value)}`)),
       dashboardId: dashboard.id,
+      heroExperimentId: hero.id,
       projectId: project.id,
       apiToken: project.apiToken,
       uiHost,

@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./experiments": "./src/content/hero-experiment.ts"
+  },
   "scripts": {
     "build": "astro build",
     "preview": "astro preview",

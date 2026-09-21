@@ -2,6 +2,7 @@ import { WorkerEnvironment } from "alchemy/Cloudflare";
 import { Effect, Predicate, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
+import { experimentHomepage, type HeroFlagEvaluator } from "./hero-experiment.ts";
 import { homepageResponse } from "./homepage-response.ts";
 
 const StaticAssets = Schema.declare(
@@ -15,7 +16,7 @@ class HomepageUnavailable extends Schema.TaggedError<HomepageUnavailable>()(
 ) {}
 
 /** Read retained assets through this request’s native binding without opening the auth database. */
-export const staticDocument = (entry?: "/index.html" | "/dashboard.html") =>
+export const staticDocument = (entry?: string) =>
   Effect.gen(function* () {
     const env = yield* WorkerEnvironment;
     const assets = yield* Schema.decodeUnknownEffect(StaticAssets)(env.ASSETS).pipe(Effect.orDie);
@@ -41,10 +42,10 @@ export const staticDocument = (entry?: "/index.html" | "/dashboard.html") =>
   );
 
 /** Same fast split as the old site: cookie presence chooses the product, never access authority. */
-export const homepage = (cookiePrefix: string) =>
+export const homepage = (cookiePrefix: string, evaluate: HeroFlagEvaluator) =>
   homepageResponse(
     cookiePrefix,
-    staticDocument("/index.html"),
+    experimentHomepage(staticDocument, evaluate),
     // The generated `_headers` file denies framing for every dashboard path, but
     // `runWorkerFirst` lists "/", and Cloudflare does not apply `_headers` to a
     // response the Worker produces. This is the one dashboard document the asset

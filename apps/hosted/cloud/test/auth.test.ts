@@ -144,14 +144,22 @@ test(
             const settings = yield* cloudAuthSettings;
             const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
             const messages: AuthEmail[] = [];
+            const signups: string[] = [];
             let deliveryFails = false;
             const options = {
-              ...cloudAuthOptions(settings, [], (email) =>
-                deliveryFails
-                  ? Effect.fail(new EmailDeliveryFailed())
-                  : Effect.sync(() => {
-                      messages.push(email);
-                    }),
+              ...cloudAuthOptions(
+                settings,
+                [],
+                (email) =>
+                  deliveryFails
+                    ? Effect.fail(new EmailDeliveryFailed())
+                    : Effect.sync(() => {
+                        messages.push(email);
+                      }),
+                undefined,
+                async (userId) => {
+                  signups.push(userId);
+                },
               ),
               database,
               secret: Redacted.value(secret),
@@ -198,6 +206,7 @@ test(
                 ),
               ),
             );
+            assert.deepEqual(signups, [signedInUser.user.id]);
             const enrollment = signed.headers
               .getSetCookie()
               .find((value) => value.startsWith(`${passkeyEnrollmentCookie.name}=`));
@@ -297,6 +306,21 @@ test(
             assert.ok(nextCode);
             const returning = yield* request("/sign-in/email-otp", { email, otp: nextCode });
             assert.equal(returning.status, 200);
+            for (const response of [signed, returning]) {
+              for (const name of ["executor_visitor", "executor_hero", "executor_hero_preview"]) {
+                assert.ok(
+                  response.headers
+                    .getSetCookie()
+                    .some((value) => value.startsWith(`${name}=`) && value.includes("Max-Age=0")),
+                  "Every successful sign-in consumes anonymous attribution before another account can use it",
+                );
+              }
+            }
+            assert.deepEqual(
+              signups,
+              [signedInUser.user.id],
+              "Returning sign-in is not another signup",
+            );
             assert.ok(
               !returning.headers
                 .getSetCookie()

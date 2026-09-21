@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WorkerEnvironment } from "alchemy/Cloudflare";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { homepage, staticDocument } from "../src/implementation/homepage.ts";
 import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
@@ -10,7 +10,11 @@ import { cloudDevelopmentOrigin } from "../src/contracts/development.ts";
 /** The real route has no auth/database service to query: routing remains a cheap cookie hint. */
 test("root serves the appropriate HTML without redirects or caching the cookie decision", async () => {
   const assetReads: string[] = [];
-  const routes = HttpRouter.add("GET", "/", homepage("executor-hosted")).pipe(
+  const routes = HttpRouter.add(
+    "GET",
+    "/",
+    homepage("executor-hosted", () => Effect.succeed(undefined)),
+  ).pipe(
     HttpRouter.provideRequest(
       Layer.succeed(WorkerEnvironment, {
         ASSETS: {
