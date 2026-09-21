@@ -28,6 +28,80 @@ const files = (content: string, dependencies?: Readonly<Record<string, string>>)
       : [{ path: "package.json", content: JSON.stringify({ dependencies }) }]),
   ]);
 
+test("the Node SDK retains the app's selected npm framework and UI", { timeout: 60_000 }, () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const fixture = path.join(directory, "package");
+        yield* fs.copy(
+          yield* path.fromFileUrl(new URL("../../apps/dist", import.meta.url)),
+          fixture,
+        );
+        const entry = path.join(fixture, "js/index.js");
+        yield* fs.writeFileString(
+          entry,
+          (yield* fs.readFileString(entry)) +
+            '\nexport const packageFixture = "older-node-package";\n',
+        );
+        const archive = path.join(directory, "apps.tgz");
+        yield* Effect.tryPromise(() =>
+          Tar.create({ cwd: directory, file: archive, gzip: true }, ["package"]),
+        );
+        const work = path.join(directory, "work");
+        const blobs = memoryBlobStore();
+        const runtime = toEffectRuntime(nodeRuntime({ workDirectory: work }), blobs);
+        const built = yield* runtime.build({
+          files: Schema.decodeUnknownSync(SourceFiles)([
+            ...files(
+              appSource(
+                'import { packageFixture } from "apps"',
+                '"Selected package"',
+                "packageFixture",
+              ),
+              { apps: `file:${archive}` },
+            ),
+            {
+              path: "ui/index.html",
+              content:
+                '<html><head><script type="module" src="./main.ts"></script></head><body></body></html>',
+            },
+            {
+              path: "ui/main.ts",
+              content:
+                'import { packageFixture } from "apps"; document.body.textContent = packageFixture;',
+            },
+          ]),
+        });
+        yield* fs.remove(work, { recursive: true });
+        yield* fs.remove(archive);
+        yield* fs.remove(fixture, { recursive: true });
+        const restored = toEffectRuntime(
+          nodeRuntime({ workDirectory: path.join(directory, "restored") }),
+          blobs,
+        );
+        assert.equal(
+          yield* restored.call({
+            app: "package-fixture",
+            build: built.build,
+            accounts: Redacted.make({}),
+            tool: "mutations.info",
+            input: {},
+          }),
+          "older-node-package",
+        );
+        const script = built.ui?.find((file) => file.path.endsWith(".js"));
+        assert.ok(script);
+        assert.ok(restored.asset);
+        const asset = yield* restored.asset({ build: built.build, path: script.path });
+        assert.match(new TextDecoder().decode(asset?.body), /older-node-package/);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  ),
+);
+
 test("a retained Node app discovers and calls a real stdio MCP process", { timeout: 30_000 }, () =>
   Effect.runPromise(
     Effect.scoped(

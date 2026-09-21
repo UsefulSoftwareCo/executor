@@ -1,10 +1,12 @@
 # Changesets
 
-This repo uses Changesets to drive versioning. No package is publishable yet:
-every workspace package is `"private": true`, and the `executor` CLI package
+This repo uses Changesets to drive versioning. Development workspaces remain
+`"private": true`, and the `executor` CLI package
 does not exist in this repo yet (tracked by #229). The `fixed` group in
 `config.json` is intentionally empty until #229/#231 land a real publish
-target; add packages there once they are ready to ship together.
+target; add packages there once they are ready to ship together. `apps` now has
+a separate staged npm artifact, built by `bun run apps:build`; its development
+workspace stays private. See [the release notes](../notes/apps-publishing.md).
 
 ## What to put in a changeset
 

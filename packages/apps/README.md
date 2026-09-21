@@ -4,6 +4,11 @@ Author apps with ordinary TypeScript and Promises. Framework operations use
 Effect v4 internally. The root export contains declarations and schemas;
 protocol helpers have separate entry points.
 
+The Executor package starts at `0.0.1-beta.0`. The first npm beta is being
+prepared; `latest` belongs to the earlier package and is not this framework.
+Once the beta is published, install it with `npm install --save-exact apps@beta`.
+For local testing, install the tarball made by `bun run pack` in this directory.
+
 ```ts
 import { defineApp } from "apps";
 import { mcpOperations } from "apps/mcp";
@@ -37,10 +42,12 @@ Declare the needed peer in the deployed app's `package.json`, for example:
 { "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.30.0" } }
 ```
 
-The product runtimes supply `apps` and Effect. They compile authored source and
-declared dependencies inside workerd, then retain the executable Worker modules.
-Do not add host-supplied packages to a deployment manifest. In this repository, playground workspaces instead
-use `"apps": "workspace:*"` for development.
+Product runtimes compile authored source and declared dependencies inside workerd,
+then retain the executable Worker modules. Declare `apps` in `package.json` to
+select its npm version for both server and browser code. Use an exact version to
+keep rebuilds repeatable. Apps with no `apps` dependency use the host's framework.
+In this repository, playground workspaces use `"apps": "workspace:*"` for development;
+replace that workspace reference with a released version before deployment.
 
 `openapiOperations` accepts normalized operations from the template generator,
 credential placement metadata, and an optional selected account. It does not
@@ -54,6 +61,12 @@ the native HTTP discovery operation for host-side import probing.
 Helpers are ordinary app libraries. The SDK still builds and invokes one app
 model with the configured account selections; there is no protocol dispatcher.
 Existing retained builds keep their bundled code until a new deployment.
+
+The packaged runtime uses host protocol 1. A package missing that runtime or using
+an unsupported protocol fails at build time; it is never replaced silently with
+the host's framework. An unsuccessful update preserves the active deployment.
+Beta compatibility is checked with an earlier package fixture, not a promise to
+support all historical versions indefinitely.
 
 Each query or mutation can declare `approval` in its options. Import `always()` or
 `never()` from `apps/operations/approval`, or supply a synchronous/async callback that

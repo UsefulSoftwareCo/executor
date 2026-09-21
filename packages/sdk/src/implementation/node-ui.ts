@@ -56,6 +56,14 @@ export const buildUi = (
                   builder.onResolve({ filter: /^apps(?:\/.*)?$/ }, (args) => {
                     if (!isBrowserAppImport(args.path))
                       return { errors: [{ text: "This apps entry point is server-only." }] };
+                    if (dependencies.apps !== undefined) {
+                      if (args.pluginData === "resolved") return undefined;
+                      return builder.resolve(args.path, {
+                        kind: args.kind,
+                        resolveDir: source,
+                        pluginData: "resolved",
+                      });
+                    }
                     return Effect.runPromise(
                       path
                         .fromFileUrl(new URL(import.meta.resolve(args.path)))

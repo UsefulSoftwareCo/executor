@@ -13,6 +13,7 @@ import {
   HostResponse,
   HostedTool,
   type HostContext,
+  type ResolvedAccountsInput,
 } from "apps/contracts";
 import {
   RuntimeBuildFailed,
@@ -27,8 +28,13 @@ import { BlobStore } from "../contracts/blobs.ts";
 import { materializeNodeBuild, nodeBuildAsset, retainNodeBuild } from "./node-builds.ts";
 import { hostPackages, installNodeDependencies } from "./node-dependencies.ts";
 import type { NodeRuntimeOptions } from "../node.ts";
+import { PublishedAppFramework } from "../contracts/worker-build.ts";
 
-type Handler = (request: Request, context: HostContext) => Promise<Response>;
+type Handler = (
+  request: Request,
+  context: HostContext,
+  accounts: ResolvedAccountsInput,
+) => Promise<Response>;
 type NodeRuntimeServices =
   | BlobStore
   | Crypto.Crypto
@@ -83,6 +89,7 @@ function dispatch<A, E>(
             signal,
           }),
           { ...context, telemetry },
+          Redacted.value(context.accounts),
         ),
       new RuntimeProtocolFailed(),
     );
@@ -164,7 +171,12 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
                   ),
                   Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies" })),
                 );
-          if (Object.keys(dependencies).some((name) => hostPackages.includes(name))) {
+          const publishedFramework = dependencies.apps !== undefined;
+          if (
+            Object.keys(dependencies).some((name) =>
+              publishedFramework ? name === "@executor-js/sdk" : hostPackages.includes(name),
+            )
+          ) {
             return yield* Effect.fail(new RuntimeBuildFailed({ stage: "dependencies" }));
           }
           yield* fs
@@ -181,6 +193,7 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
               staging,
               path.join(directory, ".dependencies"),
               source,
+              publishedFramework,
             ).pipe(Effect.withSpan("runtime.node.dependencies"));
           }
           yield* fs
@@ -188,22 +201,39 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
               path.join(staging, "entry.ts"),
               [
                 'import app from "./source/index.ts";',
-                'import { createAppHandler } from "apps/host";',
-                "export default createAppHandler(app);",
+                'import { createAppHandler, hostContext } from "apps/host";',
+                "const handler = createAppHandler(app);",
+                // Redacted owns a private store per Effect instance. Decode on
+                // the host side and re-wrap with the selected app framework.
+                "export default (request, context, accounts) => handler(request, { ...context, ...hostContext(accounts, context.approval) });",
               ].join("\n"),
             )
             .pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
-          const frameworkDirectory = path.dirname(
-            yield* path
-              .fromFileUrl(new URL(import.meta.resolve("apps")))
-              .pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" }))),
-          );
+          const frameworkDirectory = publishedFramework
+            ? path.join(staging, "node_modules/apps")
+            : path.dirname(
+                yield* path
+                  .fromFileUrl(new URL(import.meta.resolve("apps")))
+                  .pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" }))),
+              );
           const frameworkPackage = yield* fs
-            .readFileString(path.join(frameworkDirectory, "..", "package.json"))
+            .readFileString(
+              path.join(frameworkDirectory, publishedFramework ? "." : "..", "package.json"),
+            )
             .pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkPackage))),
               Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies" })),
             );
+          if (publishedFramework) {
+            yield* fs.readFileString(path.join(frameworkDirectory, "runtime.json")).pipe(
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework)),
+              ),
+              Effect.mapError(
+                () => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" }),
+              ),
+            );
+          }
           const optionalPeers = new Set(
             Object.keys(frameworkPackage.peerDependencies).filter(
               (name) => frameworkPackage.peerDependenciesMeta[name]?.optional === true,
@@ -246,6 +276,16 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
                       builder.onResolve(
                         { filter: /^(apps|effect|@effect\/platform-node)(\/.*)?$/ },
                         (args) => {
+                          if (publishedFramework) {
+                            if (args.pluginData === "selected-framework") return undefined;
+                            if (args.path !== "apps" && !args.path.startsWith("apps/"))
+                              return { path: args.path, external: true };
+                            return builder.resolve(args.path, {
+                              resolveDir: path.join(staging, "source"),
+                              kind: args.kind,
+                              pluginData: "selected-framework",
+                            });
+                          }
                           // esbuild's Promise callback is an external adapter seam. The Path
                           // service owns URL conversion; runtime operations compose Effects.
                           return Effect.runPromise(
@@ -279,6 +319,7 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
                       // Authored dependencies still load from the app's retained installation.
                       builder.onResolve({ filter: /^[^./]/ }, async (args) => {
                         if (
+                          publishedFramework ||
                           args.pluginData === "framework-dependency" ||
                           !args.importer.startsWith(frameworkDirectory + "/")
                         )
@@ -298,7 +339,8 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
                       // Keep authored npm dependencies external, but let the resolver above
                       // locate framework dependencies before externalizing their absolute paths.
                       builder.onResolve({ filter: /^[^./]/ }, (args) =>
-                        args.pluginData === "framework-dependency"
+                        args.pluginData === "framework-dependency" ||
+                        args.pluginData === "selected-framework"
                           ? undefined
                           : { path: args.path, external: true },
                       );

@@ -5,12 +5,12 @@ import type { SourceFiles } from "../contracts/deployment.ts";
 import { prepareUiBuild } from "./ui-build.ts";
 import { Effect, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
-import { WorkerBundle } from "../contracts/worker-build.ts";
+import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
 import { appBridge } from "./worker-bridge.ts";
 import { browserBuild } from "./worker-browser-build.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
-/** Host-owned framework snapshots; authored dependencies never replace these exports. */
+/** Default framework for single-file apps that do not declare their own apps dependency. */
 export interface WorkerFramework {
   readonly server: Readonly<Record<string, string>>;
   readonly browser: Readonly<Record<string, string>>;
@@ -44,6 +44,31 @@ const quietCompiler: Plugin = {
   },
 };
 
+const selectedFramework = (filesystem: InMemoryFileSystem) =>
+  Effect.gen(function* () {
+    const selected = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(PublishedAppFramework),
+    )(filesystem.read("node_modules/apps/runtime.json"));
+    for (const modules of [selected.server, selected.browser]) {
+      if (
+        Object.keys(modules).some(
+          (name) =>
+            !name.startsWith("node_modules/apps/") ||
+            !name.endsWith(".js") ||
+            name.split("/").includes(".."),
+        )
+      )
+        return yield* new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" });
+    }
+    return selected;
+  }).pipe(
+    Effect.mapError((error) =>
+      Schema.is(RuntimeBuildFailed)(error)
+        ? error
+        : new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" }),
+    ),
+  );
+
 /** Compilation returns browser bytes separately; neither imports nor credentials cross from server execution. */
 export const compileWorkerApp = (files: SourceFiles, framework: WorkerFramework) =>
   Effect.gen(function* () {
@@ -53,13 +78,16 @@ export const compileWorkerApp = (files: SourceFiles, framework: WorkerFramework)
       ...Object.fromEntries(files.map((file) => [file.path, file.content])),
       "__executor_worker.ts": appBridge,
     });
+    const dependencies = yield* workerDependencies(filesystem);
+    const selected = (yield* dependencies.framework)
+      ? yield* selectedFramework(filesystem)
+      : framework;
     const plan = yield* prepareUiBuild(files);
     const browser =
       plan === undefined
         ? undefined
-        : yield* browserBuild(files, filesystem, plan, framework.browser);
+        : yield* browserBuild(files, filesystem, plan, selected.browser);
     const wasm = wasmBuild(filesystem, yield* Path.Path);
-    const dependencies = yield* workerDependencies(filesystem);
     const compiled = yield* Effect.tryPromise({
       try: () =>
         createApp({
@@ -73,7 +101,7 @@ export const compileWorkerApp = (files: SourceFiles, framework: WorkerFramework)
           ...(plan === undefined ? {} : { client: [...plan.entries] }),
           __dangerouslyUseEsBuildPluginsDoNotUseOrYouWillBeFired: [
             quietCompiler,
-            dependencies,
+            dependencies.plugin,
             wasm.plugin,
             ...(browser === undefined ? [] : [browser.plugin]),
           ],
@@ -82,7 +110,7 @@ export const compileWorkerApp = (files: SourceFiles, framework: WorkerFramework)
     });
     const bundle = yield* Schema.decodeUnknownEffect(Schema.toType(WorkerBundle))({
       ...compiled,
-      modules: { ...compiled.modules, ...frameworkModules(framework.server), ...wasm.modules },
+      modules: { ...compiled.modules, ...frameworkModules(selected.server), ...wasm.modules },
     }).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
     const ui = browser === undefined ? undefined : yield* browser.finish();
     return { bundle, ui };

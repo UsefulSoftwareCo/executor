@@ -57,6 +57,19 @@ export const scenarios = {
       local: na("Cloudflare's static asset rewrites are Cloud-only."),
     },
   },
+  appPackage: {
+    file: "app-package.spec.ts",
+    title: "App builds retain their selected npm framework across rebuilds",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "This local tarball fixture is served on loopback; self-host exercises the shared Worker compiler.",
+      ),
+      local: na(
+        "This scenario uses hosted routes; Local shares the same workerd compiler and runtime.",
+      ),
+    },
+  },
   feedback: {
     file: "feedback.spec.ts",
     title: "Cloud feedback enforces its API contract and reports disabled ingestion",

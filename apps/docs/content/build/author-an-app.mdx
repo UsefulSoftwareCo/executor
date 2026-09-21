@@ -4,8 +4,24 @@ description: "Write an app in plain TypeScript: a provider, some queries and mut
 ---
 
 An app is TypeScript source with a default `defineApp` export from the `apps`
-package. The host supplies that package. One `index.ts` is enough; you only need
-a `package.json` for package metadata, publishing, or third-party dependencies.
+package. One `index.ts` is enough to use the framework supplied by the host.
+To author outside the monorepo and select a framework version, install the
+Executor beta of `apps` and deploy your `package.json` with the source:
+
+```sh
+npm install --save-exact apps@0.0.1-beta.0
+```
+
+The first beta is being prepared. Until it is published, use a locally packed
+tarball. Do not install `apps@latest`: that tag is separate from this beta series.
+
+When `dependencies.apps` is present, Executor uses that package's server and
+browser framework. It retains the compiled code with the deployment, so host
+updates do not replace it. An exact version also keeps rebuilds on that version;
+a version range or tag can select a newer version on the next build.
+An unavailable or unsupported package fails the build and leaves the active app
+unchanged. The host protocol is small and shared; early beta releases do not
+promise indefinite support for every past version.
 
 `defineApp` declares behavior and does not take a name. Set the package name
 in `package.json`, such as `"name": "@team/calendar"` when publishing. The name

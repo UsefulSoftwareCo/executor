@@ -6,8 +6,10 @@ description: Build and deploy Executor apps with queries, mutations, provider ac
 # Build an Executor app
 
 An app is TypeScript source with a default `defineApp` export from `apps`.
-The host supplies that package. You can start with one `index.ts`; no
-`package.json` is needed until you add package metadata, publishing, or third-party dependencies.
+The host supplies that package when you omit it from your dependencies. You can
+start with one `index.ts`. To select a published framework, declare an exact
+Executor beta version of `apps` in `package.json` and deploy it with the source.
+The first beta is being prepared; do not use the unrelated `latest` tag.
 
 `defineApp` declares behavior and does not take a name. Set the package name
 in `package.json`, such as `"name": "@team/calendar"` when publishing. The name
@@ -408,10 +410,14 @@ the factory. Build output retains code, not a permanent tool catalog.
 
 ## Dependencies and current boundaries
 
-An optional `package.json` can declare normal npm dependencies. The Node runtime
-installs them with lifecycle scripts disabled and retains the build. Do not
-bundle another copy of the host `apps`, Effect or Executor SDK packages. Native
-dependencies that need install scripts are not supported by this adapter.
+An optional `package.json` can declare normal npm dependencies, including `apps`.
+When declared, that package supplies the server and browser framework. An exact
+version keeps rebuilds on the same framework; ranges or tags can advance during
+a rebuild. The host retains the compiled version with each deployment. Missing
+or unsupported packages fail the build without replacing the active app.
+Installation disables lifecycle scripts. Do not depend on the Executor SDK in
+app code. Without a declared `apps` package, the Node SDK adapter reserves `apps`
+and Effect for the host. Native dependencies that need scripts are unsupported.
 
 App code runs as trusted code in the host Node process. It receives usable
 credentials for selected accounts. Forward `context.signal` to fetch or other
@@ -500,7 +506,8 @@ not a raw specification, and needs no extra dependency.
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and
 resolve from its own installation. A missing peer fails the deployment with
-the package to add. The host supplies `apps` and Effect.
+the package to add. A declared `apps` version owns its framework dependencies;
+otherwise the host supplies them.
 
 ## Private app UI
 

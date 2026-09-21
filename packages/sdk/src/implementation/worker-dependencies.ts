@@ -9,7 +9,7 @@ const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 
-/** Host framework imports remain external; direct npm imports retain their authored declarations. */
+/** Framework archives are loaded alone; direct npm imports retain their authored declarations and dependency graphs. */
 export const workerDependencies = (filesystem: InMemoryFileSystem) =>
   Effect.gen(function* () {
     const manifest = filesystem.read("package.json");
@@ -20,23 +20,26 @@ export const workerDependencies = (filesystem: InMemoryFileSystem) =>
             .dependencies ?? {});
     const installLock = yield* Semaphore.make(1);
     const { context } = yield* captureTelemetry;
-    const install = (name: string, version: string) =>
+    const install = (name: string, version: string, transitive = true) =>
       installLock.withPermits(1)(
         Effect.gen(function* () {
           if (filesystem.read(`node_modules/${name}/package.json`) !== null) return;
           const result = yield* Effect.tryPromise({
             try: () =>
-              installDependencies({
-                // The installer sees one declaration; bundling still sees the unmodified manifest.
-                read: (path) =>
-                  path === "package.json"
-                    ? JSON.stringify({ dependencies: { [name]: version } })
-                    : filesystem.read(path),
-                write: (path, value) => filesystem.write(path, value),
-                delete: (path) => filesystem.delete(path),
-                list: (prefix) => filesystem.list(prefix),
-                flush: () => filesystem.flush(),
-              }),
+              installDependencies(
+                {
+                  // The installer sees one declaration; bundling still sees the unmodified manifest.
+                  read: (path) =>
+                    path === "package.json"
+                      ? JSON.stringify({ dependencies: { [name]: version } })
+                      : filesystem.read(path),
+                  write: (path, value) => filesystem.write(path, value),
+                  delete: (path) => filesystem.delete(path),
+                  list: (prefix) => filesystem.list(prefix),
+                  flush: () => filesystem.flush(),
+                },
+                { transitive },
+              ),
             catch: () => new RuntimeBuildFailed({ stage: "dependencies", dependency: name }),
           });
           if (
@@ -65,7 +68,13 @@ export const workerDependencies = (filesystem: InMemoryFileSystem) =>
         });
       },
     };
-    return plugin;
+    return {
+      plugin,
+      framework:
+        dependencies.apps === undefined
+          ? Effect.succeed(false)
+          : install("apps", dependencies.apps, false).pipe(Effect.as(true)),
+    };
   }).pipe(
     Effect.catchTag("SchemaError", () =>
       Effect.fail(new RuntimeBuildFailed({ stage: "dependencies" })),

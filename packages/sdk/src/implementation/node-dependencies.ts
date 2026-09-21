@@ -17,6 +17,7 @@ export const installNodeDependencies = (
   directory: string,
   cacheDirectory: string,
   source: SourceFiles,
+  publishedFramework = false,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -79,7 +80,12 @@ export const installNodeDependencies = (
           .pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(InstalledPackage))),
           );
-        if (manifest.name !== undefined && hostPackages.includes(manifest.name))
+        if (
+          manifest.name !== undefined &&
+          (publishedFramework
+            ? manifest.name === "@executor-js/sdk"
+            : hostPackages.includes(manifest.name))
+        )
           return yield* new RuntimeBuildFailed({ stage: "dependencies" });
         // Bun makes bin targets world-writable. Normalize only declared executables
         // before retention, so live and restored builds have the same portable mode.

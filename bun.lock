@@ -418,6 +418,7 @@
     },
     "packages/apps": {
       "name": "apps",
+      "version": "0.0.1-beta.0",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -426,8 +427,10 @@
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
       },
       "devDependencies": {
+        "@cloudflare/workers-types": "5.20260729.1",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@types/react": "^19.2.0",
+        "esbuild": "0.28.2",
         "graphql": "16.11.0",
         "react": "^19.2.0",
       },

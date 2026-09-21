@@ -65,7 +65,7 @@
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run e2e:check",
-    "e2e:prepare": "bun run telemetry:build && bun run hosted:self-host:web:build && bun run web:build",
+    "e2e:prepare": "bun run apps:build && bun run telemetry:build && bun run hosted:self-host:web:build && bun run web:build",
     "e2e": "node e2e/check-boundary.ts && bun run e2e:viewer:build && node e2e/run.ts",
     "e2e:inspect": "E2E_INTERACTIVE=1 bun run e2e",
     "e2e:check": "node e2e/check-boundary.ts && tsc --noEmit -p e2e",
@@ -87,7 +87,9 @@
     "release:beta:start": "changeset pre enter beta",
     "release:beta:stop": "changeset pre exit",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
-    "test:alchemy-recovery": "WORKFLOW_RECOVERY_BACKEND=alchemy node --test scripts/miniflare-recovery.test.mjs"
+    "test:alchemy-recovery": "WORKFLOW_RECOVERY_BACKEND=alchemy node --test scripts/miniflare-recovery.test.mjs",
+    "apps:build": "bun run --cwd packages/apps build",
+    "apps:check": "bun run apps:build && bun run --cwd packages/apps test:package"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.79",

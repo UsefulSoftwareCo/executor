@@ -1,4 +1,4 @@
-/** Compile with the exact app framework bundled into this Cloud deployment. */
+/** Compile with the app's selected npm framework, or this Cloud deployment's default. */
 import { compileWorkerApp } from "@executor-js/sdk/workerd/build";
 import type { SourceFiles } from "@executor-js/sdk/core";
 import server from "../../.generated/framework.json" with { type: "json" };
