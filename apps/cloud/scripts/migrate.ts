@@ -8,6 +8,7 @@ import { migrate as migrateDrizzle } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 
 import { cloudCodeMigrations, runCodeMigrations } from "./code-migrations/index";
+import { directDatabaseUrl, waitForDatabaseConnection } from "./database-connection";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_FOLDER = resolve(__dirname, "../drizzle");
@@ -41,13 +42,15 @@ if (!connectionString) {
 const usesLocalDatabase =
   connectionString.includes("127.0.0.1") || connectionString.includes("localhost");
 
-const sql = postgres(connectionString, {
+const sql = postgres(directDatabaseUrl(connectionString), {
   max: 1,
   prepare: false,
+  connect_timeout: 10,
   ...(usesLocalDatabase ? {} : { ssl: "require" as const }),
 });
 
 try {
+  await waitForDatabaseConnection(sql, { log: console.log });
   if (!codeOnly) {
     if (dryRun) {
       console.log("[schema-migrate] dry run: Drizzle SQL migrations are not applied");

@@ -115,6 +115,11 @@ export const runSelfhostContainer = async (options: RunContainerOptions): Promis
     ...(options.oauthCimdEnabled === undefined
       ? []
       : ["-e", `EXECUTOR_OAUTH_CIMD_ENABLED=${options.oauthCimdEnabled}`]),
+    // The production image runs Better Auth's rate limiter. It sees no proxy
+    // header here, so it pools every caller into one bucket of three sign-ins
+    // per ten seconds, and this suite signs in from 100+ files at once.
+    "-e",
+    "EXECUTOR_DISABLE_AUTH_RATE_LIMIT=true",
     options.image,
   ];
   log(options.logFile, `docker ${args.join(" ")}`);

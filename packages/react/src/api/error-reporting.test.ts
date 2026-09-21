@@ -53,6 +53,20 @@ describe("frontend error reporting", () => {
     expect(messageFromExit(Exit.fail({ reason: "unknown" }), "Fallback")).toBe("Fallback");
   });
 
+  it("reads a message the error exposes as a prototype getter", () => {
+    // Schema-tagged API errors (e.g. OrgWriteDeniedError) declare no `message`
+    // field; the sentence lives on a class getter, which a struct decode misses.
+    class GetterError extends Data.TaggedError("GetterError")<{}> {
+      override get message(): string {
+        return "Requires a workspace admin.";
+      }
+    }
+    const exit = Exit.fail(new GetterError());
+
+    expect(messageFromExit(exit, "Fallback")).toBe("Requires a workspace admin.");
+    expect(messageFromUnknown(new GetterError(), "Fallback")).toBe("Requires a workspace admin.");
+  });
+
   it("reports failed exits with the provided context", () => {
     const exit = Exit.fail({ message: "Could not update integration" });
     const { calls, report } = captureReports();

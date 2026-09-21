@@ -9,6 +9,7 @@ import { IntegrationFavicon, integrationPresetIconUrl } from "./integration-favi
 import { PresetIcon } from "./preset-icon";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import {
   CommandDialog,
   CommandEmpty,
@@ -34,6 +35,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
   const integrationPlugins = useIntegrationPlugins();
   const navigate = useNavigate();
   const integrationsResult = useAtomValue(integrationsOptimisticAtom);
+  const canCreateIntegration = useCanCreateWorkspaceConnections();
 
   // Toggle with ⌘K / Ctrl+K
   useEffect(() => {
@@ -176,11 +178,13 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
             {integrationPlugins.map((plugin) => (
               <CommandItem
                 key={`add-${plugin.key}`}
+                disabled={!canCreateIntegration}
                 value={`add ${plugin.label} ${plugin.key}`}
                 onSelect={() => goToAdd(plugin.key)}
               >
                 <PlusIcon />
                 <span className="flex-1 truncate">Add {plugin.label}</span>
+                {!canCreateIntegration && <CommandShortcut>Admin only</CommandShortcut>}
               </CommandItem>
             ))}
           </CommandGroup>
@@ -193,6 +197,7 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
             {presetEntries.map((e) => (
               <CommandItem
                 key={`preset-${e.pluginKey}-${e.presetId}`}
+                disabled={!canCreateIntegration}
                 value={`preset ${e.presetName} ${e.presetSummary ?? ""} ${e.pluginLabel}`}
                 onSelect={() => goToPreset(e.pluginKey, e.presetId, e.presetUrl)}
               >
@@ -208,7 +213,9 @@ export function CommandPalette(props: { open: boolean; onOpenChange: (open: bool
                   }
                 />
                 <span className="flex-1 truncate">{e.presetName}</span>
-                <CommandShortcut>{e.pluginLabel}</CommandShortcut>
+                <CommandShortcut>
+                  {canCreateIntegration ? e.pluginLabel : "Admin only"}
+                </CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>

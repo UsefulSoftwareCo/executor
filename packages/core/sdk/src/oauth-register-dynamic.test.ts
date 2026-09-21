@@ -6,6 +6,7 @@ import {
   ConnectionName,
   IntegrationSlug,
   OAuthClientSlug,
+  ToolAddress,
   ToolName,
 } from "./ids";
 import { OAuthRegisterDynamicError } from "./oauth-client";
@@ -406,61 +407,153 @@ describe("oauth.registerDynamicClient", () => {
     ),
   );
 
-  it.effect("reuses a legacy DCR row once its origin_issuer is backfilled", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        // The post-backfill counterpart: after the GC migration stamps a legacy
-        // row's origin_issuer, the reuse lookup keys on it and mints no
-        // duplicate. This is the steady state the migration establishes.
-        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
-        const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
-        yield* executor.acme.seed();
-        const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
-        const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
+  it.effect(
+    "reuses a legacy DCR row without an explicit redirect once its issuer is backfilled",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The post-backfill counterpart: after the GC migration stamps a legacy
+          // row's origin_issuer, the reuse lookup keys on it and mints no
+          // duplicate. This is the steady state the migration establishes.
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+          const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+          const legacySlug = OAuthClientSlug.make("cloudflare-mcp");
 
-        yield* executor.oauth.createClient({
-          owner: "org",
-          slug: legacySlug,
-          authorizationUrl: probe.authorizationUrl,
-          tokenUrl: probe.tokenUrl,
-          resource: server.mcpResourceUrl,
-          grant: "authorization_code",
-          clientId: "legacy-dcr-client",
-          clientSecret: "",
-        });
-        // Simulate the migration's backfill: legacy DCR stamp + issuer set.
-        yield* Effect.promise(() =>
-          config.db.updateMany("oauth_client", {
-            where: (b) => b("slug", "=", String(legacySlug)),
-            set: {
-              origin_kind: "dynamic_client_registration",
-              origin_integration: null,
-              origin_issuer: probe.issuer,
-            },
-          }),
-        );
-        yield* server.clearRequests;
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: legacySlug,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: server.mcpResourceUrl,
+            grant: "authorization_code",
+            clientId: "legacy-dcr-client",
+            clientSecret: "",
+          });
+          // Simulate the migration's backfill: legacy DCR stamp + issuer set.
+          yield* Effect.promise(() =>
+            config.db.updateMany("oauth_client", {
+              where: (b) => b("slug", "=", String(legacySlug)),
+              set: {
+                origin_kind: "dynamic_client_registration",
+                origin_integration: null,
+                origin_issuer: probe.issuer,
+              },
+            }),
+          );
+          yield* server.clearRequests;
 
-        const reused = yield* executor.oauth.registerDynamicClient({
-          owner: "org",
-          slug: OAuthClientSlug.make("new-attempt"),
-          issuer: probe.issuer,
-          registrationEndpoint: probe.registrationEndpoint!,
-          authorizationUrl: probe.authorizationUrl,
-          tokenUrl: probe.tokenUrl,
-          resource: server.mcpResourceUrl,
-          scopes: ["read"],
-          tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-          clientName: "Acme DCR",
-          redirectUri: FLOW_REDIRECT_URI,
-          originIntegration: INTEG,
-        });
+          const reused = yield* executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: OAuthClientSlug.make("new-attempt"),
+            issuer: probe.issuer,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: server.mcpResourceUrl,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Acme DCR",
+            originIntegration: INTEG,
+          });
 
-        expect(reused).toBe(legacySlug);
-        const requests = yield* server.requests;
-        expect(registerRequestCount(requests)).toBe(0);
-      }),
-    ),
+          expect(reused).toBe(legacySlug);
+          const requests = yield* server.requests;
+          expect(registerRequestCount(requests)).toBe(0);
+        }),
+      ),
+  );
+
+  it.effect(
+    "does not reuse a legacy null-redirect client when the caller supplies an explicit redirect",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { config, executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+          const probe = yield* executor.oauth.probe({ url: server.mcpResourceUrl });
+
+          const legacySlug = yield* executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: OAuthClientSlug.make("legacy-client"),
+            issuer: probe.issuer,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Legacy DCR",
+            redirectUri: FLOW_REDIRECT_URI,
+            originIntegration: INTEG,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: legacySlug,
+            clientOwner: "org",
+            name: ConnectionName.make("legacy"),
+            integration: INTEG,
+            template: TEMPLATE,
+            redirectUri: FLOW_REDIRECT_URI,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+          // Simulate a client written before origin_redirect_uri was persisted.
+          yield* Effect.promise(() =>
+            config.db.updateMany("oauth_client", {
+              where: (b) => b("slug", "=", String(legacySlug)),
+              set: { origin_redirect_uri: null },
+            }),
+          );
+          yield* server.clearRequests;
+
+          const stableRedirectUri = "https://agent.example.test/executor/oauth/callback";
+          const replacementSlug = yield* executor.oauth.registerDynamicClient({
+            owner: "org",
+            slug: OAuthClientSlug.make("stable-callback"),
+            issuer: probe.issuer,
+            registrationEndpoint: probe.registrationEndpoint!,
+            authorizationUrl: probe.authorizationUrl,
+            tokenUrl: probe.tokenUrl,
+            resource: probe.resource,
+            scopes: ["read"],
+            tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
+            clientName: "Stable callback DCR",
+            redirectUri: stableRedirectUri,
+            originIntegration: INTEG,
+          });
+
+          expect(String(replacementSlug)).not.toBe(String(legacySlug));
+          expect(registerRequestCount(yield* server.requests)).toBe(1);
+          const clientSlugs = yield* Effect.map(executor.oauth.listClients(), (clients) =>
+            clients.map((client) => String(client.slug)),
+          );
+          expect(clientSlugs).toContain(String(legacySlug));
+          expect(clientSlugs).toContain(String(replacementSlug));
+
+          // The legacy row may still back live connections. Keeping it allows
+          // those grants to refresh while new flows use the stable callback.
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b("name", "=", "legacy"),
+              set: { expires_at: Date.now() - 60_000 },
+            }),
+          );
+          const refreshed = (yield* executor.execute(
+            ToolAddress.make("tools.acme.org.legacy.whoami"),
+            {},
+          )) as { token: string };
+          expect(refreshed.token).toMatch(/^at_/);
+        }),
+      ),
   );
 
   it.effect("uses resource to distinguish DCR clients only after an issuer already differs", () =>

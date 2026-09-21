@@ -785,9 +785,26 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // Caps on server-controlled discovery input — a hostile or buggy server must
   // not be able to hang `oauth.start` or overflow the authorize URL.
   const MAX_DISCOVERY_AUTH_SERVERS = 3; // AS-failover lists are tiny in practice
-  const MAX_DISCOVERED_SCOPES = 100; // far beyond any realistic authorization template
-  const capScopes = (scopes: readonly string[]): readonly string[] =>
-    dedupeScopes(scopes).slice(0, MAX_DISCOVERED_SCOPES);
+  // The cap is on the encoded `scope` parameter's length, not the scope
+  // count: the URL is what overflows, and a real resource can legitimately
+  // advertise well over a hundred fine-grained scopes (PostHog lists 150).
+  // Dropping any advertised scope silently mints a token the resource then
+  // rejects, so the budget is generous — 8 KiB leaves room for the rest of the
+  // authorize URL under the common 8-16 KiB request-line limits — and only an
+  // absurd list is truncated.
+  const MAX_DISCOVERED_SCOPE_CHARS = 8192;
+  const capScopes = (scopes: readonly string[]): readonly string[] => {
+    const unique = dedupeScopes(scopes);
+    let length = 0;
+    let count = 0;
+    for (const scope of unique) {
+      const next = length + scope.length + (count > 0 ? 1 : 0);
+      if (next > MAX_DISCOVERED_SCOPE_CHARS) break;
+      length = next;
+      count += 1;
+    }
+    return unique.slice(0, count);
+  };
 
   // Bound a whole discovery sequence (PRM + up to MAX_DISCOVERY_AUTH_SERVERS AS
   // fetches, each with its own request timeout). 30s is larger than a single
@@ -1269,7 +1286,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     readonly slug: OAuthClientSlug;
     readonly resource: string | null;
     /** Redirect URI the candidate registered with the AS; null for rows
-     *  predating the column (treated as matching any flow callback). */
+     *  predating the column. */
     readonly redirectUri: string | null;
   };
 
@@ -1360,20 +1377,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     Effect.gen(function* () {
       const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer);
       const resource = input.resource ?? null;
-      // A candidate is reusable only when the callback it registered with the
-      // AS still matches the current flow's callback — strict servers reject an
-      // authorize request whose redirect_uri differs from the registration
-      // (e.g. the callback origin changed after a sandbox was recreated while
-      // the persisted client survived). A null stored redirect is a legacy row
-      // predating the column: treated as matching so an upgrade doesn't
-      // re-register every client whose callback never changed. A null FLOW
-      // redirect has nothing to compare against, so it also reuses — the only
-      // alternative is a fresh registration, which the missing-redirectUri
-      // guard would fail.
-      const redirectMatches = (candidate: DcrReuseCandidate): boolean =>
-        candidate.redirectUri === null ||
-        flowRedirectUri === null ||
-        candidate.redirectUri === flowRedirectUri;
+      // A caller-supplied redirect is authoritative: only a client registered
+      // with that exact callback can be reused. In particular, a legacy row
+      // with no recorded redirect is not proof of a match. When the caller
+      // relies on the executor's configured default, retain the legacy-null
+      // compatibility behavior so upgrades do not re-register every client.
+      const hasExplicitRedirectUri = input.redirectUri != null;
+      const redirectMatches = (candidate: DcrReuseCandidate): boolean => {
+        if (candidate.redirectUri === flowRedirectUri) return true;
+        if (hasExplicitRedirectUri) return false;
+        return candidate.redirectUri === null || flowRedirectUri === null;
+      };
       // A fresh registration must never take a slug an existing candidate
       // holds: `createClient` deletes any colliding (owner, slug) row first,
       // which would clobber a client that live connections still refresh
@@ -1387,11 +1401,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // resource row is the STRANDED one — but the first drift recovery
         // already minted a client bound to the CURRENT callback, and later
         // reconnects must reuse that instead of registering another duplicate
-        // each time. Known limitation: the legacy null-redirect rule in
-        // `redirectMatches` (a legacy row with no stored redirect matches any
-        // flow redirect) still lets such a row win over a later, exactly-
-        // matching one; kept deliberately so upgrades don't re-register every
-        // client whose callback never changed.
+        // each time.
         const reusable = candidates.find(
           (client) => client.resource === resource && redirectMatches(client),
         );

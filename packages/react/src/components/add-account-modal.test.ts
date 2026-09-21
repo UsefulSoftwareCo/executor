@@ -11,6 +11,7 @@ import {
 
 import type { AuthMethod } from "../lib/auth-placements";
 import type { OAuthPopupReservation } from "../plugins/oauth-sign-in";
+import type { OAuthClientOption } from "../plugins/use-effective-oauth-client";
 import {
   connectionNameFrom,
   connectionLabel,
@@ -19,6 +20,7 @@ import {
   DEFAULT_CONNECTION_OWNER,
   hasDcr,
   mergeCustomMethods,
+  preferredMethodId,
   oauthIdentityLabelFromHealth,
   runAutomaticOAuthConnect,
   runCimdConnect,
@@ -1436,5 +1438,70 @@ describe("runDcrConnect", () => {
     expect(registerArgs).not.toBeNull();
     // Slug comes from the issuer host, independent of any picker state.
     expect(String(registerArgs!.slug)).toBe("dcr-auth-example-com");
+  });
+});
+
+describe("preferredMethodId", () => {
+  const integration = IntegrationSlug.make("team-chat");
+  const token = apiKeyMethod("token", "spec");
+  const oauth: AuthMethod = {
+    id: "oauth",
+    label: "OAuth",
+    kind: "oauth",
+    source: "spec",
+    template: AuthTemplateSlug.make("oauth"),
+    placements: [],
+    oauth: { tokenUrl: "https://auth.example.com/token", scopes: ["read"] },
+  };
+  const client: OAuthClientOption = {
+    owner: "org",
+    slug: OAuthClientSlug.make("team-chat-app"),
+    grant: "authorization_code",
+    authorizationUrl: "https://auth.example.com/authorize",
+    tokenUrl: "https://auth.example.com/token",
+    clientId: "synthetic-client",
+    origin: { kind: "manual", integration: null },
+  };
+
+  it("prefers OAuth only with a client matched to that method", () => {
+    expect(preferredMethodId([token, oauth], [client], integration)).toBe("oauth");
+    expect(preferredMethodId([oauth, token], [], integration)).toBe("token");
+    expect(
+      preferredMethodId(
+        [token, oauth],
+        [{ ...client, tokenUrl: "https://other.example.com/token" }],
+        integration,
+      ),
+    ).toBe("token");
+  });
+
+  it("selects the OAuth method with a client rather than the first OAuth method", () => {
+    const unconfigured = {
+      ...oauth,
+      id: "other-oauth",
+      oauth: { tokenUrl: "https://unregistered.example.net/token" },
+    };
+    expect(preferredMethodId([token, unconfigured, oauth], [client], integration)).toBe("oauth");
+  });
+
+  it("uses matching built-in clients only when they allow the requested scopes", () => {
+    const builtIn: OAuthClientOption = {
+      ...client,
+      origin: { kind: "first_party", allowedScopes: ["read"] },
+    };
+    expect(preferredMethodId([token, oauth], [builtIn], integration)).toBe("oauth");
+    expect(
+      preferredMethodId(
+        [token, { ...oauth, oauth: { ...oauth.oauth, scopes: ["write"] } }],
+        [builtIn],
+        integration,
+      ),
+    ).toBe("token");
+  });
+
+  it("keeps single-method and empty integrations usable", () => {
+    expect(preferredMethodId([token], [], integration)).toBe("token");
+    expect(preferredMethodId([oauth], [], integration)).toBe("oauth");
+    expect(preferredMethodId([], [], integration)).toBe("");
   });
 });

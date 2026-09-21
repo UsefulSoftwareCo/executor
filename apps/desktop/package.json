@@ -1,6 +1,6 @@
 {
   "name": "@executor-js/desktop",
-  "version": "1.6.8",
+  "version": "1.6.10",
   "private": true,
   "homepage": "https://github.com/UsefulSoftwareCo/executor",
   "license": "MIT",
@@ -48,7 +48,7 @@
     "@zip.js/zip.js": "^2.8.26",
     "bun-types": "catalog:",
     "electron": "41.10.3",
-    "electron-builder": "^26",
+    "electron-builder": "26.16.1",
     "electron-vite": "^5",
     "quickjs-emscripten": "catalog:",
     "typescript": "catalog:",

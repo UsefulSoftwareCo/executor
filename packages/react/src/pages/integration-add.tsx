@@ -1,16 +1,27 @@
-import { Suspense } from "react";
+import { Suspense, type ComponentProps } from "react";
 import { useAtomRefresh } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useIntegrationPlugins } from "@executor-js/sdk/client";
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { IntegrationCreationGate } from "../components/integration-creation-gate";
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
-export function AddIntegrationPage(props: {
+/** Render an integration setup flow only when the workspace role permits creation. */
+export function AddIntegrationPage(props: ComponentProps<typeof AddIntegrationContent>) {
+  useExecutorDocumentTitle("Add integration");
+  return (
+    <IntegrationCreationGate>
+      <AddIntegrationContent {...props} />
+    </IntegrationCreationGate>
+  );
+}
+
+function AddIntegrationContent(props: {
   pluginKey: string;
   url?: string;
   preset?: string;
@@ -20,7 +31,6 @@ export function AddIntegrationPage(props: {
   authKind?: string;
   specOverrides?: string;
 }) {
-  useExecutorDocumentTitle("Add integration");
   const { pluginKey, url, preset, namespace, authHeader, authNote, authKind, specOverrides } =
     props;
   const navigate = useNavigate();

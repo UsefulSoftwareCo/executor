@@ -1,0 +1,27 @@
+name: Database capacity
+
+on:
+  schedule:
+    - cron: "2-57/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-capacity
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      # psql is supplied by the Ubuntu runner image. A failed check uses the
+      # repository's Actions failure notifications; no customer data is logged.
+      - name: Check ordinary connection headroom
+        run: python3 .github/scripts/check-database-capacity.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

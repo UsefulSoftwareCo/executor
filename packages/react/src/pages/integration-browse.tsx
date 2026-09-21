@@ -27,6 +27,7 @@ import {
 } from "../components/integration-favicon";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import {
   availableCatalogKinds,
   catalogLogoUrl,
@@ -244,7 +245,7 @@ function RowIcon(props: { readonly src?: string; readonly alt: string }) {
   );
 }
 
-function ResultCard(props: { readonly row: Row }) {
+function ResultCard(props: { readonly row: Row; readonly canCreate: boolean }) {
   const { row } = props;
   return (
     <div
@@ -275,6 +276,7 @@ function ResultCard(props: { readonly row: Row }) {
             variant="outline"
             size="sm"
             onClick={row.onSelect}
+            disabled={!props.canCreate}
             // Every card's button reads "Add", so the visible label alone is
             // useless to a screen reader; the accessible name carries the card.
             aria-label={`Add ${row.title}`}
@@ -362,8 +364,10 @@ function quickAddCapablePlugins(plugins: readonly IntegrationPlugin[]) {
 // Page
 // ---------------------------------------------------------------------------
 
+/** Let members browse integrations while reserving creation for workspace admins. */
 export function IntegrationBrowsePage() {
   useExecutorDocumentTitle("Add an integration");
+  const canCreate = useCanCreateWorkspaceConnections();
   const navigate = useNavigate();
   const integrationPlugins = useIntegrationPlugins();
   const doDetect = useAtomSet(detectIntegration, { mode: "promiseExit" });
@@ -923,6 +927,11 @@ export function IntegrationBrowsePage() {
           description="Search for a service, or point executor at any MCP server, OpenAPI spec, or GraphQL endpoint."
         />
 
+        {!canCreate && (
+          <p className="mb-4 text-sm text-muted-foreground">
+            Requires a workspace admin to add integrations.
+          </p>
+        )}
         <div className="mb-4 flex gap-2">
           <div className="relative min-w-0 flex-1">
             <SearchIcon
@@ -937,7 +946,7 @@ export function IntegrationBrowsePage() {
                 setError(null);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && isUrl) void handleDetect();
+                if (event.key === "Enter" && isUrl && canCreate) void handleDetect();
               }}
               placeholder="Search integrations, or paste a URL…"
               aria-label="Search integrations, or paste a URL"
@@ -951,7 +960,7 @@ export function IntegrationBrowsePage() {
             <Button
               className="h-11 shrink-0"
               onClick={() => void handleDetect()}
-              disabled={detecting || query.trim().length === 0}
+              disabled={!canCreate || detecting || query.trim().length === 0}
               loading={detecting}
             >
               Add this URL
@@ -973,6 +982,7 @@ export function IntegrationBrowsePage() {
                   key={plugin.key}
                   type="button"
                   aria-label={`New ${plugin.label} integration from scratch`}
+                  disabled={!canCreate}
                   onClick={() => {
                     trackEvent("integration_add_started", {
                       plugin_key: plugin.key,
@@ -983,7 +993,7 @@ export function IntegrationBrowsePage() {
                       params: { pluginKey: plugin.key },
                     });
                   }}
-                  className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <PlusIcon className="size-3" aria-hidden />
                   {plugin.label}
@@ -1020,7 +1030,7 @@ export function IntegrationBrowsePage() {
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {results.map((row) => (
-                <ResultCard key={row.key} row={row} />
+                <ResultCard key={row.key} row={row} canCreate={canCreate} />
               ))}
               {catalog.loadingMore
                 ? Array.from({ length: 3 }, (_, index) => (

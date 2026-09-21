@@ -145,6 +145,7 @@ export type HealthCheckResult = typeof HealthCheckResult.Type;
 export const toolSyncHealthDetailPrefix = "Tool sync failing";
 
 export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): boolean =>
+  result?.reason === "tool_sync_failed" ||
   result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
 
 // ---------------------------------------------------------------------------

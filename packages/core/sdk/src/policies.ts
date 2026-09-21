@@ -121,6 +121,49 @@ export const isValidPattern = (pattern: string): boolean => {
 };
 
 // ---------------------------------------------------------------------------
+// Dynamic-tool scope — the (integration, owner, connection) prefix a pattern
+// can reach. Lets a policy source that is an allowlist (a toolkit) narrow the
+// tool rows core loads to the connections the allowlist names, instead of
+// walking the whole catalog and blocking almost all of it in memory.
+// ---------------------------------------------------------------------------
+
+/** One reachable prefix of a dynamic tool id `integration.owner.connection.tool`.
+ *  `null` in a position means any value. All three `null` = unbounded. */
+export interface DynamicToolScope {
+  readonly integration: string | null;
+  readonly owner: string | null;
+  readonly connection: string | null;
+}
+
+export const isUnboundedDynamicToolScope = (scope: DynamicToolScope): boolean =>
+  scope.integration === null && scope.owner === null && scope.connection === null;
+
+/**
+ * The prefix of dynamic tool ids a pattern can match, or `null` when it can
+ * match none. A dynamic tool id has at least four segments, so an exact
+ * pattern shorter than that reaches only static tools. A trailing `*` covers
+ * every deeper segment; a mid-pattern `*` covers exactly that segment.
+ */
+export const dynamicToolScopeForPattern = (pattern: string): DynamicToolScope | null => {
+  if (pattern === "*") return { integration: null, owner: null, connection: null };
+  const segments = pattern.split(".");
+  const subtree = segments.at(-1) === "*";
+  if (!subtree && segments.length < 4) return null;
+  const at = (index: number): string | null => {
+    const segment = segments[index];
+    if (segment === undefined) return null;
+    // Only the trailing `*` reaches past its own position; a mid `*` is one
+    // segment, which is also "any value" for that position.
+    return segment === "*" ? null : segment;
+  };
+  const owner = at(1);
+  // A dynamic tool id's owner segment is always `org` or `user`; any other
+  // literal there names a static namespace (`executor.coreTools.*`).
+  if (owner !== null && owner !== "org" && owner !== "user") return null;
+  return { integration: at(0), owner, connection: at(2) };
+};
+
+// ---------------------------------------------------------------------------
 // Resolution — each owner contributes its first matching rule by local
 // position; the most restrictive matched action across owners wins. Caller
 // passes an `ownerRank` so the resolver doesn't need to know which owner is

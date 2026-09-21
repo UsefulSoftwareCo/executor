@@ -8,6 +8,7 @@ import { useIntegrationPlugins, type IntegrationPlugin } from "@executor-js/sdk/
 import { integrationsOptimisticAtom } from "../api/atoms";
 import { trackEvent } from "../api/analytics";
 import { McpInstallCard } from "../components/mcp-install-card";
+import { WorkspaceAdminHint } from "../components/workspace-admin-hint";
 import { Button } from "../components/button";
 import { PageContainer, PageHeader } from "../components/page";
 import {
@@ -32,6 +33,7 @@ import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
+import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 
 const KIND_TO_PLUGIN_KEY: Record<string, string> = {
   openapi: "openapi",
@@ -48,6 +50,7 @@ export function IntegrationsPage() {
   useExecutorDocumentTitle("Integrations");
   const integrations = useAtomValue(integrationsOptimisticAtom);
   const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
+  const canCreate = useCanCreateWorkspaceConnections();
 
   return (
     <PageContainer>
@@ -55,15 +58,24 @@ export function IntegrationsPage() {
         title="Integrations"
         description="Tool providers available in this workspace."
         actions={
-          <Button asChild size="sm" className="gap-1.5">
-            <Link
-              to="/{-$orgSlug}/integrations/browse"
-              onClick={() => trackEvent("integration_browse_opened", { via: "header" })}
-            >
-              <PlusIcon className="size-4" />
-              Add integration
-            </Link>
-          </Button>
+          canCreate ? (
+            <Button asChild size="sm" className="gap-1.5">
+              <Link
+                to="/{-$orgSlug}/integrations/browse"
+                onClick={() => trackEvent("integration_browse_opened", { via: "header" })}
+              >
+                <PlusIcon className="size-4" />
+                Add integration
+              </Link>
+            </Button>
+          ) : (
+            <WorkspaceAdminHint allowed={false}>
+              <Button disabled size="sm">
+                <PlusIcon className="size-4" />
+                Add integration
+              </Button>
+            </WorkspaceAdminHint>
+          )
         }
       />
 
@@ -83,7 +95,7 @@ export function IntegrationsPage() {
           ),
           onSuccess: ({ value }) => {
             if (value.length === 0) {
-              return <EmptyIntegrations />;
+              return <EmptyIntegrations canCreate={canCreate} />;
             }
 
             return (
@@ -102,7 +114,7 @@ export function IntegrationsPage() {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function EmptyIntegrations() {
+function EmptyIntegrations({ canCreate }: { readonly canCreate: boolean }) {
   return (
     <div className="mb-8 flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-16">
       <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
@@ -110,17 +122,28 @@ function EmptyIntegrations() {
       </div>
       <p className="mb-1 text-[14px] font-medium text-foreground/70">No integrations yet</p>
       <p className="mb-5 text-[13px] text-muted-foreground/60">
-        Connect an integration to start curating tools.
+        {canCreate
+          ? "Connect an integration to start curating tools."
+          : "Ask a workspace admin to add an integration."}
       </p>
-      <Button asChild size="sm" className="gap-1.5">
-        <Link
-          to="/{-$orgSlug}/integrations/browse"
-          onClick={() => trackEvent("integration_browse_opened", { via: "empty-state" })}
-        >
-          <PlusIcon className="size-4" />
-          Add an integration
-        </Link>
-      </Button>
+      {canCreate ? (
+        <Button asChild size="sm" className="gap-1.5">
+          <Link
+            to="/{-$orgSlug}/integrations/browse"
+            onClick={() => trackEvent("integration_browse_opened", { via: "empty-state" })}
+          >
+            <PlusIcon className="size-4" />
+            Add an integration
+          </Link>
+        </Button>
+      ) : (
+        <WorkspaceAdminHint allowed={false}>
+          <Button disabled size="sm">
+            <PlusIcon className="size-4" />
+            Add an integration
+          </Button>
+        </WorkspaceAdminHint>
+      )}
     </div>
   );
 }

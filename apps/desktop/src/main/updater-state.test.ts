@@ -79,6 +79,15 @@ describe("updater state decisions", () => {
     });
   });
 
+  it("moves a staged or installing update to error when Squirrel rejects it", () => {
+    expect(
+      statusAfterUpdateError({ state: "downloaded", version: "1.6.9" }, "Update failed"),
+    ).toEqual({ state: "error", version: "1.6.9", message: "Update failed" });
+    expect(
+      statusAfterUpdateError({ state: "installing", version: "1.6.9" }, "Update failed"),
+    ).toEqual({ state: "error", version: "1.6.9", message: "Update failed" });
+  });
+
   it("restores autoInstallOnAppQuit only when the fatal path recovers", () => {
     expect(
       planFatalAutoInstallOnQuit({

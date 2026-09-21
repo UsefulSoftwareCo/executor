@@ -192,7 +192,10 @@ export {
 export {
   matchPattern,
   isValidPattern,
+  dynamicToolScopeForPattern,
+  isUnboundedDynamicToolScope,
   effectivePolicyFromSorted,
+  type DynamicToolScope,
   ToolPolicyActionSchema,
   type ToolPolicy,
   type CreateToolPolicyInput,
@@ -388,6 +391,7 @@ export {
   type AnyPlugin,
   type StorageDeps,
   type OwnerBinding,
+  type PreparedToolPolicy,
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
   type IntegrationRecord,

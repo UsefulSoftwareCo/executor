@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { directDatabaseUrl, waitForDatabaseConnection } from "./database-connection";
 
 import {
   MirrorReadinessState,
@@ -56,9 +57,10 @@ if (!connectionString) {
 const usesLocalDatabase =
   connectionString.includes("127.0.0.1") || connectionString.includes("localhost");
 
-const sql = postgres(connectionString, {
+const sql = postgres(directDatabaseUrl(connectionString), {
   max: 1,
   prepare: false,
+  connect_timeout: 10,
   ...(usesLocalDatabase ? {} : { ssl: "require" as const }),
 });
 const db = drizzle(sql);
@@ -84,6 +86,7 @@ const runScript = (what: string, script: string) => {
 };
 
 try {
+  await waitForDatabaseConnection(sql, { log });
   let state = await readiness();
   log(describeMirrorReadiness(state));
 

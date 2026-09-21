@@ -2,16 +2,19 @@ import {
   Context,
   definePlugin,
   definePluginStorageCollection,
+  dynamicToolScopeForPattern,
   Effect,
   HttpApiBuilder,
   isValidPattern,
   matchPattern,
   Schema,
+  type DynamicToolScope,
   type EffectivePolicy,
   type Owner,
   type PluginCtx,
   type PluginStorageFacade,
   type PluginStorageCollectionFacade,
+  type PreparedToolPolicy,
   type StorageFailure,
   type ToolPolicyAction,
   type ToolPolicyProvider,
@@ -150,22 +153,42 @@ const isLegacyConnectionPolicy = (policy: ToolkitPolicyRecord): boolean => {
   return parts.at(-1) === "*" && (parts.length === 3 || parts.length === 4);
 };
 
-const resolveToolkitPolicy = (
-  toolId: string,
+// The toolkit's rules, digested once so resolving a tool is a scan over
+// already-sorted patterns. A tools list resolves every candidate row against
+// the same snapshot, so the legacy split and the sort must not be redone per
+// tool.
+interface ToolkitRuleSnapshot {
+  /** Patterns granting access: connection records plus legacy approve rows. */
+  readonly accessPatterns: readonly string[];
+  /** Non-legacy policies in precedence order. */
+  readonly orderedPolicies: readonly ToolkitPolicyRecord[];
+}
+
+const digestToolkitRules = (
   connections: readonly ToolkitConnectionRecord[],
   policies: readonly ToolkitPolicyRecord[],
+): ToolkitRuleSnapshot => {
+  const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
+  return {
+    accessPatterns: [
+      ...connections.map((connection) => connection.pattern),
+      ...policies.filter((policy) => legacyPolicyIds.has(policy.id)).map((p) => p.pattern),
+    ],
+    orderedPolicies: policies
+      .filter((policy) => !legacyPolicyIds.has(policy.id))
+      .sort(comparePositioned),
+  };
+};
+
+const resolveToolkitPolicy = (
+  toolId: string,
+  rules: ToolkitRuleSnapshot,
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
-  const legacyPolicyIds = legacyConnectionPolicyIds(policies, connections);
-  const connected =
-    connections.some((connection) => matchPattern(connection.pattern, toolId)) ||
-    policies.some(
-      (policy) => legacyPolicyIds.has(policy.id) && matchPattern(policy.pattern, toolId),
-    );
+  const connected = rules.accessPatterns.some((pattern) => matchPattern(pattern, toolId));
   if (!connected) return blockedPolicy();
 
-  for (const policy of [...policies].sort(comparePositioned)) {
-    if (legacyPolicyIds.has(policy.id)) continue;
+  for (const policy of rules.orderedPolicies) {
     if (!matchPattern(policy.pattern, toolId)) continue;
     return {
       action: policy.action,
@@ -175,6 +198,28 @@ const resolveToolkitPolicy = (
     };
   }
   return pluginDefaultPolicy(defaultRequiresApproval);
+};
+
+// The dynamic-tool prefixes the access patterns can reach. An org toolkit
+// never grants personal tools, so its prefixes are pinned to org rows and
+// user-only prefixes drop out; the per-tool check still enforces the same
+// rule for anything the prefix cannot express.
+const toolkitDynamicScope = (
+  rules: ToolkitRuleSnapshot,
+  isOrg: boolean,
+): readonly DynamicToolScope[] => {
+  const scopes: DynamicToolScope[] = [];
+  for (const pattern of rules.accessPatterns) {
+    const scope = dynamicToolScopeForPattern(pattern);
+    if (!scope) continue;
+    if (!isOrg) {
+      scopes.push(scope);
+      continue;
+    }
+    if (scope.owner === "user") continue;
+    scopes.push(scope.owner === null ? { ...scope, owner: "org" } : scope);
+  }
+  return scopes;
 };
 
 const legacyConnectionPolicyIds = (
@@ -507,38 +552,36 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       if (toolkit.owner === "org" && isPersonalDynamicToolId(toolId)) return blockedPolicy();
       const policies = yield* listPoliciesForRecord(toolkit.data.id);
       const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      return resolveToolkitPolicy(toolId, connections, policies, defaultRequiresApproval);
+      return resolveToolkitPolicy(
+        toolId,
+        digestToolkitRules(connections, policies),
+        defaultRequiresApproval,
+      );
     });
 
   // Batched form of `resolvePolicyForSlug`: fetch the toolkit, its policies, and
   // its connections ONCE, then hand back a pure resolver core can run for every
-  // tool in a single tools/list or tools/call. `resolvePolicyForSlug` re-fetches
-  // policies + connections on every tool, which is the per-tool N+1 that scales
-  // with the whole catalog on the list surface. This is byte-for-byte the same
-  // resolution, just hoisted out of the loop.
+  // tool in a single tools/list or tools/call, plus the prefixes those rules
+  // can reach so core reads only the toolkit's rows instead of the whole
+  // catalog. `resolvePolicyForSlug` re-fetches policies + connections on every
+  // tool, which is the per-tool N+1 that scales with the whole catalog on the
+  // list surface. This is the same resolution, hoisted out of the loop.
   const preparePolicyResolverForSlug = (
     slug: string,
-  ): Effect.Effect<
-    (input: {
-      readonly toolId: string;
-      readonly defaultRequiresApproval?: boolean;
-    }) => EffectivePolicy,
-    StorageFailure
-  > =>
+  ): Effect.Effect<PreparedToolPolicy, StorageFailure> =>
     Effect.gen(function* () {
       const toolkit = yield* getBySlugEntry(slug);
-      if (!toolkit) return () => blockedPolicy();
+      if (!toolkit) return { resolve: () => blockedPolicy(), dynamicScope: [] };
       const isOrg = toolkit.owner === "org";
       const policies = yield* listPoliciesForRecord(toolkit.data.id);
       const connections = yield* listConnectionsForRecord(toolkit.data.id);
-      return (input: { readonly toolId: string; readonly defaultRequiresApproval?: boolean }) => {
-        if (isOrg && isPersonalDynamicToolId(input.toolId)) return blockedPolicy();
-        return resolveToolkitPolicy(
-          input.toolId,
-          connections,
-          policies,
-          input.defaultRequiresApproval,
-        );
+      const rules = digestToolkitRules(connections, policies);
+      return {
+        resolve: (input) => {
+          if (isOrg && isPersonalDynamicToolId(input.toolId)) return blockedPolicy();
+          return resolveToolkitPolicy(input.toolId, rules, input.defaultRequiresApproval);
+        },
+        dynamicScope: toolkitDynamicScope(rules, isOrg),
       };
     });
 

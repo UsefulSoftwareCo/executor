@@ -2033,6 +2033,73 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       ),
   );
 
+  it.effect(
+    "checkHealth without a probe serves a sync-stamped verdict instead of burying it under healthy",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          yield* executor.oauth.complete({ state: started.state, code: callback.code });
+
+          // Tool sync found the upstream rejecting the freshly minted token
+          // (e.g. an MCP discovery handshake answering 401) and stamped it.
+          // The token itself still resolves, so a credential-only check would
+          // otherwise report healthy and hide a connection that has no tools.
+          const stamped = {
+            status: "expired",
+            checkedAt: Date.now(),
+            detail: "MCP OAuth reauthorization required",
+            reason: "tool_sync_failed",
+          };
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b("name", "=", "main"),
+              set: { last_health: stamped },
+            }),
+          );
+
+          const result = yield* executor.connections.checkHealth({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+          expect(result).toMatchObject(stamped);
+
+          const row = yield* Effect.promise(() =>
+            config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+          );
+          expect(row?.last_health).toMatchObject(stamped);
+        }),
+      ),
+  );
+
   it.effect("records missing authorization-code scopes without blocking the connection", () =>
     Effect.scoped(
       Effect.gen(function* () {

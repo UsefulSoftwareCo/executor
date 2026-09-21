@@ -54,6 +54,15 @@ export interface SelfHostConfig {
    * internal network unless an operator opts in.
    */
   readonly allowLocalNetwork: boolean;
+  /**
+   * Whether Better Auth rate-limits its own endpoints (sign-in and friends).
+   * Better Auth turns this on in production and keys the limit on the client
+   * IP it reads from a trusted proxy header. With no such header every caller
+   * shares one bucket, so an operator who rate-limits upstream, or an
+   * automated suite that signs in far faster than a person, turns it off with
+   * `EXECUTOR_DISABLE_AUTH_RATE_LIMIT=true`.
+   */
+  readonly authRateLimit: boolean;
   // Better Auth session secret. Always resolved (env, else generated + persisted
   // under the data dir) so a single-container deploy boots with no env; the auth
   // layer still validates an explicitly-set env secret is long enough.
@@ -192,6 +201,7 @@ export const loadConfig = (): SelfHostConfig => {
     webBaseUrl,
     trustedOrigins: resolveTrustedOrigins(webBaseUrl),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+    authRateLimit: process.env.EXECUTOR_DISABLE_AUTH_RATE_LIMIT !== "true",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,

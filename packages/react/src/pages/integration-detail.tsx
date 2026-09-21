@@ -13,6 +13,7 @@ import {
   effectivePolicyFromSorted,
   type Connection,
   type Owner,
+  type ToolPolicyAction,
 } from "@executor-js/sdk/shared";
 import {
   checkConnectionHealth,
@@ -37,6 +38,7 @@ import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
 import { usePolicyActions } from "../hooks/use-policy-actions";
+import { WorkspaceAdminHint } from "../components/workspace-admin-hint";
 import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
@@ -45,6 +47,7 @@ import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
 import { isAsyncResultLoading } from "../lib/async-result";
 import { useConnectionsHealth } from "../lib/use-connection-health";
+import { accountPolicyPattern } from "../lib/policy-pattern";
 import {
   integrationDetailInternalTabFromSearch,
   type IntegrationDetailInternalTab,
@@ -139,11 +142,21 @@ export function IntegrationDetailPage(props: {
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
   // Integrations are workspace-owned; the server refuses catalog mutations
-  // (update/remove) from non-admin members, so hide the controls for them.
+  // (update/remove) from non-admin members, so disable the controls for them.
   const canMutateIntegration = useCanCreateWorkspaceConnections();
-  const canEdit = canMutateIntegration && !isBuiltInIntegration && integrationData !== null;
+  // Tool policies on this tab are workspace rules (`usePolicyActions("org")`),
+  // which the server refuses for non-admin members. Offer the menus only to
+  // those who can actually write them.
+  const canSetPolicy = canMutateIntegration;
+  const onSetPolicy = canSetPolicy
+    ? (pattern: string, action: ToolPolicyAction) => void policyActions.set(pattern, action)
+    : undefined;
+  const onClearPolicy = canSetPolicy
+    ? (pattern: string, policyId?: string) => void policyActions.clear(pattern, policyId)
+    : undefined;
+  const canEdit = !isBuiltInIntegration && integrationData !== null;
   const canRefresh = integrationData?.canRefresh ?? false;
-  const canRemove = canMutateIntegration && (integrationData?.canRemove ?? false);
+  const canRemove = integrationData?.canRemove ?? false;
   const urlAccountHandoff = useMemo<IntegrationAccountHandoff | null>(() => {
     const search = new URLSearchParams(locationSearch);
     // The route-validated flag and the raw `addAccount=1` are the same request;
@@ -300,6 +313,7 @@ export function IntegrationDetailPage(props: {
         policy: effectivePolicyFromSorted(matchId, policyList, t.requiresApproval),
         owner: t.owner,
         connection: t.connection,
+        integration: t.integration,
       };
     });
   }, [tools, policyList]);
@@ -499,9 +513,16 @@ export function IntegrationDetailPage(props: {
 
         <div className="flex shrink-0 items-center gap-2">
           {!confirmDelete && canEdit && (
-            <Button variant="outline" size="sm" onClick={() => setEditSheetOpen(true)}>
-              Edit
-            </Button>
+            <WorkspaceAdminHint allowed={canMutateIntegration}>
+              <Button
+                disabled={!canMutateIntegration}
+                variant="outline"
+                size="sm"
+                onClick={() => setEditSheetOpen(true)}
+              >
+                Edit
+              </Button>
+            </WorkspaceAdminHint>
           )}
 
           {canRefresh && (
@@ -530,20 +551,23 @@ export function IntegrationDetailPage(props: {
                   variant="destructive"
                   size="sm"
                   onClick={() => void handleDelete()}
-                  disabled={deleting}
+                  disabled={deleting || !canMutateIntegration}
                 >
                   {deleting ? "Deleting..." : "Confirm Delete"}
                 </Button>
               </div>
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDelete(true)}
-                className="border-destructive/30 text-destructive hover:bg-destructive/10"
-              >
-                Delete
-              </Button>
+              <WorkspaceAdminHint allowed={canMutateIntegration}>
+                <Button
+                  disabled={!canMutateIntegration}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDelete(true)}
+                  className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                >
+                  Delete
+                </Button>
+              </WorkspaceAdminHint>
             ))}
         </div>
       </div>
@@ -609,8 +633,8 @@ export function IntegrationDetailPage(props: {
                       tools={integrationTools}
                       selectedToolId={selectedToolId}
                       onSelect={setSelectedToolId}
-                      onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                      onClearPolicy={(pattern) => void policyActions.clear(pattern)}
+                      onSetPolicy={onSetPolicy}
+                      onClearPolicy={onClearPolicy}
                       policies={sortedPolicies}
                       groupByConnection={!isBuiltInIntegration}
                       emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
@@ -625,9 +649,15 @@ export function IntegrationDetailPage(props: {
                         toolName={selectedTool.name}
                         staticTool={selection?.static}
                         policy={selectedTool.policy}
-                        onSetPolicy={(pattern, action) => void policyActions.set(pattern, action)}
-                        onClearPolicy={(pattern, policyId) =>
-                          void policyActions.clear(pattern, policyId)
+                        onSetPolicy={onSetPolicy}
+                        onClearPolicy={onClearPolicy}
+                        // The header badge must write and look up the SAME
+                        // account-pinned pattern the tree row under this
+                        // account uses, or it cannot recognize its own rule.
+                        patternForDisplay={
+                          selection && !selection.static
+                            ? accountPolicyPattern(selection.owner, selection.connection)
+                            : undefined
                         }
                         {...(!selection?.static && selectedBareName
                           ? {

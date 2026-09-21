@@ -10,6 +10,7 @@ import {
   Option,
   Predicate,
   Result,
+  Schedule,
   Schema,
   Tracer,
 } from "effect";
@@ -1908,6 +1909,135 @@ describe("tool catalog sync safety", () => {
 
         expect(reads).toHaveLength(2);
         expect(resolutions).toBe(2);
+      }),
+    ),
+  );
+
+  // Live clock: the poll below waits on a detached rebuild fiber, not on the
+  // test clock.
+  it.live("a time-expired catalog answers from persisted rows and rebuilds in the background", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const listingStarted = yield* Deferred.make<void>();
+        const releaseListing = yield* Deferred.make<void>();
+        let resolutions = 0;
+        const remotePlugin = definePlugin(() => ({
+          id: "remote" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          resolveTools: () =>
+            Effect.gen(function* () {
+              resolutions += 1;
+              if (resolutions === 1) {
+                return { tools: [{ name: ToolName.make("deploy"), description: "deploy" }] };
+              }
+              yield* Deferred.succeed(listingStarted, undefined);
+              yield* Deferred.await(releaseListing);
+              return {
+                tools: [
+                  { name: ToolName.make("deploy"), description: "deploy" },
+                  { name: ToolName.make("list"), description: "list" },
+                ],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+          }),
+        }))();
+        // TTL 0: every catalog is time-expired on every read.
+        const config = {
+          ...makeTestConfig({ plugins: [remotePlugin] as const }),
+          toolsSyncTtlMs: 0,
+        };
+        const executor = yield* createExecutor(config);
+        yield* executor.remote.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        // Let the clock move past the stamp `create` wrote, so the catalog is
+        // older than the zero TTL on the read below.
+        yield* Effect.sleep("5 millis");
+
+        // The upstream listing is held open. A read that waited on it would
+        // pay the full grace budget; this one must answer at once from the
+        // persisted catalog.
+        const startedAt = Date.now();
+        const stale = yield* executor.tools.list({ integration: INTEG });
+        expect(Date.now() - startedAt).toBeLessThan(1000);
+        expect(stale.map((tool) => String(tool.name))).toEqual(["deploy"]);
+        yield* Deferred.await(listingStarted);
+
+        // Once the background rebuild lands, a later read observes it.
+        yield* Deferred.succeed(releaseListing, undefined);
+        const converged = yield* executor.tools.list({ integration: INTEG }).pipe(
+          Effect.map((tools) => tools.map((tool) => String(tool.name)).sort()),
+          Effect.repeat({
+            until: (names) => names.length === 2,
+            schedule: Schedule.spaced("10 millis"),
+          }),
+          Effect.timeout("5 seconds"),
+        );
+        expect(converged).toEqual(["deploy", "list"]);
+      }),
+    ),
+  );
+
+  it.effect("a stale-marked catalog still gates the read within the grace budget", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let resolutions = 0;
+        const remotePlugin = definePlugin(() => ({
+          id: "remote" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          resolveTools: () =>
+            Effect.sync(() => {
+              resolutions += 1;
+              return {
+                tools:
+                  resolutions === 1
+                    ? [{ name: ToolName.make("deploy"), description: "deploy" }]
+                    : [
+                        { name: ToolName.make("deploy"), description: "deploy" },
+                        { name: ToolName.make("list"), description: "list" },
+                      ],
+              };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [remotePlugin] as const });
+        const executor = yield* createExecutor(config);
+        yield* executor.remote.seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+        // Stale-marked (an upstream said the catalog changed): the very next
+        // read reflects the rebuild.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "main")),
+            set: { tools_synced_at: null },
+          }),
+        );
+        const tools = yield* executor.tools.list({ integration: INTEG });
+        expect(tools.map((tool) => String(tool.name)).sort()).toEqual(["deploy", "list"]);
       }),
     ),
   );
