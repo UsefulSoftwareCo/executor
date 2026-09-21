@@ -1,6 +1,7 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Schema, type Effect } from "effect";
 import { JsonObject, SourceFiles } from "@executor-js/sdk";
+import type { CustomAppInput } from "./imports.ts";
 
 /** Public integrations.sh v1 entries; only metadata consumed by the importer is retained. */
 export const CatalogEntry = Schema.Struct({
@@ -65,4 +66,6 @@ export interface Catalog {
   readonly prepare: (
     input: CatalogImport,
   ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;
+  /** Prepare source for a URL a user supplied, using the same host egress as an install. */
+  readonly custom: (input: CustomAppInput) => Effect.Effect<PreparedApp, CatalogImportFailed>;
 }

@@ -214,6 +214,14 @@ const generateDefinition = (
         fail("This entry does not declare enough authentication details to generate an app.");
       const methods = new Map<string, GeneratedSecrets>();
       const operations: GeneratedOperation[] = [];
+      // Every credential-bearing operation of one app addresses one origin. A document-,
+      // path- or operation-level `servers` override that names another host would send the
+      // connected account's key there, so the first resolved origin pins the rest.
+      const rootServer = options.baseUrl ?? spec.servers?.[0]?.url;
+      let pinnedOrigin =
+        rootServer === undefined
+          ? undefined
+          : new URL(absolute(new URL(rootServer, entry.connectUrl).href)).origin;
       for (const [path, source] of Object.entries(spec.paths)) {
         if (!path.startsWith("/") || path.includes("?") || path.includes("#"))
           fail("An operation has an invalid API path.");
@@ -245,6 +253,9 @@ const generateDefinition = (
           if (serverUrl === undefined)
             fail("The API has no server URL. Set an API base URL and try again.");
           const baseUrl = absolute(new URL(serverUrl, entry.connectUrl).href);
+          pinnedOrigin ??= new URL(baseUrl).origin;
+          if (new URL(baseUrl).origin !== pinnedOrigin)
+            fail("This API sends some operations to a different host. Set an API base URL first.");
           const combined = [
             ...(Array.isArray(item.parameters) ? item.parameters : []),
             ...(operation.parameters ?? []),

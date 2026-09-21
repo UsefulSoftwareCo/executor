@@ -8,6 +8,7 @@ import { nativeRepositories } from "@executor-js/app-source/node";
 import { remoteRegistry } from "@executor-js/app-registry";
 /** Real Better Auth grants, PGlite, Effect HTTP transport, and the official MCP client. */
 import { memoryBlobStore } from "@executor-js/sdk/blobs";
+import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -154,7 +155,11 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               storage,
               credentials,
               runtime: nodeRuntime({ workDirectory: `${directory}/builds` }),
-              oauth: { httpClient: yield* HttpClient.HttpClient, clientName: "Executor app test" },
+              oauth: {
+                httpClient: yield* HttpClient.HttpClient,
+                clientName: "Executor app test",
+                urlPolicy: defaultUrlPolicy,
+              },
             });
             const initialize = yield* organizationDefaults(
               executor,
@@ -213,6 +218,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             const catalog = Layer.succeed(HostedCatalog, {
               list: Effect.succeed([]),
               prepare: () => Effect.die("Unexpected catalog import"),
+              custom: () => Effect.die("This fixture does not import custom apps"),
             });
             const routes = Layer.mergeAll(
               selfHostApi.pipe(

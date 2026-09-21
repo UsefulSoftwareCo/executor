@@ -16,6 +16,7 @@ services:
       # OAuth transport exceptions are explicit and parsed at startup.
       EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
+      EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
       EXECUTOR_OAUTH_CALLBACK_URL:
       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.

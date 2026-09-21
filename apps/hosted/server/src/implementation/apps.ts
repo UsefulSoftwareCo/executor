@@ -1,9 +1,5 @@
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
-import {
-  CatalogImportFailed,
-  generateCustomApp,
-  type RemoteCustomAppInput,
-} from "@executor-js/catalog";
+import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
 import {
   type AppId,
   type DeploymentId,
@@ -37,11 +33,16 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
     );
     return (yield* executor.apps.deploy({ owner, name: input.name, files })).app;
   });
-/** Generate remote protocol source and create an organization app without replacing a name. */
+/**
+ * Generate remote protocol source and create an organization app without replacing a name.
+ * A tenant-supplied import URL is fetched by the host, so it stays on public destinations.
+ * Operators who need an internal definition deploy its source instead.
+ */
 export const importCustomApp = (owner: OwnerId, input: RemoteCustomAppInput) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const generated = yield* generateCustomApp(input);
+    const catalog = yield* HostedCatalog;
+    const generated = yield* catalog.custom(input);
     const namespace = yield* Effect.flatten(CurrentOrganizationNamespace);
     const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
       Effect.mapError(

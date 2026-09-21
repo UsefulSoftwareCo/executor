@@ -20,7 +20,8 @@ import {
   Stream,
 } from "effect";
 import { CompiledQuery } from "kysely";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
 import { SqlClient } from "effect/unstable/sql";
 import {
   Inventory,
@@ -263,10 +264,17 @@ test(
               );
 
               const identity = yield* selfHostAuth;
+              // This fixture composes the real routes; it never leaves loopback.
+              const egress = {
+                policy: defaultUrlPolicy,
+                client: yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer)),
+              };
               const services = yield* Effect.context<AuthDatabase | SqlClient.SqlClient>();
               const routes = selfHostApi.pipe(
-                HttpRouter.provideRequest(catalogLive([], executorSelfHostApiDocument(origin))),
-                HttpRouter.provideRequest(selfHostExecutor([])),
+                HttpRouter.provideRequest(
+                  catalogLive([], executorSelfHostApiDocument(origin), egress),
+                ),
+                HttpRouter.provideRequest(selfHostExecutor([], egress)),
                 Layer.provide(requireUserLive),
                 Layer.provide(requireOrganizationLive),
                 Layer.provide(identity.identity),

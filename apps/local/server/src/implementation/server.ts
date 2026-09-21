@@ -19,13 +19,9 @@ import {
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 import { Config, Effect, Layer, Path, Redacted, Result, Deferred, Schedule } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { safeHttpClient } from "@executor-js/utils/safe-fetch";
+import type { HostEgress } from "@executor-js/utils/url-policy";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import type { LocalServerOptions } from "../contracts/server.ts";
 import type { ServerConfig } from "../contracts/config.ts";
@@ -66,7 +62,10 @@ export const localApi = (
       const directory = path.resolve(config.directory);
       const storage = yield* openStorage(directory);
       const credentialStore = yield* credentials(config.encryptionKey, crypto);
-      const httpClient = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
+      // Node can hook connect, so every host-side fetch re-checks the addresses a name resolves
+      // to. The agent lives for this layer's scope, which is the process.
+      const httpClient = yield* safeHttpClient(config.urlPolicy);
+      const egress: HostEgress = { policy: config.urlPolicy, client: httpClient };
       const blobs = filesystemBlobStore({ directory: path.join(directory, "builds") });
       const ready = yield* Deferred.make<Executor>();
       const { runtime, workflows } = yield* workerdApps({
@@ -77,6 +76,9 @@ export const localApi = (
           path.join(directory, "app-data"),
           path.join(directory, "workflow-engine"),
         ],
+        // The bundled Executor app calls this process on 127.0.0.1, and local development
+        // routinely targets a service on the operator's own machine.
+        allowPrivateAppFetch: true,
       });
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
@@ -222,7 +224,7 @@ export const localApi = (
         HttpRouter.add("GET", "/mcp/*", notFound),
         HttpRouter.add("GET", "*", ui.page),
       ).pipe(Layer.provide(appOriginAccess.layer), Layer.provide(privateResponses.layer));
-      const dashboardApi = dashboard(executor, storage, credentialStore, config, auth, {
+      const dashboardApi = dashboard(executor, storage, credentialStore, config, auth, egress, {
         managedApp: managed.app,
         managedAccount: managed.account,
       });

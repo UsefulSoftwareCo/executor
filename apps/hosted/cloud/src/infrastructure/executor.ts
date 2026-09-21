@@ -2,7 +2,7 @@ import { executorCloudApiDocument } from "../contracts/api.ts";
 import { AppManagementHost } from "@executor-js/app-management";
 import { createAppRegistry, makeRegistryStorage, storedRegistry } from "@executor-js/app-registry";
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
-import { urlPolicyConfig } from "@executor-js/utils/url-policy";
+import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import { executorSkillFiles } from "@executor-js/app-templates/executor";
 import authoring from "../../.generated/executor-authoring.json" with { type: "json" };
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
@@ -23,6 +23,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Layer, Option } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
@@ -33,6 +34,17 @@ import { DatabaseConnection } from "./database.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
+
+/**
+ * Cloudflare offers no connect hook for global fetch, so this host cannot re-check a resolved
+ * address. `global_fetch_strictly_public` on the app isolates and `parseDestination` on every
+ * host-side fetch are the controls here.
+ */
+export const cloudEgress = Effect.gen(function* () {
+  const policy = yield* urlPolicyConfig;
+  const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
+  return { policy, client } satisfies HostEgress;
+});
 
 /**
  * Alchemy owns one concrete Effect SQL client per invocation, closed with that invocation.
@@ -46,7 +58,7 @@ export const cloudExecutor = Effect.fn(function* (
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
-  const urlPolicy = yield* urlPolicyConfig;
+  const egress = yield* cloudEgress;
   const clientMetadataUrl = yield* Config.String("EXECUTOR_OAUTH_CLIENT_METADATA_URL").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -74,7 +86,11 @@ export const cloudExecutor = Effect.fn(function* (
         runtime,
         blobs,
         sources,
-        { urlPolicy, ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }) },
+        {
+          httpClient: egress.client,
+          urlPolicy: egress.policy,
+          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+        },
         { storage, webhookOrigin: origin, workflows },
       ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));
       const scheduleAuthority = yield* makeScheduledAuthority(executor).pipe(

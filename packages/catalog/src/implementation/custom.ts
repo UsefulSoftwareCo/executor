@@ -6,11 +6,19 @@ import { generateMcpApp } from "./mcp.ts";
 import { readApiDocument } from "./source.ts";
 import { generateRemoteApp, generateStdioApp, type RemoteAuth } from "@executor-js/app-templates";
 import { CatalogImportFailed } from "../contracts/catalog.ts";
+import { parseDestination, type HostEgress } from "@executor-js/utils/url-policy";
 
-/** Account secrets are supplied later through the shared account connection flow. */
-export const generateCustomApp = (input: CustomAppInput) =>
+/**
+ * Account secrets are supplied later through the shared account connection flow. The product
+ * supplies the destination policy for every host-side fetch this import performs.
+ */
+export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
   Effect.gen(function* () {
     if (input.kind === "mcp-stdio") return yield* generateStdioApp(input);
+    if (parseDestination(input.url, egress.policy) === undefined)
+      return yield* new CatalogImportFailed({
+        reason: "This URL is not an allowed destination. Use a public HTTPS URL and try again.",
+      });
     const entry = {
       id: input.url,
       kind: input.kind,
@@ -20,13 +28,21 @@ export const generateCustomApp = (input: CustomAppInput) =>
       connectUrl: input.url,
     };
     if (input.kind === "openapi") {
+      if (
+        input.baseUrl !== undefined &&
+        parseDestination(input.baseUrl, egress.policy) === undefined
+      )
+        return yield* new CatalogImportFailed({
+          reason:
+            "This API base URL is not an allowed destination. Use a public HTTPS URL and try again.",
+        });
       return yield* generateApp(
         entry,
-        yield* readApiDocument(input.url),
+        yield* readApiDocument(input.url, egress),
         input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl },
       );
     }
-    if (input.auth.type === "auto") return yield* generateMcpApp(entry, "auto");
+    if (input.auth.type === "auto") return yield* generateMcpApp(entry, egress, "auto");
     let auth: RemoteAuth;
     switch (input.auth.type) {
       case "none":
@@ -39,6 +55,8 @@ export const generateCustomApp = (input: CustomAppInput) =>
         auth = { oauth: { discover: input.url } };
         break;
       case "oauth":
+        // These endpoints are stored, not fetched here. Every OAuth request applies the host
+        // destination rule at the moment it runs, under that host's own policy.
         auth = {
           oauth: {
             authorizationUrl: input.auth.authorizationUrl,

@@ -4,9 +4,12 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    "./url-policy": "./src/url-policy.ts"
+    "./url-policy": "./src/url-policy.ts",
+    "./safe-fetch": "./src/safe-fetch.ts"
   },
   "dependencies": {
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "ipaddr.js": "^2.5.0"
   }
 }

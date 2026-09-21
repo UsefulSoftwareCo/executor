@@ -139,6 +139,7 @@ test(
               Layer.succeed(HostedCatalog, {
                 list: Effect.succeed([]),
                 prepare: () => Effect.die("No catalog in this fixture"),
+                custom: () => Effect.die("This fixture does not import custom apps"),
               }),
             ),
             Layer.provide(requireUserLive),

@@ -110,6 +110,7 @@ test("default setup preserves source, build and storage failures through HTTP an
             Layer.succeed(HostedCatalog, {
               list: Effect.succeed([]),
               prepare: () => Effect.die("Not used"),
+              custom: () => Effect.die("This fixture does not import custom apps"),
             }),
           ),
           Layer.provide(requireUserLive),

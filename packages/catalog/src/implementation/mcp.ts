@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { bearerResourceMetadata } from "@executor-js/sdk/core";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { generateRemoteApp } from "@executor-js/app-templates";
+import { parseDestination, type HostEgress, type UrlPolicy } from "@executor-js/utils/url-policy";
 import {
   CatalogImportFailed,
   type CatalogEntry,
@@ -11,7 +12,7 @@ import {
 
 const fail = (reason: string) => new CatalogImportFailed({ reason });
 
-const mcpUrl = (value: string | undefined) =>
+const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
   Effect.gen(function* () {
     const url = yield* Effect.try({
       try: () => new URL(value ?? ""),
@@ -22,7 +23,9 @@ const mcpUrl = (value: string | undefined) =>
       url.username ||
       url.password ||
       url.hash ||
-      /[{}]/.test(url.href)
+      /[{}]/.test(url.href) ||
+      // Live probes run from the host process, so the destination policy applies to them.
+      parseDestination(url.href, policy) === undefined
     ) {
       return yield* fail(
         "Use an HTTP MCP server URL without embedded credentials or placeholders.",
@@ -32,10 +35,9 @@ const mcpUrl = (value: string | undefined) =>
   });
 
 /** Inspect only response headers and release streams; an auth error alone does not establish OAuth support. */
-const advertisesOAuth = (url: string) =>
+const advertisesOAuth = (url: string, client: HttpClient.HttpClient) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient;
       const response = yield* HttpClient.withScope(client).get(url, {
         headers: { accept: "application/json, text/event-stream" },
       });
@@ -51,7 +53,6 @@ const advertisesOAuth = (url: string) =>
     }),
   ).pipe(
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-    Effect.provide(FetchHttpClient.layer),
     Effect.timeout("10 seconds"),
     Effect.mapError(() =>
       fail(
@@ -60,14 +61,19 @@ const advertisesOAuth = (url: string) =>
     ),
   );
 
-function authentication(entry: CatalogEntry, choice: McpImportAuth, url: string) {
+function authentication(
+  entry: CatalogEntry,
+  choice: McpImportAuth,
+  url: string,
+  client: HttpClient.HttpClient,
+) {
   if (choice !== "auto") return Effect.succeed(choice);
   const kind = entry.auth?.kind;
   if (kind === "oauth") return Effect.succeed("oauth" as const);
   if (kind === "mixed") return Effect.succeed("mixed" as const);
   return Effect.gen(function* () {
     // Catalog hints may be incomplete. Preserve API-key support while adding live OAuth support.
-    if (yield* advertisesOAuth(url))
+    if (yield* advertisesOAuth(url, client))
       return kind === "api_key" ? ("mixed" as const) : ("oauth" as const);
     if (kind === "api_key") return "apiKey" as const;
     if (kind === "none" || kind === "public") return "none" as const;
@@ -88,12 +94,16 @@ function authentication(entry: CatalogEntry, choice: McpImportAuth, url: string)
 }
 
 /** Generate a provider only when needed; credentials are never embedded in retained files. */
-export const generateMcpApp = (entry: CatalogEntry, choice: McpImportAuth = "auto") =>
+export const generateMcpApp = (
+  entry: CatalogEntry,
+  egress: HostEgress,
+  choice: McpImportAuth = "auto",
+) =>
   Effect.gen(function* () {
     if (entry.kind !== "mcp") return yield* fail("Choose an MCP catalog entry.");
-    const url = yield* mcpUrl(entry.connectUrl);
-    const discovery = yield* mcpUrl(entry.oauthDiscoveryUrl ?? url);
-    const auth = yield* authentication(entry, choice, discovery);
+    const url = yield* mcpUrl(entry.connectUrl, egress.policy);
+    const discovery = yield* mcpUrl(entry.oauthDiscoveryUrl ?? url, egress.policy);
+    const auth = yield* authentication(entry, choice, discovery, egress.client);
     let header = { name: "Authorization", prefix: "Bearer " };
     if ((auth === "apiKey" || auth === "mixed") && entry.auth?.header !== undefined) {
       const parsed = /^([!#$%&'*+.^_`|~A-Za-z0-9-]+):\s*([^{}\r\n]*)\{[A-Za-z0-9_]+\}$/.exec(

@@ -31,6 +31,8 @@ import { AppSignInApi, appSignInPage, appSignInScript } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { dataDirectory, appUiBaseUrl } from "./contracts/config.ts";
+import { safeHttpClient } from "@executor-js/utils/safe-fetch";
+import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import { Config, Deferred, Effect, Layer, Option, Path, Schema } from "effect";
 import {
   HttpRouter,
@@ -63,7 +65,12 @@ const settings = Config.all({
 export const selfHostRoutes = Effect.gen(function* () {
   const skills = yield* readExecutorSkills;
   const auth = yield* selfHostAuth;
-  const executorServices = Layer.succeedContext(yield* Layer.build(selfHostExecutor(skills)));
+  // Node can hook connect, so one client re-checks the addresses every host-side fetch resolves.
+  const policy = yield* urlPolicyConfig;
+  const egress: HostEgress = { policy, client: yield* safeHttpClient(policy) };
+  const executorServices = Layer.succeedContext(
+    yield* Layer.build(selfHostExecutor(skills, egress)),
+  );
   yield* Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const authorize = yield* ScheduledAuthority;
@@ -88,7 +95,7 @@ export const selfHostRoutes = Effect.gen(function* () {
   const api = selfHostApi(document).pipe(
     Layer.provide(appUi.dashboard),
     HttpRouter.provideRequest(auth.appSessions),
-    HttpRouter.provideRequest(catalogLive(skills, document)),
+    HttpRouter.provideRequest(catalogLive(skills, document, egress)),
     Layer.provide(requireUserLive),
     Layer.provide(requireOrganizationLive),
     HttpRouter.provideRequest(executorServices),

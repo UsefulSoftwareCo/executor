@@ -84,12 +84,24 @@ const NativeStep = Schema.declare(
 );
 interface Environment {
   readonly AUTH: string;
+  /** Host decision, not an app capability: apps never see or change this binding. */
+  readonly APPS_PRIVATE_FETCH: boolean;
+  /** workerd network service that refuses private, loopback and link-local destinations. */
+  readonly PUBLIC_FETCH: Fetcher;
   readonly LOADER: WorkerLoader;
   readonly DATA: { getByName(name: string): DataEntrypoint };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
 }
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
+/**
+ * Where an app isolate's global `fetch` goes. `global_fetch_strictly_public` cannot do this
+ * here: it routes global fetch through workerd's `internet` service, which this runtime
+ * configures to allow private addresses. An explicit outbound to the public-only network
+ * service is the control. Omitting it leaves the isolate on the default network.
+ */
+const appOutbound = (env: Environment): Fetcher | undefined =>
+  env.APPS_PRIVATE_FETCH ? undefined : env.PUBLIC_FETCH;
 const rpcOptions = { onSendError: () => new Error("App runtime request failed") };
 const json = Schema.decodeUnknownSync(Schema.Json);
 const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
@@ -171,6 +183,7 @@ const invoke = (
           ),
         );
       }
+      const outbound = appOutbound(env);
       const worker = env.LOADER.get(
         `${input.app}:${execution?.runId ?? "call"}:${identity}`,
         () => ({
@@ -181,6 +194,7 @@ const invoke = (
           },
           compatibilityDate: "2026-07-30",
           compatibilityFlags: ["nodejs_compat"],
+          ...(outbound === undefined ? {} : { globalOutbound: outbound }),
         }),
       );
       const entry = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(worker.getEntrypoint());
@@ -309,7 +323,7 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
-    this.#supervisor = Effect.runPromise(makeFacetSupervisor(ctx, env.LOADER));
+    this.#supervisor = Effect.runPromise(makeFacetSupervisor(ctx, env.LOADER, appOutbound(env)));
   }
   async invoke(
     input: typeof FacetInvocation.Type,

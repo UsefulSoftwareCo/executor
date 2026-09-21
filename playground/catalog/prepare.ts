@@ -1,9 +1,16 @@
 /** Prepare source without a product server, account, database or workspace. No network calls. */
 import { createCatalog } from "@executor-js/catalog";
+import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import { Console, Effect } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
-// Supply a small feed so this example works offline. createCatalog() uses integrations.sh.
-const catalog = createCatalog({
+// Supply a small feed so this example works offline. A host normally passes a client that also
+// checks the address a destination resolves to; nothing here reaches the network.
+const egress = {
+  policy: httpsOnlyUrlPolicy,
+  client: Effect.runSync(HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))),
+};
+const catalog = createCatalog(egress, {
   list: Effect.succeed([
     {
       id: "example/notes",

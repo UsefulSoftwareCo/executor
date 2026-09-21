@@ -19,7 +19,8 @@ import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
-import { createCatalog, generateCustomApp, type CatalogSource } from "@executor-js/catalog";
+import { createCatalog, type CatalogSource } from "@executor-js/catalog";
+import type { HostEgress } from "@executor-js/utils/url-policy";
 import type { AuthStorageError } from "../contracts/auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { accountSignIn } from "./account-status.ts";
@@ -58,6 +59,7 @@ export const dashboard = (
   credentials: Credentials,
   config: ServerConfig,
   auth: LocalAuth,
+  egress: HostEgress,
   {
     catalog,
     managedApp,
@@ -69,7 +71,7 @@ export const dashboard = (
   } = {},
 ) => {
   const owner = OwnerId.make("local");
-  const appCatalog = createCatalog(catalog);
+  const appCatalog = createCatalog(egress, catalog);
   const db = storage.orm("1.12.0");
   const signIn = accountSignIn(storage, credentials);
   const query = <A, E>(work: () => Effect.Effect<A, E>) =>
@@ -364,7 +366,7 @@ export const dashboard = (
           const input = payload.source;
           const existing = yield* executor.apps.list({ owner, name: input.name });
           if (existing.length > 0) return yield* new AppNameTaken({ owner, name: input.name });
-          const generated = yield* generateCustomApp(input);
+          const generated = yield* appCatalog.custom(input);
           return (yield* executor.apps.deploy({
             owner,
             name: input.name,

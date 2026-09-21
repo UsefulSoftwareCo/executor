@@ -73,6 +73,7 @@ test("health and denied actions do not acquire the SDK; allowed failures keep th
         const catalog = Layer.succeed(HostedCatalog, {
           list: Effect.succeed([]),
           prepare: () => Effect.die("Unexpected catalog import"),
+          custom: () => Effect.die("This fixture does not import custom apps"),
         });
         const auth = Layer.succeed(Authentication, {
           apiKey: () => Effect.die("API key creation is outside this fixture"),

@@ -62,7 +62,7 @@ export interface OAuthOptions {
   readonly httpClient: HttpClient.HttpClient;
   readonly clientName: string;
   /** Host transport policy for callbacks, discovery and every token request. */
-  readonly urlPolicy?: UrlPolicy;
+  readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
 }
 

@@ -1,6 +1,11 @@
 /** Workerd edge: one supervisor per configured app; code changes preserve the isolated facet database. */
 import { WorkerBundle, workerModules } from "./contracts/worker-bundle.ts";
-import type { DurableObjectState, WorkerLoader, WebSocket } from "@cloudflare/workers-types";
+import type {
+  DurableObjectState,
+  Fetcher,
+  WorkerLoader,
+  WebSocket,
+} from "@cloudflare/workers-types";
 import { Clock, Deferred, Effect, Exit, Result, Schema, Semaphore } from "effect";
 import { fingerprint } from "./implementation/cursor.ts";
 import { AppDatabaseError } from "./contracts/database.ts";
@@ -48,7 +53,16 @@ const FacetEntrypoint = Schema.declare(
 );
 
 /** Use supervisor alarms: the pinned workerd cannot schedule alarms from a facet. */
-export const makeFacetSupervisor = (state: DurableObjectState, loader: Pick<WorkerLoader, "get">) =>
+export const makeFacetSupervisor = (
+  state: DurableObjectState,
+  loader: Pick<WorkerLoader, "get">,
+  /**
+   * Network the facet's global `fetch` uses. Cloudflare has no private network to reach, so it
+   * passes nothing and relies on the compatibility flag. A local workerd host passes a
+   * public-only network service, which the flag cannot express there.
+   */
+  globalOutbound?: Fetcher,
+) =>
   Effect.gen(function* () {
     const execution = yield* Semaphore.make(1);
     const metadata = yield* Semaphore.make(1);
@@ -72,8 +86,11 @@ export const makeFacetSupervisor = (state: DurableObjectState, loader: Pick<Work
                 ...invocation.bundle,
                 modules: workerModules(invocation.bundle.modules),
                 compatibilityDate: "2026-07-30",
-                // Same-zone URLs must use their public Worker routes, not the underlying origin.
-                compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+                ...(globalOutbound === undefined
+                  ? // Same-zone URLs must use their public Worker routes, not the underlying origin.
+                    { compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"] }
+                  : // The flag would override this outbound and send fetch to the shared network.
+                    { compatibilityFlags: ["nodejs_compat"], globalOutbound }),
               }));
               return { class: worker.getDurableObjectClass("ExecutorAppData") };
             }),

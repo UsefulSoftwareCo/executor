@@ -22,9 +22,18 @@ Three settings are required. The container will not start without them.
 | `EXECUTOR_ENCRYPTION_KEY`            | yes      | Key that encrypts stored credentials. Exactly 64 hexadecimal characters. |
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
+| `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
 | `SSO_DISCOVERY_URL`                  | no       | OIDC discovery document. Leave it empty to keep SSO off.                 |
 | `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` | no       | Credentials for that identity provider.                                  |
 | `SSO_ALLOWED_DOMAINS`                | no       | Comma-separated email domains allowed to join through SSO.               |
+
+App code runs in an isolate whose `fetch` reaches only public addresses, the same
+as Executor Cloud. The default follows `BETTER_AUTH_URL`: a public origin keeps
+private fetch off, and a loopback, private or single-label origin turns it on,
+because the bundled Executor app must reach the dashboard to use its own tools.
+A startup line records it when the derived default turns private fetch on. Set
+`EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` yourself to override that default. Every app
+in the instance shares that network position, so grant it deliberately.
 
 `BETTER_AUTH_URL` must match the scheme, host and port you actually use. If it
 does not, browser sign-in is rejected as an invalid origin. Origins are never

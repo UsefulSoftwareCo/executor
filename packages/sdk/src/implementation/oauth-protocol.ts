@@ -1,5 +1,5 @@
 /** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
-import { parseEndpoint } from "@executor-js/utils/url-policy";
+import { parseDestination } from "@executor-js/utils/url-policy";
 import { Effect, Schema } from "effect";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -72,7 +72,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       Effect.runPromiseWith(telemetry.context)(
         Effect.gen(function* () {
           // Enforce host policy on every request, including discovered endpoints and saved grants.
-          const destination = parseEndpoint(url, options.urlPolicy);
+          const destination = parseDestination(url, options.urlPolicy);
           if (destination === undefined)
             return yield* new OAuthProtocolFailed({ reason: "request" });
           const request = yield* Effect.try({
@@ -130,7 +130,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     }).pipe(Effect.flatMap((server) => decode(OAuthServer, server)));
 
   const secureUrl = (value: string) => {
-    const url = parseEndpoint(value, options.urlPolicy);
+    const url = parseDestination(value, options.urlPolicy);
     return url === undefined
       ? Effect.fail(new OAuthProtocolFailed({ reason: "invalid_response" }))
       : Effect.succeed(url);

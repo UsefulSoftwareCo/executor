@@ -36,6 +36,7 @@ import { aesGcmCredentials as credentials } from "@executor-js/sdk/core";
 import { openStorage } from "../src/implementation/storage.ts";
 import { makeLocalAuth, sessionCookie, type LocalAuth } from "../src/implementation/auth.ts";
 import { createCatalog, type CatalogEntry } from "@executor-js/catalog";
+import { defaultUrlPolicy, type HostEgress } from "@executor-js/utils/url-policy";
 import { withRemoteMcp } from "./fixtures/remote-mcp.ts";
 
 const entry = {
@@ -57,8 +58,14 @@ const completedCall = async (
   assert.ok(result.status === "completed", "Fixture tool must complete without approval");
   return result.value;
 };
+// Fixture servers run on loopback, which is exactly what the local product's policy allows.
+// These cases exercise catalog behaviour, not egress, so the platform fetch client is enough.
+const egress: HostEgress = {
+  policy: defaultUrlPolicy,
+  client: Effect.runSync(HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))),
+};
 const catalogFor = (entry: CatalogEntry, document?: unknown) =>
-  createCatalog({
+  createCatalog(egress, {
     list: Effect.succeed([entry]),
     document: () => Effect.succeed(document),
   });
@@ -158,7 +165,7 @@ async function withServer(
             runtime: nodeRuntime({ workDirectory: path.join(directory, "builds") }),
           });
           auth = yield* makeLocalAuth(crypto, directory);
-          const api = dashboard(executor, storage, store, config, auth, {
+          const api = dashboard(executor, storage, store, config, auth, egress, {
             catalog: {
               list: Effect.succeed([catalogEntry]),
               document: () => Effect.succeed(document),

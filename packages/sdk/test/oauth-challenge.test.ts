@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
 import { Effect } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { bearerResourceMetadata } from "../src/implementation/oauth-challenge.ts";
@@ -55,7 +56,11 @@ for (const invalid of [
         );
       }),
     );
-    const protocol = makeOAuthProtocol({ httpClient, clientName: "Fixture" });
+    const protocol = makeOAuthProtocol({
+      httpClient,
+      clientName: "Fixture",
+      urlPolicy: defaultUrlPolicy,
+    });
     await assert.rejects(
       () =>
         Effect.runPromise(

@@ -4,7 +4,7 @@ import { remoteRegistry } from "@executor-js/app-registry";
 import { gitSourceStorage } from "@executor-js/app-source";
 import { nativeRepositories } from "@executor-js/app-source/node";
 /** Self-host SDK uses the same PGlite connection as Better Auth. */
-import { urlPolicyConfig } from "@executor-js/utils/url-policy";
+import type { HostEgress } from "@executor-js/utils/url-policy";
 import {
   toEffectRuntime,
   makeExecutorStorage,
@@ -25,19 +25,24 @@ import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 import { Config, Effect, Layer, Option, Path, Deferred, Schedule } from "effect";
-import { dataDirectory } from "./contracts/config.ts";
+import {
+  allowPrivateAppFetch as allowPrivateAppFetchFor,
+  dataDirectory,
+} from "./contracts/config.ts";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/unstable/sql";
 
 /** Database initialization finishes before this service is acquired. */
-export const selfHostExecutor = (skills: readonly SourceFile[]) =>
+export const selfHostExecutor = (skills: readonly SourceFile[], egress: HostEgress) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const directory = yield* dataDirectory;
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
       const origin = yield* Config.String("BETTER_AUTH_URL");
-      const urlPolicy = yield* urlPolicyConfig;
+      // Match hosted Cloudflare wherever the dashboard origin is public. An operator whose apps
+      // must call an internal service opts in, accepting that app code then shares this network.
+      const allowPrivateAppFetch = yield* allowPrivateAppFetchFor(origin);
       const clientMetadataUrl = yield* Config.String("EXECUTOR_OAUTH_CLIENT_METADATA_URL").pipe(
         Config.option,
         Config.map(Option.getOrUndefined),
@@ -53,6 +58,7 @@ export const selfHostExecutor = (skills: readonly SourceFile[]) =>
           path.resolve(directory, "app-data"),
           path.resolve(directory, "workflow-engine"),
         ],
+        allowPrivateAppFetch,
       });
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
@@ -66,7 +72,11 @@ export const selfHostExecutor = (skills: readonly SourceFile[]) =>
         runtime,
         blobs,
         sources,
-        { urlPolicy, ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }) },
+        {
+          httpClient: egress.client,
+          urlPolicy: egress.policy,
+          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+        },
         { storage, webhookOrigin: origin, workflows },
       );
       yield* Deferred.succeed(ready, executor);

@@ -10,7 +10,9 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Layer, Redacted, Ref, Schema } from "effect";
-import { HttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import { generateCustomApp } from "@executor-js/catalog";
+import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import {
   ToolBlocked,
@@ -52,6 +54,10 @@ const selfHostApi = HttpApiBuilder.layer(HostedApi).pipe(
     Layer.succeed(AppManagementHost, Effect.die("App authoring is outside this fixture")),
   ),
 );
+const fixtureEgress = {
+  policy: defaultUrlPolicy,
+  client: Effect.runSync(HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))),
+};
 
 const origin = "http://localhost:4400";
 test(
@@ -124,6 +130,8 @@ test(
                 Layer.succeed(HostedCatalog, {
                   list: Effect.succeed([]),
                   prepare: () => Effect.die("Custom imports do not use catalog entries"),
+                  // This fixture is its own host, and its upstream runs on loopback.
+                  custom: (input) => generateCustomApp(input, fixtureEgress),
                 }),
               ),
               Layer.provide(requireUserLive),
@@ -336,6 +344,7 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
                 runtime: nodeRuntime({ workDirectory: directory }),
                 oauth: {
                   clientName: "Fixture",
+                  urlPolicy: defaultUrlPolicy,
                   httpClient: HttpClient.make(() =>
                     Effect.die("Insecure OAuth endpoints must fail before network access"),
                   ),

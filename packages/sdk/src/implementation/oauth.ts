@@ -1,5 +1,5 @@
 /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
-import { parseEndpoint, httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
+import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import {
   Clock,
   type Crypto,
@@ -141,7 +141,7 @@ export const makeOAuth = (
         discovered.server.token_endpoint,
         discovered.server.registration_endpoint,
       ].filter((address) => address !== undefined)) {
-        const url = parseEndpoint(address, options.urlPolicy);
+        const url = parseDestination(address, options.urlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "discovery" });
       }
       if (
@@ -192,7 +192,7 @@ export const makeOAuth = (
         options.clientMetadataUrl !== undefined
       ) {
         const metadataUrl = options.clientMetadataUrl;
-        const url = parseEndpoint(metadataUrl, httpsOnlyUrlPolicy);
+        const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }

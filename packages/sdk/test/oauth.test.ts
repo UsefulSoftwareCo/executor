@@ -1,6 +1,6 @@
 import { memorySourceStorage } from "@executor-js/sdk/testing";
 /** Synthetic issuer through the production HTTP seam, with real SQLite and credential encryption. */
-import { HttpOrigin, type UrlPolicy } from "@executor-js/utils/url-policy";
+import { defaultUrlPolicy, HttpOrigin, type UrlPolicy } from "@executor-js/utils/url-policy";
 import { memoryBlobStore } from "@executor-js/sdk/blobs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -330,7 +330,7 @@ async function setup(
     oauth: {
       httpClient: service.httpClient,
       clientName: "Executor test",
-      ...(settings.urlPolicy === undefined ? {} : { urlPolicy: settings.urlPolicy }),
+      urlPolicy: settings.urlPolicy ?? defaultUrlPolicy,
       ...(mode === "cimd" ? { clientMetadataUrl: "https://client.example/oauth.json" } : {}),
     },
   };

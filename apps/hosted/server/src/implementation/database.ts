@@ -10,7 +10,6 @@ import {
   type ExecutorOptions,
 } from "@executor-js/sdk/core";
 import { Config, Effect, type Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
 /** Explicit connection URL shared by Better Auth and Executor; never logged or returned. */
 export const databaseUrl = Config.Redacted("DATABASE_URL").pipe(
@@ -45,7 +44,7 @@ export const postgresExecutor = (
   runtime: AppRuntime,
   blobs: BlobStorage,
   sources: AppSourceStorage,
-  oauth?: Pick<OAuthOptions, "clientMetadataUrl" | "urlPolicy">,
+  oauth: Pick<OAuthOptions, "httpClient" | "clientMetadataUrl" | "urlPolicy">,
   options?: Partial<
     Pick<ExecutorOptions, "storage" | "appStorage" | "webhookOrigin" | "workflows">
   >,
@@ -53,7 +52,6 @@ export const postgresExecutor = (
   Effect.gen(function* () {
     const storage = options?.storage ?? (yield* makeExecutorStorage({ provider: "postgresql" }));
     const credentials = yield* aesGcmCredentials(secret, globalThis.crypto);
-    const httpClient = yield* HttpClient.HttpClient;
     return yield* createExecutor({
       storage,
       ...(options?.workflows === undefined ? {} : { workflows: options.workflows }),
@@ -64,12 +62,12 @@ export const postgresExecutor = (
       credentials,
       runtime,
       oauth: {
-        httpClient,
+        httpClient: oauth.httpClient,
         clientName: "Executor",
-        ...(oauth?.urlPolicy === undefined ? {} : { urlPolicy: oauth.urlPolicy }),
-        ...(oauth?.clientMetadataUrl === undefined
+        urlPolicy: oauth.urlPolicy,
+        ...(oauth.clientMetadataUrl === undefined
           ? {}
           : { clientMetadataUrl: oauth.clientMetadataUrl }),
       },
     });
-  }).pipe(Effect.provide(FetchHttpClient.layer));
+  });

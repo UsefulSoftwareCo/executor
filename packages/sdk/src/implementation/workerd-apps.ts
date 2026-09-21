@@ -1,5 +1,9 @@
 /** Node composition for Alchemy's workerd app runtime and native workflow engine. */
-import { Runtime as LocalRuntime, layerLocalRuntime } from "@alchemy.run/cloudflare-runtime/core";
+import {
+  Runtime as LocalRuntime,
+  layerLocalRuntime,
+  type BindingHook,
+} from "@alchemy.run/cloudflare-runtime/core";
 import {
   DurableObjectNamespace,
   Json as JsonBinding,
@@ -7,6 +11,8 @@ import {
   WorkerLoader,
   Workflows,
 } from "@alchemy.run/cloudflare-runtime/core/bindings";
+import * as AlchemyPlugin from "@alchemy.run/cloudflare-runtime/core/Plugin";
+import { Internet, InternetLive } from "@alchemy.run/cloudflare-runtime/core/globals/Internet";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { WebSocket as NodeWebSocket } from "ws";
 import { RpcTarget, newWebSocketRpcSession, type RpcStub } from "capnweb";
@@ -75,6 +81,44 @@ export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigratio
   "WorkerdMigrationRequired",
   { directory: Schema.String },
 ) {}
+/**
+ * workerd's `internet` service backs every global fetch, and Alchemy configures it to allow
+ * private and loopback addresses because the host worker and local development need them. A
+ * second network service carries the public-only rule, so app isolates can be pointed at it
+ * through `globalOutbound` without changing the network the host itself uses. The refusal
+ * happens in workerd after DNS resolution, so a public name that resolves to 127.0.0.1 is
+ * refused too.
+ */
+const PUBLIC_EGRESS_SERVICE = "internet:public";
+/** Environment name of the public-only network service inside the workerd host worker. */
+const PUBLIC_EGRESS_BINDING = "PUBLIC_FETCH";
+class PublicEgress extends AlchemyPlugin.Service<PublicEgress>()(
+  "cloudflare-runtime/plugin/executor-public-egress",
+) {}
+const publicEgress = Layer.effect(
+  PublicEgress,
+  Effect.map(Internet, (internet) => ({
+    services: [
+      {
+        name: PUBLIC_EGRESS_SERVICE,
+        // A getter, like Alchemy's own service, so added CA certificates are read per config build.
+        get network() {
+          // Same TLS trust as the default network. Only the destination rule differs.
+          return {
+            ...("network" in internet ? internet.network : undefined),
+            allow: ["public"],
+            deny: [],
+          };
+        },
+      },
+    ],
+  })),
+).pipe(Layer.provide(InternetLive));
+const publicEgressBinding: BindingHook = Effect.succeed({
+  name: PUBLIC_EGRESS_BINDING,
+  service: { name: PUBLIC_EGRESS_SERVICE },
+});
+
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
 const json = Schema.decodeUnknownSync(Schema.Json);
@@ -111,6 +155,12 @@ export const workerdApps = (options: {
   readonly blobs: BlobStorage;
   readonly executor: Effect.Effect<Executor>;
   readonly legacyDataDirectories?: readonly string[];
+  /**
+   * Let authored app code reach loopback and private address space. Hosted Cloudflare never
+   * does. Local development needs it, because the bundled Executor app calls this process on
+   * 127.0.0.1. Self-host leaves it off unless an operator opts in for an internal service.
+   */
+  readonly allowPrivateAppFetch?: boolean;
 }): Effect.Effect<
   { readonly runtime: ReturnType<typeof runtimeAdapter>; readonly workflows: WorkflowRuntime },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
@@ -196,6 +246,8 @@ export const workerdApps = (options: {
     );
     const runtimeContext = yield* Layer.build(
       layerLocalRuntime({ directory: options.directory }).pipe(
+        // Registered as a runtime plugin so its service reaches the generated workerd config.
+        Layer.provide(publicEgress),
         Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
         Layer.provide(
           ConfigProvider.layer(
@@ -208,10 +260,12 @@ export const workerdApps = (options: {
     );
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
     const secret = crypto.randomUUID();
+    const privateAppFetch = options.allowPrivateAppFetch === true;
     const origin = yield* engine
       .start({
         name: "executor-apps",
         compatibilityDate: "2026-07-30",
+        // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat"],
         modules: yield* bundleWorkerdHost,
         durableObjectNamespaces: [
@@ -227,6 +281,8 @@ export const workerdApps = (options: {
             className: "AppWorkflows",
           }),
           JsonBinding.local("AUTH", secret),
+          JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
+          publicEgressBinding,
           Loopback.local({ binding: "HOST", name: "executor-workflow-host", handler }),
         ],
         // Raw authored console output is not a host log. Apps return bounded telemetry through their protocol.

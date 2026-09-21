@@ -1,5 +1,5 @@
 /** Hosted app pages use scoped sessions, independent of dashboard and management API credentials. */
-import { parseEndpoint } from "@executor-js/utils/url-policy";
+import { defaultUrlPolicy, parseEndpoint } from "@executor-js/utils/url-policy";
 import { AppId, HttpUrl, type Runtime } from "@executor-js/sdk/core";
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
@@ -23,10 +23,15 @@ export const AppUiTarget = Schema.Struct({
   origin: HttpUrl,
 });
 export type AppUiTarget = typeof AppUiTarget.Type;
-/** A wildcard DNS base, separate from the dashboard origin; HTTP is limited to loopback development. */
+/**
+ * A wildcard DNS base, separate from the dashboard origin; HTTP is limited to loopback development.
+ * This is an origin the host serves to browsers, not a destination the host fetches, so it takes
+ * the fixed transport rule rather than the deployment's egress policy: an operator exception for
+ * reaching an internal API must not also widen the origins app UIs can be published on.
+ */
 export const AppUiBaseUrl = Schema.String.check(
   Schema.makeFilter((value) => {
-    const url = parseEndpoint(value);
+    const url = parseEndpoint(value, defaultUrlPolicy);
     return (
       url !== undefined &&
       url.origin === value &&
