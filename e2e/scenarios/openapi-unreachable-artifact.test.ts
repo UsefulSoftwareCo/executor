@@ -1,7 +1,7 @@
 // Cross-target: an artifact whose OpenAPI query cannot reach its upstream gets
-// an actionable network error, not the opaque defect mask. This walks the real
-// path from a saved artifact through the nested shell, execute-action, sandbox,
-// OpenAPI transport, and back into ArtifactError.
+// an actionable query error, not a success-looking empty state. This walks the
+// real path from a saved artifact through the nested shell, execute-action,
+// sandbox, OpenAPI transport, and back into ArtifactError.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -107,7 +107,7 @@ const executeApproved = (session: McpSession, code: string) =>
 const artifactSource = (slug: string) => `
 function App() {
   const query = useQuery(tools.${slug}.things.listThings.queryOptions({}));
-  const result = query.data;
+  const things = query.data?.data ?? [];
   return (
     <div className="flex h-full flex-col gap-4">
       <h2>Upstream status</h2>
@@ -116,10 +116,10 @@ function App() {
           <ArtifactLoading />
         ) : query.error ? (
           <ArtifactError error={query.error} onRetry={query.refetch} />
-        ) : result?.ok === false ? (
-          <ArtifactError error={result.error} onRetry={query.refetch} />
+        ) : things.length === 0 ? (
+          <ArtifactEmpty title="No things returned" />
         ) : (
-          <p>Unexpected upstream success</p>
+          <p>{things.length} things returned</p>
         )}
       </div>
     </div>
@@ -135,7 +135,7 @@ const artifactContent = (page: Page) =>
   page.frameLocator('[data-testid="artifact-shell-frame"]').frameLocator("iframe");
 
 scenario(
-  "Artifacts · an unreachable OpenAPI host shows actionable retry guidance instead of an internal error",
+  "Artifacts · a failed tool call shows an error instead of empty data",
   { timeout: 180_000 },
   Effect.scoped(
     Effect.gen(function* () {
@@ -184,12 +184,16 @@ scenario(
             });
 
             await step(
-              "The artifact explains that the upstream host could not be reached",
+              "The failed tool call renders an error instead of an empty state",
               async () => {
                 const state = artifactContent(page).getByTestId("upstream-state");
                 await state.locator('[data-slot="artifact-error"]').waitFor({ timeout: 30_000 });
                 const message = await state.innerText();
 
+                expect(
+                  await state.getByText("No things returned").count(),
+                  "the failure is not empty data",
+                ).toBe(0);
                 expect(message, "the user gets actionable network guidance").toContain(
                   `Could not reach the upstream server for "${slug}"`,
                 );
