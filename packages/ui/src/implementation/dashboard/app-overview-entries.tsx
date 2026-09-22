@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import type { App } from "@executor-js/sdk";
 import type { ComponentType } from "react";
 import type { SkillBindings, WorkflowBindings } from "../../contracts/app-browser.ts";
@@ -26,16 +27,16 @@ export function AppOverviewEntries<E>({
         <EntryHeader app={app} view="skills" label="Skills" />
         <div className="min-h-0 flex-1 overflow-auto">
           {app.activeDeployment === null ? (
-            <p className="py-5 text-sm text-muted-foreground">
+            <EmptyState size="compact" heading="h3" title="No deployment yet">
               Deploy this app to view its skills.
-            </p>
+            </EmptyState>
           ) : (
             <QueryView
               query={bindings.skills}
               Failure={Failure}
               pending={<OverviewCardLoading label="Loading skills preview" descriptionLines={2} />}
             >
-              {(catalog) => <EntryList items={catalog.skills} empty="This app has no skills." />}
+              {(catalog) => <EntryList items={catalog.skills} empty="No skills yet" />}
             </QueryView>
           )}
         </div>
@@ -47,9 +48,9 @@ export function AppOverviewEntries<E>({
         <EntryHeader app={app} view="workflows" label="Workflows" />
         <div className="min-h-0 flex-1 overflow-auto">
           {app.activeDeployment === null ? (
-            <p className="py-5 text-sm text-muted-foreground">
+            <EmptyState size="compact" heading="h3" title="No deployment yet">
               Deploy this app to view its workflows.
-            </p>
+            </EmptyState>
           ) : (
             <QueryView
               query={bindings.workflows}
@@ -58,7 +59,7 @@ export function AppOverviewEntries<E>({
                 <OverviewCardLoading label="Loading workflows preview" descriptionLines={2} />
               }
             >
-              {(workflows) => <EntryList items={workflows} empty="This app has no workflows." />}
+              {(workflows) => <EntryList items={workflows} empty="No workflows" />}
             </QueryView>
           )}
         </div>
@@ -98,7 +99,7 @@ function EntryList({
   readonly items: readonly { readonly name: string; readonly description?: string }[];
   readonly empty: string;
 }) {
-  if (items.length === 0) return <p className="py-5 text-sm text-muted-foreground">{empty}</p>;
+  if (items.length === 0) return <EmptyState size="compact" heading="h3" title={empty} />;
   return (
     <ul className="divide-y">
       {items.slice(0, 4).map((item) => (

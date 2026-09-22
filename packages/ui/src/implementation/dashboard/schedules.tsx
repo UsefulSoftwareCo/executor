@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Option, Schema } from "effect";
@@ -139,9 +140,9 @@ function ScheduleList<E>({
     onSuccess: () => ({
       error: null,
       empty: (
-        <div className="rounded-lg border p-6 text-sm text-muted-foreground">
-          This app has no schedules.
-        </div>
+        <EmptyState title="No schedules yet">
+          Add a schedule to this app’s source to run tasks automatically.
+        </EmptyState>
       ),
     }),
     onFailure: (failure) => ({

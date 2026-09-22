@@ -1,3 +1,4 @@
+import { EmptyState, EmptyStatePanel } from "./empty-state.tsx";
 import { useState, type ComponentType } from "react";
 import type { App, HostedWorkflow, WorkflowRun, WorkflowRunId } from "@executor-js/sdk";
 import { Option } from "effect";
@@ -31,8 +32,10 @@ export function AppWorkflows<E>({
 }) {
   if (app.activeDeployment === null)
     return (
-      <section aria-label="App workflows">
-        <p className="p-7 text-sm text-muted-foreground">Deploy this app to use its workflows.</p>
+      <section aria-label="App workflows" className="min-h-full">
+        <EmptyStatePanel title="No deployment yet">
+          Deploy this app to use its workflows.
+        </EmptyStatePanel>
       </section>
     );
   return <WorkflowBrowser bindings={bindings} Failure={Failure} />;
@@ -49,7 +52,7 @@ function WorkflowBrowser<E>({
   const workflows = Option.isSome(definitions.data) ? definitions.data.value : [];
   const selected = workflows.find((item) => item.name === workflow);
   return (
-    <section aria-label="App workflows">
+    <section aria-label="App workflows" className="min-h-full">
       <div className="grid min-h-80 min-[900px]:grid-cols-[240px_minmax(0,1fr)]">
         <nav
           aria-label="Workflows"
@@ -71,9 +74,9 @@ function WorkflowBrowser<E>({
           >
             {(items) =>
               items.length === 0 ? (
-                <p className="p-3 text-xs text-muted-foreground">
-                  No workflows in this deployment.
-                </p>
+                <EmptyState size="compact" icon={null} title="No workflows">
+                  This deployment has no workflows.
+                </EmptyState>
               ) : (
                 items.map((item) => (
                   <button
@@ -174,9 +177,9 @@ function RunList({
   const [selected, setSelected] = useState<string>();
   if (runs.length === 0)
     return (
-      <div className="border-t py-10 text-center text-sm text-muted-foreground">
-        No runs to show.
-      </div>
+      <EmptyState title="No runs yet">
+        Workflow runs will appear here after a workflow starts.
+      </EmptyState>
     );
   return (
     <div>

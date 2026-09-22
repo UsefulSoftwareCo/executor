@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import type { Account, App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
 import { useState, type ComponentType, type ReactNode } from "react";
@@ -209,7 +210,9 @@ export function DisconnectAccount<E>({
 export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
   const { AppLink } = useDashboard();
   return apps.length === 0 ? (
-    <p className="muted text-muted-foreground">No apps use this account.</p>
+    <EmptyState size="compact" heading="h3" title="No connected apps">
+      No apps use this account.
+    </EmptyState>
   ) : (
     <div className="account-apps flex flex-col [&_>_a]:flex [&_>_a]:items-center [&_>_a]:justify-between [&_>_a]:gap-3 [&_>_a]:py-[13px] [&_>_a]:px-0 [&_>_a]:text-[14px] [&_>_a_+_a]:border-t [&_>_a_+_a]:border-t-border [&_>_a_>_span]:wrap-anywhere [&_>_a_>_span]:min-w-0 [&_>_a_>_svg]:shrink-0 [&_>_a_>_svg]:text-muted-foreground">
       {apps.map((app) => (

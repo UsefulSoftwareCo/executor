@@ -1,7 +1,7 @@
 import { PageSkeleton, DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Alert, AlertDescription } from "@executor-js/ui/components/alert";
-import { Empty } from "@executor-js/ui/components/empty";
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Card } from "@executor-js/ui/components/card";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
@@ -172,14 +172,13 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
 }
 function BillingFailure({ retry }: { readonly retry?: (() => void) | undefined }) {
   return (
-    <Empty
-      className="empty-state min-h-77.5 flex flex-col justify-center items-center text-center p-[32px] text-muted-foreground border border-border rounded-[8px] [&_h2]:text-[14px] [&_h2]:text-foreground [&_h2]:font-medium [&_h2]:[margin:15px_0_5px] [&_p]:text-[12px] [&_p]:max-w-85 [&_a]:underline [&_a]:underline-offset-[3px] max-[740px]:min-h-62.5 max-[740px]:py-[24px] max-[740px]:px-[18px] max-[740px]:[&_a]:inline-flex max-[740px]:[&_a]:items-center max-[740px]:[&_a]:min-h-11"
+    <EmptyState
+      title="Billing unavailable"
       role="alert"
+      action={<Button onClick={retry}>Try again</Button>}
     >
-      <h2>Billing unavailable</h2>
-      <p>We couldn’t load your billing details.</p>
-      <Button onClick={retry}>Try again</Button>
-    </Empty>
+      We couldn’t load your billing details.
+    </EmptyState>
   );
 }
 /** Members never fetch billing; the backend independently enforces the same rule. */
@@ -192,9 +191,9 @@ export function BillingPage({ returned }: { readonly returned: ReturnType<typeof
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           Billing
         </h1>
-        <Empty className="empty-state min-h-77.5 flex flex-col justify-center items-center text-center p-[32px] text-muted-foreground border border-border rounded-[8px] [&_h2]:text-[14px] [&_h2]:text-foreground [&_h2]:font-medium [&_h2]:[margin:15px_0_5px] [&_p]:text-[12px] [&_p]:max-w-85 [&_a]:underline [&_a]:underline-offset-[3px] max-[740px]:min-h-62.5 max-[740px]:py-[24px] max-[740px]:px-[18px] max-[740px]:[&_a]:inline-flex max-[740px]:[&_a]:items-center max-[740px]:[&_a]:min-h-11">
-          <p>An organization owner or admin can manage billing.</p>
-        </Empty>
+        <EmptyState title="Billing access">
+          An organization owner or admin can manage billing.
+        </EmptyState>
       </section>
     );
   return <BillingDetails key={organization.organization} returned={returned} />;

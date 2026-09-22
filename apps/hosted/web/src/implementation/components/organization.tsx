@@ -2,7 +2,7 @@ import { OrganizationSlug, OrganizationReference } from "@executor-js/hosted-ser
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
 import { PageFrame, PageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { Empty } from "@executor-js/ui/components/empty";
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
 import { Link, Navigate, useLocation, useNavigate } from "@tanstack/react-router";
@@ -78,12 +78,19 @@ export function OrganizationContent({ children }: { readonly children: ReactNode
   const route = useOrganizationRoute();
   return route.unavailable ? (
     <section className="p-6">
-      <Empty>
-        <h2>Organization unavailable</h2>
-        <p>This organization does not exist or you do not have access.</p>
-        <Button onClick={route.retry}>Try again</Button>
-        <Link to="/">Choose organization</Link>
-      </Empty>
+      <EmptyState
+        title="Organization unavailable"
+        action={
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button onClick={route.retry}>Try again</Button>
+            <Link className="text-sm underline underline-offset-4" to="/">
+              Choose organization
+            </Link>
+          </div>
+        }
+      >
+        This organization does not exist or you do not have access.
+      </EmptyState>
     </section>
   ) : (
     children
@@ -448,7 +455,9 @@ export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate
           />
         ) : (
           organizations.value.length === 0 && (
-            <p>Your account has no access to this instance. Contact an administrator.</p>
+            <EmptyState size="compact" title="No organization access">
+              Your account has no access to this instance. Contact an administrator.
+            </EmptyState>
           )
         )}
       </div>
@@ -472,11 +481,17 @@ export function OrganizationDestination({
   return target ? (
     <Navigate to="/org/$organizationSlug/apps" params={{ organizationSlug: target.slug }} replace />
   ) : (
-    <Empty className="empty-state min-h-77.5 flex flex-col justify-center items-center text-center p-[32px] text-muted-foreground border border-border rounded-[8px] [&_h2]:text-[14px] [&_h2]:text-foreground [&_h2]:font-medium [&_h2]:[margin:15px_0_5px] [&_p]:text-[12px] [&_p]:max-w-85 [&_a]:underline [&_a]:underline-offset-[3px] max-[740px]:min-h-62.5 max-[740px]:py-[24px] max-[740px]:px-[18px] max-[740px]:[&_a]:inline-flex max-[740px]:[&_a]:items-center max-[740px]:[&_a]:min-h-11">
-      <p>Unable to open this organization.</p>
-      <Button onClick={refresh}>Try again</Button>
-      <Link to="/">Choose organization</Link>
-    </Empty>
+    <EmptyState
+      title="Unable to open this organization"
+      action={
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button onClick={refresh}>Try again</Button>
+          <Link className="text-sm underline underline-offset-4" to="/">
+            Choose organization
+          </Link>
+        </div>
+      }
+    />
   );
 }
 function OrganizationAvatar({

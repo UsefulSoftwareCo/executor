@@ -1,3 +1,4 @@
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
 import { appToolsCatalog } from "../../contracts/app-browser.ts";
 import { ToolAccounts } from "@executor-js/ui/dashboard/tool-accounts";
 import { Atom, AsyncResult as ToolResult } from "effect/unstable/reactivity";
@@ -74,7 +75,11 @@ export function AppTools(props: AppToolsProps) {
   const readiness = appToolReadiness(props.app, props.accounts);
   switch (readiness.state) {
     case "not-deployed":
-      return <p>Deploy this app to load its tools.</p>;
+      return (
+        <EmptyStatePanel title="No deployment yet">
+          Deploy this app to load its tools.
+        </EmptyStatePanel>
+      );
     case "selection":
       return (
         <AccountSetup

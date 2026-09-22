@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import type { ComponentType, ReactNode } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ApprovalListItem } from "../../contracts/schedules.ts";
@@ -23,9 +24,9 @@ export function ApprovalsPage<E>({
       <QueryView query={query} Failure={Failure}>
         {(items) =>
           items.length === 0 ? (
-            <div className="rounded-lg border p-6 text-sm text-muted-foreground">
-              No approvals waiting.
-            </div>
+            <EmptyState title="No approvals waiting">
+              Scheduled runs that need your review will appear here.
+            </EmptyState>
           ) : (
             <div className="divide-y rounded-lg border">
               {items.map((item) => (

@@ -1,3 +1,4 @@
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
 import { AppDeploymentsLoading } from "@executor-js/ui/dashboard/app-loading";
 import { AppWorkspace } from "@executor-js/ui/dashboard/app-workspace";
 import { appManagement } from "../../contracts/app-management.ts";
@@ -29,9 +30,9 @@ export function AppDeployments({ app }: { readonly app: App }) {
   const deployment = selected ?? app.activeDeployment;
   if (deployment === null)
     return (
-      <p className="p-7 text-sm text-muted-foreground">
-        No deployments yet. Deploy from Source when you’re ready.
-      </p>
+      <EmptyStatePanel title="No deployments yet">
+        Deploy from Source when you’re ready.
+      </EmptyStatePanel>
     );
   return (
     <QueryView

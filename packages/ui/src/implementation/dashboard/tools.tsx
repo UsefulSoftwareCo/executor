@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { useState, type ReactNode } from "react";
 import type { Tool } from "@executor-js/sdk";
@@ -88,7 +89,9 @@ export function ToolBrowser<E>({
                   className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2"
                 >
                   {filtered.length === 0 ? (
-                    <p className="px-2 py-4 text-xs text-muted-foreground">No matching tools.</p>
+                    <EmptyState size="compact" icon={null} title="No matching tools">
+                      Try another name.
+                    </EmptyState>
                   ) : (
                     filtered.map((tool) => (
                       <button

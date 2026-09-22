@@ -1,3 +1,4 @@
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Cause, Exit } from "effect";
@@ -86,7 +87,9 @@ export function McpAuthorizePage() {
         </Select>
       </div>
       {available.length === 0 ? (
-        <p>Join or create an organization in Executor, then return here to connect.</p>
+        <EmptyState size="compact" title="No organizations">
+          Join or create an organization in Executor, then return here to connect.
+        </EmptyState>
       ) : (
         <McpConsentSummary target={target} destination={destination} />
       )}

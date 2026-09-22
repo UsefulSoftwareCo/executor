@@ -1,3 +1,4 @@
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
 import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
@@ -179,9 +180,9 @@ export function AppDetailPage({
           ) : tab === "source" || tab === "history" ? (
             <AppSource data={current} view={tab} />
           ) : current.app.activeDeployment === null ? (
-            <p className="p-5 text-sm text-muted-foreground">
+            <EmptyStatePanel title="No deployment yet">
               Deploy this app before using its tools or selecting accounts.
-            </p>
+            </EmptyStatePanel>
           ) : tab === "tools" ? (
             <AppTools app={current.app} accounts={overview.accounts} selected={tool} />
           ) : (

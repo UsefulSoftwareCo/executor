@@ -1,3 +1,4 @@
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -195,16 +196,13 @@ function GroupContent({
               ))}
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed p-8 text-center">
-              <h2 className="font-medium">{search ? "No matching groups" : "No groups yet"}</h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {search
-                  ? "Try another name."
-                  : admin
-                    ? "Create a group and choose its members."
-                    : "An organization admin can create groups."}
-              </p>
-            </div>
+            <EmptyState title={search ? "No matching groups" : "No groups yet"}>
+              {search
+                ? "Try another name."
+                : admin
+                  ? "Create a group and choose its members."
+                  : "An organization admin can create groups."}
+            </EmptyState>
           )}
         </>
       )}
@@ -290,9 +288,7 @@ function Members({ members }: { readonly members: readonly GroupMember[] }) {
       ))}
     </div>
   ) : (
-    <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-      No members in this group.
-    </div>
+    <EmptyState title="No members yet">No members in this group.</EmptyState>
   );
 }
 function GroupEditor({
@@ -523,7 +519,9 @@ function GroupEditor({
                     </label>
                   ))}
                   {!shown.length && (
-                    <p className="p-4 text-xs text-muted-foreground">No matching members.</p>
+                    <EmptyState size="compact" icon={null} title="No matching members">
+                      Try another name or email.
+                    </EmptyState>
                   )}
                 </div>
               </fieldset>
@@ -571,7 +569,9 @@ function GroupApps({ group }: { readonly group: string }) {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No apps available to you in this group.</p>
+            <EmptyState title="No apps available">
+              No apps are available to you in this group.
+            </EmptyState>
           );
         }}
       </QueryView>

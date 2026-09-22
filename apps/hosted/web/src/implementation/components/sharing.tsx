@@ -1,3 +1,4 @@
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 /** Sharing uses group grants; personal ownership is not a named-person assignment. */
 import { useForm, useStore } from "@tanstack/react-form";
 import { Exit } from "effect";
@@ -118,9 +119,9 @@ export function AudienceInput(props: AudienceInputProps) {
               </label>
             ))}
           {!props.groups.length && (
-            <p className="p-3 text-sm text-muted-foreground">
+            <EmptyState size="compact" icon={null} title="No groups available">
               No groups are available to share with.
-            </p>
+            </EmptyState>
           )}
         </div>
       )}

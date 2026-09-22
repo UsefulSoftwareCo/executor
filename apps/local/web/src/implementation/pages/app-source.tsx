@@ -1,3 +1,4 @@
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
 import { AppWorkspace } from "@executor-js/ui/dashboard/app-workspace";
 import { appManagement } from "../../contracts/app-management.ts";
 import { acknowledgeApp } from "../../contracts/apps.ts";
@@ -19,9 +20,9 @@ export function AppDeployments({ data }: { readonly data: DashboardApp }) {
   );
   if (deployment === null || query === undefined)
     return (
-      <p className="p-7 text-sm text-muted-foreground">
-        No deployments yet. Deploy from Source when you’re ready.
-      </p>
+      <EmptyStatePanel title="No deployments yet">
+        Deploy from Source when you’re ready.
+      </EmptyStatePanel>
     );
   return (
     <SharedAppDeployments

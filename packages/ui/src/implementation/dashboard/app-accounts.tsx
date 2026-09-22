@@ -8,6 +8,7 @@ import {
   type AccountSummary,
 } from "../../contracts/dashboard.ts";
 import { Empty, ProviderIcon } from "./common.tsx";
+import { cn } from "../lib/utils.ts";
 
 /** Compact provider rows show the selected identities and the host's account actions. */
 export function AppAccounts({
@@ -27,8 +28,13 @@ export function AppAccounts({
   const requirements = Object.entries(app.requirements.accounts);
   const issues = accountSelectionIssues(app, accounts);
   return (
-    <div className="accounts-section">
-      <div className="p-7 max-[740px]:p-4">
+    <div className="accounts-section flex min-h-full flex-col">
+      <div
+        className={cn(
+          "p-7 max-[740px]:p-4",
+          requirements.length === 0 && "flex flex-1 items-center justify-center",
+        )}
+      >
         {requirements.length > 0 && chooseAction && (
           <div className="mb-4 flex max-w-185 justify-end">{chooseAction}</div>
         )}

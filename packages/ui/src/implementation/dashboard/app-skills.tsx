@@ -6,6 +6,8 @@ import {
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
 import { useState, type ComponentType } from "react";
+import { BookOpen01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { App, AppSkillBundle, AppSkillDocument } from "@executor-js/sdk";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,7 +15,8 @@ import type { SkillBindings } from "../../contracts/app-browser.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import { QueryView } from "./context.tsx";
 import { SkillBrowserLoading } from "./app-browser-loading.tsx";
-import { Code } from "./code.tsx";
+import { Code, CopyButton } from "./code.tsx";
+import { EmptyStatePanel } from "./empty-state.tsx";
 import { Button } from "../components/button.tsx";
 
 type Skill = AppSkillBundle["skills"][number];
@@ -29,22 +32,41 @@ export function AppSkills<E>({
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   return (
-    <section aria-label="App skills">
+    <section aria-label="App skills" className="flex min-h-full flex-col">
       {app.activeDeployment === null ? (
-        <p className="p-7 text-sm text-muted-foreground">Deploy this app to browse its skills.</p>
+        <EmptyStatePanel title="No deployment yet">
+          Deploy this app to browse its skills.
+        </EmptyStatePanel>
       ) : (
         <QueryView query={bindings.bundle} Failure={Failure} pending={<SkillBrowserLoading />}>
-          {(catalog) => <SkillCatalog key={catalog.deployment} catalog={catalog} />}
+          {(catalog) => <SkillCatalog key={catalog.deployment} app={app} catalog={catalog} />}
         </QueryView>
       )}
     </section>
   );
 }
-function SkillCatalog({ catalog }: { readonly catalog: AppSkillBundle }) {
+function SkillCatalog({ app, catalog }: { readonly app: App; readonly catalog: AppSkillBundle }) {
   const [selected, setSelected] = useState<string>();
   const current = catalog.skills.find((skill) => skill.name === selected) ?? catalog.skills[0];
   if (current === undefined)
-    return <p className="p-7 text-sm text-muted-foreground">This app has no skills.</p>;
+    return (
+      <EmptyStatePanel
+        title="No skills yet"
+        icon={<HugeiconsIcon icon={BookOpen01Icon} aria-hidden size={26} strokeWidth={1.3} />}
+        action={
+          <CopyButton
+            code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
+            label="Copy prompt"
+            text="Copy prompt"
+            variant="default"
+            size="default"
+            inline
+          />
+        }
+      >
+        Copy this prompt and paste it into your agent to add skills for this app.
+      </EmptyStatePanel>
+    );
   return (
     <div className="grid min-h-80 min-[900px]:grid-cols-[240px_minmax(0,1fr)]">
       <nav

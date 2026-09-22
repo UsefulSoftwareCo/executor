@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { AppWorkspaceLoading, SourceHistoryLoading } from "./app-loading.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 /** Inspect agent-authored source and manage app deployments. */
@@ -200,7 +201,9 @@ function SourceHistory<E>({ app, atoms, Failure }: AppManagementProps<E> & { rea
       <QueryView query={atoms.history(app.id)} Failure={Failure} pending={<SourceHistoryLoading />}>
         {(history) =>
           history.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No saved changes yet.</p>
+            <EmptyState title="No saved changes yet">
+              Save a source change to start this app’s history.
+            </EmptyState>
           ) : (
             <ol className="divide-y overflow-hidden rounded-lg border">
               {history.map((entry) => (

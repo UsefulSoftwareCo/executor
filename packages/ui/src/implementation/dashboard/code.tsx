@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { highlightedAtom } from "../../contracts/highlight.ts";
-import { Button } from "../components/button.tsx";
+import { Button, type ButtonProps } from "../components/button.tsx";
 
 /** Read-only code with selectable text and local syntax highlighting. */
 export function Code({
@@ -90,10 +90,16 @@ export function CopyButton({
   code,
   label,
   inline = false,
+  text = "Copy",
+  variant = "ghost",
+  size = "xs",
 }: {
   readonly code: string | undefined;
   readonly label: string;
   readonly inline?: boolean;
+  readonly text?: string;
+  readonly variant?: ButtonProps["variant"];
+  readonly size?: ButtonProps["size"];
 }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timeout = useRef<number | undefined>(undefined);
@@ -126,8 +132,8 @@ export function CopyButton({
       <Button
         type="button"
         disabled={code === undefined}
-        variant="ghost"
-        size="xs"
+        variant={variant}
+        size={size}
         onClick={() => void copy()}
         aria-label={label}
         aria-live="polite"
@@ -138,7 +144,7 @@ export function CopyButton({
           aria-hidden
           size={14}
         />
-        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy"}
+        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : text}
       </Button>
     </div>
   );

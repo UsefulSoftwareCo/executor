@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { useState, type ReactNode, type ComponentType } from "react";
 import { Exit, type Cause } from "effect";
 import type { AccountId, AccountRequirement, App, SelectedAccounts } from "@executor-js/sdk";
@@ -153,9 +154,9 @@ export function AccountPicker<E>({
               );
             })}
           {available.length === 0 && (
-            <p className="py-3 text-sm text-muted-foreground">
-              No saved accounts. Close this dialog and connect an account.
-            </p>
+            <EmptyState size="compact" title="No saved accounts">
+              Close this dialog and connect an account.
+            </EmptyState>
           )}
         </div>
         {connectAction && (

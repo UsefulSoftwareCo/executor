@@ -1,3 +1,4 @@
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
 import { Button } from "@executor-js/ui/components/button";
@@ -49,12 +50,18 @@ const membershipInvitationsClass =
 
 function MembersFailure({ cause, retry }: FailureProps<OrganizationFailed | Schema.SchemaError>) {
   return (
-    <div className="membership-panel membership-empty border border-border rounded-[10px] bg-background shadow-none overflow-hidden flex min-h-24 items-center justify-center flex-col gap-3 p-[16px] text-muted-foreground text-[13px] text-center">
-      <p role="alert">{organizationError(cause)}</p>
-      <Button variant="outline" onClick={retry}>
-        Try again
-      </Button>
-    </div>
+    <EmptyState
+      size="compact"
+      title="Members unavailable"
+      role="alert"
+      action={
+        <Button variant="outline" onClick={retry}>
+          Try again
+        </Button>
+      }
+    >
+      {organizationError(cause)}
+    </EmptyState>
   );
 }
 
@@ -388,9 +395,16 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                 </tbody>
               </table>
               {rows.length === 0 && (
-                <p className="membership-empty flex min-h-24 items-center justify-center flex-col gap-3 p-[16px] text-muted-foreground text-[13px] text-center">
-                  {search ? "No members or invitations match your search." : "No members yet."}
-                </p>
+                <div className="p-4">
+                  <EmptyState
+                    size="compact"
+                    title={search ? "No matching members" : "No members yet"}
+                  >
+                    {search
+                      ? "No members or invitations match your search."
+                      : "Invite someone to join this organization."}
+                  </EmptyState>
+                </div>
               )}
             </div>
           )}

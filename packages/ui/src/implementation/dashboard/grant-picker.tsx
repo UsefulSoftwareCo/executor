@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { useId, useState, type ReactNode } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { AppId, Tool } from "@executor-js/sdk";
@@ -85,14 +86,10 @@ export function GrantPicker<E>({
       ) : (
         <>
           {apps.length === 0 ? (
-            <div className="grant-empty py-[24px] px-[16px] text-muted-foreground text-center text-[13px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550] [&_p]:[margin:6px_0_12px]">
-              <strong>No apps to connect yet</strong>
-              <p>
-                Install an app to choose its tools, or select Use all apps to let this client set up
-                apps.
-              </p>
-              {emptyAction}
-            </div>
+            <EmptyState size="compact" title="No apps to connect yet" action={emptyAction}>
+              Install an app to choose its tools, or select Use all apps to let this client set up
+              apps.
+            </EmptyState>
           ) : (
             <>
               <div className="grant-apps flex flex-col gap-3">
@@ -217,15 +214,19 @@ function ToolSelection<E>({
   const [shown, setShown] = useState(60);
   if (AsyncResult.isFailure(state))
     return (
-      <div
-        className="grant-empty py-[24px] px-[16px] text-muted-foreground text-center text-[13px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550] [&_p]:[margin:6px_0_12px]"
+      <EmptyState
+        size="compact"
+        icon={null}
         role="alert"
+        title="Tools could not be loaded"
+        action={
+          <Button type="button" variant="outline" size="sm" onClick={refresh}>
+            Try again
+          </Button>
+        }
       >
-        <p>Tools could not be loaded. Check the app’s connected accounts.</p>
-        <Button type="button" variant="outline" size="sm" onClick={refresh}>
-          Try again
-        </Button>
-      </div>
+        Check the app’s connected accounts.
+      </EmptyState>
     );
   if (!AsyncResult.isSuccess(state))
     return (
@@ -277,13 +278,13 @@ function ToolSelection<E>({
         aria-label={`${appName} tools`}
       >
         {state.value.length === 0 ? (
-          <div className="grant-empty py-[24px] px-[16px] text-muted-foreground text-center text-[13px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550] [&_p]:[margin:6px_0_12px]">
+          <EmptyState size="compact" icon={null} title="No tools yet">
             This app has no tools yet.
-          </div>
+          </EmptyState>
         ) : filtered.length === 0 ? (
-          <div className="grant-empty py-[24px] px-[16px] text-muted-foreground text-center text-[13px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550] [&_p]:[margin:6px_0_12px]">
+          <EmptyState size="compact" icon={null} title="No matching tools">
             No tools match “{search}”.
-          </div>
+          </EmptyState>
         ) : (
           visible.map((tool) => (
             <div

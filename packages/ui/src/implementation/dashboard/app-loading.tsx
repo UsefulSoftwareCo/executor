@@ -1,3 +1,4 @@
+import { EmptyState, EmptyStatePanel } from "./empty-state.tsx";
 import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
 import { AppDetailLayout } from "./app-detail.tsx";
@@ -72,11 +73,17 @@ export function AppOverviewLoading({
               {title === "Accounts" &&
               app &&
               Object.keys(app.requirements.accounts).length === 0 ? (
-                <p className="py-5 text-sm text-muted-foreground">
+                <EmptyState
+                  size="compact"
+                  heading="h3"
+                  title={
+                    app.activeDeployment === null ? "No deployment yet" : "No accounts required"
+                  }
+                >
                   {app.activeDeployment === null
                     ? "Account requirements appear after deployment."
-                    : "No accounts required."}
-                </p>
+                    : "This app can run without a saved account."}
+                </EmptyState>
               ) : (
                 <OverviewCardLoading
                   label={`Loading ${title.toLowerCase()} preview`}
@@ -109,8 +116,17 @@ export function AppAccountsLoading({
           name: requirement.definition.name,
         }));
   return (
-    <section role="status" aria-label="Loading accounts" className="w-full">
-      <div className="p-7 max-[740px]:p-4">
+    <section
+      role="status"
+      aria-label="Loading accounts"
+      className="flex min-h-full w-full flex-col"
+    >
+      <div
+        className={cn(
+          "p-7 max-[740px]:p-4",
+          requirements?.length === 0 && "flex flex-1 items-center justify-center",
+        )}
+      >
         {requirements?.length !== 0 && action && (
           <div className="mb-4 flex max-w-185 justify-end">{action}</div>
         )}
@@ -304,15 +320,15 @@ export function AppDetailLoading({
   if (app?.activeDeployment === null) {
     if (view === "tools" || view === "accounts")
       return (
-        <p className="p-5 text-sm text-muted-foreground">
+        <EmptyStatePanel title="No deployment yet">
           Deploy this app before using its tools or selecting accounts.
-        </p>
+        </EmptyStatePanel>
       );
     if (view === "deployments")
       return (
-        <p className="p-7 text-sm text-muted-foreground">
-          No deployments yet. Deploy from Source when you’re ready.
-        </p>
+        <EmptyStatePanel title="No deployments yet">
+          Deploy from Source when you’re ready.
+        </EmptyStatePanel>
       );
   }
   switch (view) {

@@ -1,3 +1,4 @@
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
 import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
 import { AppOverviewEntries } from "@executor-js/ui/dashboard/app-overview-entries";
@@ -286,9 +287,9 @@ export function AppDetailPage({
                   <AppSource key={current.id} app={current} view={selectedView} />
                 )
               ) : current.activeDeployment === null ? (
-                <p className="p-5 text-sm text-muted-foreground">
+                <EmptyStatePanel title="No deployment yet">
                   Deploy this app before using its tools or selecting accounts.
-                </p>
+                </EmptyStatePanel>
               ) : (
                 <QueryResult
                   result={inventory.result}

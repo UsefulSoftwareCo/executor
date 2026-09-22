@@ -1,3 +1,4 @@
+import { EmptyState } from "./empty-state.tsx";
 import { ToolAccounts } from "./tool-accounts.tsx";
 import { OverviewCardLoading } from "./app-loading.tsx";
 import type { App, AccountRequirement, ToolPage } from "@executor-js/sdk";
@@ -105,13 +106,13 @@ export function AppOverviewTools<E>({
   if (readiness.state !== "ready")
     return (
       <ToolsPreviewFrame app={app} accounts={accounts}>
-        <p className="py-5 text-sm text-muted-foreground">
+        <EmptyState size="compact" heading="h3" title="Tools unavailable">
           {readiness.state === "not-deployed"
             ? "Deploy source to make tools available."
             : readiness.state === "unavailable"
               ? "Account status is unavailable. Check Accounts and try again."
               : "Review the app’s accounts to load its tools."}
-        </p>
+        </EmptyState>
       </ToolsPreviewFrame>
     );
 
@@ -142,9 +143,9 @@ function LiveToolsPreview<E>({
       >
         {(page) =>
           page.items.length === 0 ? (
-            <p className="py-5 text-sm text-muted-foreground">
+            <EmptyState size="compact" heading="h3" title="No tools">
               This app does not expose any tools.
-            </p>
+            </EmptyState>
           ) : (
             <div className="grid">
               {page.items.slice(0, 4).map((tool) => (
@@ -238,11 +239,15 @@ export function AppOverviewAccounts({
   const issues = accountSelectionIssues(app, accounts);
   if (requirements.length === 0)
     return (
-      <p className="py-5 text-sm text-muted-foreground">
+      <EmptyState
+        size="compact"
+        heading="h3"
+        title={app.activeDeployment === null ? "No deployment yet" : "No accounts required"}
+      >
         {app.activeDeployment === null
           ? "Account requirements appear after deployment."
-          : "No accounts required."}
-      </p>
+          : "This app can run without a saved account."}
+      </EmptyState>
     );
   return (
     <div className="divide-y">

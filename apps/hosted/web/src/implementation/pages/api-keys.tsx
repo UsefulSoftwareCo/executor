@@ -1,3 +1,4 @@
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Redacted } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -130,11 +131,10 @@ function PersonalAccessTokens() {
               </Button>
             </div>
           ) : keys.value.apiKeys.length === 0 ? (
-            <div className="p-8 text-center">
-              <h3 className="font-medium">No tokens yet</h3>
-              <p className="mt-2 text-sm text-muted-foreground">
+            <div className="p-6">
+              <EmptyState heading="h3" title="No tokens yet">
                 Create a separate token for each script so you can revoke access independently.
-              </p>
+              </EmptyState>
             </div>
           ) : (
             <div className="overflow-x-auto">

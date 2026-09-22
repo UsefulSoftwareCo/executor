@@ -1,4 +1,3 @@
-import { Empty as EmptyState } from "@executor-js/ui/components/empty";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PackageIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { Atom } from "effect/unstable/reactivity";
@@ -85,22 +84,7 @@ export function SearchInput({
 
 export { LoadingRows } from "./context.tsx";
 
-/** Empty inventories stay useful without adding speculative management actions. */
-export function Empty({
-  title,
-  children,
-}: {
-  readonly title: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <EmptyState className="empty-state gap-0 text-wrap min-h-77.5 flex flex-col justify-center items-center text-center p-[32px] text-muted-foreground border border-border rounded-[8px] [&_h2]:text-[14px] [&_h2]:text-foreground [&_h2]:font-medium [&_h2]:[margin:15px_0_5px] [&_p]:text-[12px] [&_p]:max-w-85 [&_a]:underline [&_a]:underline-offset-[3px] max-[740px]:min-h-62.5 max-[740px]:py-[24px] max-[740px]:px-[18px] max-[740px]:[&_a]:inline-flex max-[740px]:[&_a]:items-center max-[740px]:[&_a]:min-h-11">
-      <HugeiconsIcon icon={PackageIcon} aria-hidden size={26} strokeWidth={1.3} />
-      <h2>{title}</h2>
-      <p>{children}</p>
-    </EmptyState>
-  );
-}
+export { EmptyState as Empty } from "./empty-state.tsx";
 
 /** Small section title, aligned with an optional trailing control. */
 export function SectionHeading({
