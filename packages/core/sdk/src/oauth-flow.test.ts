@@ -191,6 +191,57 @@ const routeTokenEndpointToLoopback = (
 };
 
 describe("oauth.start / oauth.complete", () => {
+  it.effect("omits PKCE only for LinkedIn confidential web clients", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const linkedinAuthorizationUrl = "https://www.linkedin.com/oauth/v2/authorization";
+
+        const startFor = (slug: string, clientSecret: string, name: string) =>
+          Effect.gen(function* () {
+            const client = OAuthClientSlug.make(slug);
+            yield* executor.oauth.createClient({
+              owner: "org",
+              slug: client,
+              authorizationUrl: linkedinAuthorizationUrl,
+              tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
+              grant: "authorization_code",
+              clientId: `${slug}-id`,
+              clientSecret,
+            });
+            const started = yield* executor.oauth.start({
+              owner: "org",
+              client,
+              clientOwner: "org",
+              name: ConnectionName.make(name),
+              integration: INTEG,
+              template: TEMPLATE,
+            });
+            if (started.status !== "redirect") {
+              return yield* Effect.die("expected a redirect-status OAuth start");
+            }
+            const session = yield* Effect.promise(() =>
+              config.db.findFirst("oauth_session", {
+                where: (b) => b("state", "=", String(started.state)),
+              }),
+            );
+            return { url: new URL(started.authorizationUrl), session };
+          });
+
+        const confidential = yield* startFor("linkedin-confidential", "secret", "confidential");
+        expect(confidential.url.searchParams.has("code_challenge")).toBe(false);
+        expect(confidential.url.searchParams.has("code_challenge_method")).toBe(false);
+        expect(confidential.session?.pkce_verifier).toBeNull();
+
+        const publicClient = yield* startFor("linkedin-public", "", "public");
+        expect(publicClient.url.searchParams.get("code_challenge_method")).toBe("S256");
+        expect(publicClient.url.searchParams.get("code_challenge")).toEqual(expect.any(String));
+        expect(publicClient.session?.pkce_verifier).toEqual(expect.any(String));
+      }),
+    ),
+  );
+
   it.effect(
     "createClient → start (redirect) → complete mints a connection + tools, executable",
     () =>

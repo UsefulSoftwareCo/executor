@@ -106,6 +106,7 @@ import {
   exchangeClientCredentials,
   isLoopbackHttpUrl,
   rebindTokenEndpointHostToCallbackDomain,
+  shouldUsePkce,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
@@ -2048,9 +2049,14 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         ...workspaceOptionalScopes,
       ]);
 
-      // authorization_code: persist a session + build the authorize URL.
-      const verifier = createPkceCodeVerifier();
-      const challenge = yield* Effect.promise(() => createPkceCodeChallenge(verifier));
+      // LinkedIn's standard confidential web flow rejects PKCE parameters. Its
+      // native/public flow and every other provider continue to require PKCE.
+      const usePkce = shouldUsePkce(client.authorizationUrl, client.clientSecret);
+      const verifier = usePkce ? createPkceCodeVerifier() : null;
+      const challenge =
+        verifier === null
+          ? undefined
+          : yield* Effect.promise(() => createPkceCodeChallenge(verifier));
       const state = OAuthState.make(createOAuthState());
       const providerState = encodeOAuthCallbackState({
         state: String(state),
@@ -2230,11 +2236,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         }
       }
 
-      // The PKCE verifier is minted by `start` for every authorization_code
-      // session. A null/missing one means a corrupt session row — exchanging
-      // with an empty verifier would violate RFC 7636 and the AS would reject
-      // it with an opaque error. Fail loudly + require a restart instead.
-      if (session.pkceVerifier == null) {
+      const usePkce = shouldUsePkce(client.authorizationUrl, client.clientSecret);
+      // Every authorization-code flow except LinkedIn's confidential web flow
+      // requires the verifier minted by `start`. Missing one is a corrupt row.
+      if (usePkce && session.pkceVerifier == null) {
         return yield* new OAuthCompleteError({
           message: `OAuth session ${input.state} is missing its PKCE code verifier; restart the flow.`,
           restartRequired: true,
@@ -2256,7 +2261,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         clientId: client.clientId,
         clientSecret: client.clientSecret,
         redirectUrl: session.redirectUrl,
-        codeVerifier: session.pkceVerifier,
+        codeVerifier: usePkce ? (session.pkceVerifier ?? undefined) : undefined,
         code: input.code,
         clientAuth: client.tokenEndpointAuthMethod,
         requestFormat: client.tokenRequestFormat,
