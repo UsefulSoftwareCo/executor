@@ -1,3 +1,4 @@
+import { Skeleton } from "../components/skeleton.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Option, Schema } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -13,7 +14,6 @@ import type { ScheduleBindings, ScheduleControls } from "../../contracts/schedul
 import { QueryView, useDashboard, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
-import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import {
   Select,
   SelectContent,
@@ -70,9 +70,6 @@ export function AppSchedulesLoading() {
 function SchedulesLayout({ children }: { readonly children: ReactNode }) {
   return (
     <section className="w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Schedules</AppSectionTitle>
-      </AppSectionHeader>
       <div className="space-y-4 p-7 max-[740px]:p-4">
         <p className="text-sm text-muted-foreground">
           Schedules run with this app’s selected accounts. New schedules start paused.
@@ -85,12 +82,24 @@ function SchedulesLayout({ children }: { readonly children: ReactNode }) {
 
 function SchedulesPending() {
   return (
-    <div
-      className="rounded-lg border p-6 text-sm text-muted-foreground"
-      role="status"
-      aria-label="Loading schedules"
-    >
-      Loading schedules…
+    <div role="status" aria-label="Loading schedules" className="divide-y rounded-lg border">
+      {Array.from({ length: 3 }, (_, i) => (
+        <div aria-hidden key={i} className="flex flex-wrap items-center justify-between gap-4 p-4">
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-5 w-36" />
+              <Skeleton className="h-6 w-14" />
+            </div>
+            <Skeleton className="h-4 w-48" />
+          </div>
+          <div className="flex gap-2">
+            <Skeleton className="h-8 w-32" />
+            <Skeleton className="h-8 w-20" />
+            <Skeleton className="h-8 w-20" />
+          </div>
+        </div>
+      ))}
+      <span className="sr-only">Loading schedules…</span>
     </div>
   );
 }

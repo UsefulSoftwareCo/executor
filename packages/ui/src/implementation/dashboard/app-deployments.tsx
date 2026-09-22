@@ -1,4 +1,3 @@
-import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { QueryResult, useQuery } from "./context.tsx";
 import type { AppDeploymentsProps } from "../../contracts/dashboard.ts";
 import { displayDate } from "../../contracts/dashboard.ts";
@@ -20,9 +19,6 @@ export function AppDeployments<E>({
   const isActive = deployment === app.activeDeployment;
   return (
     <section aria-label="App deployments" className="flex min-h-0 flex-1 flex-col">
-      <AppSectionHeader>
-        <AppSectionTitle>Deployments</AppSectionTitle>
-      </AppSectionHeader>
       <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
         <nav
           aria-label="Deployment history"

@@ -39,6 +39,10 @@ const unavailable = () =>
   message("Could not reach Executor", "Check that the local server is running, then retry.");
 const errorMessage = Match.type<DashboardError>().pipe(
   Match.tagsExhaustive({
+    AppSkillNotFound: () =>
+      message("Skill file unavailable", "Reload this app’s skills and choose the file again."),
+    WorkflowFailure: () =>
+      message("Workflows unavailable", "The workflow data could not be loaded. Try again."),
     ScheduleNotFound: () =>
       message("Schedule unavailable", "This schedule or run is no longer available."),
     ScheduleConflict: () =>

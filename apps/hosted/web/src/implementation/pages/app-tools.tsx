@@ -1,4 +1,7 @@
-import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
+import { appToolsCatalog } from "../../contracts/app-browser.ts";
+import { ToolAccounts } from "@executor-js/ui/dashboard/tool-accounts";
+import { Atom, AsyncResult as ToolResult } from "effect/unstable/reactivity";
+import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
 import { Json, type App, type Tool } from "@executor-js/sdk";
 import { Exit, Schema } from "effect";
@@ -15,6 +18,13 @@ import { appError, callToolAtom } from "../../contracts/apps.ts";
 import { AppAccounts } from "./app-accounts.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
+const toolList = Atom.family((query: ReturnType<typeof appToolsCatalog>) =>
+  Atom.map(
+    query,
+    ToolResult.map((page) => page.items),
+  ),
+);
+
 /** Tool execution is a hosted action slot; the browser and schema view are shared with local. */
 export function AppTools({
   app,
@@ -27,16 +37,16 @@ export function AppTools({
   readonly selected: string | undefined;
   readonly redirectUri: string;
 }) {
-  const atoms = useDashboardAtoms();
-  const { role, slug: organizationSlug } = useOrganizationRoute();
+  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
   if (appToolReadiness(app, accounts).state !== "ready")
     return <AppAccounts app={app} accounts={accounts} redirectUri={redirectUri} />;
   return (
     <ToolBrowser
       Failure={HostedFailure}
-      key={app.id}
-      query={atoms.tools(app.id)}
+      key={`${app.id}:${app.activeDeployment}:${JSON.stringify(app.accounts)}`}
+      accountContext={<ToolAccounts app={app} accounts={accounts} />}
+      query={toolList(appToolsCatalog(organization, app))}
       selected={selected}
       onSelect={(tool) => {
         void navigate({

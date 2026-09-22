@@ -114,7 +114,7 @@ export type WorkflowRun = typeof WorkflowRun.Type;
 /** A bounded run-history page, already scoped to an authorized configured app. */
 export const WorkflowRunPage = Schema.Struct({
   items: Schema.Array(WorkflowRun),
-  next: Schema.optionalKey(Schema.String),
+  next: Schema.optionalKey(WorkflowRunId),
 });
 export type WorkflowRunPage = typeof WorkflowRunPage.Type;
 /** Query and factory contexts may inspect only their own app's runs. */

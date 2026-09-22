@@ -21,10 +21,12 @@ export function ToolBrowser<E>({
   onSelect,
   back,
   renderAction,
+  accountContext,
 }: QueryProps<readonly Tool[], E> & {
   readonly selected: string | undefined;
   readonly onSelect: (tool: string) => void;
   readonly back: ReactNode;
+  readonly accountContext?: ReactNode;
   readonly renderAction?: (tool: Tool) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
@@ -37,6 +39,7 @@ export function ToolBrowser<E>({
   const inspecting = selected !== undefined && current?.name === selected;
   return (
     <div className="tools-section flex min-h-0 flex-1 flex-col">
+      {accountContext}
       <QueryResult
         result={result}
         Failure={Failure}

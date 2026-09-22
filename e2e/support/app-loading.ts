@@ -14,15 +14,21 @@ const tabs = [
   { view: "deployments", title: "Deployments", loading: "Loading deployments" },
   { view: "settings", title: "Settings", loading: "Loading settings" },
 ] as const;
+const redundantTitles = ["Overview", "Accounts", "Deployments", "Settings"];
 const box = (page: Page, title: string) =>
-  page.getByRole("heading", { name: title, exact: true, level: 2 }).evaluate((element) => {
-    const header = element.closest("header");
-    if (!header) throw new Error("Section header missing");
-    const row = element.textContent === "Working source" ? header.parentElement : header;
-    if (!row) throw new Error("Section row missing");
-    const rect = row.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  });
+  redundantTitles.includes(title)
+    ? page.getByRole("navigation", { name: "App navigation" }).evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      })
+    : page.getByRole("heading", { name: title, exact: true, level: 2 }).evaluate((element) => {
+        const header = element.closest("header");
+        if (!header) throw new Error("Section header missing");
+        const row = element.textContent === "Working source" ? header.parentElement : header;
+        if (!row) throw new Error("Section row missing");
+        const rect = row.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      });
 
 type Bounds = {
   readonly x: number;
@@ -35,6 +41,13 @@ const contentBox = (
   view: (typeof tabs)[number]["view"],
   loading: boolean,
 ): Promise<Bounds | readonly Bounds[] | null> => {
+  if (view === "tools" && loading)
+    return page.getByRole("status", { name: "Loading tools", exact: true }).evaluate((element) => {
+      const container = element.closest(".tools-section") ?? element.parentElement;
+      if (!container) throw new Error("Tool loading frame missing");
+      const rect = container.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    });
   if (view === "overview")
     return page.locator(".app-overview > div > section").evaluateAll((elements) =>
       elements.map((element) => {
@@ -130,6 +143,9 @@ export const checkAppLoading = (input: {
             yield* browser.use("Accounts stays a card while inventory loads", (page) =>
               page.getByRole("status", { name: "Loading accounts preview", exact: true }).waitFor(),
             );
+            yield* browser.use("Manager navigation resolves while inventory is held", (page) =>
+              page.getByRole("link", { name: "Source", exact: true }).waitFor(),
+            );
             expect(
               yield* browser.use("Card reads never insert table rows", (page) =>
                 page.locator(".loading-rows").count(),
@@ -183,12 +199,15 @@ export const checkAppLoading = (input: {
             yield* browser.use(`${tab.view} reserves its own content`, (page) =>
               page.getByRole("status", { name: tab.loading, exact: true }).waitFor(),
             );
+            // Metadata is held, but the independent permission read must establish the manager layout.
+            yield* browser.use("Manager navigation resolves while metadata is held", (page) =>
+              page.getByRole("link", { name: "Source", exact: true }).waitFor(),
+            );
             expect(
-              yield* browser.use(
-                "The selected section has its real heading while pending",
-                (page) => page.getByRole("heading", { name: title, exact: true, level: 2 }).count(),
+              yield* browser.use("Only functional pane headings appear below the tabs", (page) =>
+                page.getByRole("heading", { name: title, exact: true, level: 2 }).count(),
               ),
-            ).toBe(1);
+            ).toBe(redundantTitles.includes(title) ? 0 : 1);
             expect(
               yield* browser.use("No generic detail or inventory skeleton", (page) =>
                 page
@@ -202,20 +221,22 @@ export const checkAppLoading = (input: {
               box(page, title),
             );
             expect(pending.height).toBe(
-              viewport.width >= 768
-                ? 48
-                : tab.view === "accounts" || selectedTool
-                  ? 60
-                  : tab.view === "source" || tab.view === "history"
-                    ? 94.5
-                    : 48,
+              redundantTitles.includes(title)
+                ? 44
+                : viewport.width >= 768
+                  ? 48
+                  : tab.view === "accounts" || selectedTool
+                    ? 60
+                    : tab.view === "source" || tab.view === "history"
+                      ? 94.5
+                      : 48,
             );
             if (tab.view === "overview")
               expect(
-                yield* browser.use("Overview reserves its three cards", (page) =>
+                yield* browser.use("Overview reserves all five fixed-height cards", (page) =>
                   page.locator('[aria-label$=" placeholder"]').count(),
                 ),
-              ).toBe(3);
+              ).toBe(5);
             if (tab.view === "source")
               expect(
                 yield* browser.use("Source reserves the file viewport", (page) =>

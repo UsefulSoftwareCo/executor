@@ -26,6 +26,14 @@ export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner
 /** Both hosted products mount these shared authenticated handlers. */
 export const hostedSkillHandlers = HttpApiBuilder.group(HostedApi, "skills", (handlers) =>
   handlers
+    .handle("bundle", ({ params, query }) =>
+      Effect.gen(function* () {
+        yield* authorizeApp(params.app);
+        const owner = yield* appReaderOwner(params.app);
+        const executor = yield* Effect.flatten(HostedExecutor);
+        return yield* executor.skills.bundle({ app: params.app, ...query, owner });
+      }),
+    )
     .handle("list", ({ params, query }) => listAppSkills({ app: params.app, ...query }))
     .handle("read", ({ params, query }) =>
       readAppSkill({ app: params.app, name: params.name, ...query }),

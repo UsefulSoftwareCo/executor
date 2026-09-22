@@ -1,3 +1,4 @@
+import { localAppBrowserHandlers } from "../src/implementation/app-browser.ts";
 import { localScheduleHandlers } from "../src/implementation/schedules.ts";
 import { memorySourceStorage } from "@executor-js/sdk/testing";
 /** Generated apps run through real product HTTP contracts, storage, and the local Node runtime. */
@@ -174,6 +175,7 @@ async function withServer(
           return HttpApiBuilder.layer(DashboardApi).pipe(
             Layer.provide(api.handlers),
             Layer.provide(localScheduleHandlers(executor, config, auth)),
+            Layer.provide(localAppBrowserHandlers(executor)),
             Layer.provide(api.access),
           );
         }),

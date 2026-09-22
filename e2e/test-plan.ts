@@ -26,6 +26,42 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  toolAccountContext: {
+    file: "tool-account-context.spec.ts",
+    title: "Tools identify their accounts and replace catalogs after account selection",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its paired scenario."),
+    },
+  },
+  localToolAccountContext: {
+    file: "local-tool-account-context.spec.ts",
+    title: "Local tools identify their accounts and replace catalogs after account selection",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted uses its organization scenario."),
+      cloud: na("Hosted uses its organization scenario."),
+    },
+  },
+  appBrowser: {
+    file: "app-browser.spec.ts",
+    title: "App browser shows skill and workflow overviews",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its paired dashboard scenario."),
+    },
+  },
+  localAppBrowser: {
+    file: "local-app-browser.spec.ts",
+    title: "Local app browser shows skill and workflow overviews",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted uses its member dashboard scenario."),
+      cloud: na("Hosted uses its member dashboard scenario."),
+    },
+  },
   memberGroupVisibility: {
     file: "group-visibility.spec.ts",
     title: "Members only see and share into their own groups",
@@ -648,7 +684,7 @@ export const scenarios = {
 
   scheduleLoading: {
     file: "hosted-schedule-browser.spec.ts",
-    title: "schedule tab keeps its subhead through metadata, settings and discovery loading",
+    title: "schedule tab keeps its layout through metadata, settings and discovery loading",
     targets: {
       cloud: scheduled,
       "self-host": scheduled,

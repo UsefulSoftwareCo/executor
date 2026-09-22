@@ -1,3 +1,4 @@
+import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { useAtomValue } from "@effect/atom-react";
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
 import { Link, Outlet, useMatches, useLocation } from "@tanstack/react-router";
@@ -30,6 +31,7 @@ export function InventoryLayout() {
       <AppDetailPending
         view={search.view ?? (search.tool === undefined ? "overview" : "tools")}
         selectedTool={search.tool}
+        accountAction={<Skeleton className="h-9 w-36 max-[740px]:h-11" />}
         back={<Link to="/apps">Apps</Link>}
       />
     );

@@ -1,4 +1,3 @@
-import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import type { App } from "@executor-js/sdk";
 import type { ReactNode } from "react";
 
@@ -18,9 +17,6 @@ export function AppSettings({
 }) {
   return (
     <div className="w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Settings</AppSectionTitle>
-      </AppSectionHeader>
       <div className="max-w-3xl space-y-6 p-7 max-[740px]:p-4">
         <section aria-label="App name" className="overflow-hidden rounded-lg border">
           <div className="flex flex-wrap items-center justify-between gap-5 p-5">

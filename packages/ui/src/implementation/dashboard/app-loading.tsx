@@ -1,3 +1,4 @@
+import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
 import { AppDetailLayout } from "./app-detail.tsx";
 /** App tabs reserve the layout of their own content at every data-loading boundary. */
@@ -12,19 +13,33 @@ import { Empty } from "./common.tsx";
 import { cn } from "../lib/utils.ts";
 
 /** Card contents load independently, without replacing a card with a table skeleton. */
-export function OverviewCardLoading({ label }: { readonly label: string }) {
+export function OverviewCardLoading({
+  label,
+  rows = 4,
+  description = true,
+  descriptionLines = 1,
+}: {
+  readonly label: string;
+  readonly rows?: number;
+  readonly description?: boolean;
+  readonly descriptionLines?: 1 | 2;
+}) {
   return (
-    <div role="status" aria-label={label} className="py-5">
-      <div className="space-y-3">
-        <Skeleton className="h-3 w-3/4" />
-        <Skeleton className="h-3 w-1/2" />
-      </div>
+    <div role="status" aria-label={label} className={description ? "divide-y" : "space-y-4 py-5"}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} aria-hidden className={description ? "py-3.5" : ""}>
+          <Skeleton className="h-5 w-2/3" />
+          {description && (
+            <Skeleton className={descriptionLines === 2 ? "mt-1 h-10 w-full" : "mt-1 h-5 w-full"} />
+          )}
+        </div>
+      ))}
       <span className="sr-only">{label}…</span>
     </div>
   );
 }
 
-/** The overview keeps its three cards (or the two cards a member can inspect). */
+/** Reserve the same fixed-height cards and responsive grid as the app overview. */
 export function AppOverviewLoading({
   showSource,
   app,
@@ -34,41 +49,43 @@ export function AppOverviewLoading({
 }) {
   return (
     <section role="status" aria-label="Loading overview" className="app-overview w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Overview</AppSectionTitle>
-        {app ? (
-          <span className="text-xs text-muted-foreground">
-            {app.activeDeployment === null ? "Not deployed" : "Deployed"}
-          </span>
-        ) : (
-          <Skeleton className="h-3 w-16" />
-        )}
-      </AppSectionHeader>
       <div
         className={cn(
           "grid grid-cols-1 gap-4 p-7 max-[740px]:p-4",
           showSource ? "min-[1100px]:grid-cols-3" : "min-[900px]:grid-cols-2",
         )}
       >
-        {(showSource ? ["Accounts", "Tools", "Source"] : ["Accounts", "Tools"]).map((title) => (
+        {(showSource
+          ? ["Accounts", "Tools", "Skills", "Workflows", "Source"]
+          : ["Accounts", "Tools", "Skills", "Workflows"]
+        ).map((title) => (
           <section
             key={title}
             aria-label={`App ${title.toLowerCase()} placeholder`}
-            className="min-h-40 min-w-0 rounded-lg border bg-background p-5"
+            className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           >
-            <div className="mb-1 flex min-h-9 items-center justify-between gap-3 border-b pb-3">
+            <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
               <h3 className="text-sm font-medium">{title}</h3>
               <Skeleton className="h-3 w-14" />
             </div>
-            {title === "Accounts" && app && Object.keys(app.requirements.accounts).length === 0 ? (
-              <p className="py-5 text-sm text-muted-foreground">
-                {app.activeDeployment === null
-                  ? "Account requirements appear after deployment."
-                  : "No accounts required."}
-              </p>
-            ) : (
-              <OverviewCardLoading label={`Loading ${title.toLowerCase()} preview`} />
-            )}
+            <div className="min-h-0 flex-1 overflow-auto">
+              {title === "Accounts" &&
+              app &&
+              Object.keys(app.requirements.accounts).length === 0 ? (
+                <p className="py-5 text-sm text-muted-foreground">
+                  {app.activeDeployment === null
+                    ? "Account requirements appear after deployment."
+                    : "No accounts required."}
+                </p>
+              ) : (
+                <OverviewCardLoading
+                  label={`Loading ${title.toLowerCase()} preview`}
+                  rows={title === "Source" ? 2 : 4}
+                  description={title !== "Source"}
+                  descriptionLines={title === "Skills" || title === "Workflows" ? 2 : 1}
+                />
+              )}
+            </div>
           </section>
         ))}
       </div>
@@ -77,7 +94,13 @@ export function AppOverviewLoading({
 }
 
 /** Account slots use known requirements; zero requirements do not flash invented account rows. */
-export function AppAccountsLoading({ app }: { readonly app?: App | undefined }) {
+export function AppAccountsLoading({
+  app,
+  action,
+}: {
+  readonly app?: App | undefined;
+  readonly action?: ReactNode;
+}) {
   const requirements =
     app === undefined
       ? undefined
@@ -87,10 +110,10 @@ export function AppAccountsLoading({ app }: { readonly app?: App | undefined }) 
         }));
   return (
     <section role="status" aria-label="Loading accounts" className="w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Accounts</AppSectionTitle>
-      </AppSectionHeader>
       <div className="p-7 max-[740px]:p-4">
+        {requirements?.length !== 0 && action && (
+          <div className="mb-4 flex max-w-185 justify-end">{action}</div>
+        )}
         {requirements?.length === 0 ? (
           <Empty title="No accounts required">This app can run without a saved account.</Empty>
         ) : (
@@ -120,9 +143,6 @@ export function AppAccountsLoading({ app }: { readonly app?: App | undefined }) 
 export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading settings" className="w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Settings</AppSectionTitle>
-      </AppSectionHeader>
       <div className="max-w-3xl space-y-6 p-7 max-[740px]:p-4">
         <div className="flex items-center justify-between gap-5 rounded-lg border p-5">
           <div className="space-y-2">
@@ -246,9 +266,6 @@ export function AppDeploymentsLoading() {
       aria-label="Loading deployments"
       className="flex min-h-0 flex-1 flex-col"
     >
-      <AppSectionHeader>
-        <AppSectionTitle>Deployments</AppSectionTitle>
-      </AppSectionHeader>
       <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
         <div
           aria-hidden
@@ -276,11 +293,13 @@ export function AppDetailLoading({
   app,
   canInspectSource,
   selectedTool,
+  accountAction,
 }: {
   readonly view: AppView;
   readonly app?: App | undefined;
   readonly canInspectSource: boolean;
   readonly selectedTool?: string | undefined;
+  readonly accountAction?: ReactNode;
 }): ReactElement {
   if (app?.activeDeployment === null) {
     if (view === "tools" || view === "accounts")
@@ -297,14 +316,25 @@ export function AppDetailLoading({
       );
   }
   switch (view) {
+    case "skills":
+      return <SkillBrowserLoading />;
+    case "workflows":
+      return <WorkflowBrowserLoading />;
     case "overview":
       return <AppOverviewLoading showSource={canInspectSource} app={app} />;
     case "accounts":
-      return <AppAccountsLoading app={app} />;
+      return <AppAccountsLoading app={app} action={accountAction} />;
     case "schedules":
       return <AppSchedulesLoading />;
     case "tools":
-      return <ToolBrowserLoading selected={selectedTool} />;
+      return (
+        <>
+          <div className="shrink-0 border-b px-4 py-3 text-xs text-muted-foreground">
+            <Skeleton className="h-4 w-64 max-w-full" />
+          </div>
+          <ToolBrowserLoading selected={selectedTool} />
+        </>
+      );
     case "source":
     case "history":
       return <AppWorkspaceLoading view={view} />;
@@ -320,14 +350,21 @@ export function AppDetailPending({
   view,
   back,
   selectedTool,
+  accountAction,
 }: {
   readonly view: AppView;
   readonly back: ReactNode;
   readonly selectedTool?: string | undefined;
+  readonly accountAction?: ReactNode;
 }) {
   return (
     <AppDetailLayout app={undefined} view={view} canInspectSource back={back}>
-      <AppDetailLoading view={view} canInspectSource selectedTool={selectedTool} />
+      <AppDetailLoading
+        view={view}
+        canInspectSource
+        selectedTool={selectedTool}
+        accountAction={accountAction}
+      />
     </AppDetailLayout>
   );
 }

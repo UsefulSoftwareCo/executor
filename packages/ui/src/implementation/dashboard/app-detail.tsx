@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   GridViewIcon,
+  BookOpen01Icon,
+  WorkflowSquare01Icon,
   Calendar03Icon,
   Key01Icon,
   SourceCodeIcon,
@@ -23,12 +25,16 @@ const sections = [
   { view: "overview", label: "Overview", icon: GridViewIcon },
   { view: "accounts", label: "Accounts", icon: Key01Icon },
   { view: "tools", label: "Tools", icon: ToolsIcon },
+  { view: "skills", label: "Skills", icon: BookOpen01Icon },
+  { view: "workflows", label: "Workflows", icon: WorkflowSquare01Icon },
   { view: "schedules", label: "Schedules", icon: Calendar03Icon },
   { view: "source", label: "Source", icon: SourceCodeIcon },
   { view: "deployments", label: "Deployments", icon: PackageIcon },
   { view: "settings", label: "Settings", icon: Settings05Icon },
 ] as const;
 const contentClasses = {
+  skills: "min-h-0 min-w-0 flex-1 overflow-auto",
+  workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
   schedules: "min-h-0 min-w-0 flex-1 overflow-auto",
   settings: "min-h-0 min-w-0 flex-1 overflow-auto",
   overview: "min-h-0 min-w-0 flex-1 overflow-auto",

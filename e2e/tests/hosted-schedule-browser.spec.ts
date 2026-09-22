@@ -36,22 +36,12 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
           (organization) => `/api/organizations/${organization}/apps/${app.id}`,
         );
         const frame = (title: string) =>
-          browser.use(`Measure the ${title} subhead`, (page) =>
+          browser.use(`Measure ${title} tab navigation`, (page) =>
             page
-              .getByRole("heading", { name: title, exact: true, level: 2, includeHidden: true })
-              .evaluate((heading) => {
-                const header = heading.closest("header");
-                if (!header) throw new Error("Missing app tab subhead");
-                const { x, y, width, height } = header.getBoundingClientRect();
-                const style = getComputedStyle(heading);
-                return {
-                  x,
-                  y,
-                  width,
-                  height,
-                  fontSize: style.fontSize,
-                  fontWeight: style.fontWeight,
-                };
+              .getByRole("navigation", { name: "App navigation", includeHidden: true })
+              .evaluate((element) => {
+                const { x, y, width, height } = element.getBoundingClientRect();
+                return { x, y, width, height };
               }),
           );
         yield* browser.login(actors.owner);
@@ -65,8 +55,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               yield* browser.use("Open the reference tab", (page) =>
                 page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
               );
-              yield* browser.use("The reference subhead is visible", (page) =>
-                page.getByRole("heading", { name: "Overview", exact: true, level: 2 }).waitFor(),
+              yield* browser.use("The reference content is visible", (page) =>
+                page.getByRole("region", { name: "App tools preview", exact: true }).waitFor(),
               );
               const reference = yield* frame("Overview");
               const metadata = yield* holdQuery(paths, "continue", { allRequests: true });
@@ -85,11 +75,21 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               );
               yield* metadata.requested;
               expect(
-                yield* browser.use("Schedules has a subhead before metadata arrives", (page) =>
-                  page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
+                yield* browser.use(
+                  "Schedules has no duplicate subhead while metadata loads",
+                  (page) =>
+                    page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
                 ),
-              ).toBe(1);
+              ).toBe(0);
               expect(yield* frame("Schedules")).toEqual(reference);
+              expect(
+                yield* browser.use("Schedules has row-shaped skeletons", (page) =>
+                  page
+                    .getByRole("status", { name: "Loading schedules", exact: true })
+                    .locator("[data-slot=skeleton]")
+                    .count(),
+                ),
+              ).toBeGreaterThan(4);
               yield* browser.checkpoint(`${viewport.width} schedules metadata pending`);
               yield* metadata.release;
               yield* settings.requested;

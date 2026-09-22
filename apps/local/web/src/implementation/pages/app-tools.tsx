@@ -1,17 +1,25 @@
+import { appToolsCatalog } from "../../contracts/app-browser.ts";
+import { ToolAccounts } from "@executor-js/ui/dashboard/tool-accounts";
+import { Atom, AsyncResult as ToolResult } from "effect/unstable/reactivity";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Failure } from "../components/common.tsx";
 import { useAtomValue } from "@effect/atom-react";
 import { AccountNotFound, OAuthReconnectRequired, type App } from "@executor-js/sdk";
 import type { DashboardAccount } from "@executor-js/local-server/contracts";
 import { Cause, Option, Schema } from "effect";
-import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, Key01Icon } from "@hugeicons/core-free-icons";
-import { toolsAtom } from "../../contracts/api.ts";
 import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
+
+const toolList = Atom.family((query: ReturnType<typeof appToolsCatalog>) =>
+  Atom.map(
+    query,
+    ToolResult.map((page) => page.items),
+  ),
+);
 
 interface AppToolsProps {
   readonly app: App;
@@ -120,7 +128,7 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
 function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
   const navigate = useNavigate();
-  const atom = toolsAtom(app.id);
+  const atom = appToolsCatalog(app);
   const result = useAtomValue(atom);
   const setup = AsyncResult.isFailure(result) ? accountSetupFailure(result.cause) : Option.none();
   if (Option.isSome(setup))
@@ -144,8 +152,9 @@ function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
   return (
     <ToolBrowser
       Failure={Failure}
-      key={app.id}
-      query={dashboardAtoms.tools(app.id)}
+      key={`${app.id}:${app.activeDeployment}:${JSON.stringify(app.accounts)}`}
+      accountContext={<ToolAccounts app={app} accounts={accounts} />}
+      query={toolList(atom)}
       selected={selected}
       onSelect={(tool) => {
         void navigate({

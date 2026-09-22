@@ -12,8 +12,12 @@ import {
   WorkflowErrors,
 } from "@executor-js/sdk/core";
 import { ExecutionLimitReached, ExecutionAdmissionUnavailable } from "./execution-admission.ts";
-import { OrganizationId, OrganizationForbidden, RequireOrganization } from "./organization.ts";
-const app = { organization: OrganizationId, app: AppId };
+import {
+  OrganizationReference,
+  OrganizationForbidden,
+  RequireOrganization,
+} from "./organization.ts";
+const app = { organization: OrganizationReference, app: AppId };
 const run = { ...app, run: WorkflowRunId };
 const errors = [...WorkflowErrors, OrganizationForbidden] as const;
 const path = "/api/organizations/:organization/apps/:app";

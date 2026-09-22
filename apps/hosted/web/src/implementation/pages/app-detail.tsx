@@ -1,3 +1,7 @@
+import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
+import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
+import { AppOverviewEntries } from "@executor-js/ui/dashboard/app-overview-entries";
+import { appBrowserBindings, appToolsCatalog } from "../../contracts/app-browser.ts";
 import { AppAccessSettings } from "./resource-settings.tsx";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
 import type { AppView } from "@executor-js/ui/contracts/dashboard";
@@ -17,6 +21,7 @@ import { useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@executor-js/ui/components/button";
+import { Skeleton } from "@executor-js/ui/components/skeleton";
 import type { HostedError } from "../../contracts/errors.ts";
 import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
 import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
@@ -38,7 +43,6 @@ import {
   appError,
   removeAppAtom,
   renameAppAtom,
-  toolsAtom,
 } from "../../contracts/apps.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
@@ -96,7 +100,9 @@ export function AppDetailPage({
         </Link>
       }
       actions={
-        app && (
+        app === undefined || access === undefined ? (
+          <Skeleton className="h-9 w-28 max-[740px]:h-11" />
+        ) : (
           <>
             {canUse && openApp?.(app)}
             {canInspectSource && (
@@ -137,7 +143,19 @@ export function AppDetailPage({
         {() => (
           <QueryResult result={result} Failure={HostedFailure} retry={refresh} pending={pending}>
             {(current) =>
-              selectedView === "schedules" ? (
+              selectedView === "skills" ? (
+                <AppSkills
+                  app={current}
+                  bindings={appBrowserBindings(organization, current)}
+                  Failure={HostedFailure}
+                />
+              ) : selectedView === "workflows" ? (
+                <AppWorkflows
+                  app={current}
+                  bindings={appBrowserBindings(organization, current)}
+                  Failure={HostedFailure}
+                />
+              ) : selectedView === "schedules" ? (
                 <AppSchedules
                   bindings={scheduleBindings({ organization, app: current.id }, canInspectSource)}
                   Failure={HostedFailure}
@@ -145,6 +163,13 @@ export function AppDetailPage({
               ) : selectedView === "overview" ? (
                 <AppOverview
                   app={current}
+                  entries={
+                    <AppOverviewEntries
+                      app={current}
+                      bindings={appBrowserBindings(organization, current)}
+                      Failure={HostedFailure}
+                    />
+                  }
                   tools={
                     <QueryResult
                       result={inventory.result}
@@ -152,10 +177,12 @@ export function AppDetailPage({
                       retry={inventory.refresh}
                       pending={
                         <>
-                          <div className="mb-1 flex min-h-9 items-center border-b pb-3">
+                          <div className="mb-1 flex min-h-9 shrink-0 items-center border-b pb-3">
                             <h3 className="text-sm font-medium">Tools</h3>
                           </div>
-                          <OverviewCardLoading label="Loading tools preview" />
+                          <div className="min-h-0 flex-1 overflow-auto">
+                            <OverviewCardLoading label="Loading tools preview" />
+                          </div>
                         </>
                       }
                     >
@@ -164,7 +191,7 @@ export function AppDetailPage({
                           <AppOverviewTools
                             app={current}
                             accounts={inventory.accounts}
-                            query={toolsAtom({ organization, app: current.id })}
+                            query={appToolsCatalog(organization, current)}
                             Failure={HostedFailure}
                           />
                         ) : (
@@ -209,7 +236,13 @@ export function AppDetailPage({
                       <QueryView
                         query={appManagement(organization).source(current.id)}
                         Failure={HostedFailure}
-                        pending={<OverviewCardLoading label="Loading source preview" />}
+                        pending={
+                          <OverviewCardLoading
+                            label="Loading source preview"
+                            rows={2}
+                            description={false}
+                          />
+                        }
                       >
                         {(source) => <AppOverviewSource source={source} />}
                       </QueryView>

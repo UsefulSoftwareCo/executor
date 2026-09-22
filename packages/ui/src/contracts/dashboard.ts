@@ -76,6 +76,8 @@ export interface SelectAccounts {
 export const AppView = Schema.Literals([
   "overview",
   "schedules",
+  "skills",
+  "workflows",
   "tools",
   "accounts",
   "source",
@@ -117,6 +119,15 @@ export const selectedIds = (app: App): readonly AccountId[] => [
     Object.values(app.accounts).flatMap((value) => (typeof value === "string" ? [value] : value)),
   ),
 ];
+/** Display saved account identities without mistaking an empty label for unavailable account metadata. */
+export const selectedAccountLabels = (app: App, accounts: readonly AccountSummary[]) =>
+  selectedIds(app).map((id) => {
+    const account = accounts.find((item) => item.id === id);
+    return {
+      id,
+      label: account === undefined ? "Account unavailable" : account.label || "Unnamed account",
+    };
+  });
 /** Token expiry needs user action only when the host cannot refresh it. */
 export const accountNeedsSignIn = (account: AccountSummary, now = Date.now()) =>
   account.signIn?.state === "reconnect" ||

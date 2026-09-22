@@ -9,6 +9,7 @@ export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
     HttpApiBuilder.group(ExecutorApi, "skills", (handlers) =>
       handlers
+        .handle("bundle", ({ params, query }) => executor.skills.bundle({ ...params, ...query }))
         .handle("list", ({ params, query }) => executor.skills.list({ ...params, ...query }))
         .handle("read", ({ params, query }) => executor.skills.read({ ...params, ...query })),
     ),

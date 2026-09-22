@@ -7,18 +7,27 @@ import {
   DeploymentId,
   AppSkillName,
   AppSkillCatalog,
+  AppSkillBundle,
   AppSkillDocument,
   AppSkillErrors,
   AppSkillNotFound,
   SourceFilePath,
 } from "@executor-js/sdk/core";
-import { OrganizationId, RequireOrganization } from "./organization.ts";
+import { OrganizationReference, RequireOrganization } from "./organization.ts";
 
-const app = { organization: OrganizationId, app: AppId };
+const app = { organization: OrganizationReference, app: AppId };
 const version = { deployment: Schema.optional(DeploymentId) };
 const prefix = "/api/organizations/:organization/apps/:app/skills";
 /** Membership authorizes static instructions; account setup is not required. */
 export const HostedSkills = HttpApiGroup.make("skills")
+  .add(
+    HttpApiEndpoint.get("bundle", "/api/organizations/:organization/apps/:app/skill-bundle", {
+      params: app,
+      query: version,
+      success: AppSkillBundle,
+      error: AppSkillErrors,
+    }).annotate(RequiredAction, "discover"),
+  )
   .add(
     HttpApiEndpoint.get("list", prefix, {
       params: app,

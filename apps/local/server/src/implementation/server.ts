@@ -1,3 +1,4 @@
+import { localAppBrowserHandlers } from "./app-browser.ts";
 import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { localScheduleHandlers } from "./schedules.ts";
 import { localMcpApproval } from "./mcp-approvals.ts";
@@ -281,6 +282,7 @@ export const localApi = (
         HttpApiBuilder.layer(DashboardApi).pipe(
           Layer.provide(dashboardApi.handlers),
           Layer.provide(localScheduleHandlers(executor, config, auth)),
+          Layer.provide(localAppBrowserHandlers(executor)),
           Layer.provide(dashboardApi.access),
         ),
         HttpApiBuilder.layer(LocalAuthApi).pipe(

@@ -1,3 +1,4 @@
+import { appToolsCatalog } from "./app-browser.ts";
 import { refreshResourceDirectory } from "./resource-access.ts";
 import { protectedQuery } from "./protected-query.ts";
 /** Organization-specific app queries and mutations use the shared hosted API. */
@@ -328,6 +329,7 @@ export function acknowledgeApp(
   saved: App,
 ) {
   refreshResourceDirectory(get, organization);
+  get.refresh(appToolsCatalog(organization, saved));
   const previous = AsyncResult.value(get(appAtom({ organization, app: saved.id })));
   const accounts = new Set([
     ...selectedIds(saved),

@@ -1,5 +1,5 @@
+import { ToolAccounts } from "./tool-accounts.tsx";
 import { OverviewCardLoading } from "./app-loading.tsx";
-import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import type { App, AccountRequirement, ToolPage } from "@executor-js/sdk";
 import type { AppSourceView } from "@executor-js/app-management/contracts";
 import type { ReactNode } from "react";
@@ -24,20 +24,18 @@ export function AppOverview({
   accounts,
   tools,
   source,
+  entries,
 }: {
   readonly app: App;
   readonly accounts: ReactNode;
   readonly tools: ReactNode;
   readonly source?: ReactNode;
+  readonly entries: ReactNode;
 }) {
   const { AppLink } = useDashboard();
   const draft = app.activeDeployment === null;
   return (
     <div className="app-overview w-full">
-      <AppSectionHeader>
-        <AppSectionTitle>Overview</AppSectionTitle>
-        <span className="text-xs text-muted-foreground">{draft ? "Not deployed" : "Deployed"}</span>
-      </AppSectionHeader>
       <div
         className={cn(
           "grid grid-cols-1 gap-4 p-7 max-[740px]:p-4",
@@ -45,10 +43,10 @@ export function AppOverview({
         )}
       >
         <section
-          className="min-h-40 min-w-0 rounded-lg border bg-background p-5"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App accounts"
         >
-          <div className="mb-1 flex min-h-9 items-center justify-between gap-3 border-b pb-3">
+          <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
             <h3 className="text-sm font-medium">Accounts</h3>
             {!draft && (
               <AppLink
@@ -61,20 +59,21 @@ export function AppOverview({
               </AppLink>
             )}
           </div>
-          {accounts}
+          <div className="min-h-0 flex-1 overflow-auto">{accounts}</div>
         </section>
         <section
-          className="min-h-40 min-w-0 rounded-lg border bg-background p-5"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App tools preview"
         >
           {tools}
         </section>
+        {entries}
         {source && (
           <section
-            className="min-h-40 min-w-0 rounded-lg border bg-background p-5"
+            className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
             aria-label="App source"
           >
-            <div className="mb-1 flex min-h-9 items-center justify-between gap-3 border-b pb-3">
+            <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
               <h3 className="text-sm font-medium">Source</h3>
               <AppLink
                 app={app.id}
@@ -85,7 +84,7 @@ export function AppOverview({
                 <HugeiconsIcon icon={ArrowRight02Icon} size={13} aria-hidden />
               </AppLink>
             </div>
-            {source}
+            <div className="min-h-0 flex-1 overflow-auto">{source}</div>
           </section>
         )}
       </div>
@@ -105,7 +104,7 @@ export function AppOverviewTools<E>({
   const readiness = appToolReadiness(app, accounts);
   if (readiness.state !== "ready")
     return (
-      <ToolsPreviewFrame app={app}>
+      <ToolsPreviewFrame app={app} accounts={accounts}>
         <p className="py-5 text-sm text-muted-foreground">
           {readiness.state === "not-deployed"
             ? "Deploy source to make tools available."
@@ -116,21 +115,25 @@ export function AppOverviewTools<E>({
       </ToolsPreviewFrame>
     );
 
-  return <LiveToolsPreview app={app} {...query} />;
+  return <LiveToolsPreview app={app} accounts={accounts} {...query} />;
 }
 
 function LiveToolsPreview<E>({
   app,
+  accounts,
   query,
   Failure,
-}: QueryProps<Pick<ToolPage, "items" | "next">, E> & { readonly app: App }) {
+}: QueryProps<Pick<ToolPage, "items" | "next">, E> & {
+  readonly app: App;
+  readonly accounts: readonly AccountSummary[];
+}) {
   const { AppLink } = useDashboard();
   const { result, data, refresh } = useQuery(query);
   const count = Option.isSome(data)
     ? `${data.value.items.length}${data.value.next === undefined ? "" : "+"}`
     : undefined;
   return (
-    <ToolsPreviewFrame app={app} count={count}>
+    <ToolsPreviewFrame app={app} accounts={accounts} count={count}>
       <QueryResult
         result={result}
         retry={refresh}
@@ -180,17 +183,19 @@ function LiveToolsPreview<E>({
 
 function ToolsPreviewFrame({
   app,
+  accounts,
   count,
   children,
 }: {
   readonly app: App;
   readonly count?: string | undefined;
+  readonly accounts: readonly AccountSummary[];
   readonly children: ReactNode;
 }) {
   const { AppLink } = useDashboard();
   return (
     <>
-      <div className="flex min-h-9 items-center justify-between gap-3 border-b pb-3">
+      <div className="flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
         <h3 className="text-sm font-medium">
           Tools
           {count !== undefined && (
@@ -210,7 +215,10 @@ function ToolsPreviewFrame({
           </AppLink>
         )}
       </div>
-      {children}
+      <div className="min-h-0 flex-1 overflow-auto">
+        <ToolAccounts app={app} accounts={accounts} compact />
+        {children}
+      </div>
     </>
   );
 }

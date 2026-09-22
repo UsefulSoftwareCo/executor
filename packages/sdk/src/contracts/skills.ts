@@ -5,7 +5,12 @@ import { AppId, DeploymentId, OwnerId, RequestInvalid, StorageError } from "./sh
 import { AppNotFound, AppNotDeployed } from "./apps.ts";
 import { AppSlug } from "./app-slug.ts";
 import { DeploymentNotFound, SourceFilePath } from "./deployment.ts";
-import { AppSkillMetadata, AppSkillName, SkillDefinitionInvalid } from "./skill-source.ts";
+import {
+  AppSkillMetadata,
+  AppSkillName,
+  AppSkillSource,
+  SkillDefinitionInvalid,
+} from "./skill-source.ts";
 
 /** A configured installation supplies the namespace; skill source never hardcodes it. */
 export const SkillApp = Schema.Struct({ id: AppId, name: Schema.String, slug: AppSlug });
@@ -16,6 +21,13 @@ export const AppSkillCatalog = Schema.Struct({
   skills: Schema.Array(AppSkillMetadata),
 });
 export type AppSkillCatalog = typeof AppSkillCatalog.Type;
+/** All skill documents and reference files from one retained source snapshot. */
+export const AppSkillBundle = Schema.Struct({
+  app: SkillApp,
+  deployment: DeploymentId,
+  skills: Schema.Array(AppSkillSource),
+});
+export type AppSkillBundle = typeof AppSkillBundle.Type;
 /** A document or text reference, with its exact version and the available relative resource paths. */
 export const AppSkillDocument = Schema.Struct({
   ...AppSkillMetadata.fields,
@@ -56,6 +68,17 @@ export const AppSkillErrors = [
 
 /** Programmatic static-resource routes; serving products authorize the configured app. */
 export const AppSkillsGroup = HttpApiGroup.make("skills")
+  .add(
+    HttpApiEndpoint.get("bundle", "/v1/apps/:app/skill-bundle", {
+      params: { app: AppId },
+      query: selection,
+      success: AppSkillBundle,
+      error: AppSkillErrors,
+    }).annotate(
+      OpenApi.Description,
+      "Read every skill and its text references from one deployment without evaluating the app or resolving accounts.",
+    ),
+  )
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/skills", {
       params: { app: AppId },

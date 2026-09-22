@@ -58,6 +58,7 @@ const invocationOptions = (
 export const promiseExecutor = (executor: Executor): PromiseExecutor => {
   return {
     skills: {
+      bundle: (input) => run(AppSkillInputs.list, input, executor.skills.bundle),
       list: (input) => run(AppSkillInputs.list, input, executor.skills.list),
       read: (input) => run(AppSkillInputs.read, input, executor.skills.read),
     },

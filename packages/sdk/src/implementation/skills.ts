@@ -21,6 +21,12 @@ export const makeSkills = (apps: Pick<Executor["apps"], "get" | "source">) => {
       return { app: { id: app.id, name: app.name, slug: app.slug }, deployment: source.id, skills };
     });
   return {
+    bundle: (input: typeof AppSkillInputs.list.Type) =>
+      Schema.decodeUnknownEffect(AppSkillInputs.list)(input).pipe(
+        Effect.mapError(() => new RequestInvalid()),
+        Effect.flatMap(snapshot),
+        Effect.withSpan("sdk.skills.bundle"),
+      ),
     list: (input: typeof AppSkillInputs.list.Type) =>
       Schema.decodeUnknownEffect(AppSkillInputs.list)(input).pipe(
         Effect.mapError(() => new RequestInvalid()),

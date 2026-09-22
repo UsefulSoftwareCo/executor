@@ -1,4 +1,3 @@
-import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import type { ReactNode } from "react";
 import { useDashboard } from "./context.tsx";
 import type { App, AccountRequirement } from "@executor-js/sdk";
@@ -29,11 +28,10 @@ export function AppAccounts({
   const issues = accountSelectionIssues(app, accounts);
   return (
     <div className="accounts-section">
-      <AppSectionHeader>
-        <AppSectionTitle>Accounts</AppSectionTitle>
-        {chooseAction}
-      </AppSectionHeader>
       <div className="p-7 max-[740px]:p-4">
+        {requirements.length > 0 && chooseAction && (
+          <div className="mb-4 flex max-w-185 justify-end">{chooseAction}</div>
+        )}
         {requirements.length === 0 ? (
           <Empty title="No accounts required">This app can run without a saved account.</Empty>
         ) : (
