@@ -1,15 +1,28 @@
+import { parseAppSearch } from "../contracts/navigation.ts";
 import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type { AppLinkProps, AccountLinkProps } from "@executor-js/ui/contracts/dashboard";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { dashboardAtoms } from "../contracts/dashboard-bindings.ts";
 import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
 
 const iconDomains = catalogIconDomainsAtom(dashboardAtoms.catalog);
 
-const AppLink = ({ app, view, tool, ...props }: AppLinkProps) => (
-  <Link to="/apps/$appId" params={{ appId: app }} search={view ? { view, tool } : {}} {...props} />
-);
+const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
+  const location = useRouterState({ select: (state) => state.location });
+  const current =
+    location.pathname === `/apps/${encodeURIComponent(app)}`
+      ? parseAppSearch(location.search).profile
+      : undefined;
+  return (
+    <Link
+      to="/apps/$appId"
+      params={{ appId: app }}
+      search={{ view, tool, profile: profile ?? current }}
+      {...props}
+    />
+  );
+};
 const AccountLink = ({ account, ...props }: AccountLinkProps) => (
   <Link to="/accounts/$accountId" params={{ accountId: account }} {...props} />
 );

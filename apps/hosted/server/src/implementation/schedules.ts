@@ -26,7 +26,8 @@ import {
 import { ExecutionAdmission } from "../contracts/execution-admission.ts";
 import {
   currentOwner,
-  appManagerOwner,
+  executionManagerOwner,
+  ownProfile,
   appReaderOwner,
   selectedApp,
   checkInvocationAccounts,
@@ -52,7 +53,7 @@ export const makeScheduledAuthority = (executor: Executor) =>
         )(rows).pipe(Effect.mapError(() => new StorageError()));
         if (members.length !== 1 || members[0] === undefined)
           return yield* new OrganizationForbidden();
-        yield* selectedApp(executor, target.owner, target.app).pipe(
+        yield* selectedApp(executor, target.owner, target.app, target.profile ?? undefined).pipe(
           Effect.provideService(GroupDatabase, Effect.succeed(sql)),
           Effect.provideService(CurrentUserId, target.actor),
           Effect.provideService(CurrentOrganization, {
@@ -72,28 +73,30 @@ const wake = Effect.flatten(ScheduleWakeup);
 /** Shared handlers retain product ownership and reuse the existing browser approval contract. */
 export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules", (handlers) =>
   handlers
-    .handle("list", ({ params }) =>
+    .handle("list", ({ params, query }) =>
       Effect.gen(function* () {
         const owner = yield* appReaderOwner(params.app);
         const executor = yield* Effect.flatten(HostedExecutor);
-        return yield* executor.schedules.list({ app: params.app, owner });
+        if (query.profile !== undefined)
+          yield* ownProfile(executor, owner, params.app, query.profile);
+        return yield* executor.schedules.list({ app: params.app, owner, ...query });
       }),
     )
-    .handle("definitions", ({ params }) =>
+    .handle("definitions", ({ params, query }) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
-        yield* selectedApp(executor, owner, params.app);
-        return yield* executor.schedules.definitions({ app: params.app, owner });
+        yield* selectedApp(executor, owner, params.app, query.profile);
+        return yield* executor.schedules.definitions({ app: params.app, owner, ...query });
       }),
     )
     .handle("configure", ({ params, payload }) =>
       Effect.gen(function* () {
-        const owner = yield* appManagerOwner(params.app);
+        const executor = yield* Effect.flatten(HostedExecutor);
+        const owner = yield* executionManagerOwner(executor, params.app, payload.profile);
         const actor = yield* CurrentUserId;
         if (actor === undefined) return yield* new Forbidden();
-        const executor = yield* Effect.flatten(HostedExecutor);
-        if (payload.enabled) yield* selectedApp(executor, owner, params.app);
+        if (payload.enabled) yield* selectedApp(executor, owner, params.app, payload.profile);
         const result = yield* executor.schedules.configure({
           app: params.app,
           name: params.name,
@@ -105,12 +108,13 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         return result;
       }),
     )
-    .handle("runNow", ({ params }) =>
+    .handle("runNow", ({ params, query }) =>
       Effect.gen(function* () {
-        const owner = yield* appManagerOwner(params.app);
         const executor = yield* Effect.flatten(HostedExecutor);
-        yield* selectedApp(executor, owner, params.app);
+        const owner = yield* executionManagerOwner(executor, params.app, query.profile);
+        yield* selectedApp(executor, owner, params.app, query.profile);
         const result = yield* executor.schedules.runNow({
+          ...query,
           app: params.app,
           name: params.name,
           owner,
@@ -127,8 +131,9 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         const runs = yield* executor.schedules.runs({ ...query, owner });
         return yield* Effect.filter(runs, (run) =>
           Effect.gen(function* () {
-            yield* selectedApp(executor, owner, run.app);
-            if (query.pending) yield* requireAppAccess(run.app, "manage");
+            yield* selectedApp(executor, owner, run.app, run.profile ?? undefined);
+            if (query.pending)
+              yield* executionManagerOwner(executor, run.app, run.profile ?? undefined);
             return true;
           }).pipe(
             Effect.catchTags({
@@ -146,9 +151,14 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
         const pending = yield* executor.schedules.approval({ run: params.run, owner });
-        yield* requireAppAccess(pending.run.app, "manage");
+        yield* executionManagerOwner(executor, pending.run.app, pending.run.profile ?? undefined);
         yield* checkInvocationAccounts(executor, owner, pending.invocation);
-        const app = yield* selectedApp(executor, owner, pending.run.app);
+        const app = yield* selectedApp(
+          executor,
+          owner,
+          pending.run.app,
+          pending.run.profile ?? undefined,
+        );
         return yield* Schema.decodeUnknownEffect(BrowserApprovalView)({
           status: "pending",
           appName: app.name,
@@ -172,9 +182,9 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
         const pending = yield* executor.schedules.approval({ run: params.run, owner });
-        yield* requireAppAccess(pending.run.app, "manage");
+        yield* executionManagerOwner(executor, pending.run.app, pending.run.profile ?? undefined);
         yield* checkInvocationAccounts(executor, owner, pending.invocation);
-        yield* selectedApp(executor, owner, pending.run.app);
+        yield* selectedApp(executor, owner, pending.run.app, pending.run.profile ?? undefined);
         const response = yield* Schema.decodeUnknownEffect(ApprovalResponse)(payload.response).pipe(
           Effect.mapError(() => new RequestInvalid()),
         );

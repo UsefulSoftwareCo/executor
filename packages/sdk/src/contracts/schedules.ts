@@ -1,3 +1,5 @@
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Installed schedule controls and run review; timing and arguments remain authored app source. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
@@ -41,6 +43,7 @@ export const ScheduledRunStatus = Schema.Literals([
 export const ScheduleSettings = Schema.Struct({
   id: ScheduleId,
   app: AppId,
+  profile: Schema.NullOr(ProfileId),
   owner: OwnerId,
   name: Schema.NonEmptyString,
   actor: Schema.NonEmptyString,
@@ -56,6 +59,7 @@ export type ScheduleSettings = typeof ScheduleSettings.Type;
 export const AppSchedule = Schema.Struct({
   ...OperationSchedule.fields,
   app: AppId,
+  profile: Schema.optional(ProfileId),
   tool: ToolName,
   settings: Schema.NullOr(ScheduleSettings),
 });
@@ -65,6 +69,7 @@ export const ScheduledRun = Schema.Struct({
   id: ScheduledRunId,
   scheduleId: ScheduleId,
   app: AppId,
+  profile: Schema.NullOr(ProfileId),
   owner: OwnerId,
   name: Schema.String,
   status: ScheduledRunStatus,
@@ -116,7 +121,11 @@ export class ScheduleInvalid extends Schema.TaggedError<ScheduleInvalid>()(
   { httpApiStatus: 400 },
 ) {}
 
-const app = { app: AppId, owner: Schema.optional(OwnerId) };
+const app = {
+  app: AppId,
+  profile: Schema.optional(ProfileId),
+  owner: Schema.optional(OwnerId),
+};
 const run = { run: ScheduledRunId, owner: Schema.optional(OwnerId) };
 /** Runtime identity is supplied by the serving host; owner filters alone do not authorize changes. */
 export const ScheduleInputs = {
@@ -126,6 +135,7 @@ export const ScheduleInputs = {
     ...app,
     name: Schema.NonEmptyString,
     actor: Schema.NonEmptyString,
+    expectedProfileRevision: Schema.optional(ProfileRevision),
     enabled: Schema.Boolean,
     approvalMode: Schema.optional(ScheduleApprovalMode),
   }),
@@ -133,6 +143,7 @@ export const ScheduleInputs = {
   runs: Schema.Struct({
     owner: Schema.optional(OwnerId),
     app: Schema.optional(AppId),
+    profile: Schema.optional(ProfileId),
     pending: Schema.optional(Schema.Boolean),
   }),
   approval: Schema.Struct(run),
@@ -140,6 +151,7 @@ export const ScheduleInputs = {
 };
 /** Live discovery preserves existing account and source failures rather than returning an empty catalog. */
 export const ScheduleErrors = [
+  ...ProfileErrors,
   StorageError,
   RequestInvalid,
   ScheduleNotFound,
@@ -160,7 +172,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/schedules", {
       params: { app: AppId },
-      query: { owner: Schema.optional(OwnerId) },
+      query: { owner: Schema.optional(OwnerId), profile: Schema.optional(ProfileId) },
       success: Schema.Array(ScheduleSettings),
       error: ScheduleErrors,
     }),
@@ -168,7 +180,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("definitions", "/v1/apps/:app/schedules/definitions", {
       params: { app: AppId },
-      query: { owner: Schema.optional(OwnerId) },
+      query: { owner: Schema.optional(OwnerId), profile: Schema.optional(ProfileId) },
       success: Schema.Array(AppSchedule),
       error: ScheduleErrors,
     }),
@@ -179,6 +191,8 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
       payload: Schema.Struct({
         owner: Schema.optional(OwnerId),
         actor: Schema.NonEmptyString,
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+        profile: Schema.optional(ProfileId),
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
       }),
@@ -189,7 +203,10 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/run", {
       params: { app: AppId, name: Schema.NonEmptyString },
-      payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
+      payload: Schema.Struct({
+        owner: Schema.optional(OwnerId),
+        profile: Schema.optional(ProfileId),
+      }),
       success: ScheduleSettings,
       error: ScheduleErrors,
     }),

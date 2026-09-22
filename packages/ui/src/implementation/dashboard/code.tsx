@@ -1,3 +1,4 @@
+import { formattedCodeAtom, codeLanguage } from "../../contracts/code-format.ts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -5,6 +6,13 @@ import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { highlightedAtom } from "../../contracts/highlight.ts";
 import { Button, type ButtonProps } from "../components/button.tsx";
+
+/** Source headers and code blocks share the exact same formatting result. */
+export function useFormattedCode(code: string, path: string): string {
+  const atom = useMemo(() => formattedCodeAtom({ code, path }), [code, path]);
+  const result = useAtomValue(atom);
+  return AsyncResult.isSuccess(result) ? result.value : code;
+}
 
 /** Read-only code with selectable text and local syntax highlighting. */
 export function Code({
@@ -18,22 +26,9 @@ export function Code({
   readonly copyable?: boolean;
   readonly copyLabel?: string;
 }) {
-  const language = /\.tsx?$/.test(path)
-    ? "typescript"
-    : /\.jsx?$/.test(path)
-      ? "javascript"
-      : path.endsWith(".css")
-        ? "css"
-        : /\.(md|markdown)$/.test(path)
-          ? "markdown"
-          : /\.html?$/.test(path)
-            ? "html"
-            : path.endsWith(".sh")
-              ? "shellscript"
-              : path.endsWith(".json")
-                ? "json"
-                : "text";
-  const atom = useMemo(() => highlightedAtom({ code, language }), [code, language]);
+  const language = codeLanguage(path);
+  const display = useFormattedCode(code, path);
+  const atom = useMemo(() => highlightedAtom({ code: display, language }), [display, language]);
   const result = useAtomValue(atom);
   const view = (
     <pre
@@ -63,7 +58,7 @@ export function Code({
                 {"\n"}
               </span>
             ))
-          : code.split("\n").map((line, i) => (
+          : display.split("\n").map((line, i) => (
               <span
                 className="code-line inline [@media(prefers-color-scheme:_dark)]:[&_span[style]]:text-[color:var(--shiki-dark)]!"
                 key={i}
@@ -83,7 +78,7 @@ export function Code({
   );
   return copyable ? (
     <div className="code-block relative [.source-file_>_&]:flex-1 [.source-file_>_&]:min-h-0 [.source-file_>_&]:flex [.source-file_>_&]:flex-col">
-      <CopyButton code={code} label={copyLabel} />
+      <CopyButton code={display} label={copyLabel} />
       {view}
     </div>
   ) : (

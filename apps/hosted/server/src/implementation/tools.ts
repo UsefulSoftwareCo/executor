@@ -17,7 +17,7 @@ export const listTools = (input: Parameters<Executor["tools"]["list"]>[0]) =>
     yield* requireAppAccess(input.app, "use");
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app);
+    yield* selectedApp(executor, owner, input.app, input.profile);
     const page = yield* executor.tools.list({ ...input, limit: 2000 });
     return {
       ...page,
@@ -31,7 +31,7 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
       yield* authorizeTool(input.app, input.tool);
       yield* requireAppAccess(input.app, "use");
       const executor = yield* Effect.flatten(HostedExecutor);
-      yield* selectedApp(executor, owner, input.app);
+      yield* selectedApp(executor, owner, input.app, input.profile);
       yield* (yield* ExecutionAdmission)((yield* CurrentOrganization).organization);
       const result = yield* executor.tools.call(input);
       if (result.status === "approval-required")

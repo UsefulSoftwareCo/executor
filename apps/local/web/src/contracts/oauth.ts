@@ -5,6 +5,7 @@ import {
   AppId,
   AccountId,
   AccountConnectionId,
+  ProfileId,
   type ProviderId,
   type OAuthClientInput,
 } from "@executor-js/sdk";
@@ -52,10 +53,12 @@ export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined
   Atom.keepAlive,
 );
 /** Safe navigation intent; the server separately owns provider, owner and credential identity. */
-const OAuthAppReturn = Schema.Struct({
+/** An app connection returns to the same account selection after provider consent. */
+export const OAuthAppReturn = Schema.Struct({
   connection: AccountConnectionId,
   app: AppId,
   slot: Schema.NonEmptyString,
+  profile: Schema.optional(ProfileId),
 });
 export const OAuthReturn = Schema.Union([
   OAuthAppReturn,
@@ -81,7 +84,7 @@ export const completeOAuthAtom = DashboardClient.runtime
       accountCredentialsChanged(get, savedAccount);
       if (Schema.is(OAuthAppReturn)(target)) {
         invalidate(get, appAtom(target.app));
-        get.refresh(toolsAtom(target.app));
+        get.refresh(toolsAtom({ app: target.app }));
       }
       return savedAccount;
     }),

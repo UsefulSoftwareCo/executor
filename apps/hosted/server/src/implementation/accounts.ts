@@ -1,4 +1,5 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permitsApp, permittedAppIds } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
@@ -20,7 +21,12 @@ import { HostedApi } from "../contracts/api.ts";
 import { ApiAuthentication, Authentication } from "../contracts/auth.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { appManagerOwner, accountManagerOwner, currentOwner, ownedConnection } from "./access.ts";
+import {
+  executionManagerOwner,
+  accountManagerOwner,
+  currentOwner,
+  ownedConnection,
+} from "./access.ts";
 
 /** Read provider metadata through the public SDK, including for accounts with no remaining apps. */
 export const getAccount = (owner: OwnerId, account: AccountId) =>
@@ -100,16 +106,25 @@ export const connectAccount = (
   input: {
     readonly app: AppId;
     readonly requirement: string;
+    readonly profile?: import("@executor-js/sdk/core").ProfileId | undefined;
     readonly destination?: typeof ConnectionDestination.Type | undefined;
   },
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* requireAppAccess(input.app, "manage");
+    yield* executionManagerOwner(executor, input.app, input.profile);
+    if (input.profile !== undefined) yield* requireAppAccess(input.app, "use");
     yield* executor.apps.get({ owner, app: input.app });
     yield* checkDestination(input.destination ?? { kind: "personal" });
     return yield* executor.accountConnections
-      .create({ owner, target: { app: input.app, requirement: input.requirement } })
+      .create({
+        owner,
+        target: {
+          app: input.app,
+          requirement: input.requirement,
+          ...(input.profile === undefined ? {} : { profile: input.profile }),
+        },
+      })
       .pipe(
         Effect.flatMap((connection) =>
           recordConnection(connection, input.destination ?? { kind: "personal" }),
@@ -137,9 +152,10 @@ export const submitConnection = (
     const intent = yield* checkConnection(
       yield* ownedConnection(executor, owner, input.connection),
     );
-    return yield* executor.accountConnections
-      .submit({ ...input, owner })
-      .pipe(accountDestination(intent.destination));
+    return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+      accountDestination(intent.destination),
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 /** OAuth client resolution and credentials remain inside the trusted SDK. */
 export const startOAuth = (
@@ -165,9 +181,10 @@ export const completeOAuth = (
     const intent = yield* checkConnection(
       yield* ownedConnection(executor, owner, input.connection),
     );
-    return yield* executor.accountConnections
-      .completeOAuth({ ...input, owner })
-      .pipe(accountDestination(intent.destination));
+    return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
+      accountDestination(intent.destination),
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 
 /** Account policy and persisted connection ownership protect management and OAuth return requests. */
@@ -209,7 +226,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       )
       .handle("connect", ({ params, payload }) =>
         Effect.gen(function* () {
-          const owner = yield* appManagerOwner(params.app);
+          const owner = yield* currentOwner;
           const request = yield* HttpServerRequest.HttpServerRequest;
           const headers = new Headers(request.headers);
           const organization = yield* CurrentOrganization;

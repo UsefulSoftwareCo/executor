@@ -43,6 +43,7 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     listSkills: unavailable,
     readSkill: unavailable,
     listApps: unavailable,
+    listTargets: unavailable,
     listTools: unavailable,
     callTool: unavailable,
     resumeInvocation: unavailable,
@@ -58,6 +59,7 @@ const requestBackend: McpBackend<RequestError> = {
   authorizeElicitation: (input) =>
     Effect.flatMap(RequestBackend, (backend) => backend.authorizeElicitation(input)),
   listApps: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listApps(input)),
+  listTargets: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTargets(input)),
   listTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTools(input)),
   callTool: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.callTool(input, options)),
@@ -132,6 +134,7 @@ export const dispatchHostedMcp = <E, R>(
       listSkills: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input))),
       readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
       listApps: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listApps(input))),
+      listTargets: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listTargets(input))),
       listTools: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listTools(input))),
       authorizeElicitation: (input) =>
         current.pipe(

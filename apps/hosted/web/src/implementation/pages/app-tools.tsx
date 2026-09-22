@@ -1,9 +1,8 @@
-import { appToolsCatalog } from "../../contracts/app-browser.ts";
-import { ToolAccounts } from "@executor-js/ui/dashboard/tool-accounts";
-import { Atom, AsyncResult as ToolResult } from "effect/unstable/reactivity";
+import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
+import { profileMutations } from "../../contracts/profiles.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
-import { Json, type App, type Tool } from "@executor-js/sdk";
+import { Json, type App, type Tool, type Profile, type ProfileId } from "@executor-js/sdk";
 import { Exit, Schema } from "effect";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -12,73 +11,112 @@ import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { appToolReadiness, type AccountSummary } from "@executor-js/ui/contracts/dashboard";
 import { Button } from "@executor-js/ui/components/button";
 import { Textarea } from "@executor-js/ui/components/textarea";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
-import { appError, callToolAtom } from "../../contracts/apps.ts";
-import { AppAccounts } from "./app-accounts.tsx";
+import { appError, callToolAtom, toolListAtom } from "../../contracts/apps.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-const toolList = Atom.family((query: ReturnType<typeof appToolsCatalog>) =>
-  Atom.map(
-    query,
-    ToolResult.map((page) => page.items),
-  ),
-);
-
-/** Tool execution is a hosted action slot; the browser and schema view are shared with local. */
+/** Discover and run tools using the selected profile's exact bindings and revision. */
 export function AppTools({
   app,
   accounts,
   selected,
-  redirectUri,
+  profile,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
   readonly selected: string | undefined;
-  readonly redirectUri: string;
+  readonly profile: Profile | undefined;
 }) {
-  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
-  if (appToolReadiness(app, accounts).state !== "ready")
-    return <AppAccounts app={app} accounts={accounts} redirectUri={redirectUri} />;
-  return (
-    <ToolBrowser
-      Failure={HostedFailure}
-      key={`${app.id}:${app.activeDeployment}:${JSON.stringify(app.accounts)}`}
-      accountContext={<ToolAccounts app={app} accounts={accounts} />}
-      query={toolList(appToolsCatalog(organization, app))}
-      selected={selected}
-      onSelect={(tool) => {
-        void navigate({
-          to: "/org/$organizationSlug/apps/$appId",
-          params: { organizationSlug, appId: app.id },
-          search: { view: "tools", tool },
-        });
-      }}
-      back={
+  if (profile?.enabled === false || profile?.status === "removing")
+    return (
+      <p className="p-5 text-sm text-muted-foreground">
+        This profile is disabled. Enable it from the profile menu to use its tools.
+      </p>
+    );
+  const readiness = appToolReadiness(app, accounts);
+  if (readiness.state === "not-deployed")
+    return <p className="p-5 text-sm text-muted-foreground">Deploy this app to load its tools.</p>;
+  if (readiness.state !== "ready")
+    return (
+      <p className="p-5 text-sm text-muted-foreground">
+        Review the selected accounts in{" "}
         <Link
-          className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
           to="/org/$organizationSlug/apps/$appId"
           params={{ organizationSlug, appId: app.id }}
-          search={{ view: "tools" }}
+          search={{ view: "accounts", profile: profile?.id }}
         >
-          <HugeiconsIcon icon={ArrowLeft02Icon} size={16} />
-          All tools
-        </Link>
-      }
-      {...(role === "owner" || role === "admin"
-        ? {
-            renderAction: (tool: Tool) => (
-              <ToolRunner key={`${app.id}:${tool.name}`} app={app} tool={tool} />
-            ),
-          }
-        : {})}
-    />
+          Accounts
+        </Link>{" "}
+        to load tools.
+      </p>
+    );
+  return (
+    <>
+      {profile && (
+        <ProfileStatus
+          profile={profile}
+          retry={profileMutations({ organization, app: app.id, profile: profile.id }).reconcile}
+          Failure={HostedFailure}
+        />
+      )}
+      <ToolBrowser
+        key={`${app.id}:${app.activeDeployment}:${profile?.id}:${profile?.revision}:${JSON.stringify(app.accounts)}`}
+        query={toolListAtom({
+          organization,
+          app: app.id,
+          profile: profile?.id,
+          expectedProfileRevision: profile?.revision,
+          deployment: app.activeDeployment ?? undefined,
+          accounts: JSON.stringify(app.accounts),
+        })}
+        Failure={HostedFailure}
+        selected={selected}
+        onSelect={(tool) => {
+          void navigate({
+            to: "/org/$organizationSlug/apps/$appId",
+            params: { organizationSlug, appId: app.id },
+            search: { view: "tools", tool, profile: profile?.id },
+          });
+        }}
+        back={
+          <Link
+            className="text-xs text-muted-foreground"
+            to="/org/$organizationSlug/apps/$appId"
+            params={{ organizationSlug, appId: app.id }}
+            search={{ view: "tools", profile: profile?.id }}
+          >
+            All tools
+          </Link>
+        }
+        renderAction={(tool) => (
+          <ToolRunner
+            key={tool.name}
+            app={app}
+            tool={tool}
+            profile={profile?.id}
+            revision={profile?.revision}
+          />
+        )}
+      />
+    </>
   );
 }
-function ToolRunner({ app, tool }: { readonly app: App; readonly tool: Tool }) {
+function ToolRunner({
+  app,
+  tool,
+  profile,
+  revision,
+}: {
+  readonly app: App;
+  readonly tool: Tool;
+  readonly profile?: ProfileId | undefined;
+  readonly revision?: number | undefined;
+}) {
   const { organization } = useOrganizationRoute();
-  const call = useAtomSet(callToolAtom, { mode: "promiseExit" });
+  const call = useAtomSet(callToolAtom({ organization, app: app.id, profile, tool: tool.name }), {
+    mode: "promiseExit",
+  });
   const [input, setInput] = useState("{}");
   const [pending, setPending] = useState(false);
   const [output, setOutput] = useState<string>();
@@ -97,8 +135,9 @@ function ToolRunner({ app, tool }: { readonly app: App; readonly tool: Tool }) {
           setPending(true);
           setOutput(undefined);
           const result = await call({
-            params: { organization, app: app.id },
-            payload: { tool: tool.name, input: parsed.value },
+            input: parsed.value,
+            deployment: app.activeDeployment ?? undefined,
+            expectedProfileRevision: revision,
           });
           setPending(false);
           if (Exit.isFailure(result)) setError(appError(result.cause));

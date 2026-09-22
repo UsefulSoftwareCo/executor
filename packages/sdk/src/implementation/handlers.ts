@@ -7,6 +7,22 @@ import type { Executor } from "../contracts/executor.ts";
 /** Mount the SDK contract with one supplied executor; the host provides transport and access control. */
 export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
+    HttpApiBuilder.group(ExecutorApi, "appProfiles", (handlers) =>
+      handlers
+        .handle("create", ({ params, payload }) =>
+          executor.apps.profiles.create({ ...params, ...payload }),
+        )
+        .handle("get", ({ params, query }) => executor.apps.profiles.get({ ...params, ...query }))
+        .handle("list", ({ params, query }) => executor.apps.profiles.list({ ...params, ...query }))
+        .handle("update", ({ params, payload }) =>
+          executor.apps.profiles.update({ ...params, ...payload }),
+        )
+        .handle("setEnabled", ({ params, payload }) =>
+          executor.apps.profiles.setEnabled({ ...params, ...payload }),
+        )
+        .handle("reconcile", ({ params }) => executor.apps.profiles.reconcile(params))
+        .handle("remove", ({ params }) => executor.apps.profiles.remove(params)),
+    ),
     HttpApiBuilder.group(ExecutorApi, "skills", (handlers) =>
       handlers
         .handle("bundle", ({ params, query }) => executor.skills.bundle({ ...params, ...query }))
@@ -96,7 +112,9 @@ export const executorHandlers = (executor: Executor) =>
       handlers.handle("remove", ({ params }) => executor.owners.remove(params)),
     ),
     HttpApiBuilder.group(ExecutorApi, "appWorkflows", (handlers) =>
-      handlers.handle("list", ({ params }) => executor.apps.workflows.list(params)),
+      handlers.handle("list", ({ params, query }) =>
+        executor.apps.workflows.list({ ...params, ...query }),
+      ),
     ),
     HttpApiBuilder.group(ExecutorApi, "appWorkflowRuns", (handlers) =>
       handlers
@@ -113,8 +131,10 @@ export const executorHandlers = (executor: Executor) =>
       handlers
         .handle("get", ({ params }) => executor.webhooks.get(params))
         .handle("confirmRemoval", ({ params }) => executor.webhooks.confirmRemoval(params))
-        .handle("definitions", ({ params }) => executor.webhooks.definitions(params))
-        .handle("list", ({ params }) => executor.webhooks.list(params))
+        .handle("definitions", ({ params, query }) =>
+          executor.webhooks.definitions({ ...params, ...query }),
+        )
+        .handle("list", ({ params, query }) => executor.webhooks.list({ ...params, ...query }))
         .handle("create", ({ params, payload }) =>
           executor.webhooks.create({ ...params, ...payload }),
         )

@@ -1,3 +1,4 @@
+import { ProfileId, ProfileConflict } from "@executor-js/sdk/core";
 /** Product host for private app pages. Identity comes from the hostname and app cookie, never request input. */
 import {
   Deployment,
@@ -28,7 +29,7 @@ import { appSessionCookie } from "../contracts/app-ui.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import type { LocalAuth } from "./auth.ts";
 import { appRequest } from "./app-auth.ts";
-import { appPrivateHeaders as privateHeaders, appSignInPage } from "apps/ui/auth";
+import { AppReturnPath, appPrivateHeaders as privateHeaders, appSignInPage } from "apps/ui/auth";
 
 const failed = (reason: UiFailed["reason"] = "unavailable") => new UiFailed({ reason });
 const UiBuild = Schema.Struct({ id: DeploymentId, build: Deployment.fields.build });
@@ -42,7 +43,7 @@ export const appUi = (
   auth: LocalAuth,
 ) => {
   const native = runtime;
-  const db = storage.orm("1.12.0");
+  const db = storage.orm("3.0.0");
   const current = (id: AppId) =>
     executor.apps
       .get({ app: id, owner: OwnerId.make("local") })
@@ -70,12 +71,24 @@ export const appUi = (
         Effect.mapError(() => failed()),
       );
       if (app.activeDeployment !== pinned) return yield* new UiDeploymentChanged();
-      return { app: app.id, deployment: pinned, name: payload.name, input: payload.input };
+      const profile = yield* Schema.decodeUnknownEffect(Schema.optional(ProfileId))(
+        payload.profile,
+      ).pipe(Effect.mapError(() => new UiForbidden()));
+      return {
+        app: app.id,
+        deployment: pinned,
+        profile,
+        expectedProfileRevision: payload.expectedProfileRevision,
+        name: payload.name,
+        input: payload.input,
+      };
     });
   const operationFailure = (error: unknown) =>
-    Schema.is(AccountRequired)(error) || Schema.is(OAuthReconnectRequired)(error)
-      ? failed("account_required")
-      : failed("operation_failed");
+    Schema.is(ProfileConflict)(error) && error.reason === "revision"
+      ? new UiDeploymentChanged()
+      : Schema.is(AccountRequired)(error) || Schema.is(OAuthReconnectRequired)(error)
+        ? failed("account_required")
+        : failed("operation_failed");
   const safeOperation = <A, E>(effect: Effect.Effect<A, E>) =>
     effect.pipe(Effect.mapError(operationFailure));
   const uiHandlers = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
@@ -175,7 +188,62 @@ export const appUi = (
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
     const version = yield* deployment(app);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = new URL(request.url, target.origin);
+    const requested = url.searchParams.get("profile");
+    const profile = yield* Schema.decodeUnknownEffect(Schema.optional(ProfileId))(
+      requested ?? undefined,
+    ).pipe(Effect.mapError(() => new UiForbidden()));
+    if (
+      profile === undefined &&
+      (request.headers["sec-fetch-mode"] === "navigate" ||
+        request.headers.accept?.includes("text/html")) &&
+      Object.keys(app.requirements.accounts).some((slot) => !Object.hasOwn(app.accounts, slot))
+    ) {
+      const saved = yield* executor.apps.profiles
+        .list({ app: app.id, owner: app.owner, subject: "local" })
+        .pipe(Effect.mapError(() => failed()));
+      const candidates = saved.filter(
+        (item) =>
+          item.enabled &&
+          item.status !== "removed" &&
+          item.status !== "removing" &&
+          Object.keys(app.requirements.accounts).every(
+            (slot) => Object.hasOwn(app.accounts, slot) || Object.hasOwn(item.accounts, slot),
+          ),
+      );
+      const only = candidates[0];
+      if (candidates.length === 1 && only !== undefined) {
+        url.searchParams.set("profile", only.id);
+        return HttpServerResponse.redirect(url.href, { status: 302, headers: privateHeaders });
+      }
+      const returnTo = yield* Schema.decodeUnknownEffect(AppReturnPath)(
+        url.pathname + url.search,
+      ).pipe(Effect.mapError(() => new UiForbidden()));
+      const chooser = new URL(
+        `/apps/${app.id}/open`,
+        config.browserOrigin ?? `http://127.0.0.1:${config.port}`,
+      );
+      chooser.searchParams.set("returnTo", returnTo);
+      return HttpServerResponse.redirect(chooser.href, { status: 302, headers: privateHeaders });
+    }
+    const selected =
+      profile === undefined
+        ? undefined
+        : yield* executor.apps.profiles
+            .get({ app: app.id, profile })
+            .pipe(Effect.mapError(() => new UiForbidden()));
+    if (
+      selected !== undefined &&
+      (!selected.enabled ||
+        selected.subject !== "local" ||
+        selected.status === "removed" ||
+        selected.status === "removing")
+    )
+      return yield* new UiForbidden();
     return yield* appDocument({
+      profile: selected?.id,
+      expectedProfileRevision: selected?.revision,
       origin: target.origin,
       deployment: version.id,
       asset: (path) => readAsset(version.build, path),

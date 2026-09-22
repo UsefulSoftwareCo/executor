@@ -1,8 +1,8 @@
 import { DashboardRuntime } from "./telemetry.ts";
 import { LocalAppManagementApi } from "@executor-js/local-server/app-management";
 import { DashboardApi } from "@executor-js/local-server/contracts";
-import type { AppId, DeploymentId } from "@executor-js/sdk";
-import { Cause, Clock, Effect, Option, Schedule, Schema, Stream } from "effect";
+import type { AppId, DeploymentId, ProfileId } from "@executor-js/sdk";
+import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError } from "effect/unstable/http";
 import { AsyncResult, Atom, AtomHttpApi } from "effect/unstable/reactivity";
 import { accountNeedsSignIn } from "./dashboard.ts";
@@ -134,13 +134,35 @@ export const sourceAtom = Atom.family(
 );
 
 /** Tool discovery reruns only when this app's execution inputs change. */
-export const toolsAtom = Atom.family((app: AppId) =>
+class ToolKey extends Data.Class<{
+  readonly app: AppId;
+  readonly profile?: ProfileId | undefined;
+  readonly revision?: number | undefined;
+  readonly deployment?: DeploymentId | null | undefined;
+  readonly accounts?: string | undefined;
+}> {}
+const toolQueries = Atom.family((key: ToolKey) =>
   liveQueryAtom(
     Effect.flatMap(DashboardClient, (client) =>
       client.dashboard.liveTools({
-        params: { app },
+        params: { app: key.app },
+        query: { profile: key.profile, expectedProfileRevision: key.revision },
         sseOptions: { maxEventSize: 16 * 1024 * 1024 },
       }),
     ),
   ).pipe(currentQuery),
 );
+
+/** Catalog identities follow each tab's saved account selection. */
+export const toolsAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
+  toolQueries(new ToolKey(key));
+
+const toolLists = Atom.family((key: ToolKey) =>
+  Atom.map(
+    toolQueries(key),
+    AsyncResult.map((page) => page.tools),
+  ),
+);
+/** Shared browser view for the selected profile. */
+export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
+  toolLists(new ToolKey(key));

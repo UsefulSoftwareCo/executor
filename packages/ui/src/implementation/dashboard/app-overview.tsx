@@ -1,24 +1,22 @@
-import { EmptyState } from "./empty-state.tsx";
-import { ToolAccounts } from "./tool-accounts.tsx";
-import { OverviewCardLoading } from "./app-loading.tsx";
-import type { App, AccountRequirement, ToolPage } from "@executor-js/sdk";
+import { OverviewCatalog } from "./overview-catalog.tsx";
+import type { AccountContext } from "./account-group.tsx";
+import type { App, ToolPage } from "@executor-js/sdk";
 import type { AppSourceView } from "@executor-js/app-management/contracts";
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import {
   accountNeedsSignIn,
   accountSelectionIssues,
   providerDisplayUrl,
-  appToolReadiness,
-  type QueryProps,
+  type Query,
+  type FailureProps,
   type AccountSummary,
 } from "../../contracts/dashboard.ts";
-import { Option } from "effect";
-import { useDashboard, useQuery, QueryResult } from "./context.tsx";
+import { useDashboard } from "./context.tsx";
 import { ProviderIcon } from "./common.tsx";
-import { cn } from "../lib/utils.ts";
 import { Button } from "../components/button.tsx";
+import { cn } from "../lib/utils.ts";
 
 /** The app home shows current configuration; hosts supply independent tool, account, and source reads. */
 export function AppOverview({
@@ -72,7 +70,7 @@ export function AppOverview({
         )}
       >
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App accounts"
         >
           <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
@@ -91,7 +89,7 @@ export function AppOverview({
           <div className="flex min-h-0 flex-1 flex-col overflow-auto">{accounts}</div>
         </section>
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App tools preview"
         >
           {tools}
@@ -99,7 +97,7 @@ export function AppOverview({
         {entries}
         {source && (
           <section
-            className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+            className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
             aria-label="App source"
           >
             <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
@@ -121,67 +119,49 @@ export function AppOverview({
   );
 }
 
-/** Load a small preview through the existing live catalog only when the app can be inspected. */
+/** The overview lists each tool once; account selection belongs to the Tools tab. */
 export function AppOverviewTools<E>({
   app,
-  accounts,
-  ...query
-}: QueryProps<Pick<ToolPage, "items" | "next">, E> & {
-  readonly app: App;
-  readonly accounts: readonly AccountSummary[];
-}) {
-  const readiness = appToolReadiness(app, accounts);
-  if (readiness.state !== "ready")
-    return (
-      <ToolsPreviewFrame app={app} accounts={accounts}>
-        <EmptyState size="card" heading="h3" title="Tools unavailable">
-          {readiness.state === "not-deployed"
-            ? "Deploy source to make tools available."
-            : readiness.state === "unavailable"
-              ? "Account status is unavailable. Check Accounts and try again."
-              : "Review the app’s accounts to load its tools."}
-        </EmptyState>
-      </ToolsPreviewFrame>
-    );
-
-  return <LiveToolsPreview app={app} accounts={accounts} {...query} />;
-}
-
-function LiveToolsPreview<E>({
-  app,
-  accounts,
-  query,
+  sources,
   Failure,
-}: QueryProps<Pick<ToolPage, "items" | "next">, E> & {
+  empty,
+}: {
   readonly app: App;
-  readonly accounts: readonly AccountSummary[];
+  readonly sources: readonly {
+    readonly key: string;
+    readonly query: Query<Pick<ToolPage, "items" | "next">, E>;
+  }[];
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly empty: ReactNode;
 }) {
   const { AppLink } = useDashboard();
-  const { result, data, refresh } = useQuery(query);
-  const count = Option.isSome(data)
-    ? `${data.value.items.length}${data.value.next === undefined ? "" : "+"}`
-    : undefined;
   return (
-    <ToolsPreviewFrame app={app} accounts={accounts} count={count}>
-      <QueryResult
-        result={result}
-        retry={refresh}
-        Failure={Failure}
-        pending={<OverviewCardLoading label="Loading tools preview" />}
-      >
-        {(page) =>
-          page.items.length === 0 ? (
+    <ToolsPreviewFrame app={app}>
+      {app.activeDeployment === null ? (
+        <EmptyState size="card" heading="h3" title="No deployment yet">
+          Deploy source to make tools available.
+        </EmptyState>
+      ) : sources.length === 0 ? (
+        empty
+      ) : (
+        <OverviewCatalog
+          sources={sources}
+          items={(page) => page.items}
+          Failure={Failure}
+          label="Loading tools preview"
+          empty={
             <EmptyState size="card" heading="h3" title="No tools">
               This app does not expose any tools.
             </EmptyState>
-          ) : (
+          }
+        >
+          {(tools) => (
             <div className="grid">
-              {page.items.slice(0, 4).map((tool) => (
+              {tools.slice(0, 4).map((tool) => (
                 <AppLink
                   key={tool.name}
                   app={app.id}
                   view="tools"
-                  tool={tool.name}
                   className="group flex min-w-0 items-center gap-3 border-b py-3.5 last:border-b-0 hover:bg-muted/20 focus-visible:outline-ring"
                 >
                   <div className="min-w-0 flex-1">
@@ -203,36 +183,19 @@ function LiveToolsPreview<E>({
                 </AppLink>
               ))}
             </div>
-          )
-        }
-      </QueryResult>
+          )}
+        </OverviewCatalog>
+      )}
     </ToolsPreviewFrame>
   );
 }
 
-function ToolsPreviewFrame({
-  app,
-  accounts,
-  count,
-  children,
-}: {
-  readonly app: App;
-  readonly count?: string | undefined;
-  readonly accounts: readonly AccountSummary[];
-  readonly children: ReactNode;
-}) {
+function ToolsPreviewFrame({ app, children }: { readonly app: App; readonly children: ReactNode }) {
   const { AppLink } = useDashboard();
   return (
     <>
       <div className="flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
-        <h3 className="text-sm font-medium">
-          Tools
-          {count !== undefined && (
-            <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">
-              {count}
-            </span>
-          )}
-        </h3>
+        <h3 className="text-sm font-medium">Tools</h3>
         {app.activeDeployment !== null && (
           <AppLink
             app={app.id}
@@ -244,27 +207,26 @@ function ToolsPreviewFrame({
           </AppLink>
         )}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <ToolAccounts app={app} accounts={accounts} compact />
-        {children}
-      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">{children}</div>
     </>
   );
 }
 
-/** Show declared account slots and real selections without implying upstream service health. */
+/** Summarize providers across profiles; individual account choices live in Accounts. */
 export function AppOverviewAccounts({
   app,
   accounts,
-  accountActions,
+  contexts,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
-  readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
+  readonly contexts: readonly AccountContext[];
 }) {
-  const { AccountLink } = useDashboard();
   const requirements = Object.entries(app.requirements.accounts);
-  const issues = accountSelectionIssues(app, accounts);
+  const selections = contexts.length === 0 ? [app] : contexts.map((context) => context.app);
+  const incomplete = contexts.filter(
+    (context) => accountSelectionIssues(context.app, accounts).length > 0,
+  ).length;
   if (requirements.length === 0)
     return (
       <EmptyState
@@ -278,67 +240,57 @@ export function AppOverviewAccounts({
       </EmptyState>
     );
   return (
-    <div className="divide-y">
-      {requirements.map(([slot, requirement]) => {
-        const selection = app.accounts[slot];
-        const ids =
-          selection === undefined ? [] : typeof selection === "string" ? [selection] : selection;
-        return (
-          <div key={slot} className="flex items-start gap-3 py-4">
-            <ProviderIcon
-              name={requirement.definition.name}
-              url={providerDisplayUrl(requirement.definition)}
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                <p className="text-[13px] font-medium">{requirement.definition.name}</p>
-                {issues.some((issue) => issue.slot === slot) &&
-                  (accountActions ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {accountActions(slot, requirement)}
-                    </div>
-                  ) : (
-                    <span className="text-[11px] text-sign-in-warning">Needs attention</span>
-                  ))}
+    <div>
+      <div className="divide-y">
+        {requirements.map(([slot, requirement]) => {
+          const ids = new Set(
+            [app, ...selections].flatMap((configured) => {
+              const selection = configured.accounts[slot];
+              return selection === undefined
+                ? []
+                : typeof selection === "string"
+                  ? [selection]
+                  : selection;
+            }),
+          );
+          const selected = accounts.filter((account) => ids.has(account.id));
+          const reconnect = selected.some((account) => accountNeedsSignIn(account));
+          const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
+          const showSlot = requirements.some(
+            ([otherSlot, other]) =>
+              otherSlot !== slot && other.definition.name === requirement.definition.name,
+          );
+          return (
+            <div key={slot} className="flex items-center gap-3 py-2.5">
+              <ProviderIcon
+                name={requirement.definition.name}
+                url={providerDisplayUrl(requirement.definition)}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13px] font-medium">
+                  {requirement.definition.name}
+                  {showSlot && <span className="ml-2 text-xs text-muted-foreground">{slot}</span>}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {ids.size === 0
+                    ? "No accounts selected"
+                    : `${ids.size} ${ids.size === 1 ? "account" : "accounts"}`}
+                </p>
               </div>
-              {requirements.length > 1 && (
-                <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{slot}</p>
+              {(reconnect || unavailable) && (
+                <span className="text-xs text-sign-in-warning">
+                  {reconnect ? "Needs sign-in" : "Unavailable"}
+                </span>
               )}
-              <div className="mt-1 space-y-1 text-xs leading-5 text-muted-foreground">
-                {ids.length === 0 ? (
-                  <p>No accounts selected</p>
-                ) : (
-                  ids.map((id) => {
-                    const account = accounts.find((item) => item.id === id);
-                    return (
-                      <div
-                        key={id}
-                        className="flex flex-wrap items-baseline justify-between gap-x-3"
-                      >
-                        <span className="break-words [&_a:hover]:text-foreground [&_a:hover]:underline">
-                          {account ? (
-                            <AccountLink account={id}>
-                              {account.label || "Unnamed account"}
-                            </AccountLink>
-                          ) : (
-                            "Account disconnected"
-                          )}
-                        </span>
-                        {account &&
-                          (accountNeedsSignIn(account) ? (
-                            <span className="text-sign-in-warning">Needs sign-in</span>
-                          ) : account.signIn?.state === "unavailable" ? (
-                            <span className="text-sign-in-warning">Unavailable</span>
-                          ) : null)}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+      {incomplete > 0 && (
+        <p className="border-t pt-2 text-xs text-sign-in-warning">
+          {incomplete === 1 ? "1 profile needs accounts" : `${incomplete} profiles need accounts`}
+        </p>
+      )}
     </div>
   );
 }
@@ -356,3 +308,4 @@ export function AppOverviewSource({ source }: { readonly source: typeof AppSourc
     </div>
   );
 }
+import { EmptyState } from "./empty-state.tsx";

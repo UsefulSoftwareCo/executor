@@ -1,5 +1,5 @@
 import { EmptyState, EmptyStatePanel } from "./empty-state.tsx";
-import { useState, type ComponentType } from "react";
+import { useState, type ReactNode, type ComponentType } from "react";
 import type { App, HostedWorkflow, WorkflowRun, WorkflowRunId } from "@executor-js/sdk";
 import { Option } from "effect";
 import type { WorkflowBindings } from "../../contracts/app-browser.ts";
@@ -20,12 +20,26 @@ const statuses: Record<WorkflowRun["status"], string> = {
 };
 type WorkflowOutput = Extract<WorkflowRun, { status: "complete" }>["output"];
 
+interface WorkflowActions {
+  readonly start?: ((definition: HostedWorkflow, onStarted: () => void) => ReactNode) | undefined;
+  readonly runAction?:
+    | ((
+        run: WorkflowRun,
+        workflow: string | undefined,
+        cursor: WorkflowRunId | undefined,
+      ) => ReactNode)
+    | undefined;
+}
 /** Runs remain the primary view and load independently of workflow descriptions. */
 export function AppWorkflows<E>({
   app,
   bindings,
   Failure,
-}: {
+  enabled = true,
+  start,
+  runAction,
+}: WorkflowActions & {
+  readonly enabled?: boolean;
   readonly app: App;
   readonly bindings: WorkflowBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
@@ -38,12 +52,28 @@ export function AppWorkflows<E>({
         </EmptyStatePanel>
       </section>
     );
-  return <WorkflowBrowser bindings={bindings} Failure={Failure} />;
+  if (!enabled)
+    return (
+      <section aria-label="Workflow run history" className="p-5">
+        <WorkflowRuns
+          workflow={undefined}
+          workflows={[]}
+          bindings={bindings}
+          Failure={Failure}
+          runAction={runAction}
+        />
+      </section>
+    );
+  return (
+    <WorkflowBrowser bindings={bindings} Failure={Failure} start={start} runAction={runAction} />
+  );
 }
 function WorkflowBrowser<E>({
   bindings,
   Failure,
-}: {
+  start,
+  runAction,
+}: WorkflowActions & {
   readonly bindings: WorkflowBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
@@ -108,6 +138,8 @@ function WorkflowBrowser<E>({
           <WorkflowRuns
             key={workflow === undefined ? "all-workflows" : `workflow:${workflow}`}
             workflow={workflow}
+            start={start}
+            runAction={runAction}
             workflows={workflows}
             bindings={bindings}
             Failure={Failure}
@@ -122,7 +154,9 @@ function WorkflowRuns<E>({
   workflows,
   bindings,
   Failure,
-}: {
+  start,
+  runAction,
+}: WorkflowActions & {
   readonly workflow: string | undefined;
   readonly workflows: readonly HostedWorkflow[];
   readonly bindings: WorkflowBindings<E>;
@@ -130,47 +164,58 @@ function WorkflowRuns<E>({
 }) {
   const [pages, setPages] = useState<readonly (WorkflowRunId | undefined)[]>([undefined]);
   const cursor = pages[pages.length - 1];
+  const selected = workflows.find((item) => item.name === workflow);
   return (
-    <QueryView
-      query={bindings.runs(workflow, cursor)}
-      Failure={Failure}
-      pending={<WorkflowRunsLoading />}
-    >
-      {(page) => (
-        <>
-          <RunList key={cursor ?? "first"} runs={page.items} workflows={workflows} />
-          {(pages.length > 1 || page.next !== undefined) && (
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pages.length === 1}
-                onClick={() => setPages(pages.slice(0, -1))}
-              >
-                Newer runs
-              </Button>
-              <span className="text-xs text-muted-foreground">Page {pages.length}</span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page.next === undefined}
-                onClick={() => {
-                  if (page.next !== undefined) setPages([...pages, page.next]);
-                }}
-              >
-                Older runs
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-    </QueryView>
+    <>
+      {selected && start?.(selected, () => setPages([undefined]))}
+      <QueryView
+        query={bindings.runs(workflow, cursor)}
+        Failure={Failure}
+        pending={<WorkflowRunsLoading />}
+      >
+        {(page) => (
+          <>
+            <RunList
+              key={cursor ?? "first"}
+              runs={page.items}
+              workflows={workflows}
+              action={(run) => runAction?.(run, workflow, cursor)}
+            />
+            {(pages.length > 1 || page.next !== undefined) && (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pages.length === 1}
+                  onClick={() => setPages(pages.slice(0, -1))}
+                >
+                  Newer runs
+                </Button>
+                <span className="text-xs text-muted-foreground">Page {pages.length}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page.next === undefined}
+                  onClick={() => {
+                    if (page.next !== undefined) setPages([...pages, page.next]);
+                  }}
+                >
+                  Older runs
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </QueryView>
+    </>
   );
 }
 function RunList({
   runs,
   workflows,
+  action,
 }: {
+  readonly action: (run: WorkflowRun) => ReactNode;
   readonly runs: readonly WorkflowRun[];
   readonly workflows: readonly HostedWorkflow[];
 }) {
@@ -227,6 +272,7 @@ function RunList({
                 aria-label="Workflow run details"
                 className="space-y-5 bg-muted/20 px-5 py-5"
               >
+                {action(run)}
                 {run.status === "complete" && (
                   <div>
                     <h4 className="mb-3 text-xs font-medium text-muted-foreground">Result</h4>

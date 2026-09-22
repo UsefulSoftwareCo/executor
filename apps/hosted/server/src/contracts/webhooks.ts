@@ -4,6 +4,7 @@ import { Schema } from "effect";
 import { HttpApiGroup, HttpApiEndpoint } from "effect/unstable/httpapi";
 import {
   AppId,
+  ProfileId,
   WebhookId,
   CreateWebhook,
   WebhookErrors,
@@ -46,6 +47,7 @@ export const HostedWebhooks = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/webhook-definitions`, {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(HostedWebhook),
       error: errors,
     }).annotate(RequiredAction, "read"),
@@ -53,6 +55,7 @@ export const HostedWebhooks = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("list", `${path}/webhooks`, {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(WebhookSubscription),
       error: errors,
     }).annotate(RequiredAction, "read"),

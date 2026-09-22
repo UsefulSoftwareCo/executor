@@ -1,4 +1,5 @@
-import { requireAppAccess, requireAccountAccess } from "./resource-policy.ts";
+import { executionManagerOwner } from "./access.ts";
+import { requireAccountAccess } from "./resource-policy.ts";
 import type { WebhookId } from "@executor-js/sdk/core";
 /** Private setup shares SDK state without making secret exchange available to MCP credentials. */
 import { Effect } from "effect";
@@ -27,8 +28,8 @@ const authorized = (
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* executor.apps.get({ owner: organizationOwner(organization), app: input.app });
     yield* Effect.gen(function* () {
-      yield* requireAppAccess(input.app, "manage");
       const subscription = yield* executor.webhooks.get(input);
+      yield* executionManagerOwner(executor, input.app, subscription.profile ?? undefined);
       for (const account of new Set(Object.values(subscription.accounts).flat()))
         yield* requireAccountAccess(account, permission);
     }).pipe(

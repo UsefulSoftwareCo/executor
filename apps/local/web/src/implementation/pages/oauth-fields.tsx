@@ -13,7 +13,7 @@ import {
 import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
 import type { ConnectionGrant } from "@executor-js/local-server/account-connections";
 import { OAuthFields as SharedFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
-import { startOAuthAtom, oauthSetupAtom } from "../../contracts/oauth.ts";
+import { startOAuthAtom, oauthSetupAtom, type OAuthAppReturn } from "../../contracts/oauth.ts";
 import { reconnectAccountAtom } from "../../contracts/accounts.ts";
 import {
   startConnectionOAuthAtom,
@@ -30,6 +30,7 @@ export function OAuthFields({
   account,
   connection,
   onSaved,
+  returnTo,
   onPendingChange,
   disabled = false,
 }: {
@@ -38,6 +39,7 @@ export function OAuthFields({
   readonly account?: Account;
   readonly connection?: ConnectionGrant;
   readonly onSaved: (account: Account) => void;
+  readonly returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly disabled?: boolean;
 }) {
@@ -86,7 +88,9 @@ export function OAuthFields({
             }
             if (connection) Effect.runSync(openConnectionOAuth(value.authorizationUrl, connection));
             else if (value.connection !== undefined)
-              Effect.runSync(openOAuth(value.authorizationUrl, value.connection, account?.id));
+              Effect.runSync(
+                openOAuth(value.authorizationUrl, value.connection, account?.id, returnTo),
+              );
           }}
         />
       )}

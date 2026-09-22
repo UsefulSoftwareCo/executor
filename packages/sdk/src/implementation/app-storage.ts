@@ -1,3 +1,4 @@
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Configured-app data dispatch. Platform storage never holds authored rows. */
 import { Effect, Result, Schema, Stream } from "effect";
 import type { WorkflowHostControls } from "apps/contracts";
@@ -18,7 +19,11 @@ export const makeAppData = (
   resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
   runtime: Runtime,
   appStorage?: AppDatabases,
-  workflows?: (app: import("../contracts/shared.ts").AppId) => WorkflowHostControls,
+  workflows?: (
+    app: import("../contracts/shared.ts").AppId,
+    state?: Effect.Success<ReturnType<typeof snapshot>>,
+  ) => WorkflowHostControls,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const execute = (
@@ -28,14 +33,14 @@ export const makeAppData = (
   ) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input);
-      const accounts = yield* resolve(state, resolveAccount);
+      const accounts = yield* resolve(state, resolveAccount, lifecycle);
       return yield* runtime[kind]({
         build: state.deployment.build,
         database: state.deployment.requirements.database !== undefined,
         ...accounts,
         app: state.app.id,
         ...(yield* bindAppStorage(appStorage, state.app.id)),
-        ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id) }),
+        ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
         name: input.name,
         input: input.input,
         ...(observeRevision === undefined ? {} : { observeRevision }),

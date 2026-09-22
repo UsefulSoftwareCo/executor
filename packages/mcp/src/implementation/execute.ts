@@ -12,6 +12,7 @@ import {
 } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { diagnostic } from "./diagnostics.ts";
+import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
   defaultMcpRuntimeLimits,
@@ -73,23 +74,26 @@ function toolPath(name: string): string {
     .join(".");
 }
 
-function listTools<E extends Error>(backend: McpBackend<E>, app: AppId) {
+function listTools<E extends Error>(backend: McpBackend<E>, app: AppId, target: McpTarget) {
   return Effect.gen(function* () {
     const tools: AppTool[] = [];
     let cursor: Cursor | undefined;
     let deployment: DeploymentId | undefined;
+    const selection =
+      target.kind === "app" ? {} : { profile: target.id, expectedProfileRevision: target.revision };
     do {
       const page = yield* backend.listTools({
         app,
-        ...(deployment === undefined ? {} : { deployment }),
-        ...(cursor === undefined ? {} : { cursor }),
+        ...selection,
+        deployment,
+        cursor,
         limit: 2_000,
       });
       deployment = page.deployment;
       tools.push(...page.items);
       cursor = page.next;
     } while (cursor !== undefined);
-    return tools;
+    return { tools, deployment, selection };
   });
 }
 
@@ -98,66 +102,104 @@ function catalog(backend: McpBackend<Error>) {
     const apps = yield* backend.listApps();
     const counts = new Map<string, number>();
     for (const app of apps) counts.set(app.slug, (counts.get(app.slug) ?? 0) + 1);
-    const available = yield* Effect.forEach(
+    const discovered = yield* Effect.forEach(
       apps,
       (app) =>
-        !Schema.is(AppSlug)(app.slug) || counts.get(app.slug) !== 1
-          ? Effect.succeed({
+        Effect.gen(function* () {
+          if (!Schema.is(AppSlug)(app.slug) || counts.get(app.slug) !== 1)
+            return {
               app,
-              items: [],
+              targets: [],
               error: !Schema.is(AppSlug)(app.slug) ? "AppSlugInvalid" : "AppSlugAmbiguous",
-            })
-          : listTools(backend, app.id).pipe(
-              Effect.map((items) => ({ app, items, error: undefined })),
-              Effect.catch((error) => Effect.succeed({ app, items: [], error: diagnostic(error) })),
+            };
+          return yield* backend.listTargets({ app: app.id }).pipe(
+            Effect.flatMap((targets) =>
+              Effect.forEach(
+                targets,
+                (target) =>
+                  listTools(backend, app.id, target).pipe(
+                    Effect.map((catalog) => ({ target, catalog, error: undefined })),
+                    Effect.catch((error) =>
+                      Effect.succeed({ target, catalog: undefined, error: diagnostic(error) }),
+                    ),
+                  ),
+                { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
+              ),
             ),
+            Effect.map((targets) => ({ app, targets, error: undefined })),
+            Effect.catch((error) => Effect.succeed({ app, targets: [], error: diagnostic(error) })),
+          );
+        }),
       { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
     );
     const tools: Catalog = Object.create(null);
     const unavailableApps: Array<typeof UnavailableApp.Type> = [];
-    for (const { app, items, error } of available) {
+    for (const { app, targets, error } of discovered) {
       if (error !== undefined) {
         unavailableApps.push({ app: app.id, name: app.name, reason: error });
         continue;
       }
-      const entries = yield* Effect.forEach(items, (tool) =>
-        Schema.decodeUnknownEffect(JsonObject)(tool.inputSchema).pipe(
-          Effect.map(
-            (input) =>
-              [
-                toolPath(tool.name),
-                Tool.make({
-                  description: `${app.name}: ${tool.description}`,
-                  input: renderableSchema(input),
-                  output:
-                    tool.outputSchema === undefined
-                      ? Schema.Json
-                      : renderableSchema(tool.outputSchema),
-                  execute: (input) =>
-                    Schema.decodeUnknownEffect(Json)(input).pipe(
-                      Effect.mapError(() => toolError("Tool arguments must be JSON")),
-                      Effect.flatMap((input) =>
-                        backend.callTool({ app: app.id, tool: tool.name, input }).pipe(
-                          Effect.flatMap((result) =>
-                            result.status === "completed"
-                              ? Effect.succeed(result.value)
-                              : Effect.fail(
-                                  new ToolApprovalRequired({
-                                    app: result.invocation.app,
-                                    deployment: result.invocation.deployment,
-                                    tool: result.invocation.tool,
-                                  }),
-                                ),
-                          ),
-                          Effect.mapError((error) => toolError(diagnostic(error))),
+      const entries: Array<readonly [string, Tool.Tool]> = [];
+      for (const { target, catalog, error } of targets) {
+        if (catalog === undefined) {
+          unavailableApps.push({
+            app: app.id,
+            name: app.name,
+            ...(target.kind === "profile" ? { profile: target.id } : {}),
+            reason: error,
+          });
+          continue;
+        }
+        const projected = yield* Effect.forEach(catalog.tools, (tool) =>
+          Schema.decodeUnknownEffect(JsonObject)(tool.inputSchema).pipe(
+            Effect.map(
+              (input) =>
+                [
+                  target.kind === "app"
+                    ? toolPath(tool.name)
+                    : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`,
+                  Tool.make({
+                    description: `${app.name}${target.kind === "profile" ? ` (${target.label})` : ""}: ${tool.description}`,
+                    input: renderableSchema(input),
+                    output:
+                      tool.outputSchema === undefined
+                        ? Schema.Json
+                        : renderableSchema(tool.outputSchema),
+                    execute: (input) =>
+                      Schema.decodeUnknownEffect(Json)(input).pipe(
+                        Effect.mapError(() => toolError("Tool arguments must be JSON")),
+                        Effect.flatMap((input) =>
+                          backend
+                            .callTool({
+                              app: app.id,
+                              deployment: catalog.deployment,
+                              ...catalog.selection,
+                              tool: tool.name,
+                              input,
+                            })
+                            .pipe(
+                              Effect.flatMap((result) =>
+                                result.status === "completed"
+                                  ? Effect.succeed(result.value)
+                                  : Effect.fail(
+                                      new ToolApprovalRequired({
+                                        app: result.invocation.app,
+                                        deployment: result.invocation.deployment,
+                                        tool: result.invocation.tool,
+                                      }),
+                                    ),
+                              ),
+                              Effect.mapError((error) => toolError(diagnostic(error))),
+                            ),
                         ),
                       ),
-                    ),
-                }),
-              ] as const,
+                  }),
+                ] as const,
+            ),
           ),
-        ),
-      );
+        );
+        entries.push(...projected);
+      }
       tools[app.slug] = Object.fromEntries(entries);
     }
     return { tools, unavailableApps };

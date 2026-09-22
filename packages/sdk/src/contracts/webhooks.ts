@@ -1,3 +1,5 @@
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Durable, account-bound webhook subscriptions. Products authorize management; callbacks authenticate in app code. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
@@ -43,6 +45,8 @@ export const defaultWebhookLifecycleLimits = WebhookLifecycleLimits.make({
 export const WebhookSubscription = Schema.Struct({
   id: WebhookId,
   app: AppId,
+  profile: Schema.NullOr(ProfileId),
+  profileRevision: Schema.NullOr(ProfileRevision),
   owner: OwnerId,
   key: Schema.NonEmptyString,
   deployment: DeploymentId,
@@ -83,6 +87,7 @@ export class WebhookFailed extends Schema.TaggedError<WebhookFailed>()(
 ) {}
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
 export const WebhookErrors = [
+  ...ProfileErrors,
   StorageError,
   CredentialsError,
   RequestInvalid,
@@ -102,6 +107,8 @@ const subscription = { ...app, subscription: WebhookId };
 /** Stable caller keys make creation retry-safe. A collection requires an explicit source account. */
 export const CreateWebhook = Schema.Struct({
   ...app,
+  profile: Schema.optional(ProfileId),
+  expectedProfileRevision: Schema.optional(ProfileRevision),
   key: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
   name: Schema.NonEmptyString,
   sourceAccount: Schema.optional(AccountId),
@@ -112,7 +119,7 @@ export const WebhookTarget = Schema.Struct(subscription);
 /** Public callback routes use globally unique immutable IDs, never app slugs or session-selected owners. */
 export const WebhookCallbackParams = Schema.Struct({ appId: AppId, subscriptionId: WebhookId });
 /** The app whose definitions or subscriptions are requested. */
-export const WebhookApp = Schema.Struct(app);
+export const WebhookApp = Schema.Struct({ ...app, profile: Schema.optional(ProfileId) });
 /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
 export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });
 /** Programmatic management surfaces are shared with the normal Executor management app. */
@@ -137,6 +144,7 @@ export const WebhooksGroup = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("definitions", "/v1/apps/:app/webhook-definitions", {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(HostedWebhook),
       error: WebhookErrors,
     }).annotate(OpenApi.Description, "List app webhook definitions and configuration schemas."),
@@ -144,6 +152,7 @@ export const WebhooksGroup = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/webhooks", {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(WebhookSubscription),
       error: WebhookErrors,
     }).annotate(

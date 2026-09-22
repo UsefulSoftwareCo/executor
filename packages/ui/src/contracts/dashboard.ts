@@ -4,6 +4,7 @@ import type {
   AccountId,
   App,
   AppId,
+  ProfileId,
   Deployment,
   DeploymentId,
   Provider,
@@ -68,7 +69,9 @@ export interface MutationProps<Input, A, E> {
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }
 /** Saved account selection supplied to a product resolver. */
+/** Name is used only when creating an additional setup. */
 export interface SelectAccounts {
+  readonly name?: string;
   readonly app: AppId;
   readonly accounts: SelectedAccounts;
 }
@@ -78,6 +81,7 @@ export const AppView = Schema.Literals([
   "schedules",
   "skills",
   "workflows",
+  "webhooks",
   "tools",
   "accounts",
   "source",
@@ -91,6 +95,7 @@ export interface AppLinkProps {
   readonly app: AppId;
   readonly view?: AppView;
   readonly tool?: string;
+  readonly profile?: ProfileId | undefined;
   readonly className?: string;
   readonly children: ReactNode;
   readonly "aria-label"?: string;

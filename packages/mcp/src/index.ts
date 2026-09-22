@@ -11,3 +11,5 @@ export { makeExecutions } from "./implementation/executions.ts";
 
 export * from "./contracts/browser.ts";
 export * from "./contracts/browser-tools.ts";
+
+export * from "./contracts/targets.ts";

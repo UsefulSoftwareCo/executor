@@ -1,3 +1,4 @@
+import { ProfileHost, type ProfileDispatcher } from "./profiles.ts";
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
 import { type Effect, type Redacted, type Stream, Schema } from "effect";
@@ -17,6 +18,10 @@ import type { AppSourceStorage } from "./source.ts";
 
 /** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
 export interface ResourceLifecycle {
+  /** Recheck the saved subject before any profile-backed execution, including background work. */
+  readonly profileResolving?: (
+    profile: import("./profiles.ts").Profile,
+  ) => Effect.Effect<void, StorageError>;
   /** Recheck product authority immediately before acquiring and returning account credentials. */
   readonly accountResolving: (account: Account) => Effect.Effect<void, StorageError>;
   /** Recheck a saved connection after external authentication, before committing its result. */
@@ -121,11 +126,16 @@ type FlatExecutor = {
 };
 
 /** App-related namespaces remain beneath apps, including workflow execution management. */
-export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflowRuns"> & {
+export type Executor = Omit<
+  FlatExecutor,
+  "apps" | "appWorkflows" | "appWorkflowRuns" | "appProfiles"
+> & {
   readonly apps: FlatExecutor["apps"] & {
+    readonly profiles: FlatExecutor["appProfiles"];
     readonly workflows: FlatExecutor["appWorkflows"];
     readonly workflowRuns: FlatExecutor["appWorkflowRuns"];
   };
+  readonly [ProfileHost]: ProfileDispatcher;
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
 };
@@ -135,4 +145,6 @@ type Promisify<T> = T extends (...args: infer Args) => Effect.Effect<infer A, in
   : { readonly [Key in keyof T]: Promisify<T[Key]> };
 
 /** Root SDK facade over the same operations: plain inputs, Promises, and AsyncIterable subscriptions. */
-export type PromiseExecutor = Promisify<Omit<Executor, typeof WorkflowHost | "scheduler">>;
+export type PromiseExecutor = Promisify<
+  Omit<Executor, typeof WorkflowHost | typeof ProfileHost | "scheduler">
+>;

@@ -1,6 +1,8 @@
 import { Unauthorized, AuthenticationUnavailable, Forbidden, type AccountApiKey } from "./auth.ts";
 import { Context, Schema, type Effect, type Scope } from "effect";
 import {
+  ProfileNotFound,
+  ProfileConflict,
   AccountNotFound,
   AccountFieldsInvalid,
   AuthMethodInvalid,
@@ -37,6 +39,8 @@ export const OrganizationDefaultsError = Schema.Union([
   AppNotFound,
   AppNotDeployed,
   AppDeploymentChanged,
+  ProfileNotFound,
+  ProfileConflict,
   AccountNotFound,
   AccountFieldsInvalid,
   AuthMethodInvalid,

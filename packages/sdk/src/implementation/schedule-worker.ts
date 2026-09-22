@@ -1,4 +1,5 @@
 /** A Node host owns polling and every in-flight task in its existing Effect scope. */
+import { ProfileHost } from "../contracts/profiles.ts";
 import { Effect, Schedule, Schema, Semaphore } from "effect";
 import type { Executor } from "../contracts/executor.ts";
 import type { ScheduleAuthority } from "../contracts/scheduler.ts";
@@ -26,6 +27,13 @@ export const startScheduleWorker = (
         Effect.forkIn(scope),
         Effect.asVoid,
       );
+    yield* Effect.gen(function* () {
+      yield* Effect.flatten(ScheduleHostReady);
+      yield* executor[ProfileHost].tick(config.concurrency).pipe(
+        Effect.catch(() => Effect.logError("Profile setup dispatch failed")),
+        Effect.repeat(Schedule.spaced("5 seconds")),
+      );
+    }).pipe(Effect.forkIn(scope));
     yield* Effect.gen(function* () {
       yield* Effect.flatten(ScheduleHostReady);
       yield* executor.scheduler.recover(config.runner);

@@ -21,24 +21,32 @@ import {
 } from "../components/select.tsx";
 
 /** Draft a selection once; the product supplies connect actions and the save resolver. */
-export function AccountSelectionForm<E>({
+export function AccountSelectionForm<A, E>({
   mutation,
   Failure,
   app,
   available,
   initialAccounts,
+  addedAccounts,
   notice,
   connectAction,
   finishAction,
   onSaved,
-}: MutationProps<SelectAccounts, App, E> & {
+  accountMeta,
+}: MutationProps<SelectAccounts, A, E> & {
   readonly app: App;
   readonly available: readonly AccountSummary[];
   readonly initialAccounts?: SelectedAccounts;
+  readonly addedAccounts?: SelectedAccounts | undefined;
   readonly notice?: ReactNode;
-  readonly connectAction: (slot: string, requirement: AccountRequirement) => ReactNode;
+  readonly connectAction: (
+    slot: string,
+    requirement: AccountRequirement,
+    accounts: SelectedAccounts,
+  ) => ReactNode;
   readonly finishAction: ReactNode;
-  readonly onSaved: () => void | Promise<void>;
+  readonly onSaved: (saved: A) => void | Promise<void>;
+  readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
   const [draftAccounts, setAccounts] = useState<SelectedAccounts>();
   const accounts = draftAccounts ?? initialAccounts ?? app.accounts;
@@ -63,14 +71,6 @@ export function AccountSelectionForm<E>({
     setAccounts(Object.fromEntries(Object.entries(accounts).filter(([name]) => name !== slot)));
   return (
     <>
-      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
-            {app.name}
-          </h1>
-          <p>Choose the accounts this app will use.</p>
-        </div>
-      </div>
       {notice}
       <form
         className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25"
@@ -81,7 +81,7 @@ export function AccountSelectionForm<E>({
           void save({ app: app.id, accounts }).then((exit) => {
             setPending(false);
             if (Exit.isSuccess(exit)) {
-              void onSaved();
+              void onSaved(exit.value);
             }
           });
         }}
@@ -93,6 +93,9 @@ export function AccountSelectionForm<E>({
             const options = available.filter(
               (account) => account.provider === requirement.provider,
             );
+            const added = addedAccounts?.[slot];
+            const addedIds = typeof added === "string" ? [added] : (added ?? []);
+            const choices = options.filter((account) => !addedIds.includes(account.id));
             const selection = accounts[slot];
             const selectedIds = typeof selection === "string" ? [selection] : (selection ?? []);
             return (
@@ -107,11 +110,13 @@ export function AccountSelectionForm<E>({
                   />
                   <div>
                     <h2>{requirement.definition.name}</h2>
-                    {requirements.length > 1 && (
-                      <code className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
-                        {slot}
-                      </code>
-                    )}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {requirements.some(
+                        ([other, value]) =>
+                          other !== slot && value.provider === requirement.provider,
+                      ) && `${slot} · `}
+                      <ProviderAccountSupport requirement={requirement} />
+                    </p>
                   </div>
                 </div>
                 {requirement.cardinality === "one" ? (
@@ -129,8 +134,13 @@ export function AccountSelectionForm<E>({
                   >
                     <SelectTrigger aria-label={`${requirement.definition.name} account`}>
                       <SelectValue
-                        placeholder={options.length ? "Choose an account" : "No accounts connected"}
-                      />
+                        placeholder={choices.length ? "Choose an account" : "No other accounts"}
+                      >
+                        {typeof selection === "string"
+                          ? (options.find((account) => account.id === selection)?.label ??
+                            "Account unavailable")
+                          : "Choose an account"}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="unselected">No account selected</SelectItem>
@@ -142,7 +152,7 @@ export function AccountSelectionForm<E>({
                               : "Account disconnected"}
                           </SelectItem>
                         )}
-                      {options.map((account) => (
+                      {choices.map((account) => (
                         <SelectItem key={account.id} value={account.id}>
                           {account.label || "Unnamed account"}
                         </SelectItem>
@@ -150,27 +160,61 @@ export function AccountSelectionForm<E>({
                     </SelectContent>
                   </Select>
                 ) : (
-                  <div className="selection-many flex flex-col gap-3.5 [&_label]:flex [&_label]:items-center [&_label]:gap-2.5 [&_label]:text-[13px] max-[740px]:gap-1 max-[740px]:[&_label]:min-h-11 max-[740px]:[&_label]:wrap-anywhere max-[740px]:[&_[data-slot='checkbox']]:w-5 max-[740px]:[&_[data-slot='checkbox']]:h-5">
-                    {options.map((account) => (
-                      <label key={account.id}>
-                        <Checkbox
-                          checked={selectedIds.includes(account.id)}
-                          disabled={pending}
-                          onCheckedChange={(checked) =>
-                            setAccounts({
-                              ...accounts,
-                              [slot]:
-                                checked === true
-                                  ? [...selectedIds, account.id]
-                                  : selectedIds.filter((id) => id !== account.id),
-                            })
-                          }
-                        />
-                        {account.label || "Unnamed account"}
-                      </label>
-                    ))}
-                    <label>
+                  <fieldset className="space-y-1">
+                    <legend className="mb-3 flex w-full items-center justify-between text-sm">
+                      <span>Accounts for this app</span>
+                      <span className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                        {selectedIds.length} selected
+                      </span>
+                    </legend>
+                    {choices.map((account) => {
+                      const checked = selectedIds.includes(account.id);
+                      return (
+                        <label
+                          key={account.id}
+                          className={`flex min-h-12 cursor-pointer items-center gap-3 rounded-md px-3 py-2 ${checked ? "bg-muted/50" : "hover:bg-muted/30"}`}
+                        >
+                          <ProviderIcon
+                            name={requirement.definition.name}
+                            url={providerDisplayUrl(requirement.definition)}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                              <span className="break-words">
+                                {account.label || "Unnamed account"}
+                              </span>
+                              {accountMeta?.(account)}
+                            </span>
+                          </span>
+                          <span className="shrink-0">
+                            <Checkbox
+                              aria-label={account.label || "Unnamed account"}
+                              checked={checked}
+                              disabled={pending}
+                              onCheckedChange={(value) =>
+                                setAccounts({
+                                  ...accounts,
+                                  [slot]:
+                                    value === true
+                                      ? [...selectedIds, account.id]
+                                      : selectedIds.filter((id) => id !== account.id),
+                                })
+                              }
+                            />
+                          </span>
+                        </label>
+                      );
+                    })}
+                    {!choices.length && (
+                      <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                        {addedIds.length > 0
+                          ? "No other saved accounts for this provider."
+                          : "No saved accounts for this provider."}
+                      </p>
+                    )}
+                    <label className="flex min-h-12 items-center gap-3 rounded-md px-3 py-2 text-sm hover:bg-muted/30">
                       <Checkbox
+                        aria-label="Use without accounts"
                         checked={Array.isArray(selection) && !selection.length}
                         disabled={pending}
                         onCheckedChange={(checked) => {
@@ -179,7 +223,7 @@ export function AccountSelectionForm<E>({
                       />
                       Use without accounts
                     </label>
-                  </div>
+                  </fieldset>
                 )}
                 {selectedIds.some((id) => !options.some((account) => account.id === id)) && (
                   <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
@@ -204,7 +248,7 @@ export function AccountSelectionForm<E>({
                     This app needs a selection before it can run.
                   </p>
                 )}
-                {connectAction(slot, requirement)}
+                <div className="self-start">{connectAction(slot, requirement, accounts)}</div>
               </section>
             );
           })
@@ -215,7 +259,7 @@ export function AccountSelectionForm<E>({
             Clear or replace unavailable selections before saving.
           </span>
         )}
-        <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
+        <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
           Clearing a selection keeps the saved account.
         </span>
         <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
@@ -228,3 +272,4 @@ export function AccountSelectionForm<E>({
     </>
   );
 }
+import { ProviderAccountSupport } from "./app-accounts.tsx";

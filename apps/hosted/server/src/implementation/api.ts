@@ -1,3 +1,4 @@
+import { hostedProfileHandlers } from "./profiles.ts";
 import { appManagementHandlers } from "@executor-js/app-management";
 import { HostedAppManagementApi } from "../contracts/app-management.ts";
 import { hostedAppAccess } from "../app-management.ts";
@@ -56,6 +57,7 @@ export const hostedHandlers = Layer.mergeAll(
   appManagementHandlers(HostedAppManagementApi, HostedApi.identifier).pipe(
     Layer.provide(hostedAppAccess),
   ),
+  hostedProfileHandlers,
   hostedScheduleHandlers,
   health,
   catalog,

@@ -7,7 +7,11 @@ import { driver } from "./platform.ts";
 export const holdQuery = (
   paths: readonly string[],
   outcome: "continue" | "fail",
-  options: { readonly method?: "GET" | "POST" | "PATCH"; readonly allRequests?: boolean } = {},
+  options: {
+    readonly method?: "GET" | "POST" | "PATCH";
+    readonly allRequests?: boolean;
+    readonly query?: Readonly<Record<string, string>>;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -15,7 +19,11 @@ export const holdQuery = (
     const release = yield* Deferred.make<void>();
     const active = new Set<Promise<void>>();
     let claimed = false;
-    const match = (url: URL) => paths.includes(url.pathname);
+    const match = (url: URL) =>
+      paths.includes(url.pathname) &&
+      Object.entries(options.query ?? {}).every(
+        ([key, value]) => url.searchParams.get(key) === value,
+      );
     const intercept = (route: Route) => {
       const request = Effect.runPromise(
         Effect.gen(function* () {

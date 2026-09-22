@@ -66,7 +66,7 @@ export function ConnectAccountPage({
                 className="mb-6 inline-flex text-sm text-muted-foreground"
                 to="/org/$organizationSlug/apps/$appId"
                 params={{ organizationSlug, appId: connection.target.app }}
-                search={{ view: "accounts" }}
+                search={{ view: "accounts", profile: connection.target.profile }}
               >
                 ← {connection.target.name}
               </Link>
@@ -109,7 +109,7 @@ export function ConnectAccountPage({
                     ? {
                         to: "/org/$organizationSlug/apps/$appId",
                         params: { organizationSlug, appId: connection.target.app },
-                        search: { view: "accounts" },
+                        search: { view: "accounts", profile: connection.target.profile },
                       }
                     : {
                         to: "/org/$organizationSlug/accounts/$accountId",
@@ -158,7 +158,7 @@ export function ConnectionFields({
             <Link
               to="/org/$organizationSlug/apps/$appId"
               params={{ organizationSlug, appId: connection.target.app }}
-              search={{ view: "accounts" }}
+              search={{ view: "accounts", profile: connection.target.profile }}
             >
               Back to app
             </Link>
@@ -185,6 +185,7 @@ export function ConnectionFields({
             organizationSlug,
             connection: connection.id,
             app: connection.target?.app ?? null,
+            profile: connection.target?.profile,
             redirectUri: value.redirectUri,
             label: value.label,
             manualClient: value.manualClient,

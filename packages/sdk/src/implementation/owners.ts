@@ -92,6 +92,7 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
         }
         if (appIds.length > 0) {
           yield* query(() => tx.deleteMany("appRecords", { where: (b) => b("app", "in", appIds) }));
+          yield* query(() => tx.deleteMany("profiles", { where: (b) => b("owner", "=", owner) }));
           yield* query(() => tx.deleteMany("apps", { where: (b) => b("owner", "=", owner) }));
         }
         if (accountIds.length > 0) {

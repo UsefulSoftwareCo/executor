@@ -2,6 +2,7 @@ import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
 import { useState } from "react";
 import type { Account, Provider, ProviderId } from "@executor-js/sdk";
+import type { OAuthAppReturn } from "../../contracts/oauth.ts";
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { AccountForm as SharedAccountForm } from "@executor-js/ui/dashboard/account-form";
@@ -18,9 +19,13 @@ import { OAuthFields } from "./oauth-fields.tsx";
 export function AccountForm({
   provider,
   onSaved,
+  returnTo,
+  onPendingChange,
 }: {
   readonly provider: Provider;
   readonly onSaved: (account: Account) => void;
+  readonly returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">;
+  readonly onPendingChange?: (pending: boolean) => void;
 }) {
   const add = useAtomSet(addAccountAtom, { mode: "promiseExit" });
   return (
@@ -29,6 +34,7 @@ export function AccountForm({
       Failure={Failure}
       submitLabel="Add account"
       onSaved={onSaved}
+      {...(onPendingChange ? { onPendingChange } : {})}
       header={
         <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
           <ProviderIcon
@@ -40,7 +46,14 @@ export function AccountForm({
         </div>
       }
       submit={(input: AccountSubmission) => add({ payload: { provider: provider.id, ...input } })}
-      oauth={(props) => <OAuthFields provider={provider} onSaved={onSaved} {...props} />}
+      oauth={(props) => (
+        <OAuthFields
+          provider={provider}
+          onSaved={onSaved}
+          {...(returnTo ? { returnTo } : {})}
+          {...props}
+        />
+      )}
     />
   );
 }
@@ -51,6 +64,7 @@ export function AddAccountPage({
   provider: initial,
   app,
   slot,
+  profile,
 }: {
   readonly data: DashboardOverview;
 } & AddAccountSearch) {
@@ -59,7 +73,7 @@ export function AddAccountPage({
   const [selected, setSelected] = useState<ProviderId | undefined>(initial);
   const provider = providers.find((provider) => provider.id === selected);
   const back = app
-    ? ({ to: "/apps/$appId/setup", params: { appId: app } } as const)
+    ? ({ to: "/apps/$appId/setup", params: { appId: app }, search: { profile } } as const)
     : ({ to: "/accounts" } as const);
   return (
     <div className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-w-212.5 max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
@@ -86,7 +100,7 @@ export function AddAccountPage({
                   ? {
                       to: "/apps/$appId/setup",
                       params: { appId: app },
-                      search: { selected: account.id, slot },
+                      search: { selected: account.id, slot, profile },
                     }
                   : { to: "/accounts" },
               );

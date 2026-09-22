@@ -112,9 +112,19 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        // A login must never switch a configured app to another person's identity.
-        const automaticSelection = (selected: typeof app.accounts.service) =>
-          selected === undefined;
+        // A deliberate fixed binding is not a per-user setup slot.
+        if (current.accounts.service !== undefined) return;
+        const existingProfile = yield* storage
+          .orm("3.0.0")
+          .findFirst("profiles", {
+            where: (b) =>
+              b.and(
+                b("app", "=", app.id),
+                b("subject", "=", user.userId),
+                b("idempotencyKey", "=", "executor-default"),
+              ),
+          })
+          .pipe(Effect.mapError(() => new StorageError()));
         const saved = yield* savedAccount(state.accounts);
         // A recorded account that was deliberately deleted is not a new-user setup.
         // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
@@ -129,7 +139,7 @@ export const organizationDefaults = (
         if (
           state.deployment === current.activeDeployment &&
           saved !== undefined &&
-          (app.accounts.service === saved.id || !automaticSelection(app.accounts.service))
+          existingProfile !== null
         )
           return;
         // Better Auth reads through its own database adapter. Resolve the key
@@ -137,7 +147,7 @@ export const organizationDefaults = (
         const token = saved === undefined ? yield* user.key : undefined;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
         yield* storage
-          .orm("1.12.0")
+          .orm("3.0.0")
           .transaction(
             Effect.gen(function* () {
               const rows =
@@ -177,14 +187,15 @@ export const organizationDefaults = (
                         })
                         .pipe(personalAccountCreation(user.userId))
                     : yield* new StorageError();
-              // Keep existing fixed bindings; per-member account contexts remain deferred.
-              const selected = locked.accounts.service;
-              const automatic = automaticSelection(selected);
-              if (automatic && selected !== account.id)
-                yield* executor.apps.update({
-                  app: app.id,
-                  accounts: { ...locked.accounts, service: account.id },
-                });
+              // One durable personal profile follows the common Executor deployment.
+              if (locked.accounts.service !== undefined) return;
+              yield* executor.apps.profiles.create({
+                app: app.id,
+                owner,
+                subject: user.userId,
+                idempotencyKey: "executor-default",
+                accounts: { service: account.id },
+              });
               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });
               yield* sql`update "organization" set metadata = jsonb_set(jsonb_set(
             coalesce(metadata::jsonb, '{}'::jsonb), '{executorKeyAccounts}', ${accounts}::jsonb),

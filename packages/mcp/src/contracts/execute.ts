@@ -37,6 +37,7 @@ export const UnavailableApp = Schema.Struct({
   app: Schema.String,
   name: Schema.String,
   reason: Schema.String,
+  profile: Schema.optional(Schema.String),
 });
 /** Program result plus apps that could not expose a live catalog during this execution. */
 export const ExecuteResult = Schema.Struct({
@@ -74,7 +75,7 @@ export const SearchInput = Schema.Struct({
   namespace: Schema.optionalKey(
     Schema.String.annotate({
       description:
-        "Configured app slug, such as axiom, or a nested namespace such as axiom.queries.",
+        "App slug, such as axiom, or a target namespace such as axiom.profiles.ins_id.queries.",
     }),
   ),
   limit: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),

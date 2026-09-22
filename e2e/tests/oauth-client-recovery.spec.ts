@@ -75,10 +75,12 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
               `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
             )
             .pipe(Effect.flatMap((response) => body(Setup, response)));
+        let profile: string | undefined;
         const connection = () =>
           api
             .request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
               requirement: "service",
+              ...(profile === undefined ? {} : { profile }),
             })
             .pipe(Effect.flatMap((response) => body(Resource, response)));
         const started = yield* connection();
@@ -174,9 +176,15 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
                 .waitFor({ state: "visible" }),
             ),
         );
+        profile = yield* Schema.decodeUnknownEffect(Schema.String)(
+          yield* browser.use("Read the selected account setup", (page) =>
+            page.evaluate(() => new URL(location.href).searchParams.get("profile")),
+          ),
+        );
+        const bindings = Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) });
         savedAccount = (yield* body(
-          App,
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
+          bindings,
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
         )).accounts.service;
         expect(savedAccount).toBeDefined();
         expect((yield* setup()).mode).toBe("saved");
@@ -248,8 +256,10 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             ),
         );
         expect(
-          (yield* body(App, yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)))
-            .accounts.service,
+          (yield* body(
+            bindings,
+            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
+          )).accounts.service,
         ).toBe(savedAccount);
         const replacement = yield* connection();
         const replacementStart = yield* body(

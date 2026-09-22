@@ -84,26 +84,35 @@ export const checkToolAccountContext = <E, R>(input: {
         .getByRole("link", { name: "Overview", exact: true })
         .click(),
     );
-    yield* browser.use("The tool count identifies the personal account", (page) =>
+    yield* browser.use("Overview previews the available tool", (page) =>
       page
         .getByRole("region", { name: "App tools preview", exact: true })
-        .getByRole("heading", { name: /^Tools\s*1$/ })
+        .getByRole("link", { name: /queries.personal/ })
         .waitFor({ state: "visible" }),
     );
-    yield* browser.use("Overview names the selected account", (page) =>
+    expect(
+      yield* browser.use("Overview has no repeated account context", (page) =>
+        page
+          .getByRole("region", { name: "App tools preview" })
+          .getByLabel("Tool account context")
+          .count(),
+      ),
+    ).toBe(0);
+    yield* browser.use("Account details stay in the Accounts card", (page) =>
       page
-        .getByRole("region", { name: "App tools preview" })
+        .getByRole("region", { name: "App accounts", exact: true })
         .getByRole("link", { name: "Personal GitHub", exact: true })
         .waitFor({ state: "visible" }),
     );
     yield* input.select([input.work, input.personal]);
     yield* refreshVisiblePage;
-    yield* browser.use("The combined count names both accounts", (page) =>
-      page
-        .getByRole("region", { name: "App tools preview", exact: true })
-        .getByRole("heading", { name: /^Tools\s*3$/ })
-        .waitFor({ state: "visible" }),
-    );
+    for (const name of ["queries.work", "queries.admin", "queries.personal"])
+      yield* browser.use(`Overview includes ${name}`, (page) =>
+        page
+          .getByRole("region", { name: "App tools preview", exact: true })
+          .getByRole("link", { name: new RegExp(name) })
+          .waitFor({ state: "visible" }),
+      );
     yield* browser.use("Open the combined catalog", (page) =>
       page
         .getByRole("navigation", { name: "App navigation" })

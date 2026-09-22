@@ -4,7 +4,11 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/un
 import { JsonValue } from "./schema.ts";
 
 /** Non-secret page context injected by the serving host. */
-export const UiContext = Schema.Struct({ deployment: Schema.NonEmptyString });
+export const UiContext = Schema.Struct({
+  deployment: Schema.NonEmptyString,
+  profile: Schema.optional(Schema.NonEmptyString),
+  expectedProfileRevision: Schema.optional(Schema.Int),
+});
 /** Retained browser bytes. Hosts authorize access before reading or rendering them. */
 export interface AppUiAsset {
   readonly body: Uint8Array;
@@ -12,7 +16,7 @@ export interface AppUiAsset {
 }
 /** Requests name an operation on this app and the page's deployment, never another app or account. */
 export const UiOperation = Schema.Struct({
-  deployment: Schema.NonEmptyString,
+  ...UiContext.fields,
   name: Schema.NonEmptyString,
   input: JsonValue,
 });

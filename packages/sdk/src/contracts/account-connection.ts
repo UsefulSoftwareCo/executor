@@ -1,3 +1,5 @@
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors } from "./profiles.ts";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
@@ -32,6 +34,7 @@ export const AccountConnectionState = Schema.Union([
 /** A configured app requirement to fill when account setup finishes. */
 export const AccountConnectionTarget = Schema.Struct({
   app: AppId,
+  profile: Schema.optionalKey(ProfileId),
   requirement: Schema.NonEmptyString,
 });
 /** App name is captured for browser consent without exposing unrelated app configuration. */
@@ -119,6 +122,7 @@ export class AccountConnectionTargetChanged extends Schema.TaggedError<AccountCo
 ) {}
 
 const errors = [
+  ...ProfileErrors,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
@@ -139,6 +143,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CreateAccountConnection,
       success: AccountConnection,
       error: [
+        ...ProfileErrors,
         StorageError,
         ProviderNotFound,
         AccountNotFound,

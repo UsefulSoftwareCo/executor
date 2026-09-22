@@ -1,4 +1,3 @@
-import { EmptyState, EmptyStatePanel } from "./empty-state.tsx";
 import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
 import { AppDetailLayout } from "./app-detail.tsx";
@@ -63,7 +62,7 @@ export function AppOverviewLoading({
           <section
             key={title}
             aria-label={`App ${title.toLowerCase()} placeholder`}
-            className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+            className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           >
             <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
               <h3 className="text-sm font-medium">{title}</h3>
@@ -73,17 +72,11 @@ export function AppOverviewLoading({
               {title === "Accounts" &&
               app &&
               Object.keys(app.requirements.accounts).length === 0 ? (
-                <EmptyState
-                  size="compact"
-                  heading="h3"
-                  title={
-                    app.activeDeployment === null ? "No deployment yet" : "No accounts required"
-                  }
-                >
+                <p className="py-5 text-sm text-muted-foreground">
                   {app.activeDeployment === null
                     ? "Account requirements appear after deployment."
-                    : "This app can run without a saved account."}
-                </EmptyState>
+                    : "No accounts required."}
+                </p>
               ) : (
                 <OverviewCardLoading
                   label={`Loading ${title.toLowerCase()} preview`}
@@ -116,24 +109,15 @@ export function AppAccountsLoading({
           name: requirement.definition.name,
         }));
   return (
-    <section
-      role="status"
-      aria-label="Loading accounts"
-      className="flex min-h-full w-full flex-col"
-    >
-      <div
-        className={cn(
-          "p-7 max-[740px]:p-4",
-          requirements?.length === 0 && "flex flex-1 items-center justify-center",
-        )}
-      >
+    <section role="status" aria-label="Loading accounts" className="w-full">
+      <div className="max-w-3xl space-y-3 p-5 max-[740px]:p-4">
         {requirements?.length !== 0 && action && (
           <div className="mb-4 flex max-w-185 justify-end">{action}</div>
         )}
         {requirements?.length === 0 ? (
           <Empty title="No accounts required">This app can run without a saved account.</Empty>
         ) : (
-          <div className="max-w-185 overflow-hidden rounded-lg border">
+          <div className="overflow-hidden rounded-lg border">
             {(requirements ?? [{ slot: "pending", name: undefined }]).map(({ slot, name }) => (
               <div key={slot} className="flex items-center gap-3.5 border-b p-4 last:border-b-0">
                 <Skeleton className="size-8.5 shrink-0 rounded-md" />
@@ -145,7 +129,6 @@ export function AppAccountsLoading({
                   )}
                   <Skeleton className="h-3 w-24" />
                 </div>
-                <Skeleton className="h-8 w-28 max-[740px]:h-11" />
               </div>
             ))}
           </div>
@@ -320,15 +303,15 @@ export function AppDetailLoading({
   if (app?.activeDeployment === null) {
     if (view === "tools" || view === "accounts")
       return (
-        <EmptyStatePanel title="No deployment yet">
+        <p className="p-5 text-sm text-muted-foreground">
           Deploy this app before using its tools or selecting accounts.
-        </EmptyStatePanel>
+        </p>
       );
     if (view === "deployments")
       return (
-        <EmptyStatePanel title="No deployments yet">
-          Deploy from Source when you’re ready.
-        </EmptyStatePanel>
+        <p className="p-7 text-sm text-muted-foreground">
+          No deployments yet. Deploy from Source when you’re ready.
+        </p>
       );
   }
   switch (view) {
@@ -340,6 +323,12 @@ export function AppDetailLoading({
       return <AppOverviewLoading showSource={canInspectSource} app={app} />;
     case "accounts":
       return <AppAccountsLoading app={app} action={accountAction} />;
+    case "webhooks":
+      return (
+        <p className="p-5 text-sm text-muted-foreground" role="status">
+          Loading webhooks…
+        </p>
+      );
     case "schedules":
       return <AppSchedulesLoading />;
     case "tools":

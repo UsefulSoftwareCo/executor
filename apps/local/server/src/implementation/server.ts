@@ -302,6 +302,7 @@ export const localApi = (
         HttpRouter.add("GET", "/apps/:app", web.document),
         HttpRouter.add("GET", "/app-auth", web.document),
         HttpRouter.add("GET", "/apps/:app/setup", web.document),
+        HttpRouter.add("GET", "/apps/:app/open", web.document),
         HttpRouter.add("GET", "/apps/:app/delete", web.document),
         HttpRouter.add("GET", "/accounts/add", web.document),
         HttpRouter.add("GET", "/connect", web.document),

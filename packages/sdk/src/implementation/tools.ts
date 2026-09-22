@@ -9,6 +9,7 @@ import {
 } from "apps/contracts";
 import { AccountRequired, AppNotFound, AppNotDeployed } from "../contracts/apps.ts";
 import { DeploymentNotFound } from "../contracts/deployment.ts";
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import type { Executor } from "../contracts/executor.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import {
@@ -40,13 +41,23 @@ import { type Credentials, StoredApp, StoredDeployment } from "../contracts/stor
 import { makeToolApprovals } from "./tool-approvals.ts";
 import { storedDeployment } from "./apps.ts";
 import { database, query, transaction, type Query } from "./database.ts";
+import { storedProfile, profileAccounts } from "./profiles.ts";
+import { CurrentProfile, ProfileConflict } from "../contracts/profiles.ts";
+import type { ProfileId } from "../contracts/shared.ts";
 import { validateSelection } from "./selection.ts";
 
 /** Resolve one consistent app/deployment/account selection before invoking authored code. */
 export function snapshot(
   db: Query,
-  input: { app: AppId; deployment?: DeploymentId | undefined },
+  input: {
+    app: AppId;
+    deployment?: DeploymentId | undefined;
+    profile?: ProfileId | undefined;
+    expectedProfileRevision?: number | undefined;
+  },
   savedAccounts?: import("../contracts/apps.ts").SelectedAccounts,
+  savedProfileRevision?: number,
+  cleanup = false,
 ) {
   return transaction(db, (tx) =>
     Effect.gen(function* () {
@@ -71,7 +82,35 @@ export function snapshot(
             : yield* Schema.decodeUnknownEffect(StoredDeployment)(row.deployment).pipe(
                 Effect.mapError(() => new StorageError()),
               );
-      const bindings = savedAccounts ?? app.accounts;
+      const profile =
+        input.profile === undefined
+          ? undefined
+          : yield* storedProfile(tx, {
+              app: app.id,
+              profile: input.profile,
+              owner: app.owner,
+            });
+      if (profile !== undefined) {
+        if (
+          profile.status === "removed" ||
+          ((!profile.enabled || profile.status === "removing") && !cleanup)
+        )
+          return yield* new ProfileConflict({
+            profile: profile.id,
+            reason: "inactive",
+          });
+        if (
+          input.expectedProfileRevision !== undefined &&
+          profile.revision !== input.expectedProfileRevision
+        )
+          return yield* new ProfileConflict({
+            profile: profile.id,
+            reason: "revision",
+          });
+      }
+      const bindings =
+        savedAccounts ??
+        (profile === undefined ? app.accounts : yield* profileAccounts(app, profile));
       const validated = yield* validateSelection(tx, app.id, deployment.requirements, bindings);
       const selections = yield* Effect.forEach(
         Object.keys(deployment.requirements.accounts),
@@ -85,7 +124,16 @@ export function snapshot(
             return selected;
           }),
       );
-      return { app, deployment, selections };
+      return {
+        app,
+        deployment,
+        selections,
+        profile:
+          profile === undefined
+            ? undefined
+            : { ...profile, revision: savedProfileRevision ?? profile.revision },
+        accounts: bindings,
+      };
     }),
   );
 }
@@ -94,8 +142,11 @@ export function snapshot(
 export function resolve(
   state: Effect.Success<ReturnType<typeof snapshot>>,
   resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
+  lifecycle?: ResourceLifecycle,
 ) {
   return Effect.gen(function* () {
+    if (state.profile !== undefined && lifecycle?.profileResolving)
+      yield* lifecycle.profileResolving(state.profile);
     const selections = new Map<string, ResolvedAccounts[string]>();
     for (const { slot, required, accounts } of state.selections) {
       const resolved = yield* Effect.forEach(accounts, (account) =>
@@ -118,8 +169,10 @@ export function resolve(
         selections.set(slot, account);
       }
     }
-    return { accounts: Redacted.make(Object.fromEntries(selections)) };
-  });
+    return {
+      accounts: Redacted.make(Object.fromEntries(selections)),
+    };
+  }).pipe(Effect.provideService(CurrentProfile, state.profile));
 }
 
 type Snapshot = Effect.Success<ReturnType<typeof snapshot>>;
@@ -128,6 +181,9 @@ function invocation(state: Snapshot, tool: ToolName, input: Json) {
   return Schema.decodeUnknownEffect(ToolInvocation)({
     app: state.app.id,
     owner: state.app.owner,
+    ...(state.profile === undefined
+      ? {}
+      : { profile: state.profile.id, profileRevision: state.profile.revision }),
     deployment: state.deployment.id,
     tool,
     input,
@@ -186,7 +242,11 @@ export const makeTools = (
   credentials: Credentials,
   crypto: Crypto.Crypto,
   appStorage?: AppDatabases,
-  workflows?: (app: AppId) => WorkflowHostControls,
+  workflows?: (
+    app: AppId,
+    state?: Effect.Success<ReturnType<typeof snapshot>>,
+  ) => WorkflowHostControls,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
@@ -194,7 +254,7 @@ export const makeTools = (
     list: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        const context = yield* resolve(state, resolveAccount).pipe(
+        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
         );
         yield* Effect.annotateCurrentSpan({
@@ -207,7 +267,9 @@ export const makeTools = (
             app: state.app.id,
             build: state.deployment.build,
             ...context,
-            ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id) }),
+            ...(workflows === undefined
+              ? {}
+              : { workflowControls: workflows(state.app.id, state) }),
           })
           .pipe(
             Effect.mapError(
@@ -226,6 +288,12 @@ export const makeTools = (
         const last = selected.at(-1);
         return {
           deployment: state.deployment.id,
+          ...(state.profile === undefined
+            ? {}
+            : {
+                profile: state.profile.id,
+                profileRevision: state.profile.revision,
+              }),
           items: selected.map((tool) => ({
             ...tool,
             app: state.app.id,
@@ -251,7 +319,7 @@ export const makeTools = (
           Effect.mapError(() => new RequestInvalid()),
         );
         const state = yield* snapshot(db, parsed).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        const context = yield* resolve(state, resolveAccount).pipe(
+        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
         );
         const identity = { app: state.app.id, deployment: state.deployment.id, tool: parsed.tool };
@@ -265,7 +333,9 @@ export const makeTools = (
           .call({
             app: state.app.id,
             ...(yield* bindAppStorage(appStorage, state.app.id)),
-            ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id) }),
+            ...(workflows === undefined
+              ? {}
+              : { workflowControls: workflows(state.app.id, state) }),
             build: state.deployment.build,
             database: state.deployment.requirements.database !== undefined,
             ...context,
@@ -302,6 +372,8 @@ export const makeTools = (
                 const checked = yield* snapshot(db, {
                   app: saved.app,
                   deployment: saved.deployment,
+                  profile: saved.profile,
+                  expectedProfileRevision: saved.profileRevision,
                 }).pipe(
                   Effect.withSpan("sdk.invocation.snapshot"),
                   Effect.flatMap((state) =>
@@ -329,9 +401,11 @@ export const makeTools = (
                     "executor.tool.name": saved.tool,
                     "executor.approval.id": input.requestId,
                   });
-                  const context = yield* resolve(checked.success.state, resolveAccount).pipe(
-                    Effect.withSpan("sdk.accounts.resolve"),
-                  );
+                  const context = yield* resolve(
+                    checked.success.state,
+                    resolveAccount,
+                    lifecycle,
+                  ).pipe(Effect.withSpan("sdk.accounts.resolve"));
                   const value = yield* runtime.call({
                     app: saved.app,
                     ...(yield* bindAppStorage(appStorage, saved.app)),

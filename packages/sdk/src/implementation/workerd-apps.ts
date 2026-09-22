@@ -195,8 +195,10 @@ export const workerdApps = (options: {
               accounts: Redacted.value(context.accounts),
             });
           }
-          case "context":
-            return Redacted.value((yield* host.context(command.run)).accounts);
+          case "context": {
+            const context = yield* host.context(command.run);
+            return Redacted.value(context.accounts);
+          }
           case "invoke":
             return yield* host.invoke(command.run, command).pipe(Effect.timeout(command.timeout));
           case "finish": {

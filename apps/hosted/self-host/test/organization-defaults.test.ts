@@ -227,9 +227,16 @@ test(
           assert.equal(before.length, 1);
           const app = before[0];
           assert.ok(app);
-          const account = app.accounts.service;
+          const profile = (yield* executor.apps.profiles.list({
+            app: app.id,
+            owner,
+            subject: user.userId,
+          }))[0];
+          assert.ok(profile);
+          assert.deepEqual(app.accounts, {});
+          const account = profile.accounts.service;
           assert.equal(typeof account, "string");
-          yield* storage.orm("1.12.0").transaction(
+          yield* storage.orm("3.0.0").transaction(
             Effect.gen(function* () {
               yield* sql`set transaction read only`;
               for (let i = 0; i < 3; i++) {
@@ -255,7 +262,11 @@ test(
           // This bare SDK fixture retains missing references; the hosted deletion
           // journey separately verifies its transactional selection cleanup.
           assert.equal(
-            (yield* executor.apps.get({ owner, app: app.id })).accounts.service,
+            (yield* executor.apps.profiles.get({
+              owner,
+              app: app.id,
+              profile: profile.id,
+            })).accounts.service,
             originalAccount.id,
           );
           yield* executor.apps.remove({ owner, app: app.id });

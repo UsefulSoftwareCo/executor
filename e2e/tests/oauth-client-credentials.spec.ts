@@ -145,7 +145,10 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             .getByRole("dialog")
             .waitFor({ state: "hidden" })
             .then(() =>
-              page.getByText("Team reports", { exact: true }).waitFor({ state: "visible" }),
+              page
+                .getByRole("region", { name: "App accounts", exact: true })
+                .getByText("Team reports", { exact: true })
+                .waitFor({ state: "visible" }),
             )
             .then(() => {
               expect(page.url()).toContain(`/apps/${app.id}`);

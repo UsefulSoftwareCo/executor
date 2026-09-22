@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
   AppId,
+  ProfileId,
   AppSchedule,
   ScheduleSettings,
   ScheduleApprovalMode,
@@ -23,6 +24,7 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("list", `${prefix}/apps/:app/schedules`, {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(ScheduleSettings),
       error: ScheduleErrors,
     }),
@@ -30,6 +32,7 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("definitions", `${prefix}/apps/:app/schedules/definitions`, {
       params: app,
+      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(AppSchedule),
       error: ScheduleErrors,
     }),
@@ -38,6 +41,7 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
     HttpApiEndpoint.patch("configure", `${prefix}/apps/:app/schedules/:name`, {
       params: { ...app, name: Schema.NonEmptyString },
       payload: Schema.Struct({
+        profile: Schema.optional(ProfileId),
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
       }),
@@ -48,13 +52,18 @@ export const DashboardSchedules = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.post("runNow", `${prefix}/apps/:app/schedules/:name/run`, {
       params: { ...app, name: Schema.NonEmptyString },
+      query: { profile: Schema.optional(ProfileId) },
       success: ScheduleSettings,
       error: ScheduleErrors,
     }),
   )
   .add(
     HttpApiEndpoint.get("runs", `${prefix}/scheduled-runs`, {
-      query: { app: Schema.optional(AppId), pending: Schema.optional(Schema.Boolean) },
+      query: {
+        app: Schema.optional(AppId),
+        pending: Schema.optional(Schema.Boolean),
+        profile: Schema.optional(ProfileId),
+      },
       success: Schema.Array(ScheduledRun),
       error: ScheduleErrors,
     }),

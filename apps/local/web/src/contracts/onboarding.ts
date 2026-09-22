@@ -49,7 +49,7 @@ export const deleteAppAtom = Atom.family((app: AppId) =>
                 apps: data.apps.filter((current) => current.id !== app),
               }));
           invalidate(get, appAtom(app));
-          get.refresh(toolsAtom(app));
+          get.refresh(toolsAtom({ app: app }));
         }),
       ),
     ),

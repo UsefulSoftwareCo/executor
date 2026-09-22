@@ -39,7 +39,7 @@ import {
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
-import { validateSelection } from "./selection.ts";
+import { validateSelection, assertFixedSlotsAvailable } from "./selection.ts";
 import { prepareAppSkills } from "./skill-source.ts";
 import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
 
@@ -351,6 +351,18 @@ export const makeApps = (
                 set: { activeDeployment: deployment.id, activatedSequence: sequence },
               }),
             );
+          if (promote)
+            yield* query(() =>
+              tx.updateMany("profiles", {
+                where: (b) =>
+                  b.and(
+                    b("app", "=", app.id),
+                    b("status", "!=", "removed"),
+                    b("status", "!=", "removing"),
+                  ),
+                set: { status: "pending", failure: null },
+              }),
+            );
           const projected = promote
             ? { ...app, requirements }
             : yield* project(tx, { ...existing, ...app });
@@ -426,10 +438,23 @@ export const makeApps = (
       }).pipe(Effect.withSpan("sdk.apps.get")),
     list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
       Effect.gen(function* () {
+        const account = input.account;
+        const installed =
+          account === undefined
+            ? []
+            : yield* query(() =>
+                db.findMany("profiles", {
+                  select: ["app"],
+                  where: (b) =>
+                    b.and(
+                      input.owner === undefined ? true : b("owner", "=", input.owner),
+                      b("status", "!=", "removed"),
+                      b("accounts", "json contains", account),
+                    ),
+                }),
+              );
         const rows = yield* query(() =>
           db.findMany("apps", {
-            // The existing composite relation checks both deployment ID and code
-            // lineage in one read, without loading retained source files.
             join: (b) => b.deployment({ select: ["requirements"] }),
             where: (b) =>
               b.and(
@@ -437,7 +462,16 @@ export const makeApps = (
                 input.ids === undefined ? true : b("id", "in", input.ids),
                 input.name === undefined ? true : b("name", "=", input.name),
                 input.slug === undefined ? true : b("slug", "=", input.slug),
-                input.account === undefined ? true : b("accounts", "json contains", input.account),
+                account === undefined
+                  ? true
+                  : b.or(
+                      b("accounts", "json contains", account),
+                      b(
+                        "id",
+                        "in",
+                        installed.map((item) => item.app),
+                      ),
+                    ),
               ),
             orderBy: ["id", "asc"],
           }),
@@ -474,10 +508,22 @@ export const makeApps = (
           const app = yield* lockApp(tx, input);
           const current = yield* project(tx, app);
           yield* validateSelection(tx, app.id, current.requirements, input.accounts);
+          yield* assertFixedSlotsAvailable(tx, app.id, Object.keys(input.accounts));
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),
               set: { accounts: input.accounts },
+            }),
+          );
+          yield* query(() =>
+            tx.updateMany("profiles", {
+              where: (b) =>
+                b.and(
+                  b("app", "=", current.id),
+                  b("status", "!=", "removed"),
+                  b("status", "!=", "removing"),
+                ),
+              set: { status: "pending", failure: null },
             }),
           );
           return { ...current, accounts: input.accounts };
@@ -529,6 +575,7 @@ export const makeApps = (
               tx.deleteMany("scheduledRuns", { where: (b) => b("app", "=", app.id) }),
             );
             yield* query(() => tx.deleteMany("schedules", { where: (b) => b("app", "=", app.id) }));
+            yield* query(() => tx.deleteMany("profiles", { where: (b) => b("app", "=", app.id) }));
             yield* query(() => tx.deleteMany("apps", { where: (b) => b("id", "=", app.id) }));
           }
           return { app: input.app };
@@ -560,6 +607,17 @@ export const makeApps = (
                 deploySequence: app.deploySequence + 1,
                 activatedSequence: app.deploySequence + 1,
               },
+            }),
+          );
+          yield* query(() =>
+            tx.updateMany("profiles", {
+              where: (b) =>
+                b.and(
+                  b("app", "=", app.id),
+                  b("status", "!=", "removed"),
+                  b("status", "!=", "removing"),
+                ),
+              set: { status: "pending", failure: null },
             }),
           );
           return {

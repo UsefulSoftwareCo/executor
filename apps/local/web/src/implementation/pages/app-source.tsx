@@ -51,7 +51,7 @@ export function AppSource({
       atoms={appManagement}
       onApp={(get, app) => {
         acknowledgeApp(get, app);
-        get.refresh(toolsAtom(app.id));
+        get.refresh(toolsAtom({ app: app.id }));
       }}
       view={view}
     />

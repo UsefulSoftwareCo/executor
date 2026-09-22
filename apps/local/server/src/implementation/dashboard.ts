@@ -1,3 +1,5 @@
+import { localResourceHandlers } from "./resources.ts";
+import { localProfileHandlers } from "./profiles.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
 /** Product projections over the existing SDK and retained deployment storage. */
 import {
@@ -7,6 +9,7 @@ import {
   AppNameTaken,
   HttpUrl,
   type AppId,
+  type ProfileId,
   type AccountId,
   type ExecutorDatabase,
   type Cursor,
@@ -72,7 +75,7 @@ export const dashboard = (
 ) => {
   const owner = OwnerId.make("local");
   const appCatalog = createCatalog(egress, catalog);
-  const db = storage.orm("1.12.0");
+  const db = storage.orm("3.0.0");
   const signIn = accountSignIn(storage, credentials);
   const query = <A, E>(work: () => Effect.Effect<A, E>) =>
     Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
@@ -202,12 +205,17 @@ export const dashboard = (
 
   // Only this app's execution inputs can trigger expensive upstream discovery. The cheap
   // tracked query may rerun after any account write, but credentials never enter a response.
-  const toolInputs = (appId: AppId) =>
+  const toolInputs = (appId: AppId, profile?: ProfileId) =>
     Effect.gen(function* () {
       const app = yield* executor.apps.get({ app: appId });
+      const selected =
+        profile === undefined
+          ? undefined
+          : yield* executor.apps.profiles.get({ app: appId, profile });
+      const bindings = { ...app.accounts, ...selected?.accounts };
       const ids = [
         ...new Set(
-          Object.values(app.accounts).flatMap((selection) =>
+          Object.values(bindings).flatMap((selection) =>
             typeof selection === "string" ? [selection] : selection,
           ),
         ),
@@ -231,9 +239,14 @@ export const dashboard = (
               };
         }),
       );
-      return { deployment: app.activeDeployment, selections: app.accounts, accounts };
+      return {
+        deployment: app.activeDeployment,
+        selections: bindings,
+        accounts,
+        profile: selected,
+      };
     });
-  const allTools = (app: AppId) =>
+  const allTools = (app: AppId, profile?: ProfileId, expectedProfileRevision?: number) =>
     Effect.gen(function* () {
       let cursor: Cursor | undefined;
       let deployment: DeploymentId | undefined;
@@ -242,6 +255,8 @@ export const dashboard = (
       do {
         const page = yield* executor.tools.list({
           app,
+          profile,
+          expectedProfileRevision,
           limit: 2_000,
           ...(cursor === undefined ? {} : { cursor }),
           ...(deployment === undefined ? {} : { deployment }),
@@ -279,10 +294,12 @@ export const dashboard = (
       .handle("liveOverview", () => subscribe(overview))
       .handle("liveApp", ({ params }) => subscribe(appDetail(params.app)))
       .handle("liveAccount", ({ params }) => subscribe(accountDetail(params.account)))
-      .handle("liveTools", ({ params }) =>
+      .handle("liveTools", ({ params, query }) =>
         secureLive((authorize) =>
           storage.reactivity
-            .subscribe(authorize.pipe(Effect.andThen(Effect.result(toolInputs(params.app)))))
+            .subscribe(
+              authorize.pipe(Effect.andThen(Effect.result(toolInputs(params.app, query.profile)))),
+            )
             .pipe(
               Stream.changesWith(
                 (left, right) => JSON.stringify(left.value) === JSON.stringify(right.value),
@@ -293,7 +310,9 @@ export const dashboard = (
                   const result =
                     value._tag === "Failure"
                       ? Result.fail(value.failure)
-                      : yield* Effect.result(allTools(params.app));
+                      : yield* Effect.result(
+                          allTools(params.app, query.profile, query.expectedProfileRevision),
+                        );
                   return { revision, value: result };
                 }),
               ),
@@ -416,5 +435,12 @@ export const dashboard = (
         ),
       ),
   );
-  return { handlers, access };
+  return {
+    handlers: Layer.mergeAll(
+      handlers,
+      localProfileHandlers(executor),
+      localResourceHandlers(executor),
+    ),
+    access,
+  };
 };

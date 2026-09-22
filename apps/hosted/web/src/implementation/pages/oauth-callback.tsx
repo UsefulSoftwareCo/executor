@@ -40,7 +40,7 @@ export function OAuthCallbackPage() {
     }
     const callback = new URL(pending.value.redirectUri);
     callback.search = callbackSearch;
-    const { organization, organizationSlug, connection, app } = pending.value;
+    const { organization, organizationSlug, connection, app, profile } = pending.value;
     void (async () => {
       const mutation = completeOAuthAtom({ organization, connection });
       registry.set(mutation, { callbackUrl: Redacted.make(callback.href), app });
@@ -62,7 +62,7 @@ export function OAuthCallbackPage() {
         await navigate({
           to: "/org/$organizationSlug/apps/$appId",
           params: { organizationSlug, appId: app },
-          search: { view: "accounts" },
+          search: { view: "accounts", profile },
         });
       } else
         await navigate({
@@ -111,7 +111,7 @@ export function OAuthCallbackPage() {
                       organizationSlug: pending.value.organizationSlug,
                       appId: pending.value.app,
                     }}
-                    search={{ view: "accounts" }}
+                    search={{ view: "accounts", profile: pending.value.profile }}
                   >
                     Back to app
                   </Link>

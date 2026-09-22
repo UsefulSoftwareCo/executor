@@ -19,6 +19,8 @@ import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import { database, query, transaction } from "./database.ts";
+import { lockApp } from "./apps.ts";
+import { storedProfile } from "./profiles.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
 
 const terminal = (status: ScheduledRun["status"]) =>
@@ -83,13 +85,25 @@ export const makeSchedules = (
     Effect.gen(function* () {
       yield* apps.get(input);
       const saved = yield* query(() =>
-        db.findMany("schedules", { where: (b) => b("app", "=", input.app) }),
+        db.findMany("schedules", {
+          where: (b) =>
+            b.and(
+              b("app", "=", input.app),
+              input.profile === undefined
+                ? b("profile", "is", null)
+                : b("profile", "=", input.profile),
+            ),
+        }),
       );
       const settings = yield* parse(Schema.Array(ScheduleSettings), saved);
       const results: AppSchedule[] = [];
       let cursor: Cursor | undefined;
       do {
-        const page = yield* tools.list({ app: input.app, cursor });
+        const page = yield* tools.list({
+          app: input.app,
+          profile: input.profile,
+          cursor,
+        });
         for (const tool of page.items)
           for (const schedule of tool.schedules ?? []) {
             results.push({
@@ -177,7 +191,15 @@ export const makeSchedules = (
       Effect.gen(function* () {
         yield* apps.get(input);
         const rows = yield* query(() =>
-          db.findMany("schedules", { where: (b) => b("app", "=", input.app) }),
+          db.findMany("schedules", {
+            where: (b) =>
+              b.and(
+                b("app", "=", input.app),
+                input.profile === undefined
+                  ? b("profile", "is", null)
+                  : b("profile", "=", input.profile),
+              ),
+          }),
         );
         return yield* parse(Schema.Array(ScheduleSettings), rows);
       }),
@@ -187,9 +209,24 @@ export const makeSchedules = (
           Effect.mapError(() => new RequestInvalid()),
         );
         const app = yield* apps.get(parsed);
+        if (parsed.profile !== undefined) {
+          const profile = yield* storedProfile(db, {
+            app: app.id,
+            profile: parsed.profile,
+            owner: app.owner,
+          });
+          if (profile.subject !== parsed.actor) return yield* new ScheduleConflict();
+        }
         const saved = yield* query(() =>
           db.findFirst("schedules", {
-            where: (b) => b.and(b("app", "=", app.id), b("name", "=", parsed.name)),
+            where: (b) =>
+              b.and(
+                b("app", "=", app.id),
+                b("name", "=", parsed.name),
+                parsed.profile === undefined
+                  ? b("profile", "is", null)
+                  : b("profile", "=", parsed.profile),
+              ),
           }),
         );
         // Pausing saved work never depends on evaluating broken app code or refreshing a revoked account.
@@ -201,15 +238,39 @@ export const makeSchedules = (
         const revision = yield* uuid;
         const settings = yield* transaction(db, () =>
           Effect.gen(function* () {
+            yield* lockApp(db, { app: app.id });
+            if (parsed.profile !== undefined) {
+              const profile = yield* storedProfile(db, {
+                app: app.id,
+                profile: parsed.profile,
+              });
+              if (
+                (parsed.enabled &&
+                  (!profile.enabled ||
+                    profile.status === "removing" ||
+                    profile.status === "removed")) ||
+                (parsed.expectedProfileRevision !== undefined &&
+                  profile.revision !== parsed.expectedProfileRevision)
+              )
+                return yield* new ScheduleConflict();
+            }
             const row = yield* query(() =>
               db.findFirst("schedules", {
-                where: (b) => b.and(b("app", "=", app.id), b("name", "=", parsed.name)),
+                where: (b) =>
+                  b.and(
+                    b("app", "=", app.id),
+                    b("name", "=", parsed.name),
+                    parsed.profile === undefined
+                      ? b("profile", "is", null)
+                      : b("profile", "=", parsed.profile),
+                  ),
               }),
             );
             if (row === null) {
               const created = ScheduleSettings.make({
                 id: ScheduleId.make(`sch_${revision}`),
                 app: app.id,
+                profile: parsed.profile ?? null,
                 owner: app.owner,
                 name: parsed.name,
                 actor: parsed.actor,
@@ -287,6 +348,7 @@ export const makeSchedules = (
             b.and(
               input.owner === undefined ? true : b("owner", "=", input.owner),
               input.app === undefined ? true : b("app", "=", input.app),
+              input.profile === undefined ? true : b("profile", "=", input.profile),
               input.pending === true ? b("status", "=", "awaiting-approval") : true,
             ),
           orderBy: ["startedAt", "desc"],
@@ -417,11 +479,34 @@ export const makeSchedules = (
             ),
           { concurrency: "unbounded" },
         );
+        const activeProfiles = yield* query(() =>
+          db.findMany("profiles", {
+            select: ["id"],
+            where: (b) =>
+              b.and(
+                b("enabled", "=", true),
+                b("status", "!=", "removing"),
+                b("status", "!=", "removed"),
+              ),
+          }),
+        );
         const due = yield* query(() =>
           db.findMany("schedules", {
             limit: maxCandidates,
             where: (b) =>
-              b.and(b("enabled", "=", true), b("activeRun", "is", null), b("nextAt", "<=", time)),
+              b.and(
+                b("enabled", "=", true),
+                b("activeRun", "is", null),
+                b("nextAt", "<=", time),
+                b.or(
+                  b("profile", "is", null),
+                  b(
+                    "profile",
+                    "in",
+                    activeProfiles.map((item) => item.id),
+                  ),
+                ),
+              ),
             orderBy: ["nextAt", "asc"],
           }),
         ).pipe(Effect.flatMap((rows) => parse(Schema.Array(ScheduleSettings), rows)));
@@ -435,6 +520,19 @@ export const makeSchedules = (
                 const id = ScheduledRunId.make(`run_${yield* uuid}`);
                 const claim = yield* transaction(db, () =>
                   Effect.gen(function* () {
+                    yield* lockApp(db, { app: setting.app });
+                    if (setting.profile !== null) {
+                      const profile = yield* storedProfile(db, {
+                        app: setting.app,
+                        profile: setting.profile,
+                      });
+                      if (
+                        !profile.enabled ||
+                        profile.status === "removing" ||
+                        profile.status === "removed"
+                      )
+                        return null;
+                    }
                     yield* query(() =>
                       db.updateMany("schedules", {
                         where: (b) =>
@@ -455,6 +553,7 @@ export const makeSchedules = (
                       id,
                       scheduleId: setting.id,
                       app: setting.app,
+                      profile: setting.profile,
                       owner: setting.owner,
                       name: setting.name,
                       status: "running",
@@ -470,6 +569,11 @@ export const makeSchedules = (
                     });
                     yield* query(() => db.create("scheduledRuns", run));
                     return run;
+                  }),
+                ).pipe(
+                  Effect.catchTags({
+                    AppNotFound: () => Effect.succeed(null),
+                    ProfileNotFound: () => Effect.succeed(null),
                   }),
                 );
                 if (claim === null) return;
@@ -489,6 +593,7 @@ export const makeSchedules = (
                   yield* authorize({ ...setting, phase: "start" });
                   const declared = yield* definition({
                     app: setting.app,
+                    profile: setting.profile ?? undefined,
                     owner: setting.owner,
                     name: setting.name,
                   });
@@ -506,6 +611,7 @@ export const makeSchedules = (
                   );
                   const response = yield* tools.call({
                     app: setting.app,
+                    profile: setting.profile ?? undefined,
                     tool: declared.tool,
                     input: declared.input,
                   });

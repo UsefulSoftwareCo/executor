@@ -1,51 +1,38 @@
-import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
-import { appToolsCatalog } from "../../contracts/app-browser.ts";
-import { ToolAccounts } from "@executor-js/ui/dashboard/tool-accounts";
-import { Atom, AsyncResult as ToolResult } from "effect/unstable/reactivity";
+import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
+import { profileMutations } from "../../contracts/profiles.ts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Failure } from "../components/common.tsx";
 import { useAtomValue } from "@effect/atom-react";
-import { AccountNotFound, OAuthReconnectRequired, type App } from "@executor-js/sdk";
+import {
+  AccountNotFound,
+  OAuthReconnectRequired,
+  type App,
+  type ProfileId,
+  type Profile,
+} from "@executor-js/sdk";
 import type { DashboardAccount } from "@executor-js/local-server/contracts";
 import { Cause, Option, Schema } from "effect";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import { toolsAtom, toolListAtom } from "../../contracts/api.ts";
 import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
-
-const toolList = Atom.family((query: ReturnType<typeof appToolsCatalog>) =>
-  Atom.map(
-    query,
-    ToolResult.map((page) => page.items),
-  ),
-);
 
 interface AppToolsProps {
   readonly app: App;
   readonly accounts: ReadonlyArray<DashboardAccount>;
   readonly selected: string | undefined;
+  readonly profile?: ProfileId | undefined;
+  readonly revision?: number | undefined;
 }
 
 function AccountSetup({
   app,
-  accounts,
+  profile,
   disconnected,
-}: Pick<AppToolsProps, "app" | "accounts"> & { readonly disconnected: boolean }) {
-  const requirements = Object.entries(app.requirements.accounts);
-  const only = requirements.length === 1 ? requirements[0] : undefined;
-  const needsNew =
-    only !== undefined &&
-    only[1].cardinality === "one" &&
-    !accounts.some((account) => account.provider === only[1].provider);
-  const destination =
-    needsNew && only
-      ? ({
-          to: "/accounts/add",
-          search: { provider: only[1].provider, app: app.id, slot: only[0] },
-        } as const)
-      : ({ to: "/apps/$appId/setup", params: { appId: app.id } } as const);
+}: Pick<AppToolsProps, "app" | "accounts" | "profile"> & { readonly disconnected: boolean }) {
   return (
     <div className="app-account-setup flex items-center gap-3.5 p-[22px] border border-border rounded-[8px] [&_>_svg]:text-muted-foreground [&_>_svg]:shrink-0 [&_>_div]:flex-1 [&_>_div]:min-w-0 [&_h2]:text-[14px] [&_h2]:font-medium [&_p]:text-[13px] [&_p]:text-muted-foreground [&_p]:mt-1 [&_>_[data-slot='button']]:shrink-0 max-[740px]:flex-wrap max-[740px]:p-[18px] max-[740px]:[&_>_div]:basis-[calc(100%_-_32px)] max-[740px]:[&_>_[data-slot='button']]:ml-8">
       <HugeiconsIcon icon={Key01Icon} strokeWidth={2} size={18} aria-hidden />
@@ -58,12 +45,8 @@ function AccountSetup({
         </p>
       </div>
       <Button asChild>
-        <Link {...destination}>
-          {needsNew
-            ? "Connect account"
-            : requirements.length === 1 && only?.[1].cardinality === "one"
-              ? "Choose account"
-              : "Choose accounts"}
+        <Link to="/apps/$appId" params={{ appId: app.id }} search={{ view: "accounts", profile }}>
+          Choose accounts
         </Link>
       </Button>
     </div>
@@ -71,7 +54,7 @@ function AccountSetup({
 }
 
 /** Incomplete account setup is a product state; do not start tool discovery until it is resolved. */
-export function AppTools(props: AppToolsProps) {
+function SingleAppTools(props: AppToolsProps) {
   const readiness = appToolReadiness(props.app, props.accounts);
   switch (readiness.state) {
     case "not-deployed":
@@ -131,15 +114,22 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
 }
 
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
-function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
+function LiveAppTools({ app, accounts, selected, profile, revision }: AppToolsProps) {
   const navigate = useNavigate();
-  const atom = appToolsCatalog(app);
+  const atom = toolsAtom({
+    app: app.id,
+    profile,
+    revision,
+    deployment: app.activeDeployment,
+    accounts: JSON.stringify(app.accounts),
+  });
   const result = useAtomValue(atom);
   const setup = AsyncResult.isFailure(result) ? accountSetupFailure(result.cause) : Option.none();
   if (Option.isSome(setup))
     return (
       <AccountSetup
         app={app}
+        profile={profile}
         accounts={accounts}
         disconnected={Schema.is(AccountNotFound)(setup.value)}
       />
@@ -157,15 +147,20 @@ function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
   return (
     <ToolBrowser
       Failure={Failure}
-      key={`${app.id}:${app.activeDeployment}:${JSON.stringify(app.accounts)}`}
-      accountContext={<ToolAccounts app={app} accounts={accounts} />}
-      query={toolList(atom)}
+      key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(app.accounts)}`}
+      query={toolListAtom({
+        app: app.id,
+        profile,
+        revision,
+        deployment: app.activeDeployment,
+        accounts: JSON.stringify(app.accounts),
+      })}
       selected={selected}
       onSelect={(tool) => {
         void navigate({
           to: "/apps/$appId",
           params: { appId: app.id },
-          search: { view: "tools", tool },
+          search: { view: "tools", tool, profile },
         });
       }}
       back={
@@ -173,7 +168,7 @@ function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
           className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
           to="/apps/$appId"
           params={{ appId: app.id }}
-          search={{ view: "tools" }}
+          search={{ view: "tools", profile }}
         >
           <HugeiconsIcon icon={ArrowLeft02Icon} size={16} />
           All tools
@@ -182,3 +177,31 @@ function LiveAppTools({ app, accounts, selected }: AppToolsProps) {
     />
   );
 }
+
+/** The page selects the profile; tools stay in the normal catalog and inspector. */
+export function AppTools({
+  profile,
+  ...props
+}: Omit<AppToolsProps, "profile" | "revision"> & {
+  readonly profile: Profile | undefined;
+}) {
+  if (profile?.enabled === false || profile?.status === "removing")
+    return (
+      <p className="p-5 text-sm text-muted-foreground">
+        This profile is disabled. Enable it from the profile menu to use its tools.
+      </p>
+    );
+  return (
+    <>
+      {profile && (
+        <ProfileStatus
+          profile={profile}
+          retry={profileMutations({ app: props.app.id, profile: profile.id }).reconcile}
+          Failure={Failure}
+        />
+      )}
+      <SingleAppTools {...props} profile={profile?.id} revision={profile?.revision} />
+    </>
+  );
+}
+import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";

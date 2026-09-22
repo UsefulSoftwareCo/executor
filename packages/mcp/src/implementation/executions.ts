@@ -267,13 +267,19 @@ export const makeExecutions = (
         listSkills: (input) => exchange((backend) => backend.listSkills(input)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
+        listTargets: (input) => exchange((backend) => backend.listTargets(input)),
         listTools: (input) => exchange((backend) => backend.listTools(input)),
         callTool: (input) =>
           exchange(
             (backend, operation) =>
               backend
                 .callTool(input, {
-                  elicitation: elicitation(run, operation, { app: input.app, tool: input.tool }),
+                  elicitation: elicitation(run, operation, {
+                    app: input.app,
+                    tool: input.tool,
+                    profile: input.profile,
+                    expectedProfileRevision: input.expectedProfileRevision,
+                  }),
                 })
                 .pipe(
                   Effect.withSpan("mcp.tool.call", {
@@ -520,6 +526,8 @@ export const makeExecutions = (
                     elicitation: elicitation(run, operation, {
                       app: pending.request.invocation.app,
                       tool: pending.request.invocation.tool,
+                      profile: pending.request.invocation.profile,
+                      expectedProfileRevision: pending.request.invocation.profileRevision,
                     }),
                   })
                   .pipe(

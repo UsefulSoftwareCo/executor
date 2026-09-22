@@ -9,6 +9,8 @@ import { appFailureBootstrap } from "./ui-errors.ts";
 /** Render an authorized deployment with a host-owned deployment watcher. */
 export const appDocument = <E, R>(options: {
   readonly deployment: string;
+  readonly profile?: string | undefined;
+  readonly expectedProfileRevision?: number | undefined;
   readonly origin: string;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
 }) =>
@@ -31,7 +33,11 @@ export const appDocument = <E, R>(options: {
         status: 404,
         headers: appPrivateHeaders,
       });
-    const context = JSON.stringify({ deployment: options.deployment }).replaceAll("<", "\\u003c");
+    const context = JSON.stringify({
+      deployment: options.deployment,
+      profile: options.profile,
+      expectedProfileRevision: options.expectedProfileRevision,
+    }).replaceAll("<", "\\u003c");
     const telemetry = yield* CurrentTelemetryConfig;
     const attribute = (text: string) =>
       text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");

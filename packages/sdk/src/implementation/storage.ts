@@ -13,6 +13,7 @@ import {
   AccountId,
   WebhookId,
   AppId,
+  ProfileId,
   AppCodeId,
   DeploymentId,
   BuildId,
@@ -26,11 +27,23 @@ import { column, idColumn, schema, table } from "fumadb-effect/schema";
 
 /** Current storage layout. Deployments contain Git and build references, never source files. */
 export const storageSchema = schema({
-  version: "1.12.0",
+  version: "3.0.0",
   up: ({ auto }) =>
     auto.pipe(
       Effect.map((operations) => [
         ...operations,
+        {
+          type: "custom" as const,
+          sql: "CREATE UNIQUE INDEX executor_workflow_runs_context_key ON executor_workflow_runs (app, COALESCE(installation, ''), start_key)",
+        },
+        {
+          type: "custom" as const,
+          sql: "CREATE UNIQUE INDEX executor_webhooks_context_key ON executor_webhooks (app, COALESCE(installation, ''), subscription_key)",
+        },
+        {
+          type: "custom" as const,
+          sql: "CREATE UNIQUE INDEX executor_schedules_context_name ON executor_schedules (app, COALESCE(installation, ''), name)",
+        },
         {
           type: "custom" as const,
           sql: "CREATE INDEX executor_schedules_due ON executor_schedules (enabled, active_run, next_at)",
@@ -46,9 +59,35 @@ export const storageSchema = schema({
       ]),
     ),
   tables: {
+    profiles: table("executor_installations", {
+      id: idColumn("id", ProfileId, { type: "varchar(255)" }),
+      app: column("app", AppId, { type: "varchar(255)" }),
+      owner: column("owner", OwnerId, { type: "varchar(255)" }),
+      subject: column("subject", Schema.String, { type: "varchar(255)" }),
+      name: column("name", Schema.NullOr(Schema.String), { type: "varchar(128)" }),
+      idempotencyKey: column("idempotency_key", Schema.String, { type: "varchar(128)" }),
+      accounts: column("accounts", Schema.Json),
+      webhookConfig: column("webhook_config", Schema.Json),
+      revision: column("revision", Schema.Int),
+      enabled: column("enabled", Schema.Boolean),
+      status: column("status", Schema.String, { type: "varchar(32)" }),
+      failure: column("failure", Schema.NullOr(Schema.String)),
+      reconciledDeployment: column("reconciled_deployment", Schema.NullOr(DeploymentId), {
+        type: "varchar(255)",
+      }),
+      reconciledRevision: column("reconciled_revision", Schema.NullOr(Schema.Int)),
+      request: column("request", Schema.Json),
+      lease: column("lease", Schema.NullOr(Schema.String)),
+      leaseUntil: column("lease_until", Schema.Date),
+      createdAt: column("created_at", Schema.Date),
+    }).unique("executor_installations_request", ["app", "subject", "idempotencyKey"]),
     workflowRuns: table("executor_workflow_runs", {
       id: idColumn("id", WorkflowRunId, { type: "varchar(255)" }),
       app: column("app", AppId, { type: "varchar(255)" }),
+      profile: column("installation", Schema.NullOr(ProfileId), {
+        type: "varchar(255)",
+      }).default(null),
+      profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
       owner: column("owner", OwnerId, { type: "varchar(255)" }),
       key: column("start_key", Schema.String, { type: "varchar(128)" }),
       deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
@@ -58,7 +97,7 @@ export const storageSchema = schema({
       failure: column("failure", Schema.NullOr(Schema.String)),
       encrypted: column("encrypted", Schema.Uint8Array),
       createdAt: column("created_at", Schema.Date),
-    }).unique("executor_workflow_runs_app_key", ["app", "key"]),
+    }),
     workflowAccounts: table("executor_workflow_accounts", {
       id: idColumn("id", Schema.String, { type: "varchar(255)" }),
       account: column("account", AccountId, { type: "varchar(255)" }),
@@ -67,6 +106,9 @@ export const storageSchema = schema({
     schedules: table("executor_schedules", {
       id: idColumn("id", Schema.String, { type: "varchar(255)" }),
       app: column("app", AppId, { type: "varchar(255)" }),
+      profile: column("installation", Schema.NullOr(ProfileId), {
+        type: "varchar(255)",
+      }).default(null),
       owner: column("owner", OwnerId, { type: "varchar(255)" }),
       name: column("name", Schema.String, { type: "varchar(255)" }),
       actor: column("actor", Schema.String, { type: "varchar(255)" }),
@@ -76,11 +118,14 @@ export const storageSchema = schema({
       nextAt: column("next_at", Schema.NullOr(Schema.Date)),
       activeRun: column("active_run", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
       revision: column("revision", Schema.String, { type: "varchar(255)" }),
-    }).unique("executor_schedules_app_name", ["app", "name"]),
+    }),
     scheduledRuns: table("executor_scheduled_runs", {
       id: idColumn("id", Schema.String, { type: "varchar(255)" }),
       scheduleId: column("schedule_id", Schema.String, { type: "varchar(255)" }),
       app: column("app", AppId, { type: "varchar(255)" }),
+      profile: column("installation", Schema.NullOr(ProfileId), {
+        type: "varchar(255)",
+      }).default(null),
       owner: column("owner", OwnerId, { type: "varchar(255)" }),
       name: column("name", Schema.String),
       status: column("status", Schema.String, { type: "varchar(32)" }),
@@ -190,6 +235,10 @@ export const storageSchema = schema({
     webhooks: table("executor_webhooks", {
       id: idColumn("id", WebhookId, { type: "varchar(255)" }),
       app: column("app", AppId, { type: "varchar(255)" }),
+      profile: column("installation", Schema.NullOr(ProfileId), {
+        type: "varchar(255)",
+      }).default(null),
+      profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
       owner: column("owner", OwnerId, { type: "varchar(255)" }),
       key: column("subscription_key", Schema.String, { type: "varchar(128)" }),
       deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
@@ -203,7 +252,7 @@ export const storageSchema = schema({
       failure: column("failure", Schema.NullOr(Schema.String)),
       encrypted: column("encrypted", Schema.Uint8Array),
       createdAt: column("created_at", Schema.Date),
-    }).unique("executor_webhooks_app_key", ["app", "key"]),
+    }),
   },
   relations: {
     accounts: ({ one }) => ({
@@ -224,7 +273,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("1.12.0"), sql, reactivity);
+    const db = bindOrm(client.orm("3.0.0"), sql, reactivity);
     const migrate = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       yield* (yield* migrator.migrateToLatest()).execute;
@@ -233,7 +282,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(() => new StorageError()),
     );
-    return { orm: (_version: "1.12.0") => db, reactivity, migrate };
+    return { orm: (_version: "3.0.0") => db, reactivity, migrate };
   });
 /** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
 export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;

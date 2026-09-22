@@ -87,8 +87,6 @@ export const appAuthentication = (
         const source = yield* executor.apps.source({ app: app.id, owner: app.owner });
         if (!source.files.some((file) => file.path === "ui/index.html"))
           return yield* unavailable();
-        if (Object.keys(app.requirements.accounts).some((slot) => app.accounts[slot] === undefined))
-          return yield* new UiFailed({ reason: "account_required" });
       }).pipe(
         Effect.catchTags({
           AppNotFound: () => Effect.fail(new UiForbidden()),

@@ -44,10 +44,12 @@ const timingText = (timing: Row["timing"]) => {
 export function AppSchedules<E>({
   app,
   canEdit,
+  enabled = true,
   ...props
 }: {
   readonly app: App;
   readonly canEdit: boolean;
+  readonly enabled?: boolean;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
@@ -73,7 +75,30 @@ export function AppSchedules<E>({
         </EmptyState>
       </SchedulesLayout>
     );
-  return <LiveSchedules {...props} app={app} canEdit={canEdit} />;
+  if (enabled) return <LiveSchedules {...props} app={app} canEdit={canEdit} />;
+  const { bindings, Failure } = props;
+  return (
+    <SchedulesLayout>
+      <QueryView query={bindings.settings} Failure={Failure} pending={<SchedulesPending />}>
+        {(rows) => (
+          <div className="divide-y rounded-lg border">
+            {rows.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No saved schedules.</p>
+            ) : (
+              rows.map((row) => (
+                <div key={row.id} className="p-4">
+                  <h3 className="text-sm font-medium">{row.name}</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {timingText(row.timing)} · Profile disabled
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </QueryView>
+    </SchedulesLayout>
+  );
 }
 function LiveSchedules<E>({
   app,

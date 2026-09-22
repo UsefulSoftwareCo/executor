@@ -1,4 +1,5 @@
 import { CheckOAuthSetup } from "../contracts/oauth.ts";
+import { ProfileInputs } from "../contracts/profiles.ts";
 import {
   StartWorkflow,
   WorkflowTarget,
@@ -97,6 +98,16 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
     },
     apps: {
+      profiles: {
+        create: (input) => run(ProfileInputs.create, input, executor.apps.profiles.create),
+        get: (input) => run(ProfileInputs.get, input, executor.apps.profiles.get),
+        list: (input) => run(ProfileInputs.list, input, executor.apps.profiles.list),
+        update: (input) => run(ProfileInputs.update, input, executor.apps.profiles.update),
+        setEnabled: (input) =>
+          run(ProfileInputs.setEnabled, input, executor.apps.profiles.setEnabled),
+        reconcile: (input) => run(ProfileInputs.reconcile, input, executor.apps.profiles.reconcile),
+        remove: (input) => run(ProfileInputs.remove, input, executor.apps.profiles.remove),
+      },
       workflows: { list: (input) => run(WorkflowApp, input, executor.apps.workflows.list) },
       workflowRuns: {
         start: (input) => run(StartWorkflow, input, executor.apps.workflowRuns.start),

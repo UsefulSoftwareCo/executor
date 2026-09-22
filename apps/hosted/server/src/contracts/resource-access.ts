@@ -1,3 +1,4 @@
+import { ProfileId } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { OrganizationDefaultsError } from "./organization-defaults.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved bindings. */
@@ -76,7 +77,13 @@ export const ConnectionAccess = Schema.Struct({
   connection: AccountConnectionId,
   creator: Principal.fields.userId,
   destination: ConnectionDestination,
-  target: Schema.NullOr(Schema.Struct({ app: AppId, requirement: Schema.NonEmptyString })),
+  target: Schema.NullOr(
+    Schema.Struct({
+      app: AppId,
+      requirement: Schema.NonEmptyString,
+      profile: Schema.optional(ProfileId),
+    }).pipe(Schema.encodeKeys({ profile: "installation" })),
+  ),
 });
 /** A stale revision or removed group must preserve the editor's draft. */
 export class AccessConflict extends Schema.TaggedError<AccessConflict>()(

@@ -1,3 +1,4 @@
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
 import { Cause, Clock, Effect, Encoding, Redacted, Result, Schema, type Crypto } from "effect";
 import {
@@ -10,7 +11,12 @@ import {
   type WorkflowHostControls,
 } from "apps/contracts";
 import { WorkflowHost, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";
-import { StartWorkflow, ListWorkflowRuns, WorkflowTarget } from "../contracts/workflows.ts";
+import {
+  StartWorkflow,
+  ListWorkflowRuns,
+  WorkflowTarget,
+  WorkflowApp,
+} from "../contracts/workflows.ts";
 import { SelectedAccounts } from "../contracts/apps.ts";
 import { AppId, DeploymentId, OwnerId, StorageError, type Json } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -19,6 +25,8 @@ import type { ExecutorDatabase } from "./storage.ts";
 import type { AppDatabases } from "@executor-js/app-data";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
+import { storedProfile } from "./profiles.ts";
+import { ProfileId } from "../contracts/shared.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 import { resolve, snapshot } from "./tools.ts";
@@ -27,6 +35,8 @@ import { bindAppStorage } from "./app-database.ts";
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
   app: AppId,
+  profile: Schema.NullOr(ProfileId),
+  profileRevision: Schema.NullOr(Schema.Int),
   owner: OwnerId,
   key: Schema.String,
   deployment: DeploymentId,
@@ -78,6 +88,7 @@ export const makeWorkflowRuns = (
   crypto: Crypto.Crypto,
   backend?: WorkflowRuntime,
   appStorage?: AppDatabases,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const read = (run: WorkflowRunId, app?: AppId) =>
@@ -104,6 +115,7 @@ export const makeWorkflowRuns = (
       return yield* Schema.decodeUnknownEffect(WorkflowRun)({
         id: row.id,
         app: row.app,
+        ...(row.profile === null ? {} : { profile: row.profile }),
         deployment: row.deployment,
         workflow: row.name,
         createdAt: row.createdAt.toISOString(),
@@ -157,14 +169,15 @@ export const makeWorkflowRuns = (
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
         const state = yield* snapshot(
           db,
-          { app: row.app, deployment: row.deployment },
+          { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
           row.accounts,
+          row.profileRevision ?? undefined,
         );
         return {
-          ...(yield* resolve(state, resolveAccount)),
+          ...(yield* resolve(state, resolveAccount, lifecycle)),
           database: state.deployment.requirements.database !== undefined,
           ...(yield* bindAppStorage(appStorage, row.app)),
-          workflowControls: controls(row.app),
+          workflowControls: controls(row.app, state),
         };
       }),
       "credentials",
@@ -177,8 +190,9 @@ export const makeWorkflowRuns = (
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
         const state = yield* snapshot(
           db,
-          { app: row.app, deployment: row.deployment },
+          { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
           row.accounts,
+          row.profileRevision ?? undefined,
         );
         const payload = yield* decrypt(row);
         if (row.status === "queued")
@@ -328,7 +342,10 @@ export const makeWorkflowRuns = (
       yield* storedApp(db, { app: input.app });
       return yield* reconcile(yield* read(input.run, input.app));
     });
-  const start = (input: typeof StartWorkflow.Type) =>
+  const start = (
+    input: typeof StartWorkflow.Type,
+    inherited?: Effect.Success<ReturnType<typeof snapshot>>,
+  ) =>
     Effect.gen(function* () {
       if (backend === undefined) return yield* unavailable();
       yield* storedApp(db, { app: input.app });
@@ -339,13 +356,20 @@ export const makeWorkflowRuns = (
       const find = () =>
         query(() =>
           db.findFirst("workflowRuns", {
-            where: (b) => b.and(b("app", "=", input.app), b("key", "=", key)),
+            where: (b) =>
+              b.and(
+                b("app", "=", input.app),
+                b("key", "=", key),
+                input.profile === undefined
+                  ? b("profile", "is", null)
+                  : b("profile", "=", input.profile),
+              ),
           }),
         );
       let row = yield* find();
       if (row === null) {
-        const state = yield* snapshot(db, { app: input.app });
-        const bound = yield* resolve(state, resolveAccount);
+        const state = inherited ?? (yield* snapshot(db, input));
+        const bound = yield* resolve(state, resolveAccount, lifecycle);
         const parsed = yield* safe(
           runtime.workflow({
             app: input.app,
@@ -368,13 +392,24 @@ export const makeWorkflowRuns = (
                 set: { createdAt: state.app.createdAt },
               }),
             );
+            if (state.profile !== undefined) {
+              const profile = yield* storedProfile(db, {
+                app: state.app.id,
+                profile: state.profile.id,
+              });
+              if (inherited === undefined && profile.revision !== state.profile.revision)
+                return yield* failure("conflict");
+              if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
+                return yield* failure("conflict");
+            }
             const currentApp = yield* storedApp(db, { app: state.app.id });
             if (
-              currentApp.activeDeployment !== state.app.activeDeployment ||
+              (inherited === undefined &&
+                currentApp.activeDeployment !== state.app.activeDeployment) ||
               !Schema.toEquivalence(Schema.Json)(currentApp.accounts, state.app.accounts)
             )
               return yield* failure("conflict");
-            const accountIds = [...new Set(Object.values(state.app.accounts).flat())].sort();
+            const accountIds = [...new Set(Object.values(state.accounts).flat())].sort();
             for (const account of accountIds) {
               const saved = yield* storedAccount(db, account);
               yield* query(() =>
@@ -390,17 +425,19 @@ export const makeWorkflowRuns = (
                 id,
                 app: input.app,
                 owner: state.app.owner,
+                profile: input.profile ?? null,
+                profileRevision: state.profile?.revision ?? null,
                 key,
                 deployment: state.deployment.id,
                 name: input.workflow,
-                accounts: state.app.accounts,
+                accounts: state.accounts,
                 status: "queued",
                 failure: null,
                 encrypted,
                 createdAt,
               }),
             );
-            const accounts = new Set(Object.values(state.app.accounts).flat());
+            const accounts = new Set(Object.values(state.accounts).flat());
             for (const account of accounts)
               yield* query(() =>
                 db.create("workflowAccounts", { id: `${id}:${account}`, run: id, account }),
@@ -448,7 +485,7 @@ export const makeWorkflowRuns = (
       );
       return yield* view(yield* read(row.id));
     });
-  const list = (input: typeof ListWorkflowRuns.Type) =>
+  const list = (input: typeof ListWorkflowRuns.Type, onlyProfile?: ProfileId | null) =>
     Effect.gen(function* () {
       yield* storedApp(db, { app: input.app });
       const limit = input.limit ?? 20;
@@ -457,6 +494,13 @@ export const makeWorkflowRuns = (
           where: (b) =>
             b.and(
               b("app", "=", input.app),
+              ...(onlyProfile === null
+                ? [b("profile", "is", null)]
+                : onlyProfile !== undefined
+                  ? [b("profile", "=", onlyProfile)]
+                  : input.profile === undefined
+                    ? []
+                    : [b("profile", "=", input.profile)]),
               ...(input.workflow === undefined ? [] : [b("name", "=", input.workflow)]),
               ...(input.cursor === undefined ? [] : [b("id", ">", input.cursor)]),
             ),
@@ -476,22 +520,54 @@ export const makeWorkflowRuns = (
         ...(rows.length > limit && last !== undefined ? { next: last.id } : {}),
       });
     }).pipe(Effect.withSpan("sdk.workflows.list"));
-  function controls(app: AppId): WorkflowHostControls {
+  function controls(
+    app: AppId,
+    inherited?: Effect.Success<ReturnType<typeof snapshot>>,
+  ): WorkflowHostControls {
     const parse = <A, B>(
       schema: Schema.Decoder<A>,
       input: unknown,
       run: (input: A) => Effect.Effect<B, unknown>,
     ) => safe(Schema.decodeUnknownEffect(schema)(input).pipe(Effect.flatMap(run)), "execution");
+    const within = (input: typeof WorkflowTarget.Type) =>
+      Effect.gen(function* () {
+        const row = yield* read(input.run, input.app);
+        if (row.profile !== (inherited?.profile?.id ?? null)) return yield* failure("not_found");
+      });
     return {
-      start: (input) => parse(StartWorkflow, { ...input, app }, start),
-      get: (input) => parse(WorkflowTarget, { ...input, app }, get),
-      list: (input) => parse(Schema.toType(ListWorkflowRuns), { ...input, app }, list),
-      terminate: (input) => parse(WorkflowTarget, { ...input, app }, terminate),
+      start: (input) =>
+        parse(
+          StartWorkflow,
+          {
+            ...input,
+            app,
+            profile: inherited?.profile?.id,
+          },
+          (input) => start(input, inherited),
+        ),
+      get: (input) =>
+        parse(WorkflowTarget, { ...input, app }, (input) =>
+          within(input).pipe(Effect.andThen(get(input))),
+        ),
+      list: (input) =>
+        parse(
+          Schema.toType(ListWorkflowRuns),
+          {
+            ...input,
+            app,
+            profile: inherited?.profile?.id,
+          },
+          (input) => list(input, inherited?.profile?.id ?? null),
+        ),
+      terminate: (input) =>
+        parse(WorkflowTarget, { ...input, app }, (input) =>
+          within(input).pipe(Effect.andThen(terminate(input))),
+        ),
     };
   }
   return {
     controls,
-    definitions: (input: { app: AppId }) =>
+    definitions: (input: typeof WorkflowApp.Type) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
         return yield* safe(
@@ -499,7 +575,7 @@ export const makeWorkflowRuns = (
             .workflow({
               app: input.app,
               build: state.deployment.build,
-              ...(yield* resolve(state, resolveAccount)),
+              ...(yield* resolve(state, resolveAccount, lifecycle)),
               command: { operation: "workflows" },
             })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow)))),

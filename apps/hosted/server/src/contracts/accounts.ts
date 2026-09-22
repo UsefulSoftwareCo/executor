@@ -1,3 +1,4 @@
+import { ProfileId, ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { ConnectionDestination } from "./resource-access.ts";
 import { AccountWorkflowsActive } from "@executor-js/sdk/core";
@@ -47,6 +48,7 @@ const app = { ...params, app: AppId };
 const connection = { ...params, connection: AccountConnectionId };
 // Reading a connection also verifies ownership of its optional target app.
 const connectionErrors = [
+  ...ProfileErrors,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
@@ -143,6 +145,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       params: app,
       payload: Schema.Struct({
         requirement: Schema.NonEmptyString,
+        profile: Schema.optional(ProfileId),
         destination: Schema.optional(ConnectionDestination),
       }),
       success: BrowserAccountConnection,

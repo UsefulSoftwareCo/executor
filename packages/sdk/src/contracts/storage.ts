@@ -63,7 +63,7 @@ export const StoredConnectionTarget = Schema.Struct({
   owner: OwnerId,
   cardinality: Schema.Literals(["one", "many"]),
   selection: Schema.NullOr(Schema.Union([AccountId, Schema.Array(AccountId)])),
-});
+}).pipe(Schema.encodeKeys({ profile: "installation" }));
 export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
 
 /** The host owns encryption and key custody. Ciphertexts are bound to the account, client, attempt, or approval-request identity. */

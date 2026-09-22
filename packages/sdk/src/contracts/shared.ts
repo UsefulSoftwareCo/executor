@@ -37,6 +37,9 @@ export type WebhookId = typeof WebhookId.Type;
 
 /** Id of an App (see `apps.ts`), prefix `app_`. */
 export const AppId = Id("app");
+/** Saved execution bindings for an app; independent of its deployment. */
+export const ProfileId = Id("ins");
+export type ProfileId = typeof ProfileId.Type;
 
 export type AppId = typeof AppId.Type;
 

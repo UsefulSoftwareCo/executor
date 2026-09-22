@@ -121,9 +121,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           page.evaluate(() => performance.timeOrigin),
         );
         const paths = [actors.organization.slug, actors.organization.id].map(
-          (reference) => `/api/organizations/${reference}/apps/${app.id}`,
+          (reference) => `/api/organizations/${reference}/apps/${app.id}/profiles`,
         );
-        const read = yield* holdQuery(paths, "continue");
+        const read = yield* holdQuery(paths, "continue", { allRequests: true });
         const saved = yield* browser.use("Save credentials through the account form", (page) =>
           Promise.all([
             page.waitForResponse(
@@ -140,25 +140,31 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         expect((yield* Schema.decodeUnknownEffect(Resource)(saved.body)).id).toBe(account);
         expect(created).toBe(1);
         expect(connectionReads).toBe(0);
-        const selected = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`);
-        expect(selected.status).toBe(200);
+        const selections = yield* body(
+          Schema.Array(
+            Schema.Struct({
+              id: Schema.String,
+              accounts: Schema.Struct({ service: Schema.String }),
+            }),
+          ),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles`),
+        );
+        expect(selections).toHaveLength(1);
+        expect(selections[0]?.accounts.service).toBe(account);
         expect(
-          (yield* body(
-            Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) }),
-            selected,
-          )).accounts.service,
-        ).toBe(account);
+          (yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)).body,
+        ).toMatchObject({ accounts: {} });
         yield* browser.use("Saving returns to the app without a document navigation", (page) =>
           page.waitForURL(
             (url) => url.pathname === `/org/${actors.organization.slug}/apps/${app.id}`,
           ),
         );
-        yield* browser.checkpoint("App waits for refreshed account selection");
+        yield* browser.checkpoint("App waits for confirmed profile bindings");
         const refreshPath = yield* evidence.step(
-          "Saving starts a fresh app metadata read",
+          "Saving starts a fresh profile metadata read",
           read.requested,
         );
-        yield* browser.use("The pending app read has a loading state", (page) =>
+        yield* browser.use("The pending profile read has a loading state", (page) =>
           page
             .getByRole("status", { name: "Loading accounts", exact: true })
             .waitFor({ state: "visible" }),

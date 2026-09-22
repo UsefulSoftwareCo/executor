@@ -1,127 +1,280 @@
-import type { ReactNode } from "react";
 import { useDashboard } from "./context.tsx";
-import type { App, AccountRequirement } from "@executor-js/sdk";
+import { useState, type ReactNode, type ComponentType } from "react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { Exit, type Cause } from "effect";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Add01Icon,
+  ArrowDataTransferHorizontalIcon,
+  Cancel01Icon,
+  UserCircleIcon,
+} from "@hugeicons/core-free-icons";
+import type {
+  App,
+  AccountId,
+  AccountRequirement,
+  SelectedAccounts,
+  Profile,
+  ProfileInputs,
+} from "@executor-js/sdk";
 import {
   providerDisplayUrl,
-  accountSelectionIssues,
   accountNeedsSignIn,
   type AccountSummary,
+  type FailureProps,
 } from "../../contracts/dashboard.ts";
-import { Empty, ProviderIcon } from "./common.tsx";
-import { cn } from "../lib/utils.ts";
+import { ProviderIcon } from "./common.tsx";
+import { EmptyState } from "./empty-state.tsx";
+import { Button, type ButtonProps } from "../components/button.tsx";
 
-/** Compact provider rows show the selected identities and the host's account actions. */
+/** Explain a provider's account limit and offer a separate profile when the host permits it. */
+export function ProviderAccountSupport({
+  requirement,
+  onCreateProfile,
+}: {
+  readonly requirement: AccountRequirement;
+  readonly onCreateProfile?: (() => void) | undefined;
+}) {
+  const many = requirement.cardinality === "many";
+  return (
+    <>
+      {many
+        ? `This app supports using multiple ${requirement.definition.name} accounts.`
+        : `This app only supports one ${requirement.definition.name} account${onCreateProfile ? ", create a" : "."}`}
+      {onCreateProfile && (
+        <>
+          {" "}
+          <Button
+            variant="link"
+            className="h-auto p-0 text-xs text-foreground"
+            aria-label="Create a profile"
+            onClick={onCreateProfile}
+          >
+            {many ? "Create a profile" : "profile"}
+          </Button>
+          {many ? "." : " to add more than one account."}
+        </>
+      )}
+    </>
+  );
+}
+
+/** Add an account or replace the binding for a provider that uses one account. */
+export function AccountSelectionTrigger({
+  requirement,
+  selection,
+  ...props
+}: ButtonProps & {
+  readonly requirement: AccountRequirement;
+  readonly selection: SelectedAccounts[string] | undefined;
+}) {
+  const switching = requirement.cardinality === "one" && typeof selection === "string";
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
+      aria-label={`${switching ? "Switch" : "Add"} ${requirement.definition.name} account`}
+      {...props}
+    >
+      <HugeiconsIcon
+        icon={switching ? ArrowDataTransferHorizontalIcon : Add01Icon}
+        size={14}
+        aria-hidden
+      />
+      {switching ? "Switch account" : "Add account"}
+    </Button>
+  );
+}
+
+/** Remove only this binding; keep the reusable account and every other provider selection. */
+export function RemoveAccountBinding<E>({
+  profile,
+  slot,
+  account,
+  label,
+  update,
+  Failure,
+}: {
+  readonly profile: Profile;
+  readonly slot: string;
+  readonly account: AccountId;
+  readonly label: string;
+  readonly update: Atom.AtomResultFn<
+    Omit<typeof ProfileInputs.update.Type, "app" | "profile">,
+    Profile,
+    E
+  >;
+  readonly Failure: ComponentType<FailureProps<E>>;
+}) {
+  const save = useAtomSet(update, { mode: "promiseExit" });
+  const result = useAtomValue(update);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<Cause.Cause<E>>();
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={`Remove ${label}`}
+        title="Remove from this profile"
+        className="shrink-0 text-muted-foreground hover:text-destructive [@media(hover:hover)]:opacity-0 group-hover/account:opacity-100 group-focus-within/account:opacity-100 focus-visible:opacity-100 data-loading:opacity-100"
+        loading={pending}
+        disabled={AsyncResult.isWaiting(result) || profile.status === "removing"}
+        onClick={async () => {
+          const current = profile.accounts[slot];
+          const accounts: SelectedAccounts = Object.fromEntries(
+            Object.entries(profile.accounts).filter(([name]) => name !== slot),
+          );
+          const next =
+            current !== undefined && typeof current !== "string"
+              ? { ...accounts, [slot]: current.filter((id) => id !== account) }
+              : accounts;
+          setError(undefined);
+          setPending(true);
+          const saved = await save({ accounts: next, expectedRevision: profile.revision });
+          setPending(false);
+          if (Exit.isFailure(saved)) setError(saved.cause);
+        }}
+      >
+        <HugeiconsIcon icon={Cancel01Icon} size={13} aria-hidden />
+      </Button>
+      {error && (
+        <div className="basis-full text-xs">
+          <Failure cause={error} />
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Provider rows show the account bindings inside one profile or its editor. */
 export function AppAccounts({
   app,
   accounts,
   chooseAction,
   reconnectAction,
   accountActions,
+  removeAccountAction,
+  onCreateProfile,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
   readonly chooseAction?: ReactNode;
   readonly reconnectAction?: (account: AccountSummary) => ReactNode;
   readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
+  readonly removeAccountAction?: (slot: string, account: AccountId, label: string) => ReactNode;
+  readonly onCreateProfile?: (() => void) | undefined;
 }) {
   const { AccountLink } = useDashboard();
   const requirements = Object.entries(app.requirements.accounts);
-  const issues = accountSelectionIssues(app, accounts);
+  if (requirements.length === 0)
+    return (
+      <EmptyState size="compact" title="No accounts required">
+        This app can run without a saved account.
+      </EmptyState>
+    );
   return (
-    <div className="accounts-section flex min-h-full flex-col">
-      <div
-        className={cn(
-          "p-7 max-[740px]:p-4",
-          requirements.length === 0 && "flex flex-1 items-center justify-center",
-        )}
-      >
-        {requirements.length > 0 && chooseAction && (
-          <div className="mb-4 flex max-w-185 justify-end">{chooseAction}</div>
-        )}
-        {requirements.length === 0 ? (
-          <Empty title="No accounts required">This app can run without a saved account.</Empty>
-        ) : (
-          <div className="requirements-list max-w-185 overflow-hidden rounded-lg border border-border">
-            {requirements.map(([slot, requirement]) => {
-              const selection = app.accounts[slot];
-              const ids = typeof selection === "string" ? [selection] : (selection ?? []);
-              return (
-                <section
-                  key={slot}
-                  aria-label={
-                    requirements.length > 1
-                      ? `${requirement.definition.name} (${slot})`
-                      : requirement.definition.name
-                  }
-                  className="requirement flex items-center gap-3.5 p-4 [&+.requirement]:border-t max-[480px]:flex-wrap"
-                >
-                  <ProviderIcon
-                    name={requirement.definition.name}
-                    url={providerDisplayUrl(requirement.definition)}
+    <div className="accounts-section space-y-5">
+      {requirements.map(([slot, requirement]) => {
+        const selected = app.accounts[slot];
+        const ids = typeof selected === "string" ? [selected] : (selected ?? []);
+        const action = accountActions?.(slot, requirement) ?? chooseAction;
+        const showSlot = requirements.some(
+          ([otherSlot, other]) =>
+            otherSlot !== slot && other.definition.name === requirement.definition.name,
+        );
+        return (
+          <section
+            key={slot}
+            aria-label={
+              requirements.length > 1
+                ? `${requirement.definition.name} (${slot})`
+                : requirement.definition.name
+            }
+            className="min-w-0 space-y-2.5"
+          >
+            <div className="flex min-h-8 min-w-0 items-center gap-2.5 text-sm [&_.provider-icon]:size-7 [&_.provider-icon]:rounded-md [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40">
+              <ProviderIcon
+                name={requirement.definition.name}
+                url={providerDisplayUrl(requirement.definition)}
+              />
+              <div className="min-w-0">
+                <p className="truncate font-medium">{requirement.definition.name}</p>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {showSlot && `${slot} · `}
+                  <ProviderAccountSupport
+                    requirement={requirement}
+                    onCreateProfile={onCreateProfile}
                   />
-                  <div className="min-w-0 flex-1 max-[480px]:min-w-[calc(100%-52px)]">
-                    <h3 className="text-sm font-medium">
-                      {requirement.definition.name}
-                      {requirements.length > 1 && (
-                        <span className="ml-2 text-xs font-normal text-muted-foreground">
-                          {slot}
-                        </span>
-                      )}
-                    </h3>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                      {ids.map((id, index) => {
-                        const account = accounts.find((item) => item.id === id);
-                        return (
-                          <span
-                            key={id}
-                            className="inline-flex min-w-0 items-center gap-2 break-words"
-                          >
-                            {index > 0 && <span aria-hidden>·</span>}
+                </p>
+              </div>
+              <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+                {ids.length === 0
+                  ? "No accounts"
+                  : `${ids.length} ${ids.length === 1 ? "account" : "accounts"}`}
+              </span>
+            </div>
+            {(ids.length > 0 || action) && (
+              <div
+                className={
+                  ids.length === 0
+                    ? "overflow-hidden rounded-lg border border-dashed"
+                    : "overflow-hidden rounded-lg border"
+                }
+              >
+                {ids.length > 0 && (
+                  <ul className="divide-y divide-border/50 text-[13px]">
+                    {ids.map((id) => {
+                      const account = accounts.find((item) => item.id === id);
+                      return (
+                        <li
+                          key={id}
+                          className="group/account flex min-h-10 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2 transition-colors hover:bg-muted/25 focus-within:bg-muted/25"
+                        >
+                          <HugeiconsIcon
+                            icon={UserCircleIcon}
+                            size={16}
+                            className="shrink-0 text-muted-foreground"
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1 break-words [&_a:hover]:underline">
                             {account ? (
-                              <>
-                                <span className="text-foreground/80 hover:text-foreground hover:underline">
-                                  <AccountLink account={account.id}>
-                                    {account.label || "Unnamed account"}
-                                  </AccountLink>
-                                </span>
-                                {accountNeedsSignIn(account) ? (
-                                  <>
-                                    <span className="text-sign-in-warning">Needs sign-in</span>
-                                    {reconnectAction?.(account)}
-                                  </>
-                                ) : account.signIn?.state === "unavailable" ? (
-                                  <span className="text-destructive">Unavailable</span>
-                                ) : null}
-                              </>
+                              <AccountLink account={id}>
+                                {account.label || "Unnamed account"}
+                              </AccountLink>
                             ) : (
-                              <>
-                                <span className="text-destructive">Account disconnected</span>
-                                {chooseAction}
-                              </>
+                              "Account disconnected"
                             )}
                           </span>
-                        );
-                      })}
-                      {ids.length === 0 && (
-                        <span>
-                          {issues.some((issue) => issue.slot === slot)
-                            ? "No account connected"
-                            : "No account needed"}
-                        </span>
-                      )}
-                    </div>
+                          {account && accountNeedsSignIn(account) ? (
+                            <span className="flex items-center gap-2 text-xs text-sign-in-warning">
+                              Needs sign-in{reconnectAction?.(account)}
+                            </span>
+                          ) : account?.signIn?.state === "unavailable" ? (
+                            <span className="text-xs text-sign-in-warning">Unavailable</span>
+                          ) : null}
+                          {removeAccountAction?.(
+                            slot,
+                            id,
+                            account?.label || "Account disconnected",
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {action && (
+                  <div className={ids.length > 0 ? "border-t border-border/50" : undefined}>
+                    {action}
                   </div>
-                  {accountActions && (
-                    <div className="flex shrink-0 flex-wrap items-center gap-2 max-[480px]:ml-[48px]">
-                      {accountActions(slot, requirement)}
-                    </div>
-                  )}
-                </section>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }

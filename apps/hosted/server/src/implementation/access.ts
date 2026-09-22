@@ -1,6 +1,12 @@
-import { requireAppAccess, requireAccountAccess } from "./resource-policy.ts";
+import { StorageError } from "@executor-js/sdk/core";
+import {
+  requireAppAccess,
+  requireAccountAccess,
+  currentResourceAuthority,
+} from "./resource-policy.ts";
 import type {
   AppId,
+  ProfileId,
   AccountConnectionId,
   Executor,
   OwnerId,
@@ -40,12 +46,38 @@ export const checkAccounts = (executor: Executor, owner: OwnerId, accounts: Sele
     }
   });
 /** Check both the configured app and every selected account before evaluating its code. */
-export const selectedApp = (executor: Executor, owner: OwnerId, app: AppId) =>
+export const selectedApp = (executor: Executor, owner: OwnerId, app: AppId, profile?: ProfileId) =>
   Effect.gen(function* () {
     yield* requireAppAccess(app, "use");
     const current = yield* executor.apps.get({ owner, app });
     yield* checkAccounts(executor, owner, current.accounts);
+    if (profile !== undefined) {
+      const selected = yield* ownProfile(executor, owner, app, profile);
+      yield* checkAccounts(executor, owner, selected.accounts);
+    }
     return current;
+  });
+/** Setup identity remains private even when every selected account is shared. Allows own cleanup after revocation. */
+export const ownProfile = (executor: Executor, owner: OwnerId, app: AppId, profile: ProfileId) =>
+  Effect.gen(function* () {
+    const actor = yield* currentResourceAuthority;
+    const selected = yield* executor.apps.profiles.get({ app, owner, profile }).pipe(
+      Effect.catchTags({
+        ProfileNotFound: () => new OrganizationForbidden(),
+        ProfileConflict: () => new StorageError(),
+        AccountSelectionInvalid: () => new StorageError(),
+      }),
+    );
+    if (selected.subject !== actor.user) return yield* new OrganizationForbidden();
+    return selected;
+  });
+/** Fixed service resources require app management; personal resources require their subject. */
+export const executionManagerOwner = (executor: Executor, app: AppId, profile?: ProfileId) =>
+  Effect.gen(function* () {
+    const owner = yield* currentOwner;
+    if (profile === undefined) yield* requireAppAccess(app, "manage");
+    else yield* ownProfile(executor, owner, app, profile);
+    return owner;
   });
 /** A connection must still belong to this organization, along with its optional target app. */
 export const ownedConnection = (
@@ -75,13 +107,17 @@ export const checkInvocationAccounts = (
   owner: OwnerId,
   invocation: import("@executor-js/sdk/core").ToolInvocation,
 ) =>
-  checkAccounts(
-    executor,
-    owner,
-    Object.fromEntries(
-      Object.entries(invocation.accounts).map(([slot, selected]) => [
-        slot,
-        "id" in selected ? selected.id : selected.map((account) => account.id),
-      ]),
-    ),
-  );
+  Effect.gen(function* () {
+    if (invocation.profile !== undefined)
+      yield* ownProfile(executor, owner, invocation.app, invocation.profile);
+    yield* checkAccounts(
+      executor,
+      owner,
+      Object.fromEntries(
+        Object.entries(invocation.accounts).map(([slot, selected]) => [
+          slot,
+          "id" in selected ? selected.id : selected.map((account) => account.id),
+        ]),
+      ),
+    );
+  });

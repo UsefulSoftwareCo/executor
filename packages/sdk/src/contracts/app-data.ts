@@ -1,3 +1,5 @@
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Framework data operations. Product hosts authenticate and authorize the configured app. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
@@ -10,6 +12,8 @@ import { OAuthReconnectRequired } from "./oauth.ts";
 /** Transportable invocation, independent of closures, credentials or server module imports. */
 export const AppDataInput = Schema.Struct({
   app: AppId,
+  profile: Schema.optional(ProfileId),
+  expectedProfileRevision: Schema.optional(ProfileRevision),
   deployment: Schema.optional(DeploymentId),
   name: Schema.NonEmptyString,
   input: Json,
@@ -36,6 +40,7 @@ export class AppDataFailed extends Schema.TaggedError<AppDataFailed>()(
 ) {}
 
 const errors = [
+  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,

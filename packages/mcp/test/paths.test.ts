@@ -24,6 +24,7 @@ const setup = (apps: readonly (typeof first)[]) => {
     listSkills: () => Effect.die("Unexpected skill listing"),
     readSkill: () => Effect.die("Unexpected skill read"),
     authorizeElicitation: () => Effect.void,
+    listTargets: () => Effect.succeed([{ kind: "app" }]),
     listApps: () => Effect.succeed(apps),
     listTools: ({ app }) =>
       Effect.succeed({

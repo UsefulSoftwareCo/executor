@@ -9,7 +9,7 @@ import { localRequest } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
 /** Local access and documentation I/O for the shared MCP implementation. */
-import { makeMcp, type McpBackend, type McpLimits } from "@executor-js/mcp";
+import { makeMcp, appTargets, type McpBackend, type McpLimits } from "@executor-js/mcp";
 import {
   ElicitationFailed,
   type Executor,
@@ -26,6 +26,15 @@ export const localMcpBackend = (executor: Executor) =>
     readSkill: (input) => executor.skills.read(input),
     authorizeElicitation: () => Effect.void,
     listApps: (input = {}) => executor.apps.list(input),
+    listTargets: (input) =>
+      Effect.gen(function* () {
+        const app = yield* executor.apps.get(input);
+        return appTargets(
+          app,
+          yield* executor.apps.profiles.list(input),
+          yield* executor.accounts.list({ owner: app.owner }),
+        );
+      }),
     listTools: (input) => executor.tools.list(input),
     callTool: (input, options?: ToolInvocationOptions) => executor.tools.call(input, options),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
@@ -45,6 +54,7 @@ export const localMcp = (
         listSkills: () => Effect.fail(new LocalMcpUnauthorized()),
         readSkill: () => Effect.fail(new LocalMcpUnauthorized()),
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
+        listTargets: () => Effect.fail(new LocalMcpUnauthorized()),
         listTools: () => Effect.fail(new LocalMcpUnauthorized()),
         callTool: () => Effect.fail(new LocalMcpUnauthorized()),
         resumeInvocation: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -68,6 +78,7 @@ export const localMcp = (
         listSkills: (input) => Effect.flatMap(RequestBackend, (b) => b.listSkills(input)),
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
+        listTargets: (input) => Effect.flatMap(RequestBackend, (b) => b.listTargets(input)),
         listTools: (input) => Effect.flatMap(RequestBackend, (b) => b.listTools(input)),
         callTool: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.callTool(input, options)),

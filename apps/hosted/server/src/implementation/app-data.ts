@@ -43,7 +43,7 @@ export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
       return yield* new OrganizationForbidden();
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app);
+    yield* selectedApp(executor, owner, input.app, input.profile);
     return yield* executor.appData[kind](input);
   });
 /** Shared routes; the host supplies request-owned SDK and authentication services. */
@@ -64,7 +64,7 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           const headers = new Headers(request.headers);
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
-          yield* selectedApp(executor, owner, params.app);
+          yield* selectedApp(executor, owner, params.app, payload.profile);
           const access = currentAccess(
             headers,
             (yield* CurrentOrganization).organization,
@@ -72,7 +72,9 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           ).pipe(
             Effect.provideService(Authentication, auth),
             Effect.provideService(ApiAuthentication, api),
-            Effect.tap((access) => selectedApp(executor, access.owner, params.app)),
+            Effect.tap((access) =>
+              selectedApp(executor, access.owner, params.app, payload.profile),
+            ),
           );
           const context = yield* Effect.context<Effect.Services<typeof access>>();
           const authorized = access.pipe(Effect.provideContext(context));

@@ -90,6 +90,7 @@ export const HostedWorkflow = Schema.Struct({
 export type HostedWorkflow = typeof HostedWorkflow.Type;
 
 const runFields = {
+  profile: Schema.optionalKey(Schema.NonEmptyString),
   id: WorkflowRunId,
   app: Schema.NonEmptyString,
   deployment: Schema.NonEmptyString,

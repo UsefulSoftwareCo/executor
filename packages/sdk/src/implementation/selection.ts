@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import {
   AccountSelectionInvalid,
   type AppRequirements,
-  type SelectedAccounts,
+  SelectedAccounts,
 } from "../contracts/apps.ts";
 import { type AppId, StorageError } from "../contracts/shared.ts";
 import { AccountNotFound } from "../contracts/account.ts";
@@ -60,4 +60,24 @@ export const validateSelection = (
       }),
     );
     return new Map(selections.map((selection) => [selection.slot, selection]));
+  });
+
+/** A fixed binding cannot take over a slot already used by any live personal profile. */
+export const assertFixedSlotsAvailable = (db: Query, app: AppId, slots: readonly string[]) =>
+  Effect.gen(function* () {
+    if (slots.length === 0) return;
+    const profiles = yield* query(() =>
+      db.findMany("profiles", {
+        where: (b) => b.and(b("app", "=", app), b("status", "!=", "removed")),
+        select: ["accounts"],
+      }),
+    );
+    for (const profile of profiles) {
+      const bindings = yield* Schema.decodeUnknownEffect(SelectedAccounts)(profile.accounts).pipe(
+        Effect.mapError(() => new StorageError()),
+      );
+      for (const slot of slots)
+        if (Object.hasOwn(bindings, slot))
+          return yield* new AccountSelectionInvalid({ app, slot, reason: "profile_bound" });
+    }
   });

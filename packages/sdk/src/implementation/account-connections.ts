@@ -9,7 +9,7 @@ import {
 import { AccountNotFound } from "../contracts/account.ts";
 import { AuthMethodInvalid, Provider, ProviderNotFound } from "../contracts/provider.ts";
 import { StorageError, AccountConnectionId } from "../contracts/shared.ts";
-import type { Credentials } from "../contracts/storage.ts";
+import { StoredConnectionTarget, type Credentials } from "../contracts/storage.ts";
 import { makeAccounts, ownedAccount } from "./accounts.ts";
 import {
   openConnection,
@@ -52,7 +52,12 @@ export const makeAccountConnections = (
         target:
           row.target === null
             ? null
-            : { app: row.target.app, requirement: row.target.requirement, name: row.target.name },
+            : {
+                app: row.target.app,
+                requirement: row.target.requirement,
+                name: row.target.name,
+                ...(row.target.profile === undefined ? {} : { profile: row.target.profile }),
+              },
         createdAt: row.createdAt,
         expiresAt: row.expiresAt,
         state: row.state,
@@ -77,12 +82,15 @@ export const makeAccountConnections = (
           `con_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
         );
         const now = yield* Clock.currentTimeMillis;
+        const target = yield* Schema.encodeEffect(Schema.NullOr(StoredConnectionTarget))(
+          destination.snapshot,
+        ).pipe(Effect.mapError(() => new StorageError()));
         yield* query(() =>
           db.create("accountConnections", {
             id,
             owner: input.owner,
             provider: resolved,
-            target: destination.snapshot,
+            target,
             reconnectAccount: input.account ?? null,
             state: { status: "pending" },
             oauthAttempt: null,

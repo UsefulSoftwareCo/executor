@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
 /** Bound query handle sharing the host connection and reactive transaction context. */
 export type Query = ReturnType<typeof database>;
 /** Select the latest migrated storage schema. */
-export const database = (storage: ExecutorDatabase) => storage.orm("1.12.0");
+export const database = (storage: ExecutorDatabase) => storage.orm("3.0.0");
 /** Run a lazy native query without leaking SQL or driver details. */
 export const query = <A, E, R>(work: () => Effect.Effect<A, E, R>) =>
   Effect.suspend(work).pipe(

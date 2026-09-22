@@ -41,11 +41,19 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
+        const profile = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/profiles`, {
+            accounts: {},
+            idempotencyKey: randomUUID(),
+          }),
+        );
         for (const label of ["First account", "Second account"]) {
           const connection = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
               requirement: "primary",
+              profile: profile.id,
             }),
           );
           const saved = yield* api.request(
@@ -58,18 +66,26 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
           accounts.push((yield* body(Resource, saved)).id);
         }
         yield* browser.login(actors.owner);
-        const url = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
+        const url = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts&profile=${profile.id}`;
         yield* browser.use("Open app accounts", (page) => page.goto(url));
         yield* browser.use("Change the saved account in place", (page) =>
           page
             .getByRole("region", { name: "Account fixture (primary)", exact: true })
-            .getByRole("button", { name: "Change account", exact: true })
+            .getByRole("button", { name: "Switch Account fixture account", exact: true })
             .click(),
         );
+        expect(
+          yield* browser.use("Already selected scalar account is absent from the chooser", (page) =>
+            page
+              .getByRole("dialog")
+              .getByRole("button", { name: /Second account/ })
+              .count(),
+          ),
+        ).toBe(0);
         yield* browser.checkpoint("Saved account picker");
         const failure = yield* holdQuery(
           [actors.organization.slug, actors.organization.id].map(
-            (id) => `/api/organizations/${id}/apps/${app.id}/accounts`,
+            (id) => `/api/organizations/${id}/apps/${app.id}/profiles/${profile.id}`,
           ),
           "fail",
           { method: "PATCH" },
@@ -104,7 +120,9 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
             .click(),
         );
         yield* browser.use("Picker closes after the confirmed save", (page) =>
-          page.getByRole("dialog").waitFor({ state: "hidden" }),
+          page
+            .getByRole("dialog", { name: "Account fixture accounts", exact: true })
+            .waitFor({ state: "hidden" }),
         );
         const selected = yield* body(
           Schema.Struct({
@@ -113,7 +131,11 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
               Schema.Union([Schema.String, Schema.Array(Schema.String)]),
             ),
           }),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
         );
         expect(selected.accounts.primary).toBe(accounts[0]);
         expect(
@@ -124,7 +146,7 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
         yield* browser.use("Choose several saved accounts", (page) =>
           page
             .getByRole("region", { name: "Account fixture (mailboxes)", exact: true })
-            .getByRole("button", { name: "Use saved account", exact: true })
+            .getByRole("button", { name: "Add Account fixture account", exact: true })
             .click(),
         );
         yield* browser.use("Select the first mailbox", (page) =>
@@ -169,22 +191,186 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
               .isChecked(),
           ),
         ).toBe(true);
-        yield* browser.use("Save both mailboxes together", (page) =>
-          page.getByRole("button", { name: "Use selected accounts", exact: true }).click(),
+        const savedBoth = yield* browser.use("Save both mailboxes together", (page) =>
+          Promise.all([
+            page.waitForResponse(
+              (response) =>
+                response.request().method() === "PATCH" &&
+                new URL(response.url()).pathname.endsWith(`/profiles/${profile.id}`),
+            ),
+            page.getByRole("button", { name: "Use selected accounts", exact: true }).click(),
+          ]).then(([response]) => response.status()),
         );
+        expect(savedBoth).toBe(200);
         yield* browser.use("Both accounts remain selected", (page) =>
           page
             .getByRole("region", { name: "Account fixture (mailboxes)", exact: true })
             .getByRole("link", { name: "Second account", exact: true })
             .waitFor({ state: "visible" }),
         );
+        yield* Effect.gen(function* () {
+          yield* browser.use("All saved accounts added opens a focused connection modal", (page) =>
+            page
+              .getByRole("region", { name: "Account fixture (mailboxes)", exact: true })
+              .getByRole("button", { name: "Add Account fixture account", exact: true })
+              .click(),
+          );
+          const dialog = yield* browser.use(
+            "All saved accounts added opens a focused connection modal",
+            (page) =>
+              Promise.resolve(
+                page.getByRole("dialog", {
+                  name: "Connect a new Account fixture account",
+                  exact: true,
+                }),
+              ),
+          );
+          yield* browser.use("All saved accounts added opens a focused connection modal", () =>
+            dialog.waitFor(),
+          );
+          yield* browser.use("All saved accounts added opens a focused connection modal", () =>
+            dialog.getByRole("button", { name: "Connect Account fixture", exact: true }).waitFor(),
+          );
+          expect(
+            yield* browser.use("All saved accounts added opens a focused connection modal", () =>
+              dialog.getByRole("button", { name: "Use selected accounts", exact: true }).count(),
+            ),
+          ).toBe(0);
+          expect(
+            yield* browser.use("All saved accounts added opens a focused connection modal", () =>
+              dialog
+                .getByRole("button", { name: "Stop using these accounts", exact: true })
+                .count(),
+            ),
+          ).toBe(0);
+          yield* browser.use("All saved accounts added opens a focused connection modal", () =>
+            dialog.press("Escape"),
+          );
+        });
+        yield* Effect.gen(function* () {
+          const provider = yield* browser.use("Remove one mailbox from the profile", (page) =>
+            Promise.resolve(
+              page.getByRole("region", {
+                name: "Account fixture (mailboxes)",
+                exact: true,
+              }),
+            ),
+          );
+          yield* browser.use("Remove one mailbox from the profile", () =>
+            provider.getByRole("link", { name: "Second account", exact: true }).hover(),
+          );
+          yield* browser.use("Remove one mailbox from the profile", () =>
+            provider.getByRole("button", { name: "Remove Second account", exact: true }).click(),
+          );
+          yield* browser.use("Remove one mailbox from the profile", () =>
+            provider
+              .getByRole("link", { name: "Second account", exact: true })
+              .waitFor({ state: "hidden" }),
+          );
+        });
+        const afterMailboxRemoval = yield* body(
+          Schema.Struct({
+            accounts: Schema.Record(
+              Schema.String,
+              Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+            ),
+          }),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
+        );
+        expect(afterMailboxRemoval.accounts).toEqual({
+          primary: accounts[0],
+          mailboxes: [accounts[0]],
+        });
+        yield* Effect.gen(function* () {
+          yield* browser.use("Only accounts not yet added appear in the mailbox chooser", (page) =>
+            page
+              .getByRole("region", { name: "Account fixture (mailboxes)", exact: true })
+              .getByRole("button", { name: "Add Account fixture account", exact: true })
+              .click(),
+          );
+          const dialog = yield* browser.use(
+            "Only accounts not yet added appear in the mailbox chooser",
+            (page) =>
+              Promise.resolve(
+                page.getByRole("dialog", {
+                  name: "Account fixture accounts",
+                  exact: true,
+                }),
+              ),
+          );
+          expect(
+            yield* browser.use("Only accounts not yet added appear in the mailbox chooser", () =>
+              dialog.getByRole("checkbox", { name: /First account/ }).count(),
+            ),
+          ).toBe(0);
+          yield* browser.use("Only accounts not yet added appear in the mailbox chooser", () =>
+            dialog.getByRole("checkbox", { name: /Second account/ }).waitFor(),
+          );
+          yield* browser.use("Only accounts not yet added appear in the mailbox chooser", () =>
+            dialog.getByRole("button", { name: "Use selected accounts", exact: true }).click(),
+          );
+          yield* browser.use("Only accounts not yet added appear in the mailbox chooser", () =>
+            dialog.waitFor({ state: "hidden" }),
+          );
+        });
+        yield* Effect.gen(function* () {
+          const provider = yield* browser.use(
+            "Remove the scalar binding without deleting its saved account",
+            (page) =>
+              Promise.resolve(
+                page.getByRole("region", {
+                  name: "Account fixture (primary)",
+                  exact: true,
+                }),
+              ),
+          );
+          yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
+            provider.getByRole("link", { name: "First account", exact: true }).hover(),
+          );
+          yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
+            provider.getByRole("button", { name: "Remove First account", exact: true }).click(),
+          );
+          yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
+            provider.getByText("No accounts", { exact: true }).waitFor(),
+          );
+          yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
+            provider
+              .getByRole("button", { name: "Add Account fixture account", exact: true })
+              .waitFor(),
+          );
+        });
+        const afterScalarRemoval = yield* body(
+          Schema.Struct({
+            accounts: Schema.Record(
+              Schema.String,
+              Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+            ),
+          }),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
+        );
+        expect(afterScalarRemoval.accounts).toEqual({ mailboxes: [accounts[0]] });
+        for (const account of accounts)
+          expect(
+            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
+          ).toBe(200);
         for (const account of accounts)
           yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account}`, {
             label: "Default",
           });
         yield* browser.use("Reload duplicate account labels", (page) => page.goto(url));
         yield* browser.use("Distinguish identically named accounts", (page) =>
-          page.getByRole("button", { name: "Change account", exact: true }).click(),
+          page
+            .getByRole("region", { name: "Account fixture (primary)", exact: true })
+            .getByRole("button", { name: "Add Account fixture account", exact: true })
+            .click(),
         );
         const labels = yield* browser.use("Read duplicate choice details", (page) =>
           page
@@ -235,7 +421,6 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         );
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
-        const path = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
         const overview = `/org/${actors.organization.slug}/apps/${app.id}?view=overview`;
         yield* browser.use("Open the app overview", (page) => page.goto(overview));
         yield* browser.use("Wait for the overview account provider", (page) =>
@@ -244,14 +429,17 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
             .getByText("Browser fixture", { exact: true })
             .waitFor({ state: "visible" }),
         );
-        expect(
-          yield* browser.use("The overview offers a direct Connect action", (page) =>
+        yield* Effect.gen(function* () {
+          yield* browser.use("Select accounts without creating a setup first", (page) =>
             page
-              .getByRole("region", { name: "App accounts", exact: true })
-              .getByRole("button", { name: "Connect Browser fixture", exact: true })
-              .count(),
-          ),
-        ).toBe(1);
+              .getByRole("navigation", { name: "App navigation" })
+              .getByRole("link", { name: "Accounts", exact: true })
+              .click(),
+          );
+          yield* browser.use("Select accounts without creating a setup first", (page) =>
+            page.getByRole("button", { name: "Add Browser fixture account", exact: true }).click(),
+          );
+        });
         let created = 0;
         let connectionReads = 0;
         yield* browser.use("Observe connection creation and metadata reads", (page) =>
@@ -377,16 +565,22 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         yield* browser.use("Return directly to the same app", (page) =>
           page.getByRole("link", { name: "Back to app", exact: true }).click(),
         );
-        yield* browser.use("The app's connect button is ready again", (page) =>
-          page
-            .getByRole("button", { name: "Connect Browser fixture", exact: true })
-            .waitFor({ state: "visible" }),
+        yield* browser.use("Choose the account after cancellation", (page) =>
+          page.getByRole("button", { name: "Add Browser fixture account", exact: true }).click(),
         );
         expect(
           yield* browser.use("Cancellation retained the app and organization", (page) =>
-            page.evaluate(() => location.pathname + location.search),
+            page.evaluate(() => ({
+              path: location.pathname,
+              view: new URL(location.href).searchParams.get("view"),
+              profile: new URL(location.href).searchParams.get("profile"),
+            })),
           ),
-        ).toBe(path);
+        ).toEqual({
+          path: `/org/${actors.organization.slug}/apps/${app.id}`,
+          view: "accounts",
+          profile: expect.any(String),
+        });
         yield* browser.use("Open another attempt with the cached provider", (page) =>
           page.getByRole("button", { name: "Connect Browser fixture", exact: true }).click(),
         );

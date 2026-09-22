@@ -1,3 +1,4 @@
+import { ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
@@ -24,8 +25,10 @@ declare module "@tanstack/history" {
 export function parseAppSearch(search: Record<string, unknown>): {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
+  readonly profile?: ProfileId | undefined;
 } {
   return {
+    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),
   };
@@ -69,3 +72,12 @@ export function hostedPageTitle(
 /** Return providers through sign-in completion without changing the encoded final destination. */
 export const signInCallback = (redirect: string): string =>
   `/login?redirect=${encodeURIComponent(redirect)}`;
+
+/** Account setup targets an explicit personal selection, or starts a new one. */
+export function parseSetupSearch(search: Record<string, unknown>): {
+  profile?: ProfileId | undefined;
+} {
+  return {
+    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
+  };
+}

@@ -166,6 +166,7 @@ export class AccountSelectionInvalid extends Schema.TaggedError<AccountSelection
       "expected_many",
       "provider_mismatch",
       "duplicate_account",
+      "profile_bound",
     ]),
   },
   { httpApiStatus: 422, description: "Select accounts that match the app requirement." },

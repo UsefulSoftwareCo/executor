@@ -73,6 +73,9 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
         const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
         yield* browser.use("Pair the local browser", (page) => page.goto(url));
+        yield* browser.use("Local pairing completes before app navigation", (page) =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        );
         yield* checkToolAccountContext({
           url: `/apps/${app.id}`,
           work,

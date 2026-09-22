@@ -12,7 +12,7 @@ Read these files first:
 - `src/implementation/server.ts`: compose the tools with Effect's HTTP MCP transport.
 
 `McpBackend<E>` supplies `listApps`, `listSkills`, `readSkill`, `listTools`, `callTool`, `resumeInvocation`, and
-`authorizeElicitation`. The last operation rechecks access before a running tool
+`authorizeElicitation`, and `listTargets`. The last operation rechecks access before a running tool
 receives an answer.
 Approval-required calls carry the app framework's MCP form elicitation; resume
 passes the same accept/decline/cancel response to the SDK. Each operation keeps
@@ -69,3 +69,7 @@ Products authorize those accessors with browser cookies; they cannot be called
 through an MCP bearer grant. Browser mode returns `approvalUrl` and exposes a
 collector-only `resume({ requestId })` tool. It never accepts an agent-supplied
 decision. Browser answers are ephemeral and expire with their interaction.
+
+Personal profiles appear under `tools[appSlug].profiles[profileId]`.
+Tool descriptions include account labels. Skills remain one catalog per app and
+deployment. Discovery captures the profile revision used by the call.

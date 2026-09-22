@@ -63,6 +63,7 @@ test("undiscovered calls and resume recheck the live grant before side effects",
   const backend: McpBackend<Error> = {
     listSkills: () => Effect.die("Unexpected skill listing"),
     readSkill: () => Effect.die("Unexpected skill read"),
+    listTargets: () => Effect.succeed([{ kind: "app" }]),
     listApps: (input) =>
       Effect.sync(() => {
         assert.deepEqual(
@@ -124,6 +125,7 @@ test("discovery intersects caller IDs with current grants before reaching the ho
   const backend: McpBackend<Error> = {
     listSkills: () => Effect.die("Unexpected skill listing"),
     readSkill: () => Effect.die("Unexpected skill read"),
+    listTargets: () => Effect.succeed([{ kind: "app" }]),
     listApps: (input) =>
       Effect.sync(() => {
         requested.push(input?.ids);

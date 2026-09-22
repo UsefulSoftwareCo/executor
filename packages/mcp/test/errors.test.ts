@@ -19,6 +19,7 @@ const backend: McpBackend<ProviderUnavailable> = {
   listSkills: () => Effect.die("Unexpected skill listing"),
   readSkill: () => Effect.die("Unexpected skill read"),
   authorizeElicitation: () => Effect.void,
+  listTargets: () => Effect.succeed([{ kind: "app" }]),
   listApps: () => Effect.succeed([{ id: app, slug: AppSlug.make("fixture"), name: "Fixture" }]),
   listTools: () =>
     Effect.succeed({

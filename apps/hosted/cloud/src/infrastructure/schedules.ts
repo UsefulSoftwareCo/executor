@@ -1,4 +1,5 @@
 import { previewLifetime } from "./test-stage-expiry.ts";
+import { ProfileHost } from "@executor-js/sdk/core";
 import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -70,6 +71,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
             }),
           );
           // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
+          yield* executor[ProfileHost].tick(concurrency);
           yield* executor.scheduler.tick({
             runner: "cloud",
             maxCandidates: concurrency,

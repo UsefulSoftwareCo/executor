@@ -1,24 +1,34 @@
-import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
+import { AppResources } from "./app-resources.tsx";
+import { AppAccounts } from "./app-accounts.tsx";
+import { ProfileResources } from "@executor-js/ui/dashboard/profile-resources";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
-import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
-import { AppOverviewEntries } from "@executor-js/ui/dashboard/app-overview-entries";
-import { appBrowserBindings, appToolsCatalog } from "../../contracts/app-browser.ts";
+import {
+  AppOverviewEntries,
+  AppWorkflowPreview,
+} from "@executor-js/ui/dashboard/app-overview-entries";
+import { appBrowserBindings } from "../../contracts/app-browser.ts";
+import {
+  profilesAtom,
+  accountSelectionAtom,
+  profileMutations,
+  profileWebhooksAtom,
+} from "../../contracts/profiles.ts";
+import { accountContexts, selectedAccountContext } from "@executor-js/ui/dashboard/account-group";
+import { SetupDialog } from "@executor-js/ui/dashboard/setup-dialog";
+import { ProfilePicker } from "@executor-js/ui/dashboard/profile-picker";
+import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { AppAccessSettings } from "./resource-settings.tsx";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
-import type { AppView } from "@executor-js/ui/contracts/dashboard";
+import { accountSelectionIssues, type AppView } from "@executor-js/ui/contracts/dashboard";
 import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
-import {
-  AppDetailLoading,
-  AppSettingsLoading,
-  OverviewCardLoading,
-} from "@executor-js/ui/dashboard/app-loading";
+import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option } from "effect";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
-import { AppId, type App, type AccountRequirement } from "@executor-js/sdk";
+import { AppId, type App, type Profile, type ProfileId } from "@executor-js/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@executor-js/ui/components/button";
@@ -36,10 +46,10 @@ import {
   AppOverviewSource,
 } from "@executor-js/ui/dashboard/app-overview";
 import { appManagement } from "../../contracts/app-management.ts";
-import { AppAccounts, AppAccountActions } from "./app-accounts.tsx";
 import { QueryView, QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
 import {
-  appAtom,
+  toolsAtom,
+  liveAppAtom,
   acknowledgeApp,
   appError,
   removeAppAtom,
@@ -49,38 +59,106 @@ import { useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppDeployments } from "./app-source.tsx";
 
-/** Host routing and permissions surround the common local detail frame. */
+/** One selected profile supplies runtime bindings across the app page. */
 export function AppDetailPage({
   appId,
   view,
   tool,
   openApp,
+  profile,
 }: {
   readonly appId: string;
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
-  readonly openApp?: (app: App) => ReactNode;
+  readonly openApp?: (app: App, selected?: Profile) => ReactNode;
+  readonly profile?: ProfileId | undefined;
 }) {
   const { organization, role, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
   const atoms = useDashboardAtoms();
   const inventory = useQuery(atoms.inventory);
-  const { result, data, refresh } = useQuery(appAtom({ organization, app: AppId.make(appId) }));
-  const app = Option.isSome(data)
-    ? data.value
+  const query = useQuery(liveAppAtom({ organization, app: AppId.make(appId) }));
+  const app = Option.isSome(query.data)
+    ? query.data.value
     : Option.isSome(inventory.data)
       ? inventory.data.value.apps.find((item) => item.id === appId)
       : undefined;
   const selectedView = view ?? (tool === undefined ? "overview" : "tools");
+  const setups = useQuery(profilesAtom({ organization, app: AppId.make(appId) }));
   const authority = useQuery(appAccessAtom({ organization, app: AppId.make(appId) }));
-  const access = Option.isSome(authority.data) ? authority.data.value : undefined;
-  const canInspectSource = access?.canManage === true;
-  const canUse = access?.canUse === true;
+  const access = Option.getOrUndefined(authority.data);
+  const canManage = access?.canManage === true,
+    canUse = access?.canUse === true;
+  const [setupRequest, setSetupRequest] = useState<string>();
+  const inventoryData = Option.isSome(inventory.data) ? inventory.data.value : undefined;
+  const choices =
+    app && inventoryData && Option.isSome(setups.data)
+      ? accountContexts(app, setups.data.value, true)
+      : [];
+  const selected = selectedAccountContext(choices, profile);
+  const selectedId = selected?.profile?.id;
+  const personal =
+    app !== undefined &&
+    Object.keys(app.requirements.accounts).some((slot) => !Object.hasOwn(app.accounts, slot));
+  useEffect(() => {
+    if (profile === undefined && selectedId !== undefined) {
+      void navigate({
+        to: "/org/$organizationSlug/apps/$appId",
+        params: { organizationSlug, appId },
+        search: { view: selectedView, tool, profile: selectedId },
+        replace: true,
+      });
+    }
+  }, [profile, selectedId, navigate, appId, selectedView, tool, organizationSlug]);
+  const select = (id: ProfileId | undefined, nextView: AppView = selectedView) => {
+    void navigate({
+      to: "/org/$organizationSlug/apps/$appId",
+      params: { organizationSlug, appId },
+      search: { view: nextView, profile: id },
+    });
+  };
+  const empty = (
+    <div className="space-y-3 p-5 text-sm text-muted-foreground">
+      <p>
+        {profile !== undefined
+          ? "This profile is unavailable. Choose another profile in Accounts."
+          : "Choose accounts in Accounts to start using this app."}
+      </p>
+      <Button variant="outline" size="sm" onClick={() => select(undefined, "accounts")}>
+        Go to Accounts
+      </Button>
+    </div>
+  );
+  const setupActions = app && selected?.profile && (
+    <ProfileResources
+      key={selected.key}
+      profile={selected.profile}
+      label={selected.label}
+      update={
+        profileMutations({
+          organization,
+          app: app.id,
+          profile: selected.profile.id,
+        }).update
+      }
+      hooks={profileWebhooksAtom({
+        organization,
+        app: app.id,
+        profile: selected.profile.id,
+      })}
+      Failure={HostedFailure}
+      setupLink={(hook) => (
+        <Button variant="outline" size="sm" asChild>
+          <a href={`/org/${organizationSlug}/webhooks/${app.id}/${hook.id}`}>Complete setup</a>
+        </Button>
+      )}
+    />
+  );
   const pending = (
     <AppDetailLoading
       view={selectedView}
       app={app}
-      canInspectSource={canInspectSource}
+      canInspectSource={canManage}
       selectedTool={tool}
     />
   );
@@ -89,7 +167,7 @@ export function AppDetailPage({
       key={appId}
       app={app}
       view={selectedView}
-      canInspectSource={canInspectSource}
+      canInspectSource={canManage}
       back={
         <Link
           to="/org/$organizationSlug/apps"
@@ -100,41 +178,61 @@ export function AppDetailPage({
           Apps
         </Link>
       }
+      setupPicker={
+        choices.length > 1 &&
+        canUse && (
+          <ProfilePicker
+            contexts={choices}
+            selected={selected}
+            onSelect={(context) => select(context.profile?.id)}
+            management={
+              selected?.profile
+                ? {
+                    setEnabled: profileMutations({
+                      organization,
+                      app: selected.app.id,
+                      profile: selected.profile.id,
+                    }).setEnabled,
+                    remove: profileMutations({
+                      organization,
+                      app: selected.app.id,
+                      profile: selected.profile.id,
+                    }).remove,
+                    Failure: HostedFailure,
+                    onRemoved: () => select(undefined, "accounts"),
+                  }
+                : undefined
+            }
+          />
+        )
+      }
       actions={
         app === undefined || access === undefined ? (
           <Skeleton className="h-9 w-28 max-[740px]:h-11" />
         ) : (
           <>
-            {canUse && openApp?.(app)}
-            {canInspectSource && (
-              <>
-                {(role === "owner" || role === "admin") && (
-                  <PublishApp
-                    app={app}
-                    atoms={appManagement(organization)}
-                    Failure={HostedFailure}
-                  />
-                )}
-                <CopyApp
-                  key={app.id}
-                  Failure={HostedFailure}
-                  app={app}
-                  atoms={appManagement(organization)}
-                  onApp={(get, saved) => acknowledgeApp(get, organization, saved)}
-                  onCopied={(copy) =>
-                    navigate({
-                      to: "/org/$organizationSlug/apps/$appId",
-                      params: { organizationSlug, appId: copy.id },
-                      search: { view: "source" },
-                    })
-                  }
-                />
-              </>
+            {canUse && selected !== undefined && openApp?.(app, selected.profile)}
+            {canManage && (role === "owner" || role === "admin") && (
+              <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
             )}
           </>
         )
       }
     >
+      {setupRequest && app && inventoryData && (
+        <SetupDialog
+          key={setupRequest}
+          app={app}
+          mutation={accountSelectionAtom({
+            organization,
+            app: app.id,
+            target: { kind: "new", request: setupRequest },
+          })}
+          Failure={HostedFailure}
+          onClose={() => setSetupRequest(undefined)}
+          onSaved={(saved) => select(saved.id, "accounts")}
+        />
+      )}
       <QueryResult
         result={authority.result}
         Failure={HostedFailure}
@@ -142,127 +240,48 @@ export function AppDetailPage({
         pending={pending}
       >
         {() => (
-          <QueryResult result={result} Failure={HostedFailure} retry={refresh} pending={pending}>
-            {(current) =>
-              selectedView === "skills" ? (
-                <AppSkills
-                  app={current}
-                  canEdit={canInspectSource}
-                  bindings={appBrowserBindings(organization, current)}
-                  Failure={HostedFailure}
-                />
-              ) : selectedView === "workflows" ? (
-                <AppWorkflows
-                  app={current}
-                  bindings={appBrowserBindings(organization, current)}
-                  Failure={HostedFailure}
-                />
-              ) : selectedView === "schedules" ? (
-                <AppSchedules
-                  app={current}
-                  canEdit={canInspectSource}
-                  bindings={scheduleBindings({ organization, app: current.id }, canInspectSource)}
-                  Failure={HostedFailure}
-                />
-              ) : selectedView === "overview" ? (
-                <AppOverview
-                  app={current}
-                  entries={
-                    <AppOverviewEntries
-                      app={current}
-                      bindings={appBrowserBindings(organization, current)}
-                      Failure={HostedFailure}
-                    />
-                  }
-                  tools={
-                    <QueryResult
-                      result={inventory.result}
-                      Failure={HostedFailure}
-                      retry={inventory.refresh}
-                      pending={
-                        <>
-                          <div className="mb-1 flex min-h-9 shrink-0 items-center border-b pb-3">
-                            <h3 className="text-sm font-medium">Tools</h3>
-                          </div>
-                          <div className="min-h-0 flex-1 overflow-auto">
-                            <OverviewCardLoading label="Loading tools preview" />
-                          </div>
-                        </>
-                      }
-                    >
-                      {(inventory) =>
-                        canUse ? (
-                          <AppOverviewTools
-                            app={current}
-                            accounts={inventory.accounts}
-                            query={appToolsCatalog(organization, current)}
-                            Failure={HostedFailure}
-                          />
-                        ) : (
-                          <p className="text-sm text-muted-foreground">
-                            This app is not shared with you. You can manage its settings.
-                          </p>
-                        )
-                      }
-                    </QueryResult>
-                  }
-                  accounts={
-                    <QueryResult
-                      result={inventory.result}
-                      Failure={HostedFailure}
-                      retry={inventory.refresh}
-                      pending={<OverviewCardLoading label="Loading accounts preview" />}
-                    >
-                      {(inventory) => (
-                        <AppOverviewAccounts
-                          app={current}
-                          accounts={inventory.accounts}
-                          {...(canInspectSource && current.activeDeployment !== null
-                            ? {
-                                accountActions: (slot: string, requirement: AccountRequirement) => (
-                                  <AppAccountActions
-                                    app={current}
-                                    slot={slot}
-                                    requirement={requirement}
-                                    accounts={inventory.accounts}
-                                    connectLabel="Connect"
-                                    redirectUri={inventory.accountSetup.redirectUri}
-                                  />
-                                ),
-                              }
-                            : {})}
-                        />
-                      )}
-                    </QueryResult>
-                  }
-                  source={
-                    canInspectSource && (
-                      <QueryView
-                        query={appManagement(organization).source(current.id)}
-                        Failure={HostedFailure}
-                        pending={
-                          <OverviewCardLoading
-                            label="Loading source preview"
-                            rows={2}
-                            description={false}
-                          />
-                        }
-                      >
-                        {(source) => <AppOverviewSource source={source} />}
-                      </QueryView>
-                    )
-                  }
-                />
-              ) : selectedView === "settings" ? (
-                access === undefined ? (
-                  <AppSettingsLoading app={current} />
-                ) : (
+          <QueryResult
+            result={query.result}
+            Failure={HostedFailure}
+            retry={query.refresh}
+            pending={pending}
+          >
+            {(current) => {
+              if (selectedView === "skills")
+                return (
+                  <AppSkills
+                    canEdit={canManage}
+                    app={current}
+                    bindings={appBrowserBindings(organization, current)}
+                    Failure={HostedFailure}
+                  />
+                );
+              if (selectedView === "settings")
+                return (
                   <AppSettings
                     app={current}
-                    renameAction={canInspectSource && <AppRename app={current} />}
-                    deleteAction={canInspectSource && <DeleteApp app={current} />}
+                    copyAction={
+                      canManage && (
+                        <CopyApp
+                          key={current.id}
+                          Failure={HostedFailure}
+                          app={current}
+                          atoms={appManagement(organization)}
+                          onApp={(get, saved) => acknowledgeApp(get, organization, saved)}
+                          onCopied={(copy) =>
+                            navigate({
+                              to: "/org/$organizationSlug/apps/$appId",
+                              params: { organizationSlug, appId: copy.id },
+                              search: { view: "source" },
+                            })
+                          }
+                        />
+                      )
+                    }
+                    renameAction={canManage && <AppRename app={current} />}
+                    deleteAction={canManage && <DeleteApp app={current} />}
                     notice={
-                      !canInspectSource &&
+                      !canManage &&
                       "The app creator and organization admins can rename or delete this app."
                     }
                   >
@@ -270,17 +289,13 @@ export function AppDetailPage({
                       <AppAccessSettings app={current.id} />
                     </section>
                   </AppSettings>
-                )
-              ) : selectedView === "source" ||
+                );
+              if (
+                selectedView === "source" ||
                 selectedView === "history" ||
-                selectedView === "deployments" ? (
-                access === undefined ? (
-                  <AppDetailLoading
-                    view={selectedView}
-                    app={current}
-                    canInspectSource={canInspectSource}
-                  />
-                ) : !canInspectSource ? (
+                selectedView === "deployments"
+              )
+                return !canManage ? (
                   <p className="p-5 text-sm text-muted-foreground">
                     The app creator and organization admins can inspect app source.
                   </p>
@@ -288,43 +303,188 @@ export function AppDetailPage({
                   <AppDeployments key={current.id} app={current} />
                 ) : (
                   <AppSource key={current.id} app={current} view={selectedView} />
-                )
-              ) : current.activeDeployment === null ? (
-                <EmptyStatePanel title="No deployment yet">
-                  Deploy this app before using its tools or selecting accounts.
-                </EmptyStatePanel>
-              ) : (
+                );
+              if (!canUse)
+                return (
+                  <p className="p-5 text-sm text-muted-foreground">
+                    This app is not shared with you. You can manage its settings.
+                  </p>
+                );
+              return (
                 <QueryResult
                   result={inventory.result}
                   Failure={HostedFailure}
                   retry={inventory.refresh}
                   pending={pending}
                 >
-                  {(inventory) =>
-                    selectedView === "tools" ? (
-                      canUse ? (
-                        <AppTools
-                          app={current}
-                          accounts={inventory.accounts}
-                          selected={tool}
-                          redirectUri={inventory.accountSetup.redirectUri}
-                        />
-                      ) : (
-                        <p className="p-5 text-sm text-muted-foreground">
-                          This app is not shared with you. You can manage its settings.
-                        </p>
-                      )
-                    ) : (
-                      <AppAccounts
-                        app={current}
-                        accounts={inventory.accounts}
-                        redirectUri={inventory.accountSetup.redirectUri}
-                      />
-                    )
-                  }
+                  {(inventory) => (
+                    <QueryResult
+                      result={setups.result}
+                      Failure={HostedFailure}
+                      retry={setups.refresh}
+                      pending={pending}
+                    >
+                      {(entries) => {
+                        const contexts = accountContexts(current, entries);
+                        const previewContexts = contexts.filter(
+                          (context) =>
+                            accountSelectionIssues(context.app, inventory.accounts).length === 0,
+                        );
+                        const previewEmpty =
+                          contexts.length > 0 ? (
+                            <p className="py-5 text-sm text-muted-foreground">
+                              Finish account setup in Accounts to load this preview.
+                            </p>
+                          ) : (
+                            empty
+                          );
+                        const context = selectedAccountContext(
+                          accountContexts(current, entries, true),
+                          profile,
+                        );
+                        if (selectedView === "tools")
+                          return context === undefined ? (
+                            empty
+                          ) : (
+                            <AppTools
+                              key={context.key}
+                              app={context.app}
+                              profile={context.profile}
+                              accounts={inventory.accounts}
+                              selected={tool}
+                            />
+                          );
+                        if (selectedView === "workflows" || selectedView === "webhooks")
+                          return context === undefined ? (
+                            empty
+                          ) : (
+                            <AppResources
+                              key={context.key}
+                              context={context}
+                              view={selectedView}
+                              editable={context.profile !== undefined || canManage}
+                            />
+                          );
+                        if (selectedView === "schedules")
+                          return context === undefined ? (
+                            empty
+                          ) : (
+                            <AppSchedules
+                              app={current}
+                              canEdit={canManage}
+                              key={context.key}
+                              enabled={context.profile?.enabled !== false}
+                              bindings={scheduleBindings(
+                                {
+                                  organization,
+                                  app: current.id,
+                                  profile: context.profile?.id,
+                                },
+                                context.profile === undefined ? canManage : context.profile.enabled,
+                              )}
+                              Failure={HostedFailure}
+                            />
+                          );
+                        if (selectedView === "overview")
+                          return (
+                            <AppOverview
+                              app={current}
+                              entries={
+                                <AppOverviewEntries
+                                  app={current}
+                                  bindings={appBrowserBindings(organization, current)}
+                                  workflows={
+                                    <AppWorkflowPreview
+                                      empty={previewEmpty}
+                                      Failure={HostedFailure}
+                                      sources={previewContexts.map((context) => ({
+                                        key: context.key,
+                                        query: appBrowserBindings(
+                                          organization,
+                                          context.app,
+                                          context.profile,
+                                        ).workflows,
+                                      }))}
+                                    />
+                                  }
+                                  Failure={HostedFailure}
+                                />
+                              }
+                              accounts={
+                                <AppOverviewAccounts
+                                  app={current}
+                                  contexts={contexts}
+                                  accounts={inventory.accounts}
+                                />
+                              }
+                              tools={
+                                <AppOverviewTools
+                                  app={current}
+                                  Failure={HostedFailure}
+                                  empty={previewEmpty}
+                                  sources={previewContexts.map((context) => ({
+                                    key: context.key,
+                                    query: toolsAtom({
+                                      organization,
+                                      app: current.id,
+                                      profile: context.profile?.id,
+                                      expectedProfileRevision: context.profile?.revision,
+                                      deployment: current.activeDeployment ?? undefined,
+                                      accounts: JSON.stringify(current.accounts),
+                                    }),
+                                  }))}
+                                />
+                              }
+                              source={
+                                canManage && (
+                                  <QueryView
+                                    query={appManagement(organization).source(current.id)}
+                                    Failure={HostedFailure}
+                                    pending={<OverviewCardLoading label="Loading source preview" />}
+                                  >
+                                    {(source) => <AppOverviewSource source={source} />}
+                                  </QueryView>
+                                )
+                              }
+                            />
+                          );
+                        return context === undefined && profile !== undefined ? (
+                          empty
+                        ) : (
+                          <div className="max-w-3xl p-5 max-[740px]:p-4">
+                            <AppAccounts
+                              key={context?.key ?? "default"}
+                              app={current}
+                              profile={context?.profile}
+                              accounts={inventory.accounts}
+                              redirectUri={inventory.accountSetup.redirectUri}
+                              onSelected={(id) => select(id, "accounts")}
+                              onCreateProfile={
+                                personal ? () => setSetupRequest(crypto.randomUUID()) : undefined
+                              }
+                            />
+                            {context?.profile && (
+                              <ProfileStatus
+                                profile={context.profile}
+                                retry={
+                                  profileMutations({
+                                    organization,
+                                    app: current.id,
+                                    profile: context.profile.id,
+                                  }).reconcile
+                                }
+                                Failure={HostedFailure}
+                              />
+                            )}
+                            {setupActions}
+                          </div>
+                        );
+                      }}
+                    </QueryResult>
+                  )}
                 </QueryResult>
-              )
-            }
+              );
+            }}
           </QueryResult>
         )}
       </QueryResult>

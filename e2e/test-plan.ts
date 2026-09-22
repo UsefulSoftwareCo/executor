@@ -397,6 +397,43 @@ export const scenarios = {
       local: na("This journey checks hosted account connection and app query invalidation."),
     },
   },
+  localAppLaunch: {
+    file: "local-app-launch.spec.ts",
+    title: "local app launch chooses accounts per tab and opens no-provider apps directly",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted app launch is checked with scalar and array choices."),
+      cloud: na("Hosted app launch is checked with scalar and array choices."),
+    },
+  },
+  localResources: {
+    file: "local-resources.spec.ts",
+    title: "local account groups run workflows and no-provider apps need no profile",
+    targets: {
+      local: scheduled,
+      "self-host": na("Paired local dashboard."),
+      cloud: na("Paired local dashboard."),
+    },
+  },
+  groupedResources: {
+    file: "grouped-resources.spec.ts",
+    title:
+      "account groups isolate workflow starts and webhook configuration while retaining disabled history",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local resource controls have a separate paired-browser scenario."),
+    },
+  },
+  groupedAccounts: {
+    file: "grouped-accounts.spec.ts",
+    title: "profile selection loads the full catalog and pins tool calls",
+    targets: {
+      local: na("Hosted browser runner; local lifecycle is covered separately."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   appAccountPicker: {
     file: "app-account-picker.spec.ts",
     title:
@@ -613,7 +650,7 @@ export const scenarios = {
   },
   executorKeyAccount: {
     file: "executor-key-account.spec.ts",
-    title: "Executor upserts and selects the managed user API key account",
+    title: "Executor installs each user’s managed key without rebinding the shared app",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -666,6 +703,56 @@ export const scenarios = {
       local: scheduled,
       "self-host": na("Hosted workflow coverage uses organization routes."),
       cloud: na("Hosted workflow coverage uses organization routes."),
+    },
+  },
+  localProfilePicker: {
+    file: "local-profile-picker.spec.ts",
+    title: "local account groups select scalar tools without copying apps",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local pairing journey."),
+      cloud: na("Local pairing journey."),
+    },
+  },
+  codeFormatting: {
+    file: "code-formatting.spec.ts",
+    title: "code blocks format source and copy without changing stored content",
+    targets: {
+      local: na("Shared source viewer covered through hosted."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  profileSetupStatus: {
+    file: "profile-setup-status.spec.ts",
+    title: "account setup stays invisible until provider registration fails",
+    targets: {
+      local: na("Hosted shared-view journey."),
+      "self-host": scheduled,
+      cloud: na("Uses a loopback provider fixture."),
+    },
+  },
+  profilePicker: {
+    file: "profile-picker.spec.ts",
+    title: "profile picker keeps scalar and array choices isolated across tabs",
+    targets: {
+      local: na("Hosted browser authority journey."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedProfiles: {
+    file: "hosted-profiles.spec.ts",
+    title: "hosted profiles isolate subjects across shared accounts and recheck access",
+    targets: { local: na("Hosted membership only."), "self-host": scheduled, cloud: scheduled },
+  },
+  profiles: {
+    file: "profiles.spec.ts",
+    title: "profiles share deployment and storage while preserving setup and execution bindings",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted profile access has its own browser scenario."),
+      cloud: na("Hosted profile access has its own browser scenario."),
     },
   },
   workflows: {

@@ -1240,7 +1240,7 @@ test(
                     yield* client.dashboard.liveAccount({ params: { account: account.id } }),
                   );
                   const tools = yield* observe(
-                    yield* client.dashboard.liveTools({ params: { app: first.id } }),
+                    yield* client.dashboard.liveTools({ query: {}, params: { app: first.id } }),
                   );
                   assert.equal((yield* overview()).apps.length, 1);
                   assert.equal((yield* app()).app.activeDeployment, first.activeDeployment);
@@ -1370,7 +1370,7 @@ test(
         Effect.scoped(
           Effect.gen(function* () {
             const next = yield* observeValues(
-              (yield* client.dashboard.liveTools({ params: { app: first.id } })).pipe(
+              (yield* client.dashboard.liveTools({ query: {}, params: { app: first.id } })).pipe(
                 Stream.filter((frame) => frame.type !== "heartbeat"),
               ),
             );

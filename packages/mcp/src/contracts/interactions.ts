@@ -14,7 +14,12 @@ export type InteractionId = typeof InteractionId.Type;
 export const ToolInputPending = Schema.Struct({
   status: Schema.Literal("input-required"),
   requestId: ElicitationRequestId,
-  tool: Schema.Struct({ app: ToolInputs.call.fields.app, tool: ToolInputs.call.fields.tool }),
+  tool: Schema.Struct({
+    app: ToolInputs.call.fields.app,
+    tool: ToolInputs.call.fields.tool,
+    profile: ToolInputs.call.fields.profile,
+    expectedProfileRevision: ToolInputs.call.fields.expectedProfileRevision,
+  }),
   elicitation: FormElicitation,
   expiresAt: Schema.Number,
 });

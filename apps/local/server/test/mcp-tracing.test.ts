@@ -51,6 +51,7 @@ for (const protocol of ["2025-11-25", "2026-07-28"]) {
         listSkills: () => Effect.die("Unexpected skill listing"),
         readSkill: () => Effect.die("Unexpected skill read"),
         authorizeElicitation: () => Effect.void,
+        listTargets: () => Effect.succeed([{ kind: "app" }]),
         listApps: () =>
           Effect.succeed([{ id: app, slug: AppSlug.make("fixture"), name: "Trace fixture" }]),
         listTools: () =>

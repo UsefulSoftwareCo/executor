@@ -1,3 +1,4 @@
+import { ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
 import { AccountId, AppId, ProviderId } from "@executor-js/sdk";
 import { Option, Schema } from "effect";
@@ -9,6 +10,7 @@ export type NavigationSection = "apps" | "accounts" | "connect" | "approvals";
 export interface AppSearch {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
+  readonly profile?: ProfileId | undefined;
 }
 
 /** Account creation can return to the originating app requirement. */
@@ -16,12 +18,14 @@ export interface AddAccountSearch {
   readonly provider?: ProviderId | undefined;
   readonly app?: AppId | undefined;
   readonly slot?: string | undefined;
+  readonly profile?: ProfileId | undefined;
 }
 
 /** Setup offers a newly connected account, then validates its compatibility. */
 export interface SetupSearch {
   readonly selected?: AccountId | undefined;
   readonly slot?: string | undefined;
+  readonly profile?: ProfileId | undefined;
 }
 
 const text = Schema.decodeUnknownOption(Schema.NonEmptyString);
@@ -31,6 +35,7 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   const view = Schema.decodeUnknownOption(AppView)(search.view);
   const tool = text(search.tool);
   return {
+    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(view),
     tool: Option.getOrUndefined(tool),
   };
@@ -45,6 +50,7 @@ export function parseAddAccountSearch(search: Record<string, unknown>): AddAccou
     provider: Option.getOrUndefined(provider),
     app: Option.getOrUndefined(app),
     slot: Option.getOrUndefined(slot),
+    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
 
@@ -55,6 +61,7 @@ export function parseSetupSearch(search: Record<string, unknown>): SetupSearch {
   return {
     selected: Option.getOrUndefined(selected),
     slot: Option.getOrUndefined(slot),
+    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
 

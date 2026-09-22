@@ -23,7 +23,7 @@ export function CopyApp<E>({
   const result = useAtomValue(mutation);
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         Make a copy
       </Button>
       <Dialog

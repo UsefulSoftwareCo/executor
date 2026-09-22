@@ -6,7 +6,8 @@ import {
   BookOpen01Icon,
   WorkflowSquare01Icon,
   Calendar03Icon,
-  UserCircleIcon,
+  Key01Icon,
+  WebhookIcon,
   SourceCodeIcon,
   ToolsIcon,
   PackageIcon,
@@ -23,11 +24,12 @@ import { cn } from "../lib/utils.ts";
 
 const sections = [
   { view: "overview", label: "Overview", icon: GridViewIcon },
-  { view: "accounts", label: "Accounts", icon: UserCircleIcon },
+  { view: "accounts", label: "Accounts", icon: Key01Icon },
   { view: "tools", label: "Tools", icon: ToolsIcon },
   { view: "skills", label: "Skills", icon: BookOpen01Icon },
   { view: "workflows", label: "Workflows", icon: WorkflowSquare01Icon },
   { view: "schedules", label: "Schedules", icon: Calendar03Icon },
+  { view: "webhooks", label: "Webhooks", icon: WebhookIcon },
   { view: "source", label: "Source", icon: SourceCodeIcon },
   { view: "deployments", label: "Deployments", icon: PackageIcon },
   { view: "settings", label: "Settings", icon: Settings05Icon },
@@ -35,6 +37,7 @@ const sections = [
 const contentClasses = {
   skills: "min-h-0 min-w-0 flex-1 overflow-auto",
   workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
+  webhooks: "min-h-0 min-w-0 flex-1 overflow-auto",
   schedules: "min-h-0 min-w-0 flex-1 overflow-auto",
   settings: "min-h-0 min-w-0 flex-1 overflow-auto",
   overview: "min-h-0 min-w-0 flex-1 overflow-auto",
@@ -53,6 +56,7 @@ export function AppDetailLayout({
   canInspectSource,
   back,
   actions,
+  setupPicker,
   children,
 }: {
   readonly app: App | undefined;
@@ -60,6 +64,7 @@ export function AppDetailLayout({
   readonly canInspectSource: boolean;
   readonly back: ReactNode;
   readonly actions?: ReactNode;
+  readonly setupPicker?: ReactNode;
   readonly children: ReactNode;
 }) {
   const provider = app && Object.values(app.requirements.accounts)[0]?.definition;
@@ -97,12 +102,15 @@ export function AppDetailLayout({
               )}
             </h1>
           </div>
-          {(actions || (app === undefined && canInspectSource)) && (
-            <div className="ml-auto flex flex-wrap items-center gap-2 empty:hidden max-[640px]:w-full max-[640px]:ml-0">
+          {(actions || setupPicker || (app === undefined && canInspectSource)) && (
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1 empty:hidden max-[640px]:w-full">
               {app === undefined && canInspectSource ? (
                 <Skeleton className="h-9 w-28 max-[740px]:h-11" />
               ) : (
-                actions
+                <>
+                  {actions}
+                  {setupPicker}
+                </>
               )}
             </div>
           )}
@@ -121,9 +129,6 @@ export function AppDetailLayout({
             .map((section) => {
               const classes = cn(
                 "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
-                // Reserve the list width minus the nav's left padding and two gaps.
-                (section.view === "overview" || section.view === "accounts") &&
-                  "min-[740px]:w-[calc((var(--app-tools-list-width)-2.25rem)/2)]",
                 (view === section.view || (view === "history" && section.view === "source")) &&
                   "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
               );

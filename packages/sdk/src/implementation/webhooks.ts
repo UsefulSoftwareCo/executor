@@ -1,3 +1,4 @@
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import type { WorkflowHostControls } from "apps/contracts";
 import type { AppDatabases } from "@executor-js/app-data";
 import { bindAppStorage } from "./app-database.ts";
@@ -16,6 +17,7 @@ import {
   WebhookTarget,
   DeliverWebhook,
   WebhookSubscription,
+  WebhookApp,
   WebhookNotFound,
   WebhookConflict,
   WebhookFailed,
@@ -27,6 +29,7 @@ import type { ExecutorDatabase } from "./storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { snapshot, resolve } from "./tools.ts";
+import { storedProfile } from "./profiles.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 
@@ -52,7 +55,11 @@ export const makeWebhooks = (
   crypto: Crypto.Crypto,
   origin?: string,
   appStorage?: AppDatabases,
-  workflows?: (app: AppId) => WorkflowHostControls,
+  workflows?: (
+    app: AppId,
+    state?: Effect.Success<ReturnType<typeof snapshot>>,
+  ) => WorkflowHostControls,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const next = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
@@ -79,8 +86,14 @@ export const makeWebhooks = (
     );
   const invoke = (row: typeof StoredWebhook.Type, command: WebhookCommand) =>
     Effect.gen(function* () {
-      const state = yield* snapshot(db, { app: row.app, deployment: row.deployment }, row.accounts);
-      const context = yield* resolve(state, resolveAccount);
+      const state = yield* snapshot(
+        db,
+        { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
+        row.accounts,
+        row.profileRevision ?? undefined,
+        command.operation === "webhook-unregister",
+      );
+      const context = yield* resolve(state, resolveAccount, lifecycle);
       return yield* runtime
         .webhook({
           app: row.app,
@@ -88,7 +101,7 @@ export const makeWebhooks = (
           database: state.deployment.requirements.database !== undefined,
           ...context,
           ...(yield* bindAppStorage(appStorage, row.app)),
-          ...(workflows === undefined ? {} : { workflowControls: workflows(row.app) }),
+          ...(workflows === undefined ? {} : { workflowControls: workflows(row.app, state) }),
           command,
         })
         .pipe(
@@ -100,10 +113,10 @@ export const makeWebhooks = (
           ),
         );
     });
-  const definitions = (input: { app: AppId }) =>
+  const definitions = (input: typeof WebhookApp.Type) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input);
-      const context = yield* resolve(state, resolveAccount);
+      const context = yield* resolve(state, resolveAccount, lifecycle);
       return yield* runtime
         .webhook({
           app: input.app,
@@ -230,12 +243,16 @@ export const makeWebhooks = (
         }),
       ),
     definitions,
-    list: (input: { app: AppId }) =>
+    list: (input: typeof WebhookApp.Type) =>
       Effect.gen(function* () {
         yield* storedApp(db, input);
         const rows = yield* query(() =>
           db.findMany("webhooks", {
-            where: (b) => b("app", "=", input.app),
+            where: (b) =>
+              b.and(
+                b("app", "=", input.app),
+                input.profile === undefined ? true : b("profile", "=", input.profile),
+              ),
             orderBy: ["id", "asc"],
           }),
         );
@@ -263,7 +280,7 @@ export const makeWebhooks = (
         )
           return yield* new WebhookFailed({ reason: "unavailable" });
         const state = yield* snapshot(db, parsed);
-        const context = yield* resolve(state, resolveAccount);
+        const context = yield* resolve(state, resolveAccount, lifecycle);
         const catalog = yield* runtime
           .webhook({
             app: parsed.app,
@@ -278,7 +295,7 @@ export const makeWebhooks = (
           );
         const hook = catalog.find((hook) => hook.name === parsed.name);
         if (hook === undefined) return yield* new WebhookFailed({ reason: "definition" });
-        const selected = state.app.accounts[hook.account];
+        const selected = state.accounts[hook.account];
         const sourceAccount =
           parsed.sourceAccount ?? (typeof selected === "string" ? selected : undefined);
         if (
@@ -328,6 +345,19 @@ export const makeWebhooks = (
                 set: { createdAt: state.app.createdAt },
               }),
             );
+            if (state.profile !== undefined) {
+              const profile = yield* storedProfile(db, {
+                app: state.app.id,
+                profile: state.profile.id,
+              });
+              if (
+                !profile.enabled ||
+                profile.revision !== state.profile.revision ||
+                profile.status === "removing" ||
+                profile.status === "removed"
+              )
+                return yield* new WebhookConflict();
+            }
             const current = yield* storedApp(db, { app: state.app.id });
             if (
               current.activeDeployment !== state.app.activeDeployment ||
@@ -336,7 +366,14 @@ export const makeWebhooks = (
               return yield* new WebhookConflict();
             const existing = yield* query(() =>
               db.findFirst("webhooks", {
-                where: (b) => b.and(b("app", "=", parsed.app), b("key", "=", parsed.key)),
+                where: (b) =>
+                  b.and(
+                    b("app", "=", parsed.app),
+                    b("key", "=", parsed.key),
+                    parsed.profile === undefined
+                      ? b("profile", "is", null)
+                      : b("profile", "=", parsed.profile),
+                  ),
               }),
             );
             if (existing !== null) {
@@ -352,7 +389,7 @@ export const makeWebhooks = (
             }
             const accountIds = [
               ...new Set(
-                Object.values(state.app.accounts).flatMap((selected) =>
+                Object.values(state.accounts).flatMap((selected) =>
                   typeof selected === "string" ? [selected] : [...selected],
                 ),
               ),
@@ -372,12 +409,14 @@ export const makeWebhooks = (
                 id,
                 app: parsed.app,
                 owner: state.app.owner,
+                profile: parsed.profile ?? null,
+                profileRevision: state.profile?.revision ?? null,
                 key: parsed.key,
                 deployment: state.deployment.id,
                 name: parsed.name,
                 sourceAccount,
                 callbackUrl,
-                accounts: state.app.accounts,
+                accounts: state.accounts,
                 status: hook.setup === undefined ? "pending" : "setup-required",
                 revision,
                 leaseUntil: new Date(0),
@@ -406,6 +445,19 @@ export const makeWebhooks = (
         const row = yield* read(parsed);
         if (row.status === "stopping" || row.status === "disabled" || row.status === "stopped")
           return yield* new WebhookFailed({ reason: "inactive" });
+        if (row.profile !== null) {
+          const profile = yield* storedProfile(db, {
+            app: row.app,
+            profile: row.profile,
+          });
+          if (
+            !profile.enabled ||
+            profile.status === "removing" ||
+            profile.status === "removed" ||
+            profile.revision !== row.profileRevision
+          )
+            return yield* new WebhookFailed({ reason: "inactive" });
+        }
         const saved = yield* decrypt(row);
         const url = new URL(row.callbackUrl);
         url.search = new URL(parsed.request.url).search;

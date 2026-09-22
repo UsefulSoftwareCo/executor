@@ -1,7 +1,7 @@
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
 /** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
-import type { AppId, ScheduleSettings } from "@executor-js/sdk";
+import type { AppId, ProfileId, ScheduleSettings } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/unstable/reactivity";
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
@@ -9,23 +9,33 @@ import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";
 import { DashboardClient, overviewAtom } from "./api.ts";
 
-class AppKey extends Data.Class<{ readonly app: AppId }> {}
-class ScheduleKey extends Data.Class<{ readonly app: AppId; readonly name: string }> {}
+class AppKey extends Data.Class<{
+  readonly profile?: ProfileId | undefined;
+  readonly app: AppId;
+}> {}
+class ScheduleKey extends Data.Class<{
+  readonly profile?: ProfileId | undefined;
+  readonly app: AppId;
+  readonly name: string;
+}> {}
 const settings = Atom.family((key: AppKey) =>
-  DashboardClient.query("schedules", "list", { params: key }).pipe(
-    Atom.refreshOnWindowFocus,
-    acknowledgedQuery,
-  ),
+  DashboardClient.query("schedules", "list", {
+    params: key,
+    query: { profile: key.profile },
+  }).pipe(Atom.refreshOnWindowFocus, acknowledgedQuery),
 );
 const polledSettings = Atom.family((key: AppKey) => pollingQuery(settings(key)));
 const definitions = Atom.family((key: AppKey) =>
-  DashboardClient.query("schedules", "definitions", { params: key }).pipe(
-    Atom.refreshOnWindowFocus,
-  ),
+  DashboardClient.query("schedules", "definitions", {
+    params: key,
+    query: { profile: key.profile },
+  }).pipe(Atom.refreshOnWindowFocus),
 );
 const controls = Atom.family((key: ScheduleKey) => {
   const saved = (get: Atom.FnContext, value: ScheduleSettings) =>
-    acknowledge(get, settings(new AppKey({ app: key.app })), (rows) => upsert(rows, value));
+    acknowledge(get, settings(new AppKey({ app: key.app, profile: key.profile })), (rows) =>
+      upsert(rows, value),
+    );
   return {
     configure: DashboardClient.runtime.fn(
       (
@@ -33,18 +43,24 @@ const controls = Atom.family((key: ScheduleKey) => {
         get,
       ) =>
         Effect.flatMap(DashboardClient, (client) =>
-          client.schedules.configure({ params: key, payload }),
+          client.schedules.configure({
+            params: key,
+            payload: { ...payload, profile: key.profile },
+          }),
         ).pipe(Effect.tap((value) => Effect.sync(() => saved(get, value)))),
     ),
     runNow: DashboardClient.runtime.fn((_: void, get) =>
-      Effect.flatMap(DashboardClient, (client) => client.schedules.runNow({ params: key })).pipe(
-        Effect.tap((value) => Effect.sync(() => saved(get, value))),
-      ),
+      Effect.flatMap(DashboardClient, (client) =>
+        client.schedules.runNow({ params: key, query: { profile: key.profile } }),
+      ).pipe(Effect.tap((value) => Effect.sync(() => saved(get, value)))),
     ),
   };
 });
 /** Bind saved settings independently from account-dependent definition discovery. */
-export const scheduleBindings = (key: { readonly app: AppId }, editable = true) => ({
+export const scheduleBindings = (
+  key: { readonly profile?: ProfileId | undefined; readonly app: AppId },
+  editable = true,
+) => ({
   settings: polledSettings(new AppKey(key)),
   definitions: definitions(new AppKey(key)),
   ...(editable ? { controls: (name: string) => controls(new ScheduleKey({ ...key, name })) } : {}),

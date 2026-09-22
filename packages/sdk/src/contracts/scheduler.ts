@@ -1,3 +1,4 @@
+import { ProfileId } from "./shared.ts";
 /** Effect-only host lifecycle. These privileged operations are not mounted on the SDK HTTP API. */
 import type { Effect } from "effect";
 import type { AppId, OwnerId, StorageError } from "./shared.ts";
@@ -5,6 +6,7 @@ import type { AppId, OwnerId, StorageError } from "./shared.ts";
 /** Authorize the saved actor against current product membership and app/account access before every dispatch. */
 export interface ScheduleAuthority {
   readonly app: AppId;
+  readonly profile?: ProfileId | null;
   readonly owner: OwnerId;
   readonly actor: string;
   readonly phase: "start" | "resume";

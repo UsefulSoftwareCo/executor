@@ -1,3 +1,5 @@
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Existing tool call seam, using the configured app's saved accounts. Discovery design is deferred. */
 import { Schema } from "effect";
 import {
@@ -69,6 +71,8 @@ export type Tool = typeof Tool.Type;
 
 /** One page of a live catalog, evaluated using the app's current saved selections. */
 export const ToolPage = Schema.Struct({
+  profile: Schema.optional(ProfileId),
+  profileRevision: Schema.optional(ProfileRevision),
   deployment: DeploymentId,
   items: Schema.Array(Tool),
   next: Schema.optional(Cursor),
@@ -155,6 +159,8 @@ export const InvocationAccount = Schema.Struct({
 });
 /** Reviewed call with decoded arguments, exact code version and account identities. */
 export const ToolInvocation = Schema.Struct({
+  profile: Schema.optional(ProfileId),
+  profileRevision: Schema.optional(ProfileRevision),
   app: AppId,
   owner: OwnerId,
   deployment: DeploymentId,
@@ -204,12 +210,16 @@ export class ToolApprovalNotFound extends Schema.TaggedError<ToolApprovalNotFoun
 export const ToolInputs = {
   list: Schema.Struct({
     app: AppId,
+    profile: Schema.optional(ProfileId),
+    expectedProfileRevision: Schema.optional(ProfileRevision),
     deployment: Schema.optional(DeploymentId),
     cursor: Schema.optional(Cursor),
     limit: Schema.optional(PageLimit),
   }),
   call: Schema.Struct({
     app: AppId,
+    profile: Schema.optional(ProfileId),
+    expectedProfileRevision: Schema.optional(ProfileRevision),
     deployment: Schema.optional(DeploymentId),
     tool: ToolName,
     input: Schema.optional(Json),
@@ -233,6 +243,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
       query: ToolInputs.list.fields,
       success: ToolPage,
       error: [
+        ...ProfileErrors,
         StorageError,
         CredentialsError,
         AppNotFound,
@@ -254,6 +265,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
       payload: ToolInputs.call,
       success: ToolCallResult,
       error: [
+        ...ProfileErrors,
         StorageError,
         CredentialsError,
         AppNotFound,

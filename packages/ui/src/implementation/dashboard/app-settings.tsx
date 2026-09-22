@@ -6,12 +6,14 @@ export function AppSettings({
   app,
   renameAction,
   deleteAction,
+  copyAction,
   notice,
   children,
 }: {
   readonly app: App;
   readonly renameAction?: ReactNode;
   readonly deleteAction?: ReactNode;
+  readonly copyAction?: ReactNode;
   readonly notice?: ReactNode;
   readonly children?: ReactNode;
 }) {
@@ -51,6 +53,20 @@ export function AppSettings({
             <p className="mt-3 text-xs text-muted-foreground">
               This app is an independent copy. Changes to the original do not update it.
             </p>
+          </section>
+        )}
+        {copyAction && (
+          <section
+            aria-label="Copy app"
+            className="flex flex-wrap items-center justify-between gap-5 rounded-lg border p-5"
+          >
+            <div className="min-w-0 flex-1 basis-48">
+              <h3 className="text-sm font-medium">Make a copy</h3>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Create an independent app with its own code and data.
+              </p>
+            </div>
+            {copyAction}
           </section>
         )}
         {children}

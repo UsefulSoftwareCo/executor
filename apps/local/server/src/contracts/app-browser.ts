@@ -1,5 +1,4 @@
-/** Paired dashboard reads for static skills and durable workflow history. */
-import { Schema } from "effect";
+/** Paired dashboard reads for static skills. */
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
   AppId,
@@ -9,10 +8,6 @@ import {
   AppSkillDocument,
   AppSkillErrors,
   AppSkillNotFound,
-  HostedWorkflow,
-  WorkflowRunPage,
-  ListWorkflowRuns,
-  WorkflowErrors,
 } from "@executor-js/sdk/core";
 
 const params = { app: AppId };
@@ -44,20 +39,5 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
       },
       success: AppSkillDocument,
       error: [...AppSkillErrors, AppSkillNotFound],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.get("workflows", `${prefix}/workflows`, {
-      params,
-      success: Schema.Array(HostedWorkflow),
-      error: WorkflowErrors,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.get("runs", `${prefix}/workflow-runs`, {
-      params,
-      query: ListWorkflowRuns.mapFields(({ app: _app, ...fields }) => fields),
-      success: WorkflowRunPage,
-      error: WorkflowErrors,
     }),
   );

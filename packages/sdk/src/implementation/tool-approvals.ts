@@ -19,7 +19,15 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const Payload = Schema.Struct({ invocation: ToolInvocation, originalInput: Json });
+const Payload = Schema.Struct({
+  invocation: ToolInvocation.pipe(
+    Schema.encodeKeys({
+      profile: "installation",
+      profileRevision: "installationRevision",
+    }),
+  ),
+  originalInput: Json,
+});
 const Record = Schema.Struct({
   id: ApprovalRequestId,
   owner: OwnerId,

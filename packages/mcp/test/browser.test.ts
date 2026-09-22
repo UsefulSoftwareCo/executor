@@ -26,6 +26,7 @@ const fixture = Effect.gen(function* () {
   const backend: McpBackend<Error> = {
     listSkills: () => Effect.die("Unexpected skill listing"),
     readSkill: () => Effect.die("Unexpected skill read"),
+    listTargets: () => Effect.succeed([{ kind: "app" }]),
     listApps: () =>
       Effect.succeed([{ id: app, name: "Browser fixture", slug: AppSlug.make("browser-fixture") }]),
     listTools: () =>

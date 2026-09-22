@@ -150,7 +150,10 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
         );
         yield* browser.checkpoint("Independent copy with its origin");
         yield* browser.use("Start another copy", (page) =>
-          page.getByRole("button", { name: "Make a copy", exact: true }).click(),
+          page
+            .getByRole("region", { name: "Copy app", exact: true })
+            .getByRole("button", { name: "Make a copy", exact: true })
+            .click(),
         );
         const browserName = `${name} browser`;
         yield* browser.use("Name the copy", (page) =>

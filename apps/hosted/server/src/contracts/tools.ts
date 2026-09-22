@@ -1,3 +1,4 @@
+import { ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { ExecutionLimitReached, ExecutionAdmissionUnavailable } from "./execution-admission.ts";
 /** Account-dependent discovery and execution within a configured app. */
@@ -7,11 +8,14 @@ import {
   AccountSelectionInvalid,
   AppEvaluationFailed,
   AppId,
+  ProfileId,
+  ProfileRevision,
   AppNotFound,
   AppNotDeployed,
   CredentialsError,
   Cursor,
   DeploymentNotFound,
+  DeploymentId,
   InputInvalid,
   Json,
   OAuthReconnectRequired,
@@ -36,11 +40,13 @@ import {
 
 const params = { organization: OrganizationReference, app: AppId };
 const discoveryErrors = [
+  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
   AppNotDeployed,
   DeploymentNotFound,
+  DeploymentId,
   AppEvaluationFailed,
   AccountNotFound,
   AccountRequired,
@@ -53,7 +59,12 @@ export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", prefix, {
       params,
-      query: { cursor: Schema.optional(Cursor) },
+      query: {
+        cursor: Schema.optional(Cursor),
+        deployment: Schema.optional(DeploymentId),
+        profile: Schema.optional(ProfileId),
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+      },
       success: ToolPage,
       error: discoveryErrors,
     }).annotate(RequiredAction, "discover"),
@@ -61,7 +72,13 @@ export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.post("call", `${prefix}/call`, {
       params,
-      payload: Schema.Struct({ tool: ToolName, input: Json }),
+      payload: Schema.Struct({
+        tool: ToolName,
+        input: Json,
+        deployment: Schema.optional(DeploymentId),
+        profile: Schema.optional(ProfileId),
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+      }),
       success: Json,
       error: [
         ...discoveryErrors,

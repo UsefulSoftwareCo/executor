@@ -65,8 +65,10 @@ export const invocationWorkflow = (
                 return yield* execution.driver
                   .sleepUntil(command.name, command.timestamp)
                   .pipe(Effect.as(null));
-              case "context":
-                return Redacted.value((yield* execution.resolve()).accounts);
+              case "context": {
+                const context = yield* execution.resolve();
+                return Redacted.value(context.accounts);
+              }
               case "invoke":
                 // RPC Promise cancellation cannot interrupt its remote callee. Apply
                 // the attempt deadline on the host that owns the storage transaction.

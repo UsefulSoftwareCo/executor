@@ -42,7 +42,14 @@ const errorMessage = Match.type<DashboardError>().pipe(
     AppSkillNotFound: () =>
       message("Skill file unavailable", "Reload this app’s skills and choose the file again."),
     WorkflowFailure: () =>
-      message("Workflows unavailable", "The workflow data could not be loaded. Try again."),
+      message(
+        "Workflow could not complete",
+        "Check this run or reload its account selection before trying again.",
+      ),
+    ProfileNotFound: () =>
+      message("Profile unavailable", "This profile is no longer available for this app."),
+    ProfileConflict: () =>
+      message("Profile changed", "Reload the current account selection before trying again."),
     ScheduleNotFound: () =>
       message("Schedule unavailable", "This schedule or run is no longer available."),
     ScheduleConflict: () =>

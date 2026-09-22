@@ -28,12 +28,14 @@ export const localScheduleHandlers = (
   });
   return HttpApiBuilder.group(DashboardApi, "schedules", (handlers) =>
     handlers
-      .handle("list", ({ params }) => executor.schedules.list(params))
-      .handle("definitions", ({ params }) => executor.schedules.definitions(params))
+      .handle("list", ({ params, query }) => executor.schedules.list({ ...params, ...query }))
+      .handle("definitions", ({ params, query }) =>
+        executor.schedules.definitions({ ...params, ...query }),
+      )
       .handle("configure", ({ params, payload }) =>
         executor.schedules.configure({ ...params, ...payload, actor: "local" }),
       )
-      .handle("runNow", ({ params }) => executor.schedules.runNow(params))
+      .handle("runNow", ({ params, query }) => executor.schedules.runNow({ ...params, ...query }))
       .handle("runs", ({ query }) => executor.schedules.runs(query))
       .handle("approval", ({ params }) =>
         Effect.gen(function* () {

@@ -1,5 +1,6 @@
+import { parseAppSearch } from "../../contracts/navigation.ts";
 import type { ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type {
   AppLinkProps,
@@ -21,13 +22,19 @@ export function useDashboardAtoms() {
   return dashboardAtoms(useOrganizationRoute().organization);
 }
 
-const AppLink = ({ app, view, tool, ...props }: AppLinkProps) => {
+const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
   const { slug: organizationSlug } = useOrganizationRoute();
+  const location = useRouterState({ select: (state) => state.location });
+  const current =
+    location.pathname ===
+    `/org/${encodeURIComponent(organizationSlug)}/apps/${encodeURIComponent(app)}`
+      ? parseAppSearch(location.search).profile
+      : undefined;
   return (
     <Link
       to="/org/$organizationSlug/apps/$appId"
       params={{ organizationSlug, appId: app }}
-      search={view ? { view, tool } : {}}
+      search={{ view, tool, profile: profile ?? current }}
       {...props}
     />
   );

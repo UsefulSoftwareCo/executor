@@ -9,13 +9,14 @@ export const Route = createFileRoute("/org/$organizationSlug/apps/$appId")({
 });
 function AppPage() {
   const { appId } = Route.useParams();
-  const { view, tool } = Route.useSearch();
+  const { view, tool, profile } = Route.useSearch();
   return (
     <AppDetailPage
       appId={appId}
       view={view}
       tool={tool}
-      openApp={(app) => <OpenAppAction app={app} />}
+      profile={profile}
+      openApp={(app, selected) => <OpenAppAction app={app} profile={selected?.id} />}
     />
   );
 }

@@ -35,7 +35,7 @@ const account = {
 test("real SQL rollback and cancellation leave no rows or live notification", () =>
   withStorage((storage) =>
     Effect.gen(function* () {
-      const db = storage.orm("1.12.0");
+      const db = storage.orm("3.0.0");
       const initial = yield* Deferred.make<void>();
       const rows: number[] = [];
       const subscriber = yield* storage.reactivity.subscribe(db.count("providers")).pipe(
@@ -80,7 +80,7 @@ test("real SQL rollback and cancellation leave no rows or live notification", ()
 test("joined and empty reads observe related table writes", () =>
   withStorage((storage) =>
     Effect.gen(function* () {
-      const db = storage.orm("1.12.0");
+      const db = storage.orm("3.0.0");
       yield* db.create("providers", { id: provider, definition: { name: "Before" } });
       yield* db.create("accounts", account);
       const ready = yield* Deferred.make<void>();
@@ -110,7 +110,7 @@ test("joined and empty reads observe related table writes", () =>
 test("an untracked outer SQL transaction is rejected before a tracked write", () =>
   withStorage((storage) =>
     Effect.gen(function* () {
-      const db = storage.orm("1.12.0");
+      const db = storage.orm("3.0.0");
       const sql = yield* SqlClient.SqlClient;
       const result = yield* sql
         .withTransaction(db.create("providers", { id: provider, definition: {} }))

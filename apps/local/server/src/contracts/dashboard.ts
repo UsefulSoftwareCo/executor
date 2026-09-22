@@ -1,4 +1,8 @@
 import { DashboardAppBrowser } from "./app-browser.ts";
+import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
+import { DashboardProfiles } from "./profiles.ts";
+import { ProfileId, ProfileRevision } from "@executor-js/sdk/core";
+import { ProfileErrors } from "@executor-js/sdk/core";
 import { AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { DashboardSchedules } from "./schedules.ts";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
@@ -237,6 +241,7 @@ export class ToolCatalogChanged extends Schema.TaggedError<ToolCatalogChanged>()
 
 const liveErrors = Schema.Union([DashboardUnauthorized, AuthStorageError]);
 const toolErrors = [
+  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
@@ -287,6 +292,10 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("liveTools", "/dashboard/api/live/apps/:app/tools", {
         params: { app: AppId },
+        query: {
+          profile: Schema.optional(ProfileId),
+          expectedProfileRevision: Schema.optional(ProfileRevision),
+        },
         success: HttpApiSchema.StreamSse({
           data: LiveSnapshot(DashboardTools, Schema.Union([...toolErrors, ToolCatalogChanged])),
           error: liveErrors,
@@ -324,12 +333,15 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       HttpApiEndpoint.get("tools", "/dashboard/api/apps/:app/tools", {
         params: { app: AppId },
         query: {
+          profile: Schema.optional(ProfileId),
+          expectedProfileRevision: Schema.optional(ProfileRevision),
           cursor: Schema.optional(Cursor),
           limit: Schema.optional(PageLimit),
           deployment: Schema.optional(DeploymentId),
         },
         success: ToolPage,
         error: [
+          ...ProfileErrors,
           StorageError,
           CredentialsError,
           AppNotFound,
@@ -456,6 +468,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           OAuthClientUnavailable,
           OAuthSetupFailed,
           AccountManagementBlocked,
+          ...ProfileErrors,
           AccountConnectionNotFound,
           AccountConnectionClosed,
           AccountConnectionTargetChanged,
@@ -506,6 +519,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           OAuthClientUnavailable,
           OAuthSetupFailed,
           AccountNotFound,
+          ...ProfileErrors,
           AccountConnectionNotFound,
           AccountConnectionClosed,
           AccountConnectionTargetChanged,
@@ -527,6 +541,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ProviderNotFound,
           AccountNotFound,
           OAuthCompletionFailed,
+          ...ProfileErrors,
           AccountConnectionNotFound,
           AccountConnectionClosed,
           AccountConnectionTargetChanged,
@@ -558,4 +573,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .middleware(DashboardAccess),
   DashboardSchedules.middleware(DashboardAccess),
   DashboardAppBrowser.middleware(DashboardAccess),
+  DashboardProfiles.middleware(DashboardAccess),
+  DashboardWorkflows.middleware(DashboardAccess),
+  DashboardWebhooks.middleware(DashboardAccess),
 );

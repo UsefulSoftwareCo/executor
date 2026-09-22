@@ -1,14 +1,19 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
-import { authorizeTool } from "./authorization.ts";
+import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { visibleApps, requireAppAccess } from "./resource-policy.ts";
+import {
+  visibleApps,
+  visibleAccounts,
+  currentResourceAuthority,
+  requireAppAccess,
+} from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
-import type { McpBackend } from "@executor-js/mcp";
+import { appTargets, type McpBackend } from "@executor-js/mcp";
 import { ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
 import { Context, Effect } from "effect";
-import { currentOwner, selectedApp } from "./access.ts";
+import { currentOwner, selectedApp, ownProfile, checkInvocationAccounts } from "./access.ts";
 import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
@@ -42,7 +47,12 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const owner = yield* currentOwner;
         yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
-        yield* selectedApp(executor, owner, input.app);
+        yield* selectedApp(executor, owner, input.app, input.profile);
+        if (input.profile !== undefined && input.expectedProfileRevision !== undefined) {
+          const profile = yield* ownProfile(executor, owner, input.app, input.profile);
+          if (profile.revision !== input.expectedProfileRevision)
+            return yield* new ElicitationFailed({ reason: "forbidden" });
+        }
       }).pipe(
         Effect.provideContext(context),
         Effect.catchTags({
@@ -62,6 +72,24 @@ export const hostedMcpBackend = Effect.gen(function* () {
           ),
         ),
       ),
+    listTargets: (input) =>
+      Effect.gen(function* () {
+        yield* authorizeApp(input.app);
+        yield* requireAppAccess(input.app, "use");
+        const actor = yield* currentResourceAuthority,
+          owner = yield* currentOwner,
+          executor = yield* sdk;
+        const app = yield* executor.apps.get({ ...input, owner });
+        const profiles = yield* executor.apps.profiles.list({
+          ...input,
+          owner,
+          subject: actor.user,
+        });
+        const accounts = yield* executor.accounts
+          .list({ owner })
+          .pipe(Effect.flatMap(visibleAccounts));
+        return appTargets(app, profiles, accounts);
+      }).pipe(Effect.provideContext(context)),
     listTools: (input) => listTools(input).pipe(Effect.provideContext(context)),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
@@ -69,7 +97,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const owner = yield* currentOwner;
         yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
-        yield* selectedApp(executor, owner, input.app);
+        yield* selectedApp(executor, owner, input.app, input.profile);
         return yield* executor.tools.call(input, options);
       }).pipe(Effect.provideContext(context)),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
@@ -78,7 +106,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const owner = yield* currentOwner;
         yield* requireAppAccess(request.invocation.app, "use");
         const executor = yield* sdk;
-        yield* selectedApp(executor, owner, request.invocation.app);
+        yield* checkInvocationAccounts(executor, owner, request.invocation);
         return yield* executor.tools.resume(
           { requestId: request.requestId, owner, response },
           options,

@@ -21,7 +21,7 @@ export const installExecutorApp = (
 ) =>
   Effect.gen(function* () {
     const files = yield* executorAppSource();
-    const db = storage.orm("1.12.0");
+    const db = storage.orm("3.0.0");
     const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
     const current =
       existing === undefined ? undefined : yield* executor.apps.source({ owner, app: existing.id });

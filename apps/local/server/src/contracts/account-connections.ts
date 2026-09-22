@@ -1,3 +1,4 @@
+import { ProfileErrors } from "@executor-js/sdk/core";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
@@ -53,6 +54,7 @@ export const ConnectionSignIn = Schema.Union([
 ]);
 
 const errors = [
+  ...ProfileErrors,
   ConnectionLinkRejected,
   AuthForbidden,
   StorageError,

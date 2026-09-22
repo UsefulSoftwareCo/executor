@@ -94,5 +94,5 @@ function refreshCredentialDependents(get: Atom.FnContext | Atom.AtomContext, acc
           typeof selection === "string" ? selection === account : selection.includes(account),
         )
       )
-        get.registry.refresh(toolsAtom(app.id));
+        get.registry.refresh(toolsAtom({ app: app.id }));
 }

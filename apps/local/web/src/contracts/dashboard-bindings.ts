@@ -14,7 +14,7 @@ export const dashboardAtoms = {
   catalog: catalogAtom,
   tools: Atom.family((app: AppId) =>
     Atom.map(
-      toolsAtom(app),
+      toolsAtom({ app: app }),
       AsyncResult.map((value) => value.tools),
     ),
   ),
@@ -39,7 +39,7 @@ export const dashboardAtoms = {
         Effect.tap((saved) =>
           Effect.sync(() => {
             acknowledgeApp(get, saved);
-            get.refresh(toolsAtom(input.app));
+            get.refresh(toolsAtom({ app: input.app }));
           }),
         ),
       ),

@@ -1,3 +1,4 @@
+import type { McpTarget, McpTargetInput } from "./targets.ts";
 import type {
   App,
   Executor,
@@ -30,7 +31,10 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<AppSkillDocument, E>;
   /** Reauthorize input delivery using the current request before releasing a running tool. */
   readonly authorizeElicitation: (
-    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "tool">,
+    input: Pick<
+      Parameters<Executor["tools"]["call"]>[0],
+      "app" | "tool" | "profile" | "expectedProfileRevision"
+    >,
   ) => Effect.Effect<void, ElicitationFailed>;
   /** Apply IDs in storage before loading app metadata. [] selects none; omitted IDs add no restriction.
    * Hosts still enforce owner access; this filter is never an authorization grant.
@@ -38,6 +42,8 @@ export interface McpBackend<E extends Error> {
   readonly listApps: (
     input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids">,
   ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
+  /** Enumerate only the caller's execution targets; static skills still belong to the real app. */
+  readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
   /** Authorize the app and its selected accounts before evaluating each catalog page. */
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],

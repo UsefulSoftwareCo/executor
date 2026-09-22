@@ -28,6 +28,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         const ids = permittedAppIds(grant, input?.ids);
         return yield* backend.listApps({ ids });
       }),
+    listTargets: (input) => check(input.app).pipe(Effect.andThen(() => backend.listTargets(input))),
     listTools: (input) =>
       Effect.gen(function* () {
         yield* check(input.app);

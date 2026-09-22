@@ -1,8 +1,9 @@
 import { EmptyState } from "./empty-state.tsx";
-import type { App } from "@executor-js/sdk";
-import type { ComponentType } from "react";
-import type { SkillBindings, WorkflowBindings } from "../../contracts/app-browser.ts";
-import type { FailureProps } from "../../contracts/dashboard.ts";
+import { OverviewCatalog } from "./overview-catalog.tsx";
+import type { App, HostedWorkflow } from "@executor-js/sdk";
+import type { ComponentType, ReactNode } from "react";
+import type { SkillBindings } from "../../contracts/app-browser.ts";
+import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { QueryView, useDashboard } from "./context.tsx";
 import { OverviewCardLoading } from "./app-loading.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -13,15 +14,17 @@ export function AppOverviewEntries<E>({
   app,
   bindings,
   Failure,
+  workflows,
 }: {
   readonly app: App;
-  readonly bindings: SkillBindings<E> & WorkflowBindings<E>;
+  readonly bindings: SkillBindings<E>;
+  readonly workflows: ReactNode;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
   return (
     <>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+        className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
         aria-label="App skills preview"
       >
         <EntryHeader app={app} view="skills" label="Skills" />
@@ -42,7 +45,7 @@ export function AppOverviewEntries<E>({
         </div>
       </section>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+        className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
         aria-label="App workflows preview"
       >
         <EntryHeader app={app} view="workflows" label="Workflows" />
@@ -52,19 +55,37 @@ export function AppOverviewEntries<E>({
               Deploy this app to view its workflows.
             </EmptyState>
           ) : (
-            <QueryView
-              query={bindings.workflows}
-              Failure={Failure}
-              pending={
-                <OverviewCardLoading label="Loading workflows preview" descriptionLines={2} />
-              }
-            >
-              {(workflows) => <EntryList items={workflows} empty="No workflows" />}
-            </QueryView>
+            workflows
           )}
         </div>
       </section>
     </>
+  );
+}
+/** Workflow descriptions appear once across the available account catalogs. */
+export function AppWorkflowPreview<E>({
+  sources,
+  Failure,
+  empty,
+}: {
+  readonly sources: readonly {
+    readonly key: string;
+    readonly query: Query<readonly HostedWorkflow[], E>;
+  }[];
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly empty: ReactNode;
+}) {
+  if (sources.length === 0) return empty;
+  return (
+    <OverviewCatalog
+      sources={sources}
+      items={(workflows) => workflows}
+      Failure={Failure}
+      label="Loading workflows preview"
+      empty={<p className="py-5 text-sm text-muted-foreground">This app has no workflows.</p>}
+    >
+      {(workflows) => <EntryList items={workflows} empty="This app has no workflows." />}
+    </OverviewCatalog>
   );
 }
 function EntryHeader({

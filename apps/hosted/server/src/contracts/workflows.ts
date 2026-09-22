@@ -3,6 +3,9 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
   AppId,
+  ProfileId,
+  ProfileRevision,
+  DeploymentId,
   WorkflowRunId,
   HostedWorkflow,
   WorkflowRun,
@@ -26,6 +29,11 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
       params: app,
+      query: {
+        profile: Schema.optional(ProfileId),
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+        deployment: Schema.optional(DeploymentId),
+      },
       success: Schema.Array(HostedWorkflow),
       error: errors,
     }),

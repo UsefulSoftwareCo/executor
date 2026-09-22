@@ -1,3 +1,5 @@
+import { ProfileHost } from "../contracts/profiles.ts";
+import { makeProfileSetup } from "./profile-setup.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
@@ -8,6 +10,7 @@ import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
 import { makeAccounts } from "./accounts.ts";
+import { makeProfiles } from "./profiles.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
 import { makeSchedules } from "./schedules.ts";
@@ -34,6 +37,7 @@ export const createExecutor = (
       crypto,
       options.workflows,
       options.appStorage,
+      options.lifecycle,
     );
     const webhooks = makeWebhooks(
       options.storage,
@@ -44,9 +48,11 @@ export const createExecutor = (
       options.webhookOrigin,
       options.appStorage,
       workflows.controls,
+      options.lifecycle,
     );
     const apps = {
       ...makeApps(db, runtime, crypto, options.sources, options.blobs, options.lifecycle),
+      profiles: makeProfiles(db, crypto),
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };
@@ -58,9 +64,16 @@ export const createExecutor = (
       crypto,
       options.appStorage,
       workflows.controls,
+      options.lifecycle,
     );
     const schedules = makeSchedules(options.storage, apps, tools, options.credentials, crypto);
+    const setup = makeProfileSetup(db, crypto, apps.profiles, {
+      webhooks: webhooks.webhooks,
+      schedules: schedules.operations,
+      runs: workflows.runs,
+    });
     return {
+      [ProfileHost]: { tick: setup.tick },
       [WorkflowHost]: workflows.host,
       scheduler: schedules.dispatcher,
       schedules: schedules.operations,
@@ -69,7 +82,7 @@ export const createExecutor = (
         ...makeAccountConnections(db, options.credentials, crypto, options.lifecycle),
         ...oauth.connections,
       },
-      apps,
+      apps: { ...apps, profiles: setup.operations },
       owners: makeOwners(db),
       skills: makeSkills(apps),
       ...webhooks,
@@ -79,6 +92,7 @@ export const createExecutor = (
         runtime,
         options.appStorage,
         workflows.controls,
+        options.lifecycle,
       ),
       tools,
     };

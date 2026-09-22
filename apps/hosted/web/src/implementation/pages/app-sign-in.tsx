@@ -1,3 +1,4 @@
+import type { ProfileId } from "@executor-js/sdk";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
@@ -40,17 +41,25 @@ export function AppSignInPage({ request }: { readonly request: AppSignInId | und
 }
 
 /** Optional action slot: products with app hosting render a normal link. */
-export function OpenAppAction({ app }: { readonly app: App }) {
+export function OpenAppAction({
+  app,
+  profile,
+}: {
+  readonly app: App;
+  readonly profile?: ProfileId | undefined;
+}) {
   return app.activeDeployment === null ? null : (
-    <DeployedOpenAppAction app={app} deployment={app.activeDeployment} />
+    <DeployedOpenAppAction app={app} profile={profile} deployment={app.activeDeployment} />
   );
 }
 
 function DeployedOpenAppAction({
   app,
   deployment,
+  profile,
 }: {
   readonly app: App;
+  readonly profile?: ProfileId | undefined;
   readonly deployment: NonNullable<App["activeDeployment"]>;
 }) {
   const { organization, slug } = useOrganizationRoute();
@@ -95,7 +104,15 @@ function DeployedOpenAppAction({
   if (result.value.status !== "ready") return null;
   return (
     <Button variant="outline" asChild>
-      <a href={result.value.url} target="_blank" rel="noopener noreferrer">
+      <a
+        href={
+          profile === undefined
+            ? result.value.url
+            : `${result.value.url}?profile=${encodeURIComponent(profile)}`
+        }
+        target="_blank"
+        rel="noopener noreferrer"
+      >
         Open app
       </a>
     </Button>
