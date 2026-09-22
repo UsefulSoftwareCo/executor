@@ -33,6 +33,8 @@
     "fumadb-effect": "workspace:*",
     "oauth4webapi": "3.8.8",
     "parse5": "8.0.0",
+    "tailwindcss": "4.3.3",
+    "tailwindcss-iso": "1.0.7",
     "tar": "7.5.22",
     "ws": "8.21.0",
     "yaml": "^2.8.2"

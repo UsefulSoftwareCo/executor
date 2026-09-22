@@ -562,6 +562,8 @@
         "fumadb-effect": "workspace:*",
         "oauth4webapi": "3.8.8",
         "parse5": "8.0.0",
+        "tailwindcss": "4.3.3",
+        "tailwindcss-iso": "1.0.7",
         "tar": "7.5.22",
         "ws": "8.21.0",
         "yaml": "^2.8.2",
@@ -656,7 +658,6 @@
       "devDependencies": {
         "@types/react": "^19.2.0",
         "@types/react-dom": "^19.2.0",
-        "tailwindcss": "^4.3.3",
       },
     },
     "playground/demo-apps/mail": {
@@ -711,10 +712,6 @@
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "fumadb-effect": "workspace:*",
       },
-      "devDependencies": {
-        "@tailwindcss/node": "^4.3.3",
-        "@tailwindcss/oxide": "^4.3.3",
-      },
     },
   },
   "patchedDependencies": {
@@ -723,6 +720,7 @@
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.79": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.79.patch",
     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
+    "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
     "@effect/sql-pg@https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/@effect%2Fsql-pg@c7d1ffff.patch",
     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.12": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.12.patch",
@@ -4006,6 +4004,8 @@
     "tailwind-merge": ["tailwind-merge@3.7.0", "", {}, "sha512-XPPUyAc+cvspz3lHTcR/QgPfW2A0lv/xQNIjX3HGhLR+Nq2lHaLq5MtTesHn8GUr3W3DguT2KT5x3NVgRtYwmA=="],
 
     "tailwindcss": ["tailwindcss@4.3.3", "", {}, "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ=="],
+
+    "tailwindcss-iso": ["tailwindcss-iso@1.0.7", "", { "optionalDependencies": { "@tailwindcss/node": "^4.1.12", "@tailwindcss/oxide": "^4.1.12" }, "peerDependencies": { "tailwindcss": "^3.0.0 || ^4.0.0" } }, "sha512-HnJ82HzmQ34Ct76QqAIUSbpsMwpaSPc3Lvl7JQfjWhA6hxvnWhbB9pGZCL7j4osCK5DmSmAE7oULNGS7oPJ6jA=="],
 
     "takumi-js": ["takumi-js@2.14.0", "", { "dependencies": { "@takumi-rs/core": "2.14.0", "@takumi-rs/helpers": "2.14.0", "@takumi-rs/wasm": "2.14.0" } }, "sha512-dZHMrK9KI2T8uKjFa+tid3KK5HOlk8Nb08Uoq321Y6ISkUkZRFQ69acQUdFGeQjEinenzt1qAkXP/62AjmL7hg=="],
 

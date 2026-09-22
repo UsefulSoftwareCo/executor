@@ -1,8 +1,7 @@
-/* Compile with the deploy helper before the SDK bundles the authored UI. */
+/* Executor compiles these utilities with the app's browser bundle. */
 @layer theme, base, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
-@source "./main.tsx";
 
 @layer base {
   :root {

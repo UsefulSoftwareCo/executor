@@ -43,6 +43,12 @@ diff --git a/dist/index.d.ts b/dist/index.d.ts
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
+@@ -81 +81 @@ function resolvePackage(specifier, files, conditions, extensions) {
+-	const legacyEntry = resolveExports.legacy(pkg, { fields: ["module", "main"] });
++	const legacyEntry = resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
+@@ -258 +258 @@ async function bundleWithEsbuild(options) {
+-						const result = resolveModule(args.path, { files });
++						const result = resolveModule(args.path, { files, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });
 @@ -857,7 +857,12 @@
  		this.files = files instanceof Map ? files : new Map(Object.entries(files));
  	}

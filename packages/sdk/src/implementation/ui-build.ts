@@ -59,6 +59,7 @@ export const prepareUiBuild = (
       entries.push({ element, attribute, source: location.slice(1) });
     }
     return {
+      html: entry.content,
       entries: [...new Set(entries.map((entry) => entry.source))],
       finish: (compiled, outputs) =>
         Effect.gen(function* () {

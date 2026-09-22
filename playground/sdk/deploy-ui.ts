@@ -5,7 +5,6 @@ import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { ExecutorApi, OwnerId, SourceFiles } from "@executor-js/sdk";
-import { buildLiveInboxStyles } from "./live-inbox-styles.ts";
 
 NodeRuntime.runMain(
   Effect.gen(function* () {
@@ -25,15 +24,7 @@ NodeRuntime.runMain(
       (file) =>
         fs
           .readFileString(path.join(root, file))
-          .pipe(
-            Effect.flatMap((content) =>
-              file === "ui/style.css"
-                ? buildLiveInboxStyles(content, path.join(root, "ui")).pipe(
-                    Effect.map((compiled) => ({ path: file, content: compiled })),
-                  )
-                : Effect.succeed({ path: file, content }),
-            ),
-          ),
+          .pipe(Effect.map((content) => ({ path: file, content }))),
     );
     const manifest = yield* fs
       .readFileString(path.join(root, "package.json"))

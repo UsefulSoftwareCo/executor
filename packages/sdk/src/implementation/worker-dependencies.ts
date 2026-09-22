@@ -4,6 +4,7 @@ import { captureTelemetry } from "@executor-js/telemetry";
 import { Effect, Schema, Semaphore } from "effect";
 import type { Plugin } from "esbuild";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
+import tailwind from "tailwindcss/package.json" with { type: "json" };
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -57,6 +58,13 @@ export const workerDependencies = (filesystem: InMemoryFileSystem) =>
       setup(build) {
         build.onResolve({ filter: /^[^./]/ }, async (args) => {
           if (args.path === "apps" || args.path.startsWith("apps/")) return undefined;
+          if (
+            args.kind === "import-rule" &&
+            (args.path === "tailwindcss" || args.path.startsWith("tailwindcss/"))
+          ) {
+            await Effect.runPromiseWith(context)(install("tailwindcss", tailwind.version, false));
+            return undefined;
+          }
           const parts = args.path.split("/");
           const name = args.path.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
           if (name === undefined || !Object.hasOwn(dependencies, name)) return undefined;

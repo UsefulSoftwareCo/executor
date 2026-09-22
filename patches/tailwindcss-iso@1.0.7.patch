@@ -1,0 +1,27 @@
+diff --git a/package.json b/package.json
+index 223fbf11b73dfb08fa490a284d3ac50f45f20a4e..b5de13ba0f5584590c29d40ab298e11d137492f5 100644
+--- a/package.json
++++ b/package.json
+@@ -31,6 +31,14 @@
+     "./server": {
+       "types": "./types/index.d.ts",
+       "default": "./src/server/index.js"
++    },
++    "./oxide": {
++      "types": "./src/browser/oxide/tailwindcss_oxide.d.ts",
++      "default": "./src/browser/oxide/tailwindcss_oxide.js"
++    },
++    "./oxide.wasm": {
++      "types": "./types/oxide-wasm.d.ts",
++      "default": "./src/browser/oxide/tailwindcss_oxide_bg.wasm"
+     }
+   },
+   "scripts": {
+diff --git a/types/oxide-wasm.d.ts b/types/oxide-wasm.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a677a457105a87457a01df3d309b1806b74edc1
+--- /dev/null
++++ b/types/oxide-wasm.d.ts
+@@ -0,0 +1,2 @@
++declare const module: WebAssembly.Module;
++export default module;

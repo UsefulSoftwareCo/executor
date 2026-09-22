@@ -521,6 +521,14 @@ Use local React components or browser-compatible npm component libraries.
 Declare library dependencies and include their required styles and assets.
 Do not assume that the host runs custom build plugins required by a library.
 
+Tailwind CSS v4 compilation is built in. Import `./style.css` from `ui/main.tsx`
+and start the stylesheet with `@import "tailwindcss";`. No Tailwind dependency,
+config file or build script is needed. Use complete class names in React code;
+the build scans the browser bundle, including imported components and lazy
+chunks. Customize tokens with CSS `@theme`. Use `@source inline("...")` for
+classes supplied only at runtime. Do not use filesystem `@source` paths or
+JavaScript `@config` and `@plugin` files. Plain CSS and library styles still work.
+
 For hosted apps, discover and call `appUi_location` after deployment:
 
 ```js

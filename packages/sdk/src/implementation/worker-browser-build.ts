@@ -6,6 +6,7 @@ import { isBrowserAppImport, isServerUiImport, uiContentType } from "./ui-build.
 import type { UiBuildEntry, UiBuildFile, UiBuildPlan } from "../contracts/ui-build.ts";
 import { Effect, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
+import { compileUiTailwind } from "./ui-tailwind.ts";
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -124,7 +125,17 @@ export const browserBuild = (
         });
       },
     };
-    return { plugin, finish: () => plan.finish(assets, outputs) };
+    return {
+      plugin,
+      finish: () =>
+        compileUiTailwind(
+          assets,
+          plan.html,
+          Effect.tryPromise(() => import("tailwindcss-iso/oxide.wasm")).pipe(
+            Effect.map((module) => module.default),
+          ),
+        ).pipe(Effect.flatMap((compiled) => plan.finish(compiled, outputs))),
+    };
   }).pipe(
     Effect.provide(Path.layer),
     Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })),

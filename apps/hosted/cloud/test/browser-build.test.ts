@@ -26,11 +26,12 @@ const files = [
   {
     path: "ui/main.tsx",
     content:
-      'import { createRoot } from "react-dom/client"; import { createAppClient } from "apps/client"; import { object, string } from "apps"; import logo from "./logo.svg"; import "./main.css"; import("./lazy.ts").then(value => console.log(value.ready)); const client=createAppClient(); const result=object({hello:string(),privateValue:string()}); createRoot(document.getElementById("root")).render(<main><img src={logo}/><button onClick={()=>client.query({name:"greet",kind:"query"},{},result)}>Browser-only marker</button></main>);',
+      'import { createRoot } from "react-dom/client"; import { createAppClient } from "apps/client"; import { object, string } from "apps"; import logo from "./logo.svg"; import "./main.css"; import("./lazy.ts").then(value => console.log(value.ready)); const client=createAppClient(); const result=object({hello:string(),privateValue:string()}); createRoot(document.getElementById("root")).render(<main className="p-[13px] md:p-8"><img src={logo}/><button onClick={()=>client.query({name:"greet",kind:"query"},{},result)}>Browser-only marker</button></main>);',
   },
   {
     path: "ui/main.css",
-    content: 'main { color: rgb(12, 34, 56); background-image: url("./logo.svg") }',
+    content:
+      '@import "tailwindcss"; main { color: rgb(12, 34, 56); background-image: url("./logo.svg") }',
   },
   { path: "ui/theme.css", content: "body { margin: 0; }" },
   { path: "ui/logo.svg", content: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>' },
@@ -120,6 +121,7 @@ test(
                 "module entry, linked CSS, and CSS imported by the module",
               );
               assert.ok(references.some((value) => value?.endsWith(".js")));
+              const styles: string[] = [];
               for (const name of references) {
                 assert.ok(name);
                 const asset = yield* Effect.promise(() =>
@@ -128,6 +130,7 @@ test(
                 assert.equal(asset.status, 200);
                 const body = yield* Effect.promise(() => asset.text());
                 assert.doesNotMatch(body, /synthetic-server-private-marker|another-server-marker/);
+                if (name.endsWith(".css")) styles.push(body);
                 if (name.endsWith(".js")) {
                   assert.match(body, /Browser-only marker/);
                   assert.doesNotMatch(body, /from\s*["'](?:apps|react)/);
@@ -143,6 +146,8 @@ test(
                   );
                 }
               }
+              assert.match(styles.join("\n"), /padding:\s*13px/);
+              assert.doesNotMatch(styles.join("\n"), /@(?:tailwind|theme)\b/);
               assert.equal(
                 (yield* Effect.promise(() =>
                   worker.dispatchFetch(`https://test/asset?build=${fixtureBuild}&path=icon.svg`),

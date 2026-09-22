@@ -11,7 +11,6 @@ import { ServerConfig } from "../src/contracts/config.ts";
 import { startLocalServer } from "../src/node.ts";
 import { sessionCookie } from "../src/implementation/auth.ts";
 import { appOrigin, AppSignInRedirect } from "../src/contracts/app-ui.ts";
-import { buildLiveInboxStyles } from "../../../../playground/sdk/live-inbox-styles.ts";
 
 const apiKey = "synthetic-app-ui-test-key-0000000000";
 const settings = (directory: string) =>
@@ -70,15 +69,7 @@ test(
             (file) =>
               fs
                 .readFileString(path.join(root, file))
-                .pipe(
-                  Effect.flatMap((content) =>
-                    file === "ui/style.css"
-                      ? buildLiveInboxStyles(content, path.join(root, "ui")).pipe(
-                          Effect.map((compiled) => ({ path: file, content: compiled })),
-                        )
-                      : Effect.succeed({ path: file, content }),
-                  ),
-                ),
+                .pipe(Effect.map((content) => ({ path: file, content }))),
           );
           files.push({
             path: "package.json",

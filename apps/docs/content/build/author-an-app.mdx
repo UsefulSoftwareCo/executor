@@ -333,6 +333,28 @@ libraries. Declare their dependencies and include the required styles and
 assets. Libraries that need custom build plugins require additional build
 support.
 
+Tailwind CSS v4 compilation is built in. Import a stylesheet from your React
+entry:
+
+```tsx
+import "./style.css";
+```
+
+Start `ui/style.css` with:
+
+```css
+@import "tailwindcss";
+```
+
+Write complete utility classes in your React components. No Tailwind dependency,
+config file or separate build command is needed. The build scans browser code,
+including imported components and lazy chunks. Ordinary CSS and component-library
+styles can share the same app.
+
+Use CSS `@theme` for custom tokens. Use `@source inline("...")` to include classes
+that only arrive at runtime. Filesystem `@source` paths and JavaScript `@config`
+or `@plugin` files are not supported.
+
 For hosted apps, discover `appUi_location` through `tools.search` and call it:
 
 ```js

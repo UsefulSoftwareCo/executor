@@ -5,6 +5,7 @@ import { prepareUiBuild, uiContentType, isBrowserAppImport, isServerUiImport } f
 import type { UiBuildEntry, UiBuildFile } from "../contracts/ui-build.ts";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
 import type { SourceFiles } from "../contracts/deployment.ts";
+import { compileUiTailwind } from "./ui-tailwind.ts";
 
 /** A conventional ui/index.html opts into a frontend without evaluating server code. */
 export const buildUi = (
@@ -22,6 +23,7 @@ export const buildUi = (
     const source = path.join(staging, "source");
     const output = path.join(staging, "ui");
     const framework = path.dirname(yield* path.fromFileUrl(new URL(import.meta.resolve("apps"))));
+    const host = path.dirname(yield* path.fromFileUrl(new URL(import.meta.url)));
     const entries = plan.entries.map((logical) => ({
       logical,
       source: path.join(source, logical),
@@ -53,6 +55,18 @@ export const buildUi = (
               {
                 name: "browser-boundary",
                 setup(builder) {
+                  builder.onResolve({ filter: /^tailwindcss(?:\/.*)?$/ }, (args) => {
+                    if (args.kind !== "import-rule" || args.pluginData === "resolved")
+                      return undefined;
+                    return builder.resolve(
+                      args.path === "tailwindcss" ? "tailwindcss/index.css" : args.path,
+                      {
+                        kind: args.kind,
+                        resolveDir: host,
+                        pluginData: "resolved",
+                      },
+                    );
+                  });
                   builder.onResolve({ filter: /^apps(?:\/.*)?$/ }, (args) => {
                     if (!isBrowserAppImport(args.path))
                       return { errors: [{ text: "This apps entry point is server-only." }] };
@@ -144,7 +158,17 @@ export const buildUi = (
         outputs.push({ source: entry.logical, path: url, ...(css === undefined ? {} : { css }) });
       }
     }
-    const complete = yield* plan.finish(assets, outputs);
+    const styled = yield* compileUiTailwind(
+      assets,
+      plan.html,
+      path.fromFileUrl(new URL(import.meta.resolve("tailwindcss-iso/oxide.wasm"))).pipe(
+        Effect.flatMap((file) => fs.readFile(file)),
+        Effect.flatMap((bytes) =>
+          Effect.tryPromise(() => WebAssembly.compile(new Uint8Array(bytes))),
+        ),
+      ),
+    );
+    const complete = yield* plan.finish(styled, outputs);
     for (const file of complete) {
       const destination = path.join(output, file.path);
       yield* fs.makeDirectory(path.dirname(destination), { recursive: true });

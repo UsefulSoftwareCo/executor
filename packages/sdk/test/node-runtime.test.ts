@@ -507,6 +507,10 @@ test(
                 '<html><head><script type="module" src="./main.ts"></script></head><body></body></html>',
             },
             { path: "ui/main.ts", content: 'import app from "../index.ts"; console.log(app)' },
+            {
+              path: "ui/style.css",
+              content: '@import "tailwindcss"; .plain { color: rebeccapurple; }',
+            },
           ];
           const rejected = yield* Effect.flip(
             runtime.build({ files: Schema.decodeUnknownSync(SourceFiles)(source) }),
@@ -516,7 +520,11 @@ test(
             files: Schema.decodeUnknownSync(SourceFiles)(
               source.map((file) =>
                 file.path === "ui/main.ts"
-                  ? { ...file, content: 'document.body.textContent = "App UI"' }
+                  ? {
+                      ...file,
+                      content:
+                        'import "./style.css"; document.body.className = "p-[13px]"; document.body.textContent = "App UI"',
+                    }
                   : file,
               ),
             ),
@@ -528,6 +536,12 @@ test(
           assert.equal(yield* asset({ build: built.build, path: "index.ts" }), undefined);
           const html = yield* asset({ build: built.build, path: "index.html" });
           assert.equal(html?.contentType, "text/html");
+          const stylesheet = built.ui?.find((file) => file.contentType === "text/css");
+          assert.ok(stylesheet);
+          const css = yield* asset({ build: built.build, path: stylesheet.path });
+          assert.ok(css);
+          assert.match(new TextDecoder().decode(css.body), /padding:\s*13px/);
+          assert.match(new TextDecoder().decode(css.body), /rebeccapurple/);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );

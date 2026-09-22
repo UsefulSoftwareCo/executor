@@ -18,6 +18,7 @@ export interface UiBuildEntry {
 
 /** One build's HTML plan. Entry paths use canonical project-relative POSIX paths. */
 export interface UiBuildPlan {
+  readonly html: string;
   readonly entries: readonly string[];
   readonly finish: (
     files: readonly UiBuildFile[],

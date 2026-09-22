@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "tailwindcss": "^4.3.3"
+    "@types/react-dom": "^19.2.0"
   }
 }

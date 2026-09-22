@@ -88,6 +88,16 @@ Use your own React components or browser-compatible npm component libraries.
 Declare library dependencies and include their required styles and assets.
 Libraries that need custom build plugins require additional build support.
 
+Tailwind CSS v4 compilation is built in. Import a stylesheet from your React
+entry and put `@import "tailwindcss";` in that stylesheet. No Tailwind package,
+config file or separate build command is required. Ordinary CSS imports and
+stylesheet links continue to work.
+
+The build scans complete class names in the browser bundle, including imported
+components and lazy chunks. Use CSS `@theme` for custom tokens and `@source
+inline("...")` for classes that only arrive at runtime. Filesystem `@source`
+paths and JavaScript `@config` or `@plugin` files are not supported.
+
 ```ts
 import type { listMessages, receiveMessage } from "./index.ts";
 import { array } from "apps";

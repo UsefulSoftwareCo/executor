@@ -415,6 +415,17 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appTailwind: {
+    file: "app-tailwind.spec.ts",
+    title: "React app deployments compile Tailwind utilities and preserve ordinary styles",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "This scenario uses hosted deployment and app authentication; local shares the workerd compiler.",
+      ),
+    },
+  },
   appObservability: {
     file: "app-observability.spec.ts",
     title: "app query traces connect browser, streamed host work, runtime and React commits",
