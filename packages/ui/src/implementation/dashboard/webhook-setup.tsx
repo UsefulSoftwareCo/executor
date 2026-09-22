@@ -71,7 +71,7 @@ function CopyValue({
     <div className="space-y-1.5">
       <span className="field-label">{label}</span>
       <div className="flex min-w-0 items-center gap-2 rounded-md border px-3 py-2">
-        <code className="min-w-0 flex-1 break-all text-xs">
+        <code className="min-w-0 flex-1 break-all text-xs" data-private={secret || undefined}>
           {secret && !visible ? "••••••••••••••••" : value}
         </code>
         {secret && (
@@ -225,6 +225,7 @@ function SetupForm<E>({
             <label className="field-label">
               Setup details (JSON)
               <Textarea
+                data-private
                 value={json}
                 onChange={(event) => setJson(event.target.value)}
                 spellCheck={false}

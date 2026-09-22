@@ -20,22 +20,22 @@ export const replayPageAllowed = (url: URL) =>
   /^\/org\/[^/]+\/(apps|accounts|connect|settings|groups|approvals)(\/|$)/.test(url.pathname) &&
   !/\/(api-keys|source|connections|oauth|credentials|secrets)(\/|$)/.test(url.pathname);
 
-/** Mask content at the recorder, before transport. Code, form values and app frames are never recorded. */
+/** Record readable dashboard content; exclude password fields and marked secrets before transport. */
 export const dashboardReplay: SessionRecordingOptions = {
-  maskAllInputs: true,
-  maskAllElementAttributes: true,
+  maskAllInputs: false,
+  maskInputOptions: { password: true },
+  maskAllElementAttributes: false,
+  // Embedded HTML can contain secret fields; record its DOM with the same selectors instead.
+  maskAttributeFn: (name, value) => (name === "srcdoc" ? "" : value),
   slimDOMOptions: "all",
   captureJsonLd: false,
-  maskTextSelector: "*",
-  maskTextFn: () => "***",
-  maskInputFn: () => "***",
-  blockSelector:
-    'iframe,pre,code,form,input,textarea,select,img,video,audio,canvas,[contenteditable="true"],[data-private],[data-product-private],a[href*="?"],a[href*="#"]',
+  maskTextSelector: "",
+  blockSelector: 'input[type="password"],[data-private],[data-product-private]',
   recordCrossOriginIframes: false,
   recordHeaders: false,
   recordBody: false,
   collectFonts: false,
-  inlineStylesheet: false,
+  inlineStylesheet: true,
   captureCanvas: { recordCanvas: false },
   // rrweb also uses this callback for its required page metadata. Keep only a fixed route label.
   maskCapturedNetworkRequestFn: (request) =>

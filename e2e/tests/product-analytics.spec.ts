@@ -7,7 +7,7 @@ import { Evidence } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
-import { captureBrowserAnalytics } from "../support/product-analytics.ts";
+import { captureBrowserAnalytics, renderBrowserReplay } from "../support/product-analytics.ts";
 
 const Event = Schema.Struct({
   event: Schema.String,
@@ -99,37 +99,102 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           browser.use("Navigate product page", (page) => page.goto(url));
         const appsReady = () =>
           browser.use("Wait for apps", (page) =>
-            page.getByRole("heading", { name: "Apps", exact: true }).waitFor(),
+            page.getByRole("heading", { name: /^Apps(?:\s*\d+)?$/ }).waitFor(),
           );
         const interact = () =>
           browser.use("Interact with dashboard", (page) => page.mouse.click(900, 350));
         const recordedAfter = (count: number) =>
           browser.use("Wait for real snapshot transport", (page) =>
             expect
-              .poll(() => page.mouse.click(1400, 900).then(() => snapshots().length), {
+              .poll(() => page.mouse.click(900, 350).then(() => snapshots().length), {
                 timeout: 30000,
               })
               .toBeGreaterThan(count),
           );
+        yield* browser.use("Serve a linked application stylesheet", (page) =>
+          page.route("**/replay-layout.css", (route) =>
+            route.fulfill({
+              contentType: "text/css",
+              body: ".shell { --replay-stylesheet-probe: linked; }",
+            }),
+          ),
+        );
         yield* open(dashboard);
         yield* appsReady();
+        yield* browser.use("Load linked CSS before capturing the replay", (page) =>
+          page.evaluate(
+            () =>
+              new Promise<void>((resolve, reject) => {
+                const link = document.createElement("link");
+                link.rel = "stylesheet";
+                link.href = "/replay-layout.css";
+                link.onload = () => resolve();
+                link.onerror = () => reject(new Error("Replay fixture stylesheet did not load"));
+                document.head.append(link);
+              }),
+          ),
+        );
         yield* interact();
         yield* recordedAfter(0);
+        yield* browser.use("Wait for the embedded stylesheet recording", () =>
+          expect
+            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
+            .toContain("--replay-stylesheet-probe"),
+        );
+        const initialReplay = [...snapshots()];
+        const liveLayout = yield* browser.use("Read live dashboard layout", (page) =>
+          page.locator(".shell").evaluate((element) => ({
+            display: getComputedStyle(element).display,
+            columns: getComputedStyle(element).gridTemplateColumns,
+            background: getComputedStyle(document.body).backgroundColor,
+            linkedStyle: getComputedStyle(element).getPropertyValue("--replay-stylesheet-probe"),
+            top: element.getBoundingClientRect().top,
+          })),
+        );
+        expect(liveLayout.display).toBe("grid");
+        expect(liveLayout.linkedStyle).toBe("linked");
+        yield* browser.checkpoint("live-dashboard");
         const first = snapshots().length;
-        yield* browser.use("Insert synthetic private values", (page) =>
+        yield* browser.use("Insert ordinary content and synthetic secrets", (page) =>
           page.evaluate(() => {
             const region = document.createElement("section");
+            region.id = "replay-fields";
             region.innerHTML =
-              '<div title="PRIVATE_ATTRIBUTE" data-secret="PRIVATE_DATA">PRIVATE_TEXT</div><input value="PRIVATE_INPUT"><form>PRIVATE_FORM</form><pre>PRIVATE_SOURCE</pre><iframe srcdoc="PRIVATE_FRAME"></iframe>';
+              '<div title="VISIBLE_ATTRIBUTE">VISIBLE_TEXT</div><a href="/visible-link">VISIBLE_LINK</a><form><label>Account name<input aria-label="Replay account name" value="VISIBLE_INPUT"></label><label>Password<input aria-label="Replay password" type="password" value="PRIVATE_PASSWORD"></label><label>Token<input aria-label="Replay token" type="password" data-private value="PRIVATE_TOKEN"></label><label>Numeric credential<input type="number" data-private value="9876543210123"></label><textarea data-private>PRIVATE_JSON</textarea></form><pre>VISIBLE_CODE</pre><div data-private title="PRIVATE_ATTRIBUTE" data-secret="PRIVATE_DATA" style="--secret:PRIVATE_STYLE">PRIVATE_TEXT<code>PRIVATE_SECRET</code></div><div data-product-private>PRIVATE_PRODUCT</div><iframe srcdoc="VISIBLE_FRAME<input type=&quot;password&quot; value=&quot;PRIVATE_FRAME_PASSWORD&quot;><span data-private>PRIVATE_FRAME_SECRET</span>"></iframe>';
             document.body.append(region);
             console.log("PRIVATE_CONSOLE");
           }),
         );
         yield* interact();
         yield* recordedAfter(first);
+        yield* browser.use("Update ordinary and secret fields, then reveal a token", (page) =>
+          page
+            .getByLabel("Replay password")
+            .fill("PRIVATE_PASSWORD_EDIT")
+            .then(() =>
+              page
+                .getByLabel("Replay token")
+                .evaluate((element) => element.setAttribute("type", "text")),
+            )
+            .then(() =>
+              page.getByRole("textbox", { name: "Replay token" }).fill("PRIVATE_TOKEN_REVEALED"),
+            )
+            .then(() =>
+              page.getByRole("textbox", { name: "Replay account name" }).fill("VISIBLE_EDIT"),
+            ),
+        );
+        yield* browser.use("Wait for the readable input update", () =>
+          expect
+            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
+            .toContain("VISIBLE_EDIT"),
+        );
+        const fieldsReplay = [...snapshots()];
         yield* open(`/org/${actors.organization.slug}/api-keys`);
         yield* browser.use("Wait for excluded API keys page", (page) =>
           page.getByRole("heading", { name: "API keys", exact: true }).waitFor(),
+        );
+        yield* browser.use("Insert a sentinel on the excluded API keys page", (page) =>
+          page.evaluate(() => document.body.append("PRIVATE_API_KEY_PAGE")),
         );
         yield* open(`${dashboard}?private=PRIVATE_QUERY`);
         yield* appsReady();
@@ -143,19 +208,33 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         for (const privateValue of [
           "PRIVATE_ATTRIBUTE",
           "PRIVATE_DATA",
+          "PRIVATE_STYLE",
           "PRIVATE_TEXT",
-          "PRIVATE_INPUT",
-          "PRIVATE_FORM",
-          "PRIVATE_SOURCE",
-          "PRIVATE_FRAME",
+          "PRIVATE_SECRET",
+          "PRIVATE_PRODUCT",
+          "PRIVATE_PASSWORD",
+          "PRIVATE_TOKEN",
+          "9876543210123",
+          "PRIVATE_JSON",
+          "PRIVATE_FRAME_PASSWORD",
+          "PRIVATE_FRAME_SECRET",
           "PRIVATE_CONSOLE",
           "PRIVATE_QUERY",
-          "/api-keys",
+          "PRIVATE_API_KEY_PAGE",
         ])
           expect(recorded).not.toContain(privateValue);
+        for (const visibleValue of [
+          "VISIBLE_ATTRIBUTE",
+          "VISIBLE_TEXT",
+          "VISIBLE_LINK",
+          "VISIBLE_INPUT",
+          "VISIBLE_EDIT",
+          "VISIBLE_CODE",
+          "VISIBLE_FRAME",
+        ])
+          expect(recorded).toContain(visibleValue);
         expect(recorded).toContain("$snapshot_data");
         expect(recorded).toContain('"type":2');
-        expect(recorded).toContain("***");
         yield* browser.use("Clear signed-in session", (page) => page.context().clearCookies());
         yield* open("/login?redirect=%2Forg%2Fprivate%2Fapps");
         yield* browser.use("Wait for sign-in", (page) =>
@@ -167,6 +246,43 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         );
         yield* open("/home");
         expect(snapshots()).toHaveLength(signedOut);
+        yield* browser.use("Render captured dashboard replay", (page) =>
+          renderBrowserReplay(page, initialReplay),
+        );
+        const replayLayout = yield* browser.use("Read replay layout", (page) =>
+          page
+            .frameLocator("iframe")
+            .locator(".shell")
+            .evaluate((element) => ({
+              display: getComputedStyle(element).display,
+              columns: getComputedStyle(element).gridTemplateColumns,
+              background: getComputedStyle(element.ownerDocument.body).backgroundColor,
+              linkedStyle: getComputedStyle(element).getPropertyValue("--replay-stylesheet-probe"),
+              top: element.getBoundingClientRect().top,
+            })),
+        );
+        yield* browser.use("Check that replay navigation is readable", (page) =>
+          page
+            .frameLocator("iframe")
+            .getByRole("heading", { name: /^Apps(?:\s*\d+)?$/ })
+            .waitFor(),
+        );
+        yield* browser.checkpoint("readable-dashboard-replay");
+        expect(replayLayout).toEqual(liveLayout);
+        yield* browser.use("Render captured field updates", (page) =>
+          renderBrowserReplay(page, fieldsReplay),
+        );
+        yield* browser.use("Check ordinary content and input values in playback", (page) => {
+          const replay = page.frameLocator("iframe");
+          return replay
+            .locator("#replay-fields")
+            .innerText()
+            .then((text) => expect(text).toContain("VISIBLE_TEXT"))
+            .then(() => replay.getByRole("textbox", { name: "Replay account name" }).inputValue())
+            .then((value) => expect(value).toBe("VISIBLE_EDIT"))
+            .then(() => replay.locator("#replay-fields").innerHTML())
+            .then((html) => expect(html).not.toContain("PRIVATE_"));
+        });
       }),
     ),
   );

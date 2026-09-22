@@ -28,35 +28,37 @@ export function CredentialFields({
           key={name}
         >
           {field.title ?? name.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
-          {field.type === "boolean" || field.enum ? (
-            <Select
-              value={values[name] ?? ""}
-              onValueChange={(value) => onChange({ ...values, [name]: value })}
-              disabled={pending}
-              required={fields.required?.includes(name) === true}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Choose a value" />
-              </SelectTrigger>
-              <SelectContent>
-                {(field.enum ?? [true, false]).map((value) => (
-                  <SelectItem value={String(value)} key={String(value)}>
-                    {String(value)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              type={field.type === "string" ? "password" : "number"}
-              autoComplete="off"
-              value={values[name] ?? ""}
-              onChange={(event) => onChange({ ...values, [name]: event.target.value })}
-              required={fields.required?.includes(name) === true}
-              step={field.type === "number" ? "any" : undefined}
-              disabled={pending}
-            />
-          )}
+          <div data-private>
+            {field.type === "boolean" || field.enum ? (
+              <Select
+                value={values[name] ?? ""}
+                onValueChange={(value) => onChange({ ...values, [name]: value })}
+                disabled={pending}
+                required={fields.required?.includes(name) === true}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a value" />
+                </SelectTrigger>
+                <SelectContent data-private>
+                  {(field.enum ?? [true, false]).map((value) => (
+                    <SelectItem value={String(value)} key={String(value)}>
+                      {String(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                type={field.type === "string" ? "password" : "number"}
+                autoComplete="off"
+                value={values[name] ?? ""}
+                onChange={(event) => onChange({ ...values, [name]: event.target.value })}
+                required={fields.required?.includes(name) === true}
+                step={field.type === "number" ? "any" : undefined}
+                disabled={pending}
+              />
+            )}
+          </div>
           {field.description && (
             <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
               {field.description}

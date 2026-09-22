@@ -104,3 +104,37 @@ export const captureBrowserAnalytics = (page: Page) => {
     )
     .then(() => ({ events, failures, requests }));
 };
+
+/** Rebuild the captured browser transport in rrweb, without the live page's CSS or session. */
+export const renderBrowserReplay = (page: Page, snapshots: readonly Schema.Json[]) => {
+  const snapshotData = Schema.decodeUnknownSync(
+    Schema.Struct({
+      properties: Schema.Struct({ $snapshot_data: Schema.Array(Schema.Json) }),
+    }),
+  );
+  const events = snapshots.flatMap((snapshot) => snapshotData(snapshot).properties.$snapshot_data);
+  return page
+    .goto("about:blank")
+    .then(() => page.setContent('<!doctype html><html><body style="margin:0"></body></html>'))
+    .then(() => page.addScriptTag({ path: "node_modules/@rrweb/replay/umd/replay.js" }))
+    .then(() =>
+      page.evaluate((events) => {
+        const data = document.createElement("script");
+        data.id = "replay-events";
+        data.type = "application/json";
+        data.textContent = JSON.stringify(events);
+        document.body.append(data);
+      }, events),
+    )
+    .then(() =>
+      page.addScriptTag({
+        content: `
+      const events = JSON.parse(document.getElementById("replay-events").textContent);
+      const replay = new rrwebReplay.Replayer(events, {
+        root: document.body, mouseTail: false, showWarning: false,
+      });
+      replay.pause(events.at(-1).timestamp - events[0].timestamp);
+    `,
+      }),
+    );
+};
