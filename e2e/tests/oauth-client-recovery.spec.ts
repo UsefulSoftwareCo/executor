@@ -125,6 +125,9 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.use("Open a fresh client form after a bad attempt", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
+        yield* browser.use("Choose an account for the app", (page) =>
+          page.getByRole("button", { name: "Add Recoverable OAuth account", exact: true }).click(),
+        );
         yield* browser.use("Connect again", (page) =>
           page.getByRole("button", { name: "Connect Recoverable OAuth", exact: true }).click(),
         );
@@ -199,6 +202,10 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
         );
+        yield* browser.use("Open advanced connection options", (page) =>
+          page.getByText("Advanced", { exact: true }).click(),
+        );
+        yield* browser.checkpoint("Advanced OAuth client options");
         yield* browser.use("Saved clients can be changed", (page) =>
           page.getByRole("button", { name: "Change OAuth client", exact: true }).click(),
         );

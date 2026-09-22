@@ -52,8 +52,8 @@ export default defineApp({accounts: {service}}, async () => ({queries: {}}));`,
         yield* browser.use("Open the connection dialog", (page) =>
           page.getByRole("button", { name: "Connect Permissions fixture", exact: true }).click(),
         );
-        yield* browser.use("Wait for the declared permissions", (page) =>
-          page.getByText("Required permissions", { exact: true }).waitFor({ state: "visible" }),
+        yield* browser.use("Wait for advanced connection options", (page) =>
+          page.getByText("Advanced", { exact: true }).waitFor({ state: "visible" }),
         );
         for (const viewport of [
           { width: 1440, height: 900 },
@@ -75,7 +75,9 @@ export default defineApp({accounts: {service}}, async () => ({queries: {}}));`,
               .then((visible) => {
                 expect(visible).toBe(false);
               })
-              .then(() => dialog.locator("summary").textContent())
+              .then(() =>
+                dialog.locator("h3").filter({ hasText: "Required permissions" }).textContent(),
+              )
               .then((text) => {
                 expect(text).toContain(String(scopes.length));
               })
@@ -90,11 +92,11 @@ export default defineApp({accounts: {service}}, async () => ({queries: {}}));`,
           yield* browser.checkpoint(`Collapsed permissions ${viewport.width}`);
           yield* browser.use("Expand permissions with the keyboard", (page) => {
             const dialog = page.getByRole("dialog");
-            const summary = dialog.locator("summary");
+            const advanced = dialog.locator("summary").filter({ hasText: "Advanced" });
             const list = page.getByRole("region", { name: "Required permissions", exact: true });
-            return summary
+            return advanced
               .focus()
-              .then(() => summary.press("Enter"))
+              .then(() => advanced.press("Enter"))
               .then(() => list.waitFor({ state: "visible" }))
               .then(() => list.locator("code").allTextContents())
               .then((values) => {
@@ -129,10 +131,10 @@ export default defineApp({accounts: {service}}, async () => ({queries: {}}));`,
           yield* browser.checkpoint(`Expanded permissions ${viewport.width}`);
           yield* browser.use("Collapse permissions without submitting", (page) => {
             const dialog = page.getByRole("dialog");
-            const summary = dialog.locator("summary");
-            return summary
+            const advanced = dialog.locator("summary").filter({ hasText: "Advanced" });
+            return advanced
               .focus()
-              .then(() => summary.press("Space"))
+              .then(() => advanced.press("Space"))
               .then(() => dialog.getByLabel("Account name", { exact: true }).inputValue())
               .then((label) => {
                 expect(label).toBe("Default");

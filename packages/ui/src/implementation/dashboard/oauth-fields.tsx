@@ -125,28 +125,6 @@ export function OAuthFields<A, E>({
   };
   return (
     <>
-      {setup !== "unresolved" && setup.mode === "saved" && (
-        <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs">
-          <span className="text-muted-foreground">
-            {manual
-              ? "New details are saved after a successful connection."
-              : "Using a saved OAuth client."}
-          </span>
-          <Button
-            type="button"
-            variant="link"
-            size="sm"
-            className="h-auto shrink-0 p-0 text-xs"
-            disabled={pending || disabled}
-            onClick={() => {
-              setManual(!manual);
-              setError(undefined);
-            }}
-          >
-            {manual ? "Use saved client" : "Change OAuth client"}
-          </Button>
-        </div>
-      )}
       {manual && (
         <>
           <Alert role="note" className="gap-y-2 bg-muted/30 px-3 py-3">
@@ -245,31 +223,67 @@ export function OAuthFields<A, E>({
             : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
         </Button>
       </div>
-      {setup !== "unresolved" && setup.scopes.length > 0 && (
-        <details className="group min-w-0 rounded-md border">
-          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-3 py-2.5 text-[13px] font-medium outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+      {setup !== "unresolved" && (setup.mode === "saved" || setup.scopes.length > 0) && (
+        <details className="group/advanced min-w-0 border-t pt-3">
+          <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
             <HugeiconsIcon
               icon={ArrowDown01Icon}
-              size={16}
-              className="shrink-0 -rotate-90 text-muted-foreground group-open:rotate-0"
+              size={14}
+              className="shrink-0 -rotate-90 group-open/advanced:rotate-0"
               aria-hidden
             />
-            <span>Required permissions</span>
-            <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">
-              {setup.scopes.length}
-            </span>
+            <span>Advanced</span>
           </summary>
-          <div
-            role="region"
-            aria-label="Required permissions"
-            tabIndex={0}
-            className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain border-t p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-          >
-            {setup.scopes.map((scope) => (
-              <code key={scope} className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all">
-                {scope}
-              </code>
-            ))}
+          <div className="space-y-4 pt-4">
+            {setup.mode === "saved" && (
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <div className="min-w-0 space-y-1">
+                  <p className="font-medium">OAuth client</p>
+                  <p className="text-muted-foreground">
+                    {manual ? "Saved after a successful connection." : "Using a saved client"}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  aria-label={manual ? "Use saved client" : "Change OAuth client"}
+                  disabled={pending || disabled}
+                  onClick={() => {
+                    setManual(!manual);
+                    setError(undefined);
+                  }}
+                >
+                  {manual ? "Use saved client" : "Change"}
+                </Button>
+              </div>
+            )}
+            {setup.scopes.length > 0 && (
+              <section className="space-y-2">
+                <h3 className="flex items-center gap-2 text-xs font-medium">
+                  <span>Required permissions</span>
+                  <span className="font-normal tabular-nums text-muted-foreground">
+                    {setup.scopes.length}
+                  </span>
+                </h3>
+                <div
+                  role="region"
+                  aria-label="Required permissions"
+                  tabIndex={0}
+                  className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                >
+                  {setup.scopes.map((scope) => (
+                    <code
+                      key={scope}
+                      className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all"
+                    >
+                      {scope}
+                    </code>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </details>
       )}

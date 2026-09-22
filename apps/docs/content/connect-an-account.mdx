@@ -34,13 +34,14 @@ If your own client is required, its fields appear immediately. A failed check of
 server during these checks.
 
 The provider's code declares the grant, endpoints, scopes, and authentication
-method. The dialog shows the required permissions and asks only for a client ID
+method. Open **Advanced** below Connect to review **Required permissions**.
+The dialog asks only for a client ID
 and, when required, a client secret. For browser sign-in, copy the fixed redirect
 URL into the OAuth app's settings. Machine-to-machine connections complete in the
 dialog and need no browser redirect.
 
-If saved OAuth client details are wrong, choose **Change OAuth client** in the
-connection form and enter the replacement. Executor saves manual client details
+If saved OAuth client details are wrong, open **Advanced** below the Connect button,
+choose **Change** next to OAuth client, and enter the replacement. Executor saves manual client details
 only after a successful sign-in. A failed replacement keeps the previous client
 and account. If browser sign-in rejects the client, **Update client details**
 opens the form again with the account name retained.
