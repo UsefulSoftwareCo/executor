@@ -17,6 +17,9 @@ the build scans the browser bundle, including imported components and lazy
 chunks. Customize tokens with CSS `@theme`. Use `@source inline("...")` for
 classes supplied only at runtime. Do not use filesystem `@source` paths or
 JavaScript `@config` and `@plugin` files. Plain CSS and library styles still work.
+The full Tailwind import includes Preflight, which resets browser button and
+form styles. Importing only `theme.css` and `utilities.css` omits those resets;
+use that split only when you supply the required base styles yourself.
 
 For hosted apps, discover and call `appUi_location` after deployment:
 
@@ -35,6 +38,9 @@ browser. The browser completes sign-in using their Executor session. MCP
 credentials do not grant a browser session. A `403` response alone does not
 prove the URL is correct or that the UI renders; invalid hosts also return it.
 Verify the actual page before claiming that the UI works.
+Use an available authenticated browser session for that check. A fresh profile
+may stop at sign-in. Successful tool calls or rows added by someone else do not
+verify the page's layout, controls or optimistic interactions.
 
 Import `createAppClient`, `queryReference`, and `mutationReference` from
 `apps/client`. Import server operation **types only** from `index.ts`; put shared
@@ -95,6 +101,15 @@ variant. Update filtered lists deliberately. `setQuery` replaces a mounted value
 and validates it with that query's output schema. It does not create a subscription.
 The complete `live-inbox` example returned by `framework_describe` shows insertion
 with a temporary ID. Create IDs before calling the mutation, and pass them as input.
+
+A temporary ID is only a UI placeholder. The example's server ignores `clientId`
+and returns a row with a database-generated ID; the client does not rewrite IDs
+in later mutation arguments. If you add per-row actions, use distinguishable
+temporary IDs (for example, `"pending:" + crypto.randomUUID()`) and disable edit,
+toggle and delete for those rows. Enable them when reconciliation replaces the
+placeholder with the authoritative row. Awaiting the create Promise alone is
+not sufficient: it resolves before the placeholder is necessarily replaced.
+Do not send a temporary ID to a database mutation or assume queued writes map it.
 
 The callback must be synchronous, pure, and return nothing. It can run repeatedly
 over newer server data. Do not mutate values, make network calls, or generate IDs

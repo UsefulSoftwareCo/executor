@@ -112,6 +112,22 @@ transform data, but has no direct imports, fetch, filesystem or process APIs.
 Do not place `defineApp` declarations directly in execute code; deploy them as
 source strings through `apps_deploy`.
 
+### Carry source as data
+
+When source comes from `framework_describe` or `appManagement_source`, transform
+its `files` in the same execution and pass them to create or commit. For a small
+edit, replace only the affected file content and retain the other files. Check
+that the expected text exists before applying a text replacement. Do not print
+the entire app and retype it to change one style or operation.
+
+For locally authored files, generate the `{ path, content }` array with a local
+script and JSON serialization. Insert that serialized value as JavaScript data
+in the `execute` payload; keep it out of shell interpolation. JSON handles
+quotes, backticks, newlines and literal `${...}` without changing the source.
+Do not wrap arbitrary source in a manually constructed template literal.
+The local script can prepare the payload, but remote `execute` cannot read a
+local path. Submit the actual contents through the available tool interface.
+
 ## Updating a hosted app
 
 Search the Executor management app for its source, deployments, update and

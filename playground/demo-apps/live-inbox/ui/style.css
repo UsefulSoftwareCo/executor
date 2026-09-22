@@ -1,7 +1,5 @@
-/* Executor compiles these utilities with the app's browser bundle. */
-@layer theme, base, utilities;
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
+/* Includes Preflight so copied controls do not retain browser default styles. */
+@import "tailwindcss";
 
 @layer base {
   :root {

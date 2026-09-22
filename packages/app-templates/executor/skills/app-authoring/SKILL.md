@@ -14,6 +14,7 @@ the framework. An app's installed name is separate from its source definition.
 
 | Task                                                         | Reference                          |
 | ------------------------------------------------------------ | ---------------------------------- |
+| Start a new UI with storage from a checked example           | [starter.md](starter.md)           |
 | Declare queries, mutations, schemas, approvals or app skills | [tools.md](tools.md)               |
 | Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)             |
 | Build a React UI and subscribe to data                       | [ui.md](ui.md)                     |
@@ -23,7 +24,9 @@ the framework. An app's installed name is separate from its source definition.
 | Handle webhooks                                              | [webhooks.md](webhooks.md)         |
 | Run workflows or scheduled mutations                         | [workflows.md](workflows.md)       |
 
-For a UI with storage, read `tools.md`, `ui.md`, `storage.md` and `deploy.md`.
+For a new UI with storage, start with `starter.md`. It links to the topics
+needed to adapt the example. For an existing app, read its current source and
+the reference for the part being changed.
 Load files through the MCP `skills` tool using the returned app slug and deployment:
 
 ```json
