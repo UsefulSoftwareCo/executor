@@ -43,18 +43,18 @@ export function ProviderAccountSupport({
         ? `This app supports using multiple ${requirement.definition.name} accounts.`
         : `This app only supports one ${requirement.definition.name} account${onCreateProfile ? ", create a" : "."}`}
       {onCreateProfile && (
-        <>
-          {" "}
+        <span className={many ? "block text-pretty" : undefined}>
+          {many ? "If you want to use a different combination of accounts,\u00a0" : " "}
           <Button
             variant="link"
-            className="h-auto p-0 text-xs text-foreground"
+            className="h-auto p-0 text-xs text-foreground max-[740px]:min-h-0"
             aria-label="Create a profile"
             onClick={onCreateProfile}
           >
-            {many ? "Create a profile" : "profile"}
+            {many ? "create a profile" : "profile"}
           </Button>
           {many ? "." : " to add more than one account."}
-        </>
+        </span>
       )}
     </>
   );
@@ -195,14 +195,15 @@ export function AppAccounts({
             }
             className="min-w-0 space-y-2.5"
           >
-            <div className="flex min-h-8 min-w-0 items-center gap-2.5 text-sm [&_.provider-icon]:size-7 [&_.provider-icon]:rounded-md [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40">
+            <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
               <ProviderIcon
                 name={requirement.definition.name}
                 url={providerDisplayUrl(requirement.definition)}
+                large
               />
               <div className="min-w-0">
                 <p className="truncate font-medium">{requirement.definition.name}</p>
-                <p className="text-xs leading-relaxed text-muted-foreground">
+                <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
                   {showSlot && `${slot} · `}
                   <ProviderAccountSupport
                     requirement={requirement}
