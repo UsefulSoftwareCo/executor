@@ -1,13 +1,9 @@
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue, useAtomMount } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
+import { OrganizationEntry } from "@executor-js/hosted-web/organization";
 import { SessionMenu } from "@executor-js/hosted-web/auth";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
-import {
-  HostedEntry,
-  OrganizationLookupError,
-  HostedEntryLoading,
-  DashboardEntryPending,
-} from "@executor-js/hosted-web/entry";
+import { HostedEntry, HostedEntryLoading } from "@executor-js/hosted-web/entry";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
 import { IconPicker } from "@executor-js/hosted-web/icon-picker";
 import {
@@ -18,7 +14,7 @@ import {
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
-import { Cause, Exit, Schema } from "effect";
+import { Cause, Exit, Option, Schema } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useState, type ReactNode } from "react";
 import {
@@ -30,56 +26,65 @@ import { prepareTeamAtom, createTeamAtom } from "../../contracts/onboarding.ts";
 
 /** Confirm first-team details at entry; exact invitation and organization links remain intact. */
 export function TeamSetupBoundary({ children }: { readonly children: ReactNode }) {
-  const session = useAtomValue(sessionAtom);
+  const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   const { pathname } = useLocation();
   if (
-    !AsyncResult.isSuccess(session) ||
-    session.value === null ||
+    session === undefined ||
+    session === null ||
     (pathname !== "/" && pathname !== "/mcp/authorize")
   )
     return children;
   return (
     <OrganizationEntryGate
-      key={session.value.user.id}
-      userId={session.value.user.id}
-      mcp={pathname === "/mcp/authorize"}
+      key={session.user.id}
+      userId={session.user.id}
+      destination={pathname === "/mcp/authorize" ? "mcp" : "entry"}
     >
       {children}
     </OrganizationEntryGate>
   );
 }
 
+/** The dedicated setup route owns its membership check, form, and completion navigation. */
+export function CreateTeamPage() {
+  // Keep the supplied membership snapshot available for the confirmed-write handoff.
+  useAtomMount(organizationsAtom);
+  const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
+  if (session === undefined || session === null) return <HostedEntryLoading />;
+  return (
+    <TeamEntry key={session.user.id} userId={session.user.id} mcp={false}>
+      <OrganizationEntry />
+    </TeamEntry>
+  );
+}
+
 function OrganizationEntryGate({
   userId,
-  mcp,
+  destination,
   children,
 }: {
   readonly userId: string;
-  readonly mcp: boolean;
+  readonly destination: "entry" | "mcp";
   readonly children: ReactNode;
 }) {
   const organizations = useAtomValue(organizationsAtom);
   const refresh = useAtomRefresh(organizationsAtom);
   return AsyncResult.builder(organizations)
-    .onInitial(() => (mcp ? <McpConsentLoading /> : <DashboardEntryPending />))
-    .onFailure(() =>
-      mcp ? (
-        <HostedEntry title="Unable to load your organizations" description="Try again to connect.">
-          <Button onClick={refresh}>Try again</Button>
-        </HostedEntry>
-      ) : (
-        <DashboardEntryPending>
-          <OrganizationLookupError retry={refresh} />
-        </DashboardEntryPending>
-      ),
-    )
+    .onInitial(() => (destination === "mcp" ? <McpConsentLoading /> : <HostedEntryLoading />))
+    .onFailure(() => (
+      <HostedEntry title="Unable to load your organizations" description="Try again to continue.">
+        <Button onClick={refresh}>Try again</Button>
+      </HostedEntry>
+    ))
     .onSuccess((items) =>
       items.length > 0 ? (
         children
-      ) : (
-        <TeamEntry userId={userId} mcp={mcp}>
+      ) : destination === "mcp" ? (
+        <TeamEntry userId={userId} mcp>
           {children}
         </TeamEntry>
+      ) : (
+        <Navigate to="/create" replace />
       ),
     )
     .exhaustive();

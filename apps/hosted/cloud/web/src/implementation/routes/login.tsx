@@ -4,6 +4,7 @@ import { loginSearch } from "@executor-js/hosted-web/pages/login";
 
 /** Each host mounts the same login UI on its own origin. */
 export const Route = createFileRoute("/login")({
+  codeSplitGroupings: [],
   validateSearch: loginSearch,
   component: () => <CloudLoginPage {...Route.useSearch()} />,
 });

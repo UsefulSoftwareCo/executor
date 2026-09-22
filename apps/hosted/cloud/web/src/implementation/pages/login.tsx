@@ -1,18 +1,18 @@
 import { PasskeyEnrollment } from "../components/passkey-enrollment.tsx";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import {
-  ContinueAfterSignIn,
-  LoginLegalFooter,
-  LoginPage,
-  loginSearch,
-} from "@executor-js/hosted-web/pages/login";
+import { LoginLegalFooter, LoginPage, loginSearch } from "@executor-js/hosted-web/pages/login";
 import { AuthFailed, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import { Cause, Exit, Option } from "effect";
-import { useState } from "react";
-import { passkeySignInAtom, sendCodeAtom, verifyCodeAtom } from "../../contracts/auth.ts";
+import { useEffect, useState } from "react";
+import {
+  finishCloudSignIn,
+  passkeySignInAtom,
+  sendCodeAtom,
+  verifyCodeAtom,
+} from "../../contracts/auth.ts";
 
 /** Cloud adds passkeys and verified email codes to the social sign-in choices. */
 export function CloudLoginPage(props: ReturnType<typeof loginSearch>) {
@@ -29,7 +29,7 @@ export function CloudLoginPage(props: ReturnType<typeof loginSearch>) {
     return (
       <>
         <PasskeyEnrollment key={current.user.id} userId={current.user.id} canSubmit={verified}>
-          <ContinueAfterSignIn redirect={props.redirect} userId={current.user.id} />
+          <CompleteSignIn redirect={props.redirect} verified={verified} />
         </PasskeyEnrollment>
         {AsyncResult.isFailure(session) && (
           <div
@@ -47,6 +47,19 @@ export function CloudLoginPage(props: ReturnType<typeof loginSearch>) {
   return <CloudSignInForm {...props} />;
 }
 
+function CompleteSignIn({
+  redirect,
+  verified,
+}: {
+  readonly redirect: string;
+  readonly verified: boolean;
+}) {
+  useEffect(() => {
+    if (verified) finishCloudSignIn(redirect);
+  }, [redirect, verified]);
+  return null;
+}
+
 function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
   const send = useAtomSet(sendCodeAtom, { mode: "promiseExit" });
   const verify = useAtomSet(verifyCodeAtom, { mode: "promiseExit" });
@@ -57,7 +70,12 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pending = sending.waiting || verifying.waiting || signing.waiting;
+  const pending =
+    sending.waiting ||
+    verifying.waiting ||
+    signing.waiting ||
+    AsyncResult.isSuccess(verifying) ||
+    AsyncResult.isSuccess(signing);
   const failure = (cause: Cause.Cause<AuthFailed>) => {
     const value = Cause.squash(cause);
     setError(value instanceof AuthFailed ? value.message : "Sign-in failed. Try again.");
@@ -70,7 +88,7 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
         loading={signing.waiting}
         onClick={async () => {
           setError(null);
-          const result = await passkey();
+          const result = await passkey(props.redirect);
           if (Exit.isFailure(result)) failure(result.cause);
         }}
       >
@@ -87,7 +105,7 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
             else setSent(true);
           } else {
             const otp = String(new FormData(event.currentTarget).get("otp"));
-            const result = await verify({ email: email.trim(), otp });
+            const result = await verify({ email: email.trim(), otp, redirect: props.redirect });
             if (Exit.isFailure(result)) failure(result.cause);
           }
         }}

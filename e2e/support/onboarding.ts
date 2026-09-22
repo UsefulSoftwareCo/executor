@@ -1,6 +1,7 @@
 import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Browser } from "./browser.ts";
+import { holdOrganizationEntry } from "./organization-entry.ts";
 import { Emulators } from "./emulators.ts";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
@@ -76,6 +77,7 @@ const make = Effect.gen(function* () {
           emulators.identity(provider),
         );
         yield* openLogin;
+        const memberships = yield* holdOrganizationEntry;
         yield* browser.use(`Choose ${provider} sign-in`, (page) =>
           page
             .getByRole("button", {
@@ -84,9 +86,39 @@ const make = Effect.gen(function* () {
             })
             .click(),
         );
-        yield* browser.use(`Choose the identity on the ${provider} emulator`, (page) =>
-          page.getByRole("button").filter({ hasText: identity.email }).click(),
+        const document = yield* browser.use(
+          `Choose the identity on the ${provider} emulator`,
+          (page) =>
+            Promise.all([
+              page.waitForResponse((response) => {
+                const url = new URL(response.url());
+                return (
+                  response.request().isNavigationRequest() &&
+                  url.origin === target.metadata.origin &&
+                  url.pathname === "/login"
+                );
+              }),
+              page.getByRole("button").filter({ hasText: identity.email }).click(),
+            ]).then(([response]) =>
+              response.text().then((html) => ({
+                status: response.status(),
+                prepared: html.includes('id="executor-entry"') && html.includes('"path":"/create"'),
+                private: response.headers()["cache-control"]?.includes("no-store") === true,
+              })),
+            ),
         );
+        if (document.status !== 200)
+          return yield* new OnboardingFailed({ operation: "Sign-in document did not load" });
+        if (!document.prepared || !document.private)
+          return yield* new OnboardingFailed({
+            operation: "Sign-in document must contain private server-prepared team setup",
+          });
+        yield* browser.use("Team form renders without a browser membership read", (page) =>
+          page
+            .getByRole("heading", { name: "Create your team", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* memberships.release;
         yield* browser.use("Complete the OAuth callback into Cloud", (page) =>
           page.waitForURL(
             (url) => url.origin === target.metadata.origin && url.pathname !== "/login",
@@ -140,20 +172,29 @@ const make = Effect.gen(function* () {
       return {
         wasRequested: Effect.sync(() => started),
         show: Effect.gen(function* () {
-          yield* Deferred.await(arrived).pipe(Effect.timeout("30 seconds"));
-          yield* browser.use("Company preparation is visibly loading", (page) =>
-            page
-              .getByRole("status", { name: "Preparing your team", exact: true })
-              .waitFor({ state: "visible" }),
+          yield* browser.use("The server prepared the form before its first render", (page) =>
+            page.getByLabel("Team name", { exact: true }).waitFor({ state: "visible" }),
           );
-          yield* browser.checkpoint("Company information loading");
+          if (started)
+            return yield* new OnboardingFailed({
+              operation: "Setup repeated preparation in the browser",
+            });
+          const spinners = yield* browser.use(
+            "No intermediate sign-in or preparation view is mounted",
+            (page) => page.locator('.auth-pending, [aria-label="Preparing your team"]').count(),
+          );
+          if (spinners !== 0)
+            return yield* new OnboardingFailed({
+              operation: "Unexpected intermediate setup loading view",
+            });
+          yield* browser.checkpoint("Team form ready on first entry");
           yield* evidence.json("preparation-delay.json", {
-            externalNetworkDelay: true,
-            heldUntilLoadingCheckpoint: true,
+            browserPreparationRequested: started,
+            serverPrepared: true,
             responseReplaced: false,
           });
           yield* Deferred.succeed(release, undefined);
-          yield* Deferred.await(completed);
+          if (started) yield* Deferred.await(completed);
         }),
         release: Deferred.succeed(release, undefined),
       };
@@ -162,6 +203,16 @@ const make = Effect.gen(function* () {
       yield* browser.use("Team details are ready to review", (page) =>
         page.getByLabel("Team name", { exact: true }).waitFor({ state: "visible" }),
       );
+      const entry = yield* browser.use("Setup stays outside the dashboard", (page) =>
+        page
+          .locator(".shell")
+          .count()
+          .then((shells) => ({ pathname: new URL(page.url()).pathname, shells })),
+      );
+      if (entry.pathname !== "/create" || entry.shells !== 0)
+        return yield* new OnboardingFailed({
+          operation: "Expected shell-free team confirmation at /create",
+        });
       const suggested = yield* browser.use("Read the suggested team name", (page) =>
         page.getByLabel("Team name", { exact: true }).inputValue(),
       );

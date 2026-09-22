@@ -29,7 +29,11 @@ function Root() {
     );
   return (
     <DocumentTitleProvider
-      fallbackTitle={productTitle(hostedPageTitle(pathname, { billing: "Billing" }))}
+      fallbackTitle={productTitle(
+        pathname === "/create"
+          ? "Create your team"
+          : hostedPageTitle(pathname, { billing: "Billing" }),
+      )}
     >
       <AnalyticsIdentity />
       <ErrorReportingIdentity />

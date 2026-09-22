@@ -77,7 +77,7 @@ test("first sign-in confirms editable team details before creating or navigating
     const form = tab.container.querySelector("form");
     assert.ok(name && form);
     assert.equal(name.value, "Example Company");
-    assert.equal(tab.router.state.location.pathname, "/");
+    assert.equal(tab.router.state.location.pathname, "/create");
     assert.equal(organizations.length, 0);
     assert.equal(requests.filter((path) => path === "/api/onboarding/create").length, before);
     assert.equal(tab.container.querySelector('input[name="slug"]'), null);
@@ -187,7 +187,7 @@ test("preparation retries and failed confirmation preserve the entered team name
     await settle(() => tab.container.textContent?.includes("Unable to create your team") === true);
     assert.equal(name.value, "My chosen team");
     assert.equal(organizations.length, 0);
-    assert.equal(tab.router.state.location.pathname, "/");
+    assert.equal(tab.router.state.location.pathname, "/create");
     onboardingFixture.failCreate = false;
     await act(async () =>
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),

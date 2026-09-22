@@ -246,9 +246,14 @@ export const scenarios = {
     title: "Hero experiments render stable HTML and isolate previews",
     targets: cloudOnboarding,
   },
+  teamCreateRoute: {
+    file: "team-create-route.spec.ts",
+    title: "Team setup routing waits for membership and redirects existing members",
+    targets: cloudOnboarding,
+  },
   signInEntry: {
     file: "sign-in-entry.spec.ts",
-    title: "First sign-in resolves the organization before entering the dashboard",
+    title: "Sign-in completion selects destinations before loading a page",
     targets: cloudOnboarding,
   },
   rootEntryLoading: {
@@ -557,7 +562,7 @@ export const scenarios = {
   },
   onboardingGoogle: {
     file: "cloud-onboarding.spec.ts",
-    title: "Cloud onboarding with Google shows company preparation before team confirmation",
+    title: "Cloud onboarding with Google opens prepared team confirmation",
     targets: cloudOnboarding,
   },
   onboardingGithub: {

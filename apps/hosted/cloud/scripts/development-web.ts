@@ -4,8 +4,11 @@ import { createServer as createHttpServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Layer, Path } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { Config, Console, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { HttpRouter, HttpClient, HttpServerRequest, FetchHttpClient } from "effect/unstable/http";
+import { CloudEntry } from "../src/contracts/entry.ts";
+import { cloudEntryDocument } from "../src/implementation/entry.ts";
+import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { cloudDevelopment } from "../src/contracts/development.ts";
 import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
 import { homepageResponse } from "../src/implementation/homepage-response.ts";
@@ -18,6 +21,7 @@ export const developmentRoutes = (
   marketing: Effect.Success<ReturnType<typeof marketingFiles>>,
   dashboard: Effect.Success<ReturnType<typeof developmentDashboard>>,
   cookiePrefix: string,
+  apiOrigin: string,
 ) => {
   return Layer.mergeAll(
     HttpRouter.add(
@@ -25,10 +29,35 @@ export const developmentRoutes = (
       "/",
       homepageResponse(cookiePrefix, marketing.experiment, dashboard.document),
     ),
+    ...(["login", "create"] as const).map((page) =>
+      HttpRouter.add(
+        "GET",
+        `/${page}`,
+        cloudEntryDocument(
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const redirect = browserReturnTo(
+              new URL(request.url, apiOrigin).searchParams.get("redirect"),
+            );
+            const client = yield* HttpClient.HttpClient;
+            const response = yield* client.get(
+              `${apiOrigin}/api/entry?page=${page}&redirect=${encodeURIComponent(redirect)}`,
+              { headers: { cookie: request.headers.cookie ?? "" } },
+            );
+            if (response.status !== 200)
+              return yield* Effect.fail(new Error("Entry lookup unavailable"));
+            return yield* response.json.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(CloudEntry)),
+            );
+          }),
+          dashboard.document,
+        ),
+      ),
+    ),
     HttpRouter.add("GET", "/home", marketing.document),
     ...marketing.paths.map((path) => HttpRouter.add("GET", path, marketing.asset)),
     HttpRouter.add("*", "*", dashboard.handler),
-  );
+  ).pipe(HttpRouter.provideRequest(FetchHttpClient.layer));
 };
 
 const main = Effect.scoped(
@@ -64,7 +93,12 @@ const main = Effect.scoped(
     const marketing = yield* marketingFiles(path.join(marketingRoot, "dist"));
     const routes = Layer.mergeAll(
       yield* cloudDevtools,
-      developmentRoutes(marketing, dashboard, cloudSessionCookiePrefix(origin.origin)),
+      developmentRoutes(
+        marketing,
+        dashboard,
+        cloudSessionCookiePrefix(origin.origin),
+        `http://127.0.0.1:${configuration.apiPort}`,
+      ),
     );
     yield* Layer.build(
       HttpRouter.serve(routes, { disableLogger: true }).pipe(

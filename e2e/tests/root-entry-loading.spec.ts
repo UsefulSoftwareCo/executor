@@ -140,7 +140,7 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
               yield* list.requested;
               yield* browser.use("Only entry without history waits for organizations", (page) =>
                 page
-                  .getByRole("status", { name: "Loading apps", exact: true })
+                  .getByRole("status", { name: "Loading organizations", exact: true })
                   .waitFor({ state: "visible" }),
               );
               expect(yield* preparation.wasRequested).toBe(false);

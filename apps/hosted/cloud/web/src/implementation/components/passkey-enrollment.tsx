@@ -1,6 +1,5 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Button } from "@executor-js/ui/components/button";
-import { Spinner } from "@executor-js/ui/components/spinner";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useState, type ReactNode } from "react";
@@ -44,15 +43,7 @@ function Enrollment({
   const adding = useAtomValue(addPasskeyAtom);
   const [error, setError] = useState<string | null>(null);
   if (AsyncResult.isSuccess(enrollment) && !enrollment.value) return children;
-  if (AsyncResult.isInitial(enrollment))
-    return (
-      <div className="auth-pending min-h-dvh flex items-center justify-center gap-4">
-        <Spinner />
-        <Button variant="ghost" onClick={() => dismiss(userId)}>
-          Not now
-        </Button>
-      </div>
-    );
+  const checking = AsyncResult.isInitial(enrollment);
   return (
     <main className="auth-page flex flex-col min-h-dvh items-center justify-center p-[24px]">
       <section className="auth-form w-full max-w-85 flex flex-col gap-6 [&_form]:flex [&_form]:flex-col [&_form]:gap-4 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.75 [&_label]:text-[13px] [&_label]:font-medium [&_input]:h-10.5 [&_form_>_button]:min-h-10.5 [&_.wordmark]:p-0 [&_.wordmark]:h-8 [&_.wordmark]:min-h-8 [&_.wordmark]:w-auto [&_.wordmark]:justify-start">
@@ -66,10 +57,10 @@ function Enrollment({
         <p>Sign in faster with your fingerprint, face, or password manager.</p>
         <Button
           className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-          loading={adding.waiting}
-          aria-disabled={!canSubmit || AsyncResult.isFailure(enrollment) || undefined}
+          loading={adding.waiting || checking}
+          aria-disabled={!canSubmit || checking || AsyncResult.isFailure(enrollment) || undefined}
           onClick={async () => {
-            if (!canSubmit || AsyncResult.isFailure(enrollment)) return;
+            if (!canSubmit || checking || AsyncResult.isFailure(enrollment)) return;
             setError(null);
             const result = await add("Passkey");
             if (Exit.isFailure(result))

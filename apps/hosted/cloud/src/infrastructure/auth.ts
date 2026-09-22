@@ -1,3 +1,4 @@
+import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import { HostedAppSessions, hostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APIError } from "better-auth/api";
@@ -260,6 +261,14 @@ export const cloudAuth = (send: SendAuthEmail) =>
       Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
     );
     return {
+      browserSession: (headers: Headers) =>
+        auth.api
+          .getSession({ headers, query: { disableRefresh: true, disableCookieCache: true } })
+          .pipe(
+            Effect.provide(RuntimeContext.phantom),
+            Effect.flatMap(Schema.decodeUnknownEffect(BrowserSession)),
+            Effect.mapError(() => new AuthenticationUnavailable()),
+          ),
       identity,
       mcpIdentity,
       apiIdentity,

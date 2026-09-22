@@ -10,7 +10,7 @@ import { BrowserAtoms } from "./telemetry.ts";
 import { UploadedOrganizationIcon } from "@executor-js/hosted-server/organization-icon";
 import { OrganizationForbidden } from "@executor-js/hosted-server/organization";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { organizationOperations, sessionAtom } from "./auth.ts";
 import { HostedClient } from "./api.ts";
@@ -83,10 +83,29 @@ const organizationsQuery = BrowserAtoms.atom((get) => {
   return request("list", (options) => organizationOperations(options).list()).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(OrganizationSummary))),
   );
-}).pipe(Atom.refreshOnWindowFocus);
+});
 
+/** A server-rendered entry document can supply membership before the browser mounts. */
+export const entryOrganizationsAtom = Atom.make<Option.Option<ReadonlyArray<OrganizationSummary>>>(
+  Option.none(),
+).pipe(Atom.keepAlive);
+const initialOrganizationsQuery = Atom.readable(
+  (get) => {
+    const entry = get(entryOrganizationsAtom);
+    return Option.isSome(entry)
+      ? AsyncResult.success<
+          ReadonlyArray<OrganizationSummary>,
+          OrganizationFailed | Schema.SchemaError
+        >(entry.value)
+      : get(organizationsQuery);
+  },
+  (refresh) => {
+    refresh(entryOrganizationsAtom);
+    refresh(organizationsQuery);
+  },
+).pipe(Atom.refreshOnWindowFocus);
 /** Confirmed writes and source waiting state are shared by every route consumer. */
-export const organizationsAtom = acknowledgedQuery(organizationsQuery);
+export const organizationsAtom = acknowledgedQuery(initialOrganizationsQuery);
 
 /** Create without changing any session preference; the caller navigates this tab. */
 export const createOrganizationAtom = BrowserAtoms.fn(

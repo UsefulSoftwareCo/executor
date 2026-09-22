@@ -71,6 +71,8 @@ export const authRequest = <A>(
 /** Browser identity deliberately excludes library session preferences and tokens. */
 export const HostedSession = BrowserSession;
 
+const entrySession = Atom.make<Option.Option<BrowserSession>>(Option.none()).pipe(Atom.keepAlive);
+
 const initialSessionHint = Atom.make<Option.Option<typeof HostedSession.Type>>(Option.none()).pipe(
   Atom.keepAlive,
 );
@@ -84,6 +86,9 @@ const liveSessionQuery = BrowserAtoms.atom(
 ).pipe(Atom.keepAlive);
 const sessionQuery = Atom.readable(
   (get) => {
+    const entry = get(entrySession);
+    if (Option.isSome(entry))
+      return AsyncResult.success<BrowserSession, AuthFailed | Schema.SchemaError>(entry.value);
     const live = get(liveSessionQuery);
     const hint = get(initialSessionHint);
     return AsyncResult.isInitial(live) && Option.isSome(hint)
@@ -94,14 +99,18 @@ const sessionQuery = Atom.readable(
         )
       : live;
   },
-  (refresh) => refresh(liveSessionQuery),
+  (refresh) => {
+    refresh(entrySession);
+    refresh(liveSessionQuery);
+  },
 ).pipe(Atom.refreshOnWindowFocus);
 /** Optimistic display identity; live results replace the hint and APIs enforce authorization. */
 export const sessionAtom = acknowledgedQuery(sessionQuery);
-/** Read the display cookie before mounting this client-rendered dashboard. */
-export const sessionInitialValues = () => [
-  Atom.initialValue(initialSessionHint, readSessionHint()),
-];
+/** Seed a server-verified entry response, or use the display hint while ordinary pages revalidate. */
+export const sessionInitialValues = (verified?: BrowserSession) =>
+  verified === undefined
+    ? [Atom.initialValue(initialSessionHint, readSessionHint())]
+    : [Atom.initialValue(entrySession, Option.some(verified))];
 
 /** Better Auth creates the OAuth state and redirects to the chosen provider. */
 export const signInAtom = BrowserAtoms.fn(

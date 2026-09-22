@@ -48,6 +48,10 @@ import {
 } from "./infrastructure/telemetry.ts";
 import { cloudEmail } from "./infrastructure/email.ts";
 import { cloudWelcomeEmails } from "./infrastructure/welcome-email.ts";
+import { cloudEntryApi, cloudEntryDocument, resolveCloudEntry } from "./implementation/entry.ts";
+import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
+import { HttpServerRequest } from "effect/unstable/http";
+import { staticDocument } from "./implementation/homepage.ts";
 import { homepage } from "./implementation/homepage.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
@@ -122,6 +126,10 @@ export default Api.make(
         // this list.
         runWorkerFirst: [
           "/",
+          "/login",
+          "/login/",
+          "/create",
+          "/create/",
           "/api",
           "/api/*",
           "/health",
@@ -212,6 +220,26 @@ export default Api.make(
       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
       authoringRoutes,
+      ...(["login", "create"] as const).map((page) =>
+        HttpRouter.add(
+          "GET",
+          `/${page}`,
+          cloudEntryDocument(
+            Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+              resolveCloudEntry(
+                auth.browserSession,
+                page,
+                browserReturnTo(new URL(request.url, auth.origin).searchParams.get("redirect")),
+                new Headers(request.headers),
+              ),
+            ),
+            staticDocument("/dashboard.html"),
+          ),
+        ).pipe(HttpRouter.provideRequest(onboarding)),
+      ),
+      HttpRouter.add("GET", "/api/entry", cloudEntryApi(auth.browserSession)).pipe(
+        HttpRouter.provideRequest(onboarding),
+      ),
       api,
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),

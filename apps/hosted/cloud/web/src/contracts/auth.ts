@@ -2,9 +2,13 @@ import { BrowserAtoms } from "@executor-js/hosted-web/contracts/telemetry";
 import { passkeyClient } from "@better-auth/passkey/client";
 import { createAuthClient } from "better-auth/client";
 import { emailOTPClient } from "better-auth/client/plugins";
-import { authRequest, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
+import { authRequest } from "@executor-js/hosted-web/contracts/auth";
 import { Effect } from "effect";
-import { invalidate } from "@executor-js/ui/contracts/mutations";
+import { signInCallback } from "@executor-js/hosted-web/contracts/navigation";
+
+/** Keep the submitting form mounted until the server selects the next document. */
+export const finishCloudSignIn = (redirect: string) =>
+  window.location.replace(signInCallback(redirect));
 
 /** Cloud-only credentials; shared session queries use the same origin and cookie. */
 export const cloudAuthClient = createAuthClient({ plugins: [passkeyClient(), emailOTPClient()] });
@@ -15,18 +19,21 @@ export const sendCodeAtom = BrowserAtoms.fn((email: string) =>
   ).pipe(Effect.withSpan("ui.auth.sendCode"), Effect.asVoid),
 );
 /** Successful code verification also proves email ownership. */
-export const verifyCodeAtom = BrowserAtoms.fn((input: { email: string; otp: string }, get) =>
-  authRequest((options) => cloudAuthClient.signIn.emailOtp(input, options)).pipe(
-    Effect.withSpan("ui.auth.signIn"),
-    Effect.tap(() => Effect.sync(() => invalidate(get, sessionAtom))),
-    Effect.asVoid,
-  ),
+export const verifyCodeAtom = BrowserAtoms.fn(
+  (input: { email: string; otp: string; redirect: string }) =>
+    authRequest((options) =>
+      cloudAuthClient.signIn.emailOtp({ email: input.email, otp: input.otp }, options),
+    ).pipe(
+      Effect.withSpan("ui.auth.signIn"),
+      Effect.tap(() => Effect.sync(() => finishCloudSignIn(input.redirect))),
+      Effect.asVoid,
+    ),
 );
 /** Start the browser's WebAuthn ceremony only after an explicit click. */
-export const passkeySignInAtom = BrowserAtoms.fn((_: void, get) =>
+export const passkeySignInAtom = BrowserAtoms.fn((redirect: string) =>
   authRequest((options) => cloudAuthClient.signIn.passkey({}, options)).pipe(
     Effect.withSpan("ui.auth.signIn"),
-    Effect.tap(() => Effect.sync(() => invalidate(get, sessionAtom))),
+    Effect.tap(() => Effect.sync(() => finishCloudSignIn(redirect))),
     Effect.asVoid,
   ),
 );

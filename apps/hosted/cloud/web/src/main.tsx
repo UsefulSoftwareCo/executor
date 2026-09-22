@@ -1,4 +1,4 @@
-import { sessionInitialValues } from "@executor-js/hosted-web/contracts/auth";
+import { cloudEntryInitialValues } from "./implementation/entry.ts";
 import { startErrorReporting, reactErrorHandlers } from "./implementation/error-reporting.tsx";
 import { startAnalytics, capturePageview } from "./implementation/analytics.tsx";
 import { Effect } from "effect";
@@ -13,6 +13,8 @@ import { UIObservation } from "./implementation/ui-observation.tsx";
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("Dashboard root is missing");
+
+const initialValues = cloudEntryInitialValues();
 
 // This public page carries an unsubscribe capability in its fragment. No identity
 // lookup, analytics or browser error reporting should receive that URL.
@@ -48,7 +50,7 @@ if (import.meta.hot)
     void PageTelemetry.dispose().catch((error) => console.error(error));
   });
 createRoot(root, reactErrorHandlers).render(
-  <RegistryProvider initialValues={sessionInitialValues()}>
+  <RegistryProvider initialValues={initialValues}>
     <UIObservation>
       <RouterProvider router={router} />
     </UIObservation>

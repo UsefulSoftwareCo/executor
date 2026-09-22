@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppAuthRouteImport } from './routes/app-auth'
+import { Route as CreateRouteImport } from './routes/create'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as EmailUnsubscribeRouteImport } from './routes/email.unsubscribe'
@@ -46,6 +47,11 @@ const IndexRoute = IndexRouteImport.update({
 const AppAuthRoute = AppAuthRouteImport.update({
   id: '/app-auth',
   path: '/app-auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreateRoute = CreateRouteImport.update({
+  id: '/create',
+  path: '/create',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InviteRoute = InviteRouteImport.update({
@@ -201,6 +207,7 @@ const OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app-auth': typeof AppAuthRoute
+  '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
@@ -231,6 +238,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/app-auth': typeof AppAuthRoute
+  '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
@@ -261,6 +269,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/app-auth': typeof AppAuthRoute
+  '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
@@ -293,6 +302,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/app-auth'
+    | '/create'
     | '/invite'
     | '/login'
     | '/email/unsubscribe'
@@ -323,6 +333,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/app-auth'
+    | '/create'
     | '/invite'
     | '/login'
     | '/email/unsubscribe'
@@ -352,6 +363,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/app-auth'
+    | '/create'
     | '/invite'
     | '/login'
     | '/email/unsubscribe'
@@ -383,6 +395,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppAuthRoute: typeof AppAuthRoute
+  CreateRoute: typeof CreateRoute
   InviteRoute: typeof InviteRoute
   LoginRoute: typeof LoginRoute
   EmailUnsubscribeRoute: typeof EmailUnsubscribeRoute
@@ -406,6 +419,13 @@ declare module '@tanstack/react-router' {
       path: '/app-auth'
       fullPath: '/app-auth'
       preLoaderRoute: typeof AppAuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/create': {
+      id: '/create'
+      path: '/create'
+      fullPath: '/create'
+      preLoaderRoute: typeof CreateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/invite': {
@@ -650,6 +670,7 @@ const OrgOrganizationSlugRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppAuthRoute: AppAuthRoute,
+  CreateRoute: CreateRoute,
   InviteRoute: InviteRoute,
   LoginRoute: LoginRoute,
   EmailUnsubscribeRoute: EmailUnsubscribeRoute,

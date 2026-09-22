@@ -26,6 +26,13 @@ test(
     let flagStatus = 200;
     const evaluatedVisitors: string[] = [];
     const backend = createServer(async (request, response) => {
+      if (request.url?.startsWith("/api/entry?")) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({ kind: "page", path: "/login", session: null, onboarding: null }),
+        );
+        return;
+      }
       if (request.url === "/flags?v=2") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -71,7 +78,7 @@ test(
             yield* fs.makeDirectory(path.join(publicRoot, "images"), { recursive: true });
             yield* fs.writeFileString(
               path.join(dashboardRoot, "index.html"),
-              '<html><body>Dashboard<script type="module" src="/entry.js"></script></body></html>',
+              '<html><head></head><body>Dashboard<script type="module" src="/entry.js"></script></body></html>',
             );
             yield* fs.writeFileString(
               path.join(dashboardRoot, "entry.js"),
@@ -116,7 +123,12 @@ test(
                     visitor,
                   ),
                 );
-                return developmentRoutes(marketing, dashboard, "executor-cloud-dev");
+                return developmentRoutes(
+                  marketing,
+                  dashboard,
+                  "executor-cloud-dev",
+                  `http://127.0.0.1:${backendAddress.port}`,
+                );
               }),
             );
             yield* Layer.build(

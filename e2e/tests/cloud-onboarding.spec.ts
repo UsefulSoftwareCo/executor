@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { holdOrganizationEntry } from "../support/organization-entry.ts";
+import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -31,16 +32,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("Select the existing synthetic Google identity", (page) =>
           page.getByRole("button").filter({ hasText: identity.email }).click(),
         );
-        yield* list.requested;
-        expect(
-          yield* browser.use(
-            "The Google return resolves its destination before leaving sign-in",
-            (page) => Promise.resolve(new URL(page.url()).pathname),
-          ),
-        ).toBe("/login");
-        yield* browser.checkpoint(
-          "Google sign-in resolves the existing organization before navigation",
-        );
         yield* list.release;
         yield* browser.use("Google returns directly to the existing team's Apps", (page) =>
           page.waitForURL(`**/org/${team.slug}/apps`),
@@ -55,8 +46,23 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
       Effect.gen(function* () {
         const onboarding = yield* Onboarding,
           browser = yield* Browser;
+        yield* browser.use("Use a phone viewport for first-team setup", (page) =>
+          page.setViewportSize({ width: 390, height: 844 }),
+        );
+        const loading = yield* onboarding.delayPreparation;
         yield* onboarding.socialSignIn("github");
+        yield* loading.show;
+        yield* browser.use("Reload the dedicated setup URL", (page) => page.reload());
         const name = yield* onboarding.prepareTeam;
+        const sessionRefresh = yield* holdQuery(["/api/auth/get-session"], "continue");
+        yield* refreshVisiblePage;
+        yield* sessionRefresh.requested;
+        expect(
+          yield* browser.use("The team draft survives session revalidation", (page) =>
+            page.getByLabel("Team name", { exact: true }).inputValue(),
+          ),
+        ).toBe(name);
+        yield* sessionRefresh.release;
         expect(yield* onboarding.organizations).toEqual([]);
         yield* onboarding.failConfirmationOnce;
         yield* browser.use("Try team confirmation during a network failure", (page) =>
@@ -74,7 +80,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           ),
         ).toBe(name);
         yield* browser.checkpoint("Team details retained for retry");
-        yield* onboarding.confirmTeam(name);
+        const team = yield* onboarding.confirmTeam(name);
+        yield* browser.use("Existing members can revisit the setup URL", (page) =>
+          page.goto("/create"),
+        );
+        yield* browser.use(
+          "Existing membership returns to Apps without another team form",
+          (page) => page.waitForURL(`**/org/${team.slug}/apps`),
+        );
       }).pipe(Effect.provide(Onboarding.layer)),
     ),
   );
