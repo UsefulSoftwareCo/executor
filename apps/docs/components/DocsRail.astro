@@ -36,7 +36,7 @@ const { navigation, route, searchEnabled, searchLocale, searchStrings, searchVer
 const stars = await getStars();
 ---
 
-<div class="docs-rail">
+<div class="docs-rail sticky top-0 z-40 bg-surface min-[1024px]:fixed min-[1024px]:inset-y-0 min-[1024px]:[inset-inline-start:max(0px,calc((100%_-_var(--site-frame-width))/2))] min-[1024px]:w-[var(--site-rail-width)] min-[1024px]:overflow-x-hidden min-[1024px]:overflow-y-auto min-[1024px]:border-r min-[1024px]:border-r-rule">
   <RailB current="docs" stars={stars != null ? formatStars(stars) : null}>
     <div class="docs-rail__secondary" slot="secondary">
       {

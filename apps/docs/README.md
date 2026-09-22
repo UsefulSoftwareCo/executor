@@ -57,12 +57,16 @@ and nothing else:
   footer `RailFrame.astro` gives every marketing page.
 
 `styles.css` holds the small amount of chrome that follows from that. It places
-the rail — fixed left column from 1024px, sticky bar below it, where the tree
+the rail — a fixed column in the same centered 1,240px frame as home from
+1024px, and a sticky bar below it, where the tree
 becomes a "Documentation" menu underneath — takes the empty navigation column
 out of Blume's grid, and lifts the outline to the top of the page now that no
 header sits above it. It uses the marketing tokens and adds no colour and no
 face of its own. Its rules sit outside every Tailwind layer, which is what lets
 them win over the utility classes on Blume's own elements without `!important`.
+
+Both builds import `apps/marketing/src/styles/site-frame.css` for the frame
+width, rail width and content gutter.
 
 `theme.css` is the only Tailwind entry on a docs page. It scans the marketing
 components and repeats their theme tokens, and it maps Blume's `--blume-*`

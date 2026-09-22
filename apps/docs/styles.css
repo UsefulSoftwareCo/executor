@@ -1,3 +1,5 @@
+@import "../marketing/src/styles/site-frame.css";
+
 /* The chrome that joins the marketing rail to Blume's own docs frame.
    Everything here uses the marketing tokens already defined in apps/marketing;
    no new colour and no new face is introduced. Blume still owns the article,
@@ -7,34 +9,23 @@
    These rules sit outside every Tailwind layer, so they win over the utility
    classes on Blume's own elements without !important. */
 
-:root {
-  --docs-rail-w: 240px;
-}
-
-/* --- The rail ---------------------------------------------------------- */
-
-/* Below 1024px the rail is a bar at the top of the page, exactly as on the
-   marketing site. From 1024px it is the page's left column: fixed, so it keeps
-   its own scroll while the article scrolls past it, with the body inset by its
-   width. */
-.docs-rail {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  background: var(--color-surface);
-}
-
+/* Match the marketing frame while retaining Blume's article and outline.
+   The rail owns its positioning utilities in DocsRail.astro. */
 @media (min-width: 1024px) {
-  .docs-rail {
-    position: fixed;
-    inset-block: 0;
-    inset-inline-start: 0;
-    width: var(--docs-rail-w);
-    overflow: hidden auto;
+  body {
+    max-width: var(--site-frame-width);
+    margin-inline: auto;
+    padding-inline-start: var(--site-rail-width);
   }
 
-  body {
-    padding-inline-start: var(--docs-rail-w);
+  #blume-content {
+    min-width: 0;
+    padding-inline: var(--site-content-gutter);
+  }
+
+  /* Keep capped article blocks on the shared content edge below the TOC breakpoint. */
+  #blume-content > * {
+    margin-inline: 0;
   }
 
   /* On the home page the rail fills the viewport exactly. With the
