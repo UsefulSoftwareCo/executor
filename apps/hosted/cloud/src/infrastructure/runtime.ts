@@ -7,7 +7,7 @@ import {
   AppRpcInvocation,
   invocationElicitation,
 } from "../implementation/elicitation.ts";
-import { forwardTelemetry, TelemetryBatch, traceHeaders } from "@executor-js/telemetry";
+import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-js/telemetry";
 import {
   BuildId,
   Json,
@@ -27,7 +27,7 @@ import {
 } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Option, Redacted, Result, Schema, Scope } from "effect";
+import { Effect, Option, Redacted, Result, Schema } from "effect";
 import { facetIdentity } from "@executor-js/app-data/cloudflare";
 import type { AppDataSupervisor } from "./app-data.ts";
 import { dataChanges } from "../implementation/data-changes.ts";
@@ -74,23 +74,18 @@ export const cloudRuntime = Effect.fn(function* (
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
   const environment = yield* Cloudflare.WorkerEnvironment;
   return Effect.gen(function* () {
-    const scope = yield* Scope.Scope;
-    const collect = (body: unknown, build?: BuildId, owner: Scope.Scope = scope) =>
+    const forward = yield* makeTelemetryForwarder;
+    const collect = (body: unknown, build?: BuildId) =>
       Effect.gen(function* () {
         // Telemetry is an additive transport field. Retained builds keep their original protocol.
         const collected = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ telemetry: Schema.optional(TelemetryBatch) }),
         )(body).pipe(Effect.result);
-        if (Result.isFailure(collected)) yield* Effect.logWarning(collected.failure);
+        if (Result.isFailure(collected)) yield* Effect.logWarning("Invalid app telemetry batch");
         if (Result.isSuccess(collected) && collected.success.telemetry !== undefined) {
           const span = yield* Effect.currentSpan.pipe(Effect.option);
           const batch = collected.success.telemetry;
-          if (Option.isSome(span))
-            yield* Effect.addFinalizer(() =>
-              forwardTelemetry(batch, span.value.traceId, build).pipe(
-                Effect.catch((error) => Effect.logWarning(error)),
-              ),
-            ).pipe(Effect.provideService(Scope.Scope, owner));
+          if (Option.isSome(span)) yield* forward(batch, span.value.traceId, build);
         }
       });
     const dispatch = <A, E>(
@@ -218,7 +213,6 @@ export const cloudRuntime = Effect.fn(function* (
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const invocationScope = yield* Scope.Scope;
           if (input.storage !== undefined) return yield* new RuntimeProtocolFailed();
           const { database, ...bundle } = yield* load(input.build);
           const identity = yield* facetIdentity(
@@ -283,7 +277,7 @@ export const cloudRuntime = Effect.fn(function* (
             .pipe(
               Effect.onInterrupt(() => target.cancel(id).pipe(Effect.catch(() => Effect.void))),
             );
-          yield* collect(body, input.build, invocationScope);
+          yield* collect(body, input.build);
           const envelope = yield* Schema.decodeUnknownEffect(HostResponse)(body);
           if (!envelope.ok)
             return yield* Schema.decodeUnknownEffect(HostCallError)(envelope.error).pipe(

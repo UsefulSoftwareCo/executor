@@ -57,11 +57,11 @@ import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudOrigin } from "./infrastructure/stage.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
-import { requestServices } from "./implementation/request-services.ts";
+import { requestServices } from "@executor-js/hosted-server";
 import { requestTiming } from "@executor-js/telemetry/http";
 
-/** One native Effect Worker serves the API with the static marketing site and dashboard attached as assets. */
-export class Api extends Cloudflare.Worker<Api, {}, AppDataSupervisor>()("Api") {}
+import { Api } from "./infrastructure/api-worker.ts";
+export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
   Effect.gen(function* () {
@@ -177,7 +177,7 @@ export default Api.make(
     const api = cloudApi(document).pipe(
       HttpRouter.provideRequest(groupDatabase),
       Layer.provide(appUi.dashboard),
-      Layer.provide(requestServices(auth.appSessions)),
+      Layer.provide(requestServices(auth.appSessions).layer),
       HttpRouter.provideRequest(catalogLive(executorSkillFiles(authoring), document, egress)),
       Layer.provide(schedules),
       Layer.provide(billing),

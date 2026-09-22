@@ -12,9 +12,11 @@ import {
   AccountId,
   AppCodeId,
   AppId,
+  AppNotFound,
   AppSlug,
   BuildId,
   DeploymentId,
+  DeploymentNotFound,
   OwnerId,
   ProviderId,
   StorageError,
@@ -121,6 +123,46 @@ const measured = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         ),
     };
   });
+
+test("app and build metadata remain available without Git and enforce owner and lineage", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The real database has retained references, but the source backend is empty.
+        const { executor, apps, deployments } = yield* fixture(1);
+        const app = apps[0],
+          retained = deployments[0],
+          foreign = deployments[1];
+        assert.ok(app && retained && foreign);
+        const read = yield* measured(executor.apps.get({ app: app.id, owner }));
+        assert.equal(read.queries.length, 1);
+        assert.deepEqual(read.value.requirements, requirements(0));
+        const metadata = yield* executor.apps.deployment({ app: app.id, owner });
+        assert.equal(metadata.id, retained.id);
+        assert.equal(metadata.build, retained.build);
+        assert.equal(metadata.sourceCommit, retained.sourceCommit);
+        assert.ok(!("files" in metadata));
+        const wrongOwner = yield* executor.apps
+          .deployment({ app: app.id, owner: otherOwner })
+          .pipe(Effect.result);
+        assert.ok(Result.isFailure(wrongOwner) && Schema.is(AppNotFound)(wrongOwner.failure));
+        for (const input of [{ deployment: foreign.id }, { deploymentOwner: owner }]) {
+          yield* executor.apps.deployment({ app: app.id, owner, ...input }).pipe(
+            Effect.result,
+            Effect.tap((denied) =>
+              Effect.sync(() =>
+                assert.ok(
+                  Result.isFailure(denied) && Schema.is(DeploymentNotFound)(denied.failure),
+                ),
+              ),
+            ),
+          );
+        }
+        const source = yield* executor.apps.source({ app: app.id, owner }).pipe(Effect.result);
+        assert.ok(Result.isFailure(source), "Source inspection still needs the source backend");
+      }),
+    ).pipe(Effect.provide(services)),
+  ));
 
 for (const count of [25, 125]) {
   test(`app list projects ${count} rows with one database read`, () =>

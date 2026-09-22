@@ -13,6 +13,7 @@ import { SourceCommit, sourceErrors, SourceSnapshot } from "./source.ts";
 import {
   AppDeploymentChanged,
   Deployment,
+  DeploymentMetadata,
   DeploymentBuildFailed,
   DeploymentNotFound,
   DeploymentSummary,
@@ -410,6 +411,18 @@ export const AppsGroup = HttpApiGroup.make("apps")
       success: Schema.Array(DeploymentSummary),
       error: [StorageError, AppNotFound],
     }).annotate(OpenApi.Description, "List retained deployments in the app code lineage."),
+  )
+  .add(
+    HttpApiEndpoint.get("deployment", "/v1/apps/:app/deployment", {
+      params: appParams,
+      query: {
+        owner: AppInputs.source.fields.owner,
+        deploymentOwner: AppInputs.source.fields.deploymentOwner,
+        deployment: AppInputs.source.fields.deployment,
+      },
+      success: DeploymentMetadata,
+      error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
+    }).annotate(OpenApi.Description, "Read retained build metadata without fetching source files."),
   )
   .add(
     HttpApiEndpoint.get("source", "/v1/apps/:app/source", {

@@ -13,7 +13,12 @@ export {
   invocationFetch,
   type InvocationTelemetry,
 } from "./context.ts";
-export { collectTelemetry, forwardTelemetry, TelemetryBatch } from "./relay.ts";
+export {
+  collectTelemetry,
+  forwardTelemetry,
+  makeTelemetryForwarder,
+  TelemetryBatch,
+} from "./relay.ts";
 export { TraceContext, currentTraceContext, externalTrace, traceLinks } from "./trace-context.ts";
 export { pendingSpan } from "./pending-span.ts";
 export { recordWorkerMeasurements } from "./measurements.ts";

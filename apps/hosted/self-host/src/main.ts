@@ -13,6 +13,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import {
   browserTelemetry,
+  requestServices,
   HostedExecutor,
   ScheduledAuthority,
   hostedOAuthCallback,
@@ -146,16 +147,12 @@ export const selfHostRoutes = Effect.gen(function* () {
     HttpRouter.add("GET", "*", dashboard),
   );
   const notFound = HttpServerResponse.empty({ status: 404 });
+  const appServices = requestServices(Layer.mergeAll(auth.appSessions, executorServices));
   const appRoutes = Layer.mergeAll(
     HttpApiBuilder.layer(AppSignInApi).pipe(Layer.provide(appUi.appAuth)),
     HttpApiBuilder.layer(AppUiApi).pipe(
       Layer.provide(appUi.calls),
-      Layer.provide(
-        appUi.sessionAccess.layer.pipe(
-          Layer.provide(auth.appSessions),
-          Layer.provide(executorServices),
-        ),
-      ),
+      Layer.provide(appUi.sessionAccess.combine(appServices).layer),
     ),
     HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
     HttpRouter.add("GET", "/_executor/auth/browser.js", appSignInScript()),

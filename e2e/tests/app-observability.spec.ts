@@ -53,6 +53,21 @@ createRoot(document.getElementById("root")).render(<App />);`,
   },
 ];
 
+const navigationTiming = () => {
+  const navigation = performance.getEntriesByType("navigation")[0];
+  if (!(navigation instanceof PerformanceNavigationTiming))
+    throw new Error("Navigation timing is unavailable");
+  const dataReadyMs = Number(document.documentElement.getAttribute("data-e2e-ready-ms"));
+  if (!Number.isFinite(dataReadyMs) || dataReadyMs <= 0)
+    throw new Error("The app readiness transition was not observed");
+  return {
+    dataReadyMs,
+    htmlHeadersMs: navigation.responseStart - navigation.requestStart,
+    htmlBodyMs: navigation.responseEnd - navigation.responseStart,
+    domContentLoadedMs: navigation.domContentLoadedEventEnd,
+  };
+};
+
 layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
   it.effect(scenarios.appObservability.title, (context) =>
     withCase(
@@ -76,6 +91,16 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
         yield* browser.login(actors.owner);
+        yield* browser.use("Observe data readiness inside the page clock", (page) =>
+          page.addInitScript(() => {
+            const observer = new MutationObserver(() => {
+              if (document.querySelector('[role="status"]')?.textContent !== "Ready") return;
+              document.documentElement.setAttribute("data-e2e-ready-ms", String(performance.now()));
+              observer.disconnect();
+            });
+            observer.observe(document, { subtree: true, childList: true, characterData: true });
+          }),
+        );
         const [header, timing] = yield* browser.use(
           "Open the real app and capture its subscription identity",
           (page) =>
@@ -107,19 +132,32 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         yield* browser.use("The initial query reaches React", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
+        yield* evidence.json(
+          "app-navigation-timing.json",
+          yield* browser.use("Measure navigation through the initial result", (page) =>
+            page.evaluate(navigationTiming),
+          ),
+        );
         const scriptUrl = yield* browser.use("Locate the deployed browser entry", (page) =>
           page.locator('script[type="module"][src]').evaluate((element) => {
             if (!(element instanceof HTMLScriptElement)) throw new Error("Browser entry missing");
             return element.src;
           }),
         );
-        const script = yield* browser.use("Read the retained browser entry", (page) =>
+        const entry = yield* browser.use("Read the retained browser entry", (page) =>
           page
             .context()
             .request.get(scriptUrl)
-            .then((response) => response.text()),
+            .then((response) =>
+              response.text().then((script) => ({
+                script,
+                timing: response.headers()["server-timing"],
+              })),
+            ),
         );
-        const mapName = script.match(/\/\/# sourceMappingURL=(\S+)/)?.[1];
+        const mapName = entry.script.match(/\/\/# sourceMappingURL=(\S+)/)?.[1];
+        const assetTraceId = entry.timing?.match(/executor-trace;desc="([a-f0-9]{32})"/)?.[1];
+        if (assetTraceId === undefined) return yield* Effect.die("The asset has no request trace");
         if (mapName === undefined)
           return yield* Effect.die("The deployed browser entry has no source map");
         const sourceMap = yield* browser.use("Read the authenticated source map", (page) =>
@@ -192,6 +230,19 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           Effect.timeout("90 seconds"),
         );
         const spans = exported.data.map((row) => row.span);
+        expect(spans.some((span) => span.operationName === "sdk.apps.source")).toBe(false);
+        const assetTrace = yield* telemetry.query(assetTraceId).pipe(
+          Effect.flatMap((result) =>
+            result.data.some((row) => row.span.operationName === "http.server GET")
+              ? Effect.succeed(result)
+              : Effect.fail(new Error("The asset request has not reached the collector")),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
+        );
+        expect(assetTrace.data.some((row) => row.span.operationName === "sdk.apps.source")).toBe(
+          false,
+        );
+        yield* evidence.json("app-asset-trace.json", assetTrace);
         const first = spans.find((span) => span.operationName === "ui.app.first_result");
         const headers = spans.find((span) => span.operationName === "ui.app.subscribe");
         expect(first?.tags["executor.milestone.reached"]).toBe("true");
@@ -231,6 +282,41 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           Effect.timeout("60 seconds"),
         );
         yield* evidence.json("app-trace-closed.json", closed);
+        for (const sample of [1, 2]) {
+          const requestHeader = yield* browser.use(`Measure normal reload ${sample}`, (page) =>
+            Promise.all([
+              page
+                .waitForRequest((request) => request.url().endsWith("/_executor/api/subscribe"))
+                .then((request) => request.headers()["traceparent"]),
+              page.goto(url),
+            ]).then(([header]) => header),
+          );
+          const reloadTraceId = requestHeader?.match(/^00-([a-f0-9]{32})-/)?.[1];
+          if (reloadTraceId === undefined) return yield* Effect.die("Reload trace context missing");
+          yield* browser.use(`Normal reload ${sample} displays data`, (page) =>
+            page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
+          );
+          yield* evidence.json(
+            `app-normal-reload-${sample}-navigation.json`,
+            yield* browser.use(`Measure normal reload ${sample} navigation`, (page) =>
+              page.evaluate(navigationTiming),
+            ),
+          );
+          const reloadTrace = yield* telemetry.query(reloadTraceId).pipe(
+            Effect.flatMap((result) =>
+              result.data.some(
+                (row) =>
+                  row.span.operationName === "ui.app.first_result" &&
+                  row.span.tags["executor.milestone.reached"] === "true",
+              )
+                ? Effect.succeed(result)
+                : Effect.fail(new Error("Reload timing has not reached the collector")),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
+          );
+          yield* evidence.json(`app-normal-reload-${sample}.json`, reloadTrace);
+          yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
+        }
         yield* browser.use("Fail only the next subscription attempt", (page) =>
           page.route("**/_executor/api/subscribe", (route) => route.abort("failed"), { times: 1 }),
         );
@@ -324,6 +410,41 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
         yield* browser.use("Close the recovered stream", (page) => page.goto("about:blank"));
+        const policy = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
+        );
+        const shared = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: policy.revision,
+            audience: { kind: "everyone" },
+          }),
+        );
+        yield* browser.login(actors.member);
+        yield* browser.use("A permitted member opens a fresh subscription", (page) =>
+          page.goto(url),
+        );
+        yield* browser.use("The member receives the app data", (page) =>
+          page.getByRole("status").filter({ hasText: "Ready" }).waitFor({ timeout: 60_000 }),
+        );
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: shared.revision,
+            audience: { kind: "private" },
+          })).status,
+        ).toBe(200);
+        yield* browser.use(
+          "The existing stream detects revoked access without another write",
+          (page) =>
+            page.getByRole("status").filter({ hasText: "Could not load app data." }).waitFor(),
+        );
+        expect(
+          (yield* browser.use("Retained assets also require current access", (page) =>
+            page.context().request.get(scriptUrl),
+          )).status(),
+        ).toBe(403);
+        yield* browser.checkpoint("Revocation stops the open stream and protects retained assets");
       }),
     ),
   );

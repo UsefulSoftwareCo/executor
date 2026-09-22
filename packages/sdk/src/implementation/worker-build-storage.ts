@@ -56,11 +56,20 @@ export const loadWorkerBuild = (build: BuildId) =>
 /** The product authenticates access; this capability serves only assets listed in the immutable build. */
 export const workerBuildAsset = (build: BuildId, path: string) =>
   Effect.gen(function* () {
-    const retained = yield* loadWorkerBuild(build);
+    const assetKey = Schema.decodeUnknownOption(BlobKey)(`${build}/ui/${path}`);
+    if (Option.isNone(assetKey)) return undefined;
+    const blobs = yield* BlobStore;
+    // Both immutable objects can load together. The manifest still authorizes
+    // the exact asset before any bytes leave this capability.
+    const { retained, found } = yield* Effect.all(
+      {
+        retained: loadWorkerBuild(build).pipe(Effect.withSpan("runtime.cloud.asset.manifest")),
+        found: blobs.get(assetKey.value).pipe(Effect.withSpan("runtime.cloud.asset.object")),
+      },
+      { concurrency: 2 },
+    );
     const asset = retained.ui?.find((asset) => asset.path === path);
     if (asset === undefined) return undefined;
-    const blobs = yield* BlobStore;
-    const found = yield* blobs.get(yield* key(`${build}/ui/${asset.path}`));
     if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
     return { body: found.value, contentType: asset.contentType };
   }).pipe(

@@ -3,10 +3,11 @@ import { memorySourceStorage } from "@executor-js/sdk/testing";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+import { Deferred, Effect, FileSystem, Option, Path, Redacted, Result, Schema } from "effect";
 import { pgliteLayer } from "fumadb-effect/pglite";
-import { BlobKey, BlobStoreError, memoryBlobStore } from "@executor-js/sdk/blobs";
+import { BlobKey, BlobStore, BlobStoreError, memoryBlobStore } from "@executor-js/sdk/blobs";
 import {
+  BuildId,
   createExecutor,
   makeExecutorStorage,
   aesGcmCredentials,
@@ -17,6 +18,7 @@ import {
   RuntimeBuildFailed,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, nodeRuntime } from "@executor-js/sdk/node";
+import { retainWorkerBuild, workerBuildAsset } from "@executor-js/sdk/workerd";
 
 test("filesystem blobs publish complete bytes, distinguish absence and reject paths outside their root", () =>
   Effect.runPromise(
@@ -205,4 +207,55 @@ test("a failed artifact write cannot produce a successful build or committed man
         assert.deepEqual(yield* fs.readDirectory(directory), []);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+  ));
+
+test("Worker assets load independent objects together and still require the manifest allowlist", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const blobs = memoryBlobStore();
+        const build = BuildId.make("bld_parallel_assets");
+        const body = new TextEncoder().encode("export default 1;");
+        yield* retainWorkerBuild(
+          build,
+          {
+            mainModule: "server.js",
+            modules: { "server.js": "private server code" },
+            database: false,
+          },
+          [{ path: "main.js", contentType: "text/javascript", body }],
+        ).pipe(Effect.provideService(BlobStore, blobs));
+        const assetStarted = yield* Deferred.make<void>();
+        const manifestKey = BlobKey.make(`${build}.json`);
+        const assetKey = BlobKey.make(`${build}/ui/main.js`);
+        const delayed = {
+          ...blobs,
+          get: (key: BlobKey) =>
+            key === manifestKey
+              ? Deferred.await(assetStarted).pipe(Effect.andThen(blobs.get(key)))
+              : Deferred.succeed(assetStarted, undefined).pipe(Effect.andThen(blobs.get(key))),
+        };
+        const asset = yield* workerBuildAsset(build, "main.js").pipe(
+          Effect.provideService(BlobStore, delayed),
+          Effect.timeout("2 seconds"),
+        );
+        assert.deepEqual(asset?.body, body);
+        assert.equal(asset?.contentType, "text/javascript");
+        yield* blobs.put(
+          BlobKey.make(`${build}/ui/unlisted.js`),
+          new TextEncoder().encode("unlisted"),
+        );
+        for (const path of ["unlisted.js", "../server.js", "../../other/ui/main.js"])
+          assert.equal(
+            yield* workerBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+            undefined,
+          );
+        yield* blobs.remove(assetKey);
+        const missing = yield* workerBuildAsset(build, "main.js").pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.result,
+        );
+        assert.ok(Result.isFailure(missing) && Schema.is(RuntimeBuildUnavailable)(missing.failure));
+      }),
+    ),
   ));

@@ -47,20 +47,23 @@ export const makeAppData = (
       Effect.succeed(
         changes === undefined
           ? storage.reactivity.subscribe(execute("query", input))
-          : Stream.merge(Stream.succeed(undefined), Stream.tick("15 seconds")).pipe(
+          : Stream.tick("15 seconds").pipe(
               Stream.mapEffect(() => snapshot(db, input)),
               Stream.changesWith((a, b) => a.deployment.id === b.deployment.id),
               Stream.switchMap((state) =>
                 Stream.merge(
+                  // First data does not wait for the notification connection.
+                  // Its initial ready event reads again after registration, so
+                  // a write during setup cannot be missed.
+                  Stream.succeed(undefined),
                   state.deployment.requirements.database === undefined
-                    ? Stream.succeed(undefined)
+                    ? Stream.empty
                     : changes(input.app).pipe(
                         Stream.mapError(
                           () => new AppDataFailed({ app: input.app, name: input.name }),
                         ),
                       ),
-                  Stream.tick("15 seconds"),
-                ),
+                ).pipe(Stream.merge(Stream.tick("15 seconds").pipe(Stream.drop(1)))),
               ),
               Stream.mapEffect(() => execute("query", input)),
               Stream.changesWith(Schema.toEquivalence(Json)),

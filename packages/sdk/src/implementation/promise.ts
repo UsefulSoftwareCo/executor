@@ -116,6 +116,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       activate: (input) => run(AppInputs.activate, input, executor.apps.activate),
       rename: (input) => run(AppInputs.rename, input, executor.apps.rename),
       deployments: (input) => run(AppInputs.deployments, input, executor.apps.deployments),
+      deployment: (input) => run(AppInputs.source, input, executor.apps.deployment),
       source: (input) => run(AppInputs.source, input, executor.apps.source),
     },
     webhookSetup: {

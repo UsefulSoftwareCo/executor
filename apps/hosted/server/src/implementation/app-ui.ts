@@ -11,7 +11,8 @@ import {
   AppNotFound,
   DeploymentId,
   DeploymentNotFound,
-  type Deployment,
+  type App,
+  type DeploymentMetadata,
 } from "@executor-js/sdk/core";
 import { AppSignInApi, AppSignInCode, appPrivateHeaders, appSignInPage } from "apps/ui/auth";
 import {
@@ -25,7 +26,7 @@ import {
 import { appAsset, appDocument } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext } from "@executor-js/telemetry";
-import { Clock, Effect, Option, Redacted, Schema, Stream } from "effect";
+import { Clock, Context, Effect, Option, Redacted, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
@@ -41,10 +42,20 @@ import {
   CurrentOrganization,
   OrganizationForbidden,
   organizationOwner,
+  type OrganizationAccess,
 } from "../contracts/organization.ts";
-import { selectedApp } from "./access.ts";
-import { executeAppData } from "./app-data.ts";
+import { checkAccounts } from "./access.ts";
 import type { appAddresses } from "./app-addresses.ts";
+
+/** Authorization belongs to one HTTP request, never a shared or timed cache. */
+class CurrentAppUi extends Context.Service<
+  CurrentAppUi,
+  {
+    readonly target: AppUiTarget;
+    readonly app: App;
+    readonly access: OrganizationAccess & { readonly userId: string };
+  }
+>()("hosted/CurrentAppUi") {}
 
 const unavailable = () => new UiFailed({ reason: "unavailable" });
 const privateJson = (value: unknown, status = 200) =>
@@ -89,40 +100,48 @@ export const hostedAppUi = (
     if (app === undefined) return yield* new UiForbidden();
     return {
       request,
+      app,
       target: { app: app.id, slug: host.slug, origin: host.origin, organization: organization.id },
     };
   });
-  const source = (target: Pick<AppUiTarget, "app" | "organization">, deployment?: DeploymentId) =>
+  const deployment = (app: App, requested?: DeploymentId) =>
     Effect.gen(function* () {
+      const id = requested ?? app.activeDeployment;
+      if (id === null) return yield* unavailable();
       const executor = yield* Effect.flatten(HostedExecutor);
-      const owner = organizationOwner(target.organization);
-      const app = yield* executor.apps.get({ owner, app: target.app });
-      const version = yield* executor.apps.source({
-        owner,
+      return yield* executor.apps.deployment({
+        owner: app.owner,
         app: app.id,
-        ...(deployment === undefined ? {} : { deployment }),
+        deployment: id,
+        deploymentOwner: app.owner,
       });
-      if (version.owner !== owner) return yield* new UiForbidden();
-      return { app, version };
     }).pipe(
       Effect.mapError((error) =>
-        Schema.is(AppNotFound)(error) ||
-        Schema.is(DeploymentNotFound)(error) ||
-        Schema.is(UiForbidden)(error)
+        Schema.is(AppNotFound)(error) || Schema.is(DeploymentNotFound)(error)
           ? new UiForbidden()
           : unavailable(),
       ),
     );
-  const usable = (target: AppUiTarget) =>
-    source(target).pipe(
-      Effect.flatMap(({ app, version }) => {
-        if (!version.files.some((file) => file.path === "ui/index.html"))
-          return Effect.fail(unavailable());
-        if (Object.keys(app.requirements.accounts).some((slot) => app.accounts[slot] === undefined))
-          return Effect.fail(new UiFailed({ reason: "account_required" }));
-        return Effect.succeed(app);
-      }),
+  const loadApp = (target: AppUiTarget) =>
+    Effect.flatten(HostedExecutor).pipe(
+      Effect.flatMap((executor) =>
+        executor.apps.get({
+          owner: organizationOwner(target.organization),
+          app: target.app,
+        }),
+      ),
+      Effect.mapError((error) =>
+        Schema.is(AppNotFound)(error) ? new UiForbidden() : unavailable(),
+      ),
     );
+  const usable = (app: App) =>
+    Effect.gen(function* () {
+      const version = yield* deployment(app);
+      if ((yield* assets(version, "index.html")) === undefined) return yield* unavailable();
+      if (Object.keys(app.requirements.accounts).some((slot) => app.accounts[slot] === undefined))
+        return yield* new UiFailed({ reason: "account_required" });
+      return app;
+    });
   const secure = (origin: string) => new URL(origin).protocol === "https:";
   const sessionCookie = (origin: string) => `${secure(origin) ? "__Host-" : ""}executor_app`;
   const attemptCookie = (origin: string, request: string) =>
@@ -141,10 +160,10 @@ export const hostedAppUi = (
     if (Option.isNone(token)) return yield* new UiUnauthorized();
     const sessions = yield* HostedAppSessions;
     const access = yield* sessions.current(resolved.target, token.value);
+    const app = resolved.app;
     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-    // Authorization needs current app/account grants, not a hydrated Git checkout.
-    // Page and asset handlers check deployment ownership when loading their content.
-    const app = yield* selectedApp(executor, access.owner, resolved.target.app).pipe(
+    yield* requireAppAccess(app.id, "use").pipe(
+      Effect.andThen(checkAccounts(executor, access.owner, app.accounts)),
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(CurrentUserId, access.userId),
       Effect.mapError((error) =>
@@ -153,7 +172,7 @@ export const hostedAppUi = (
     );
     return { ...resolved, access, app };
   });
-  const assets = (version: Deployment, path: string) =>
+  const assets = (version: DeploymentMetadata, path: string) =>
     Effect.gen(function* () {
       const runtime = yield* HostedAppRuntime;
       if (runtime.asset === undefined) return yield* unavailable();
@@ -166,7 +185,7 @@ export const hostedAppUi = (
       .handle("start", ({ payload }) =>
         Effect.gen(function* () {
           const resolved = yield* target;
-          yield* usable(resolved.target);
+          yield* usable(resolved.app);
           const sessions = yield* HostedAppSessions;
           const attempt = yield* sessions.begin(resolved.target, payload.returnTo);
           const login = new URL("/app-auth", addresses.dashboardOrigin);
@@ -191,7 +210,7 @@ export const hostedAppUi = (
             resolved.request.cookies[attemptCookie(resolved.target.origin, payload.request)],
           );
           if (Option.isNone(proof)) return yield* new UiUnauthorized();
-          yield* usable(resolved.target);
+          yield* usable(resolved.app);
           const sessions = yield* HostedAppSessions;
           const completed = yield* sessions.complete(
             resolved.target,
@@ -229,11 +248,12 @@ export const hostedAppUi = (
         Effect.gen(function* () {
           const access = yield* CurrentOrganization;
           yield* requireAppAccess(params.app, "use").pipe(Effect.mapError(() => new UiForbidden()));
-          const { app, version } = yield* source({
-            app: params.app,
-            organization: access.organization,
-          });
-          if (!addresses.enabled || !version.files.some((file) => file.path === "ui/index.html"))
+          const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+          const app = yield* executor.apps
+            .get({ owner: access.owner, app: params.app })
+            .pipe(Effect.mapError(unavailable));
+          const version = yield* deployment(app);
+          if (!addresses.enabled || (yield* assets(version, "index.html")) === undefined)
             return { status: "unavailable" as const, url: null };
           const sessions = yield* HostedAppSessions;
           const organization = yield* sessions.organization({ id: access.organization });
@@ -249,7 +269,7 @@ export const hostedAppUi = (
           const currentOrganization = yield* sessions.organization({
             id: grant.target.organization,
           });
-          const { app } = yield* source(grant.target);
+          const app = yield* loadApp(grant.target);
           if (
             !addresses.enabled ||
             currentOrganization.slug !== grant.target.slug ||
@@ -263,7 +283,7 @@ export const hostedAppUi = (
             Effect.provideService(CurrentUserId, principal.userId),
             Effect.mapError(() => new UiForbidden()),
           );
-          yield* usable(grant.target);
+          yield* usable(app);
           const callback = new URL("/_executor/auth/callback", grant.target.origin);
           callback.hash = new URLSearchParams({
             request: payload.request,
@@ -285,9 +305,8 @@ export const hostedAppUi = (
               ? "account_required"
               : "operation_failed",
         });
-  const dataInput = (payload: typeof UiOperation.Type) =>
+  const dataInput = (payload: typeof UiOperation.Type, current: typeof CurrentAppUi.Service) =>
     Effect.gen(function* () {
-      const current = yield* authorize;
       const deployment = yield* Schema.decodeUnknownEffect(DeploymentId)(payload.deployment).pipe(
         Effect.mapError(unavailable),
       );
@@ -299,8 +318,10 @@ export const hostedAppUi = (
     });
   const data = (kind: "query" | "mutate", payload: typeof UiOperation.Type) =>
     Effect.gen(function* () {
-      const { current, input } = yield* dataInput(payload);
-      return yield* executeAppData(kind, input).pipe(
+      const current = yield* CurrentAppUi;
+      const { input } = yield* dataInput(payload, current);
+      const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+      return yield* executor.appData[kind](input).pipe(
         Effect.provideService(CurrentOrganization, current.access),
         Effect.provideService(CurrentAuthorization, fullAuthority),
         Effect.provideService(CurrentUserId, current.access.userId),
@@ -313,9 +334,10 @@ export const hostedAppUi = (
       .handle("mutate", ({ payload }) => data("mutate", payload))
       .handle("subscribe", ({ payload }) =>
         Effect.gen(function* () {
-          const { input, current } = yield* dataInput(payload);
+          const current = yield* CurrentAppUi;
+          const { input } = yield* dataInput(payload, current);
           const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-          const check = dataInput(payload);
+          const check = authorize.pipe(Effect.flatMap((fresh) => dataInput(payload, fresh)));
           const request = yield* HttpServerRequest.HttpServerRequest;
           const sessions = yield* HostedAppSessions;
           const executorService = yield* HostedExecutor;
@@ -355,6 +377,7 @@ export const hostedAppUi = (
               ),
             ),
             Stream.tick("5 seconds").pipe(
+              Stream.drop(1),
               Stream.mapEffect(() => access.pipe(Effect.withSpan("app.ui.heartbeat.authorize"))),
               Stream.map(() => ({ type: "heartbeat" as const })),
             ),
@@ -381,7 +404,7 @@ export const hostedAppUi = (
   });
   const page = Effect.gen(function* () {
     const current = yield* authorize;
-    const { version } = yield* source(current.target);
+    const version = yield* deployment(current.app);
     return yield* appDocument({
       origin: current.target.origin,
       deployment: version.id,
@@ -407,7 +430,7 @@ export const hostedAppUi = (
     const params = yield* HttpRouter.schemaPathParams(
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(unavailable));
-    const { version } = yield* source(current.target, params.deployment);
+    const version = yield* deployment(current.app, params.deployment);
     return appAsset(yield* assets(version, params["*"]));
   }).pipe(htmlFailure);
   const originAccess = HttpRouter.middleware((response) =>
@@ -418,24 +441,13 @@ export const hostedAppUi = (
       }),
     ),
   );
-  const sessionAccess = HttpRouter.middleware(
-    Effect.gen(function* () {
-      const sessions = yield* HostedAppSessions;
-      const executor = yield* HostedExecutor;
-      const database = yield* GroupDatabase;
-      const check = authorize.pipe(
-        Effect.provideService(GroupDatabase, database),
-        Effect.provideService(HostedAppSessions, sessions),
-        Effect.provideService(HostedExecutor, executor),
-      );
-      return (response) =>
-        check.pipe(
-          Effect.matchEffect({
-            onFailure: (error) => Effect.succeed(failure(error)),
-            onSuccess: () => response,
-          }),
-        );
-    }),
+  const sessionAccess = HttpRouter.middleware<{ provides: CurrentAppUi }>()((response) =>
+    authorize.pipe(
+      Effect.matchEffect({
+        onFailure: (error) => Effect.succeed(failure(error)),
+        onSuccess: (current) => response.pipe(Effect.provideService(CurrentAppUi, current)),
+      }),
+    ),
   );
   const telemetry = (signal: "traces" | "logs") =>
     authorize.pipe(

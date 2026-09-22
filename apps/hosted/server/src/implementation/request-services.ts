@@ -13,4 +13,4 @@ export const requestServices = <A, E, R>(services: Layer.Layer<A, E, R>) =>
       );
       return yield* Effect.provideContext(handler, context);
     }),
-  ).layer;
+  );

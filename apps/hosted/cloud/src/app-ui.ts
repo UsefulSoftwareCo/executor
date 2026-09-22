@@ -1,3 +1,4 @@
+import { requestServices } from "@executor-js/hosted-server";
 import { cloudGroupDatabase } from "./infrastructure/group-database.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -18,7 +19,7 @@ import { cloudExecutor } from "./infrastructure/executor.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { AppDataSupervisor } from "./infrastructure/app-data.ts";
-import { Api } from "./main.ts";
+import { Api } from "./infrastructure/api-worker.ts";
 import {
   cloudObservability,
   cloudTelemetry,
@@ -71,40 +72,35 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const policy = yield* cloudGroupDatabase;
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
     const appUi = hostedAppUi(appAddresses(auth.origin, base));
+    const services = requestServices(Layer.mergeAll(auth.appSessions, executor, policy));
     const notFound = HttpServerResponse.empty({ status: 404 });
-    const routes = Layer.mergeAll(
+    const protectedRoutes = Layer.mergeAll(
       HttpApiBuilder.layer(AppSignInApi).pipe(Layer.provide(appUi.appAuth)),
-      HttpApiBuilder.layer(AppUiApi).pipe(
-        Layer.provide(appUi.calls),
-        Layer.provide(
-          appUi.sessionAccess.layer.pipe(
-            Layer.provide(auth.appSessions),
-            Layer.provide(executor),
-            Layer.provide(policy),
-          ),
-        ),
-      ),
-      HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
-      HttpRouter.add("GET", "/_executor/auth/browser.js", appSignInScript()),
       HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
+      HttpRouter.add("GET", "*", appUi.page),
+    ).pipe(Layer.provide(services.layer));
+    const routes = Layer.mergeAll(
+      protectedRoutes,
+      HttpApiBuilder.layer(AppUiApi).pipe(
+        Layer.provide(appUi.calls),
+        Layer.provide(appUi.sessionAccess.combine(services).layer),
+      ),
+      HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
+      HttpRouter.add("GET", "/_executor/auth/browser.js", appSignInScript()),
       HttpRouter.add("GET", "/_executor/*", notFound),
       HttpRouter.add("GET", "/api/*", notFound),
       HttpRouter.add("GET", "/mcp/*", notFound),
       HttpRouter.add("GET", "/.well-known/*", notFound),
-      HttpRouter.add("GET", "*", appUi.page),
-    ).pipe(
-      Layer.provide(appUi.originAccess.layer),
-      HttpRouter.provideRequest(auth.appSessions),
-      HttpRouter.provideRequest(executor),
-      HttpRouter.provideRequest(policy),
+    ).pipe(Layer.provide(appUi.originAccess.layer));
+    const handle = yield* routes.pipe(
+      Layer.provide(HttpServer.layerServices),
+      HttpRouter.toHttpEffect,
+      Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     return {
-      fetch: routes.pipe(
-        Layer.provide(HttpServer.layerServices),
-        HttpRouter.toHttpEffect,
-        Effect.flatten,
+      fetch: handle.pipe(
         reportErrors,
         Effect.catch(() =>
           Effect.succeed(

@@ -2,24 +2,30 @@
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { Cause, Effect, Queue, Stream } from "effect";
 import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
+import { traceHeaders } from "@executor-js/telemetry";
 
-/** Register before the initial read, conflate bursts, and close with the subscriber's scope. */
+/** Notify after registration, conflate bursts, and close with the subscriber's scope. */
 export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
   Stream.callback<void, RuntimeProtocolFailed>(
     (queue) =>
       Effect.gen(function* () {
         const socket = yield* Effect.acquireRelease(
-          Effect.tryPromise({
-            try: async () => {
-              const response = await namespace
-                .getByName(app)
-                .fetch("https://app.internal/changes", { headers: { Upgrade: "websocket" } });
-              if (response.status !== 101 || response.webSocket === null)
-                throw new Error("Subscription unavailable");
-              return response.webSocket;
-            },
-            catch: () => new RuntimeProtocolFailed(),
-          }),
+          Effect.gen(function* () {
+            const headers = yield* traceHeaders;
+            return yield* Effect.tryPromise({
+              try: async () => {
+                const response = await namespace
+                  .getByName(app)
+                  .fetch("https://app.internal/changes", {
+                    headers: { ...headers, Upgrade: "websocket" },
+                  });
+                if (response.status !== 101 || response.webSocket === null)
+                  throw new Error("Subscription unavailable");
+                return response.webSocket;
+              },
+              catch: () => new RuntimeProtocolFailed(),
+            });
+          }).pipe(Effect.withSpan("runtime.cloud.changes.connect", { kind: "client" })),
           (socket) => Effect.sync(() => socket.close(1000, "Subscription ended")),
         );
         const changed = () => {

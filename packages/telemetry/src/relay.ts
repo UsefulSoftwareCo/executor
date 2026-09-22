@@ -1,9 +1,44 @@
 /** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
-import { Effect, Redacted, Schema, Tracer } from "effect";
+import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { telemetryHttpClient } from "./transport.ts";
+import { recordExportFailure } from "./measurements.ts";
+
+/**
+ * Forward app telemetry in the host scope without delaying an app result.
+ * One export runs at a time, with at most sixteen pending batches. Overload and
+ * shutdown loss are reported through the normal safe export-failure signal.
+ * Scope release drains for the same three-second budget as the other exporters.
+ */
+export const makeTelemetryForwarder = Effect.gen(function* () {
+  const fibers = yield* FiberSet.make();
+  const pending = yield* Semaphore.make(16);
+  const sender = yield* Semaphore.make(1);
+  const failed = (reason: string) =>
+    recordExportFailure("app").pipe(Effect.annotateLogs({ "executor.telemetry.failure": reason }));
+  yield* Effect.addFinalizer(() =>
+    FiberSet.awaitEmpty(fibers).pipe(
+      Effect.timeoutOption("3 seconds"),
+      Effect.flatMap((drained) => (Option.isNone(drained) ? failed("shutdown") : Effect.void)),
+    ),
+  );
+  return (batch: TelemetryBatch, traceId: string, build?: string) =>
+    FiberSet.run(
+      fibers,
+      sender
+        .withPermits(1)(
+          forwardTelemetry(batch, traceId, build).pipe(Effect.catch(() => failed("relay"))),
+        )
+        .pipe(
+          pending.withPermitsIfAvailable(1),
+          Effect.flatMap((accepted) =>
+            Option.isNone(accepted) ? failed("capacity") : Effect.void,
+          ),
+        ),
+    ).pipe(Effect.asVoid);
+});
 
 const Payload = Schema.String.check(Schema.isMaxLength(262_144));
 /** Untrusted isolate batches are bounded before decoding; no endpoint or credential crosses back. */

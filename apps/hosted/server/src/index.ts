@@ -1,4 +1,5 @@
 /** Hosted product composition, shared by cloud and self-host only. */
+export { requestServices } from "./implementation/request-services.ts";
 export { HostedApi } from "./contracts/api.ts";
 export { HostedCatalog } from "./contracts/catalog.ts";
 export { hostedHandlers } from "./implementation/api.ts";

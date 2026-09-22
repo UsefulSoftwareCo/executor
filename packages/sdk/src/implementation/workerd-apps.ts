@@ -37,7 +37,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
-import { traceHeaders, TelemetryBatch, forwardTelemetry } from "@executor-js/telemetry";
+import { traceHeaders, TelemetryBatch, makeTelemetryForwarder } from "@executor-js/telemetry";
 import {
   DeclaredRequirements,
   ElicitationFailed,
@@ -175,6 +175,7 @@ export const workerdApps = (options: {
         return yield* new WorkerdMigrationRequired({ directory });
     }
     const services = yield* Effect.context<never>();
+    const forward = yield* makeTelemetryForwarder;
     const provideBlobs = Effect.provideService(BlobStore, options.blobs);
     const hostOperation = (command: WorkflowHostCommand) =>
       Effect.gen(function* () {
@@ -393,9 +394,7 @@ export const workerdApps = (options: {
         if (telemetry.telemetry !== undefined) {
           const span = yield* Effect.currentSpan.pipe(Effect.option);
           if (Option.isSome(span))
-            yield* forwardTelemetry(telemetry.telemetry, span.value.traceId, input.build).pipe(
-              Effect.catch(() => Effect.logWarning("App telemetry export failed")),
-            );
+            yield* forward(telemetry.telemetry, span.value.traceId, input.build);
         }
         const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body).pipe(
           Effect.mapError(protocolFailure),

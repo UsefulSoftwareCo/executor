@@ -86,6 +86,9 @@ export const executorHandlers = (executor: Executor) =>
         .handle("deployments", ({ params, query }) =>
           executor.apps.deployments({ ...params, ...query }),
         )
+        .handle("deployment", ({ params, query }) =>
+          executor.apps.deployment({ ...params, ...query }),
+        )
         .handle("source", ({ params, query }) => executor.apps.source({ ...params, ...query })),
     ),
     HttpApiBuilder.group(ExecutorApi, "owners", (handlers) =>

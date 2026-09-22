@@ -19,6 +19,7 @@ import { makeAppAuthoring } from "./app-authoring.ts";
 import {
   AppDeploymentChanged,
   Deployment,
+  DeploymentMetadata,
   DeploymentBuildFailed,
   DeploymentNotFound,
   DeploymentSummary,
@@ -105,13 +106,18 @@ const AppProjection = Schema.Struct({
   app: StoredApp,
   deployment: Schema.NullOr(StoredDeploymentRequirements),
 });
-const DeploymentMetadata = Schema.Struct({
-  id: DeploymentId,
-  code: AppCodeId,
-  owner: OwnerId,
-  createdAt: Schema.Date,
-  fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
-});
+const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown }) =>
+  Schema.decodeUnknownEffect(AppProjection)(row).pipe(
+    Effect.mapError(() => new StorageError()),
+    Effect.flatMap(({ app, deployment }) => {
+      if (app.activeDeployment !== null && deployment === null)
+        return Effect.fail(new StorageError());
+      return Effect.succeed({
+        ...app,
+        requirements: deployment === null ? { accounts: {} } : deployment.requirements,
+      });
+    }),
+  );
 
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
@@ -400,43 +406,43 @@ export const makeApps = (
     deploy: (input: DeployInput) => deploy(input),
     copy,
     get: (input: Parameters<Executor["apps"]["get"]>[0]) =>
-      transaction(db, (tx) =>
-        storedApp(tx, input).pipe(Effect.flatMap((app) => project(tx, app))),
-      ).pipe(Effect.withSpan("sdk.apps.get")),
+      Effect.gen(function* () {
+        const row = yield* query(() =>
+          db.findFirst("apps", {
+            join: (b) => b.deployment({ select: ["requirements"] }),
+            where: (b) =>
+              b.and(
+                b("id", "=", input.app),
+                input.owner === undefined ? true : b("owner", "=", input.owner),
+              ),
+          }),
+        );
+        if (row === null) return yield* new AppNotFound({ app: input.app });
+        const { deployment, ...app } = row;
+        return yield* projectedApp({ app, deployment });
+      }).pipe(Effect.withSpan("sdk.apps.get")),
     list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
-      transaction(db, (tx) =>
-        Effect.gen(function* () {
-          const rows = yield* query(() =>
-            tx.findMany("apps", {
-              // The existing composite relation checks both deployment ID and code
-              // lineage in one read, without loading retained source files.
-              join: (b) => b.deployment({ select: ["requirements"] }),
-              where: (b) =>
-                b.and(
-                  input.owner === undefined ? true : b("owner", "=", input.owner),
-                  input.ids === undefined ? true : b("id", "in", input.ids),
-                  input.name === undefined ? true : b("name", "=", input.name),
-                  input.slug === undefined ? true : b("slug", "=", input.slug),
-                  input.account === undefined
-                    ? true
-                    : b("accounts", "json contains", input.account),
-                ),
-              orderBy: ["id", "asc"],
-            }),
-          );
-          const stored = yield* Schema.decodeUnknownEffect(Schema.Array(AppProjection))(
-            rows.map(({ deployment, ...app }) => ({ app, deployment })),
-          ).pipe(Effect.mapError(() => new StorageError()));
-          return yield* Effect.forEach(stored, ({ app, deployment }) => {
-            if (app.activeDeployment !== null && deployment === null)
-              return Effect.fail(new StorageError());
-            return Effect.succeed({
-              ...app,
-              requirements: deployment === null ? { accounts: {} } : deployment.requirements,
-            });
-          });
-        }),
-      ).pipe(Effect.withSpan("sdk.apps.list")),
+      Effect.gen(function* () {
+        const rows = yield* query(() =>
+          db.findMany("apps", {
+            // The existing composite relation checks both deployment ID and code
+            // lineage in one read, without loading retained source files.
+            join: (b) => b.deployment({ select: ["requirements"] }),
+            where: (b) =>
+              b.and(
+                input.owner === undefined ? true : b("owner", "=", input.owner),
+                input.ids === undefined ? true : b("id", "in", input.ids),
+                input.name === undefined ? true : b("name", "=", input.name),
+                input.slug === undefined ? true : b("slug", "=", input.slug),
+                input.account === undefined ? true : b("accounts", "json contains", input.account),
+              ),
+            orderBy: ["id", "asc"],
+          }),
+        );
+        return yield* Effect.forEach(rows, ({ deployment, ...app }) =>
+          projectedApp({ app, deployment }),
+        );
+      }).pipe(Effect.withSpan("sdk.apps.list")),
     rename: (input: Parameters<Executor["apps"]["rename"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -569,7 +575,7 @@ export const makeApps = (
               orderBy: ["createdAt", "desc"],
             }),
           );
-          const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(DeploymentMetadata))(
+          const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(DeploymentSummary))(
             rows,
           ).pipe(Effect.mapError(() => new StorageError()));
           return decoded
@@ -585,6 +591,16 @@ export const makeApps = (
             }));
         }),
       ).pipe(Effect.withSpan("sdk.apps.deployments")),
+    // Code identity and retained deployments are immutable. These bounded reads
+    // need no BEGIN/COMMIT round trips; concurrent removal fails closed.
+    deployment: (input: Parameters<Executor["apps"]["deployment"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        const version = yield* storedDeployment(db, app, input.deployment, input.deploymentOwner);
+        return yield* Schema.decodeUnknownEffect(DeploymentMetadata)(version).pipe(
+          Effect.mapError(() => new StorageError()),
+        );
+      }).pipe(Effect.withSpan("sdk.apps.deployment")),
     source: (input: Parameters<Executor["apps"]["source"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {

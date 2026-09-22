@@ -7,7 +7,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
-import { requestServices } from "../src/implementation/request-services.ts";
+import { requestServices } from "@executor-js/hosted-server";
 
 class RequestLease extends Context.Service<
   RequestLease,
@@ -42,7 +42,7 @@ test("one router gives concurrent and later requests independent, scoped service
       assert.equal(lease.active(), true);
       return HttpServerResponse.text(lease.actor);
     }),
-  ).pipe(Layer.provide(requestServices(live)), Layer.provide(HttpServer.layerServices));
+  ).pipe(Layer.provide(requestServices(live).layer), Layer.provide(HttpServer.layerServices));
   const web = HttpRouter.toWebHandler(routes, { disableLogger: true });
   const request = async (actor: string) => {
     const response = await web.handler(

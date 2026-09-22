@@ -12,15 +12,21 @@ export { SourceFiles, SourceFile, SourceFilePath } from "./source.ts";
  * and no app data or external operations are reversed. The manifest is
  * NOT a build output: uploaded code is evaluated live on each use.
  */
-export const Deployment = Schema.Struct({
+export const DeploymentMetadata = Schema.Struct({
   id: DeploymentId,
   code: AppCodeId,
   owner: OwnerId,
   sourceCommit: SourceCommit,
-  // Hydrated for callers; source bytes are never a deployment SQL column.
-  files: SourceFiles,
   build: BuildId,
   createdAt: Schema.Date,
+});
+/** A retained build reference without loading its Git source. */
+export type DeploymentMetadata = typeof DeploymentMetadata.Type;
+
+/** Source inspection explicitly hydrates files; serving and execution use metadata. */
+export const Deployment = Schema.Struct({
+  ...DeploymentMetadata.fields,
+  files: SourceFiles,
 });
 
 export type Deployment = typeof Deployment.Type;

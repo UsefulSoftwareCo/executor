@@ -2,9 +2,15 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { Effect, Result, Schema, Tracer } from "effect";
+import { Deferred, Effect, Result, Schema, Tracer } from "effect";
 import { HttpClientError } from "effect/unstable/http";
-import { collectTelemetry, forwardTelemetry, telemetryLayer } from "../src/index.ts";
+import {
+  collectTelemetry,
+  forwardTelemetry,
+  makeTelemetryForwarder,
+  CurrentTelemetryConfig,
+  telemetryLayer,
+} from "../src/index.ts";
 
 test("relay retains error messages, structured logs and custom attributes", async () => {
   const captured = await Effect.runPromise(
@@ -111,3 +117,61 @@ test("relay failures retain collector status and decoding errors", async () => {
     await new Promise<void>((resolve) => receiver.close(() => resolve()));
   }
 });
+
+test(
+  "app results do not wait for the collector and their owner drains the export",
+  { timeout: 5_000 },
+  async () => {
+    const received = Deferred.makeUnsafe<void>();
+    const release = Deferred.makeUnsafe<void>();
+    let resultReady = false;
+    let scopeFinished = false;
+    const receiver = createServer(async (request, response) => {
+      for await (const _chunk of request) {
+        /* Consume the real exported body. */
+      }
+      Effect.runSync(Deferred.succeed(received, undefined));
+      await Effect.runPromise(Deferred.await(release));
+      response.writeHead(200).end("{}");
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+    const address = receiver.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const running = Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const forward = yield* makeTelemetryForwarder;
+          yield* forward(
+            { traces: ['{"resourceSpans":[]}'], logs: [], dropped: 0 },
+            "1234567890abcdef1234567890abcdef",
+          );
+          resultReady = true;
+          return "app result";
+        }),
+      ).pipe(
+        Effect.provideService(CurrentTelemetryConfig, {
+          service: "relay-test",
+          version: "test",
+          environment: "test",
+          traces: { url: `http://127.0.0.1:${address.port}/v1/traces` },
+        }),
+      ),
+    ).then((value) => {
+      scopeFinished = true;
+      return value;
+    });
+    try {
+      await Effect.runPromise(Deferred.await(received));
+      assert.equal(
+        resultReady,
+        true,
+        "The app result must be ready while collector response is held",
+      );
+      assert.equal(scopeFinished, false, "The owner must retain the pending export");
+    } finally {
+      Effect.runSync(Deferred.succeed(release, undefined));
+      assert.equal(await running, "app result");
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
+  },
+);
