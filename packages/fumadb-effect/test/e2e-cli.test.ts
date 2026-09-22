@@ -39,10 +39,12 @@ for (const provider of providers) {
             // generate must not apply anything
             expect(yield* client.version).toBe("1.0.0");
 
-            yield* cli.run(["migrate:to", "latest"]);
+            // Round-tripping 2.0.0 -> 1.0.0 needs the column 2.0.0 removed to
+            // be gone, so both steps ask for the destructive operations.
+            yield* cli.run(["migrate:to", "latest", "--unsafe"]);
             expect(yield* client.version).toBe("2.0.0");
 
-            yield* cli.run(["migrate:down"]);
+            yield* cli.run(["migrate:down", "--unsafe"]);
             expect(yield* client.version).toBe("1.0.0");
 
             const sql = yield* SqlClient.SqlClient;

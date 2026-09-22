@@ -1214,3 +1214,93 @@ describe("value codec: decode failures", () => {
     }
   });
 });
+
+describe("schema() does not mutate its input", () => {
+  /** Two versions built from one set of `table()` objects, the natural way to add a relation. */
+  const sharedTables = () => ({
+    users: table("users", {
+      id: idColumn("id", Schema.String.check(Schema.isMaxLength(255))),
+    }),
+    posts: table("posts", {
+      id: idColumn("id", Schema.String.check(Schema.isMaxLength(255))),
+      authorId: column("author_id", Schema.String.check(Schema.isMaxLength(255))),
+    }),
+  });
+
+  it("reuses one table object across two versions without duplicating a foreign key", () => {
+    const tables = sharedTables();
+    const v1 = schema({ version: "1.0.0", tables });
+    const v2 = schema({
+      version: "2.0.0",
+      tables,
+      relations: {
+        posts: ({ one }) => ({
+          author: one("users", ["authorId", "id"]).foreignKey({
+            onUpdate: "RESTRICT",
+            onDelete: "RESTRICT",
+          }),
+        }),
+      },
+    });
+
+    // the caller's objects are untouched, so v1 never learns about v2's key
+    expect(tables.posts.foreignKeys).toEqual([]);
+    expect(tables.posts.ormName).toBe("");
+    expect(v1.tables.posts.foreignKeys).toEqual([]);
+    expect(v2.tables.posts.foreignKeys).toHaveLength(1);
+    // and the schemas hold their own copies
+    expect(isSame(v1.tables.posts, v2.tables.posts)).toBe(false);
+    expect(isSame(v1.tables.posts, tables.posts)).toBe(false);
+  });
+
+  it("building the same version twice produces the same single foreign key", () => {
+    const tables = sharedTables();
+    const build = () =>
+      schema({
+        version: "1.0.0",
+        tables,
+        relations: {
+          posts: ({ one }) => ({
+            author: one("users", ["authorId", "id"]).foreignKey({
+              onUpdate: "RESTRICT",
+              onDelete: "RESTRICT",
+            }),
+          }),
+        },
+      });
+    expect(build().tables.posts.foreignKeys).toHaveLength(1);
+    expect(build().tables.posts.foreignKeys).toHaveLength(1);
+  });
+
+  it("carries the relations of an inherited table into the next version", () => {
+    const tables = sharedTables();
+    const v1 = schema({
+      version: "1.0.0",
+      tables,
+      relations: {
+        posts: ({ one }) => ({
+          author: one("users", ["authorId", "id"]).foreignKey({
+            onUpdate: "RESTRICT",
+            onDelete: "RESTRICT",
+          }),
+        }),
+      },
+    });
+    const v2 = schema({ version: "2.0.0", tables: v1.tables });
+    expect(v2.tables.posts.foreignKeys).toHaveLength(1);
+    expect(v1.tables.posts.foreignKeys).toHaveLength(1);
+    expect(isSame(v2.tables.posts.foreignKeys[0], v1.tables.posts.foreignKeys[0])).toBe(false);
+  });
+
+  it("variantSchema leaves the replacement tables reusable", () => {
+    const replacement = table("users", {
+      id: idColumn("id", Schema.String.check(Schema.isMaxLength(255))),
+      nickname: column("nickname", Schema.NullOr(Schema.String.check(Schema.isMaxLength(255)))),
+    });
+    const a = variantSchema("a", variantBase, { tables: { users: replacement } });
+    const b = variantSchema("b", variantBase, { tables: { users: replacement } });
+    expect(replacement.foreignKeys).toEqual([]);
+    expect(isSame(a.tables.users, replacement)).toBe(false);
+    expect(isSame(a.tables.users, b.tables.users)).toBe(false);
+  });
+});

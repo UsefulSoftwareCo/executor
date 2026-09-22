@@ -221,13 +221,17 @@ export class Column<S extends Schema.Top = Schema.Top, HasDefault extends boolea
     return this as unknown as Column<S, true>;
   }
 
-  /** A detached copy, keeping the schema, storage type, flags, default, and current names. */
-  clone(): Column<S, HasDefault> {
+  /**
+   * A detached copy, keeping the schema, storage type, flags, default, and
+   * current names. `nullable` overrides the stored nullability only; the
+   * schema is kept as it is.
+   */
+  clone(options: { readonly nullable?: boolean } = {}): Column<S, HasDefault> {
     const names = this.names;
     const cloned = new Column<S, HasDefault>(
       this.schema,
       this.type,
-      this.isNullable,
+      options.nullable ?? this.isNullable,
       () => names,
       this.typeInferred,
     );
@@ -264,12 +268,12 @@ export class IdColumn<
   readonly id = true;
   declare type: IdStorageType;
 
-  override clone(): IdColumn<S, HasDefault> {
+  override clone(options: { readonly nullable?: boolean } = {}): IdColumn<S, HasDefault> {
     const names = this.names;
     const cloned = new IdColumn<S, HasDefault>(
       this.schema,
       this.type,
-      this.isNullable,
+      options.nullable ?? this.isNullable,
       () => names,
       this.typeInferred,
     );

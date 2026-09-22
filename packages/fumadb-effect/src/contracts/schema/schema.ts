@@ -107,6 +107,9 @@ export const getTable = (schema: AnySchema, ormName: string): AnyTable => {
  * Tables are keyed by ORM name. Relations are declared per table with a
  * builder. The schema is validated on construction and a
  * `SchemaDefinitionError` is thrown for invalid definitions.
+ *
+ * The tables passed in are never modified: each one is cloned first, so the
+ * same `table()` object can be given to several schema versions.
  */
 export const schema = <
   Version extends string,
@@ -115,13 +118,23 @@ export const schema = <
 >(
   config: SchemaConfig<Version, Tables, RM>,
 ): Schema<Version, CreateSchemaTables<Tables, RM>> => {
-  const { relations, tables } = config;
-  for (const key of Object.keys(tables)) {
-    const t = tables[key];
-    if (t === undefined) continue;
-    t.ormName = key;
+  const { relations, tables: input } = config;
+  // Every table is cloned before anything is written to it. Relations attach a
+  // foreign key to the table they are declared on, so sharing one `table()`
+  // object across schema versions would otherwise append the same key twice
+  // and overwrite the earlier version's relation map.
+  const tables: Record<string, AnyTable> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined) continue;
+    const cloned = value.clone();
+    cloned.ormName = key;
+    tables[key] = cloned;
   }
-  if (relations !== undefined) setRelations(tables, relations);
+  // An input table may already carry relations, from `clone()` or from a
+  // previous schema version. Recreate them on the copies.
+  copyRelations(input, tables);
+  // The copies stand in for the input tables, key for key.
+  if (relations !== undefined) setRelations(tables as unknown as Tables, relations);
 
   const out: Schema<Version, CreateSchemaTables<Tables, RM>> = {
     version: config.version,
@@ -256,6 +269,13 @@ const setRelations = <Tables extends Record<string, AnyTable>>(
         }
         const output = relation.init(name);
         explicit.push({ relation: output, implicitRelationName: relation.implyingRelationName });
+        // A redeclared relation replaces the inherited one, foreign key
+        // included; appending both would emit the constraint twice.
+        const previous = (t.relations as Record<string, AnyRelation>)[name];
+        if (previous !== undefined && !previous.implied && previous.foreignKey !== undefined) {
+          const at = t.foreignKeys.indexOf(previous.foreignKey);
+          if (at !== -1) t.foreignKeys.splice(at, 1);
+        }
         (t.relations as Record<string, ExplicitRelation>)[name] = output;
         if (output.foreignKey !== undefined) t.foreignKeys.push(output.foreignKey);
       }
@@ -307,7 +327,7 @@ type OverrideTables<
  *    that left the schema. The replacement must keep the referenced columns,
  *    or construction fails with a `SchemaDefinitionError`.
  *
- * The original schema is never modified.
+ * Neither the original schema nor the replacement tables are modified.
  */
 export const variantSchema = <
   Variant extends string,
@@ -325,7 +345,11 @@ export const variantSchema = <
   const replaced = new Set<string>();
   for (const [key, value] of Object.entries(override.tables)) {
     if (value === undefined) continue;
-    tables[key] = value;
+    // Cloned like the inherited tables: `copyRelations` below attaches foreign
+    // keys, and the caller's `table()` object must stay reusable.
+    const cloned = value.clone();
+    cloned.ormName = key;
+    tables[key] = cloned;
     replaced.add(key);
   }
   // Copy the inherited relations onto the final tables, so a relation that

@@ -18,7 +18,19 @@ export interface MigrateOptions {
   readonly mode?: "from-schema" | "from-database";
   /** Write the version and name variants into the settings table. Defaults to `true`. */
   readonly updateSettings?: boolean;
-  /** Allow operations that can lose data (dropping unused columns in `from-database` mode). */
+  /**
+   * Allow operations that can lose data. Defaults to `false`, so an
+   * unattended migration never drops anything.
+   *
+   * - `from-schema`: drops tables and columns the target schema no longer has.
+   * - `from-database`: drops columns the target schema no longer has. Tables
+   *   are never dropped here, because introspection also sees tables this
+   *   library does not own.
+   *
+   * Without it, a kept column that is required and has no default is made
+   * nullable, so the table stays writable. On SQLite that change recreates
+   * the table from the target schema, which drops the column.
+   */
   readonly unsafe?: boolean;
 }
 
@@ -81,7 +93,16 @@ export interface MigrationTransformer {
 /** What an adapter supplies to {@link createMigrator}. */
 export interface MigrationEngineOptions<R> {
   readonly libConfig: LibraryConfig;
-  readonly userConfig: { readonly provider: Provider; readonly relationMode?: RelationMode };
+  readonly userConfig: {
+    readonly provider: Provider;
+    readonly relationMode?: RelationMode;
+    /**
+     * Drop settings the adapter decides itself. When either is set, `unsafe`
+     * does not change it; when both are absent, `unsafe` decides.
+     */
+    readonly dropUnusedTables?: boolean;
+    readonly dropUnusedColumns?: boolean;
+  };
   readonly executor: (
     operations: ReadonlyArray<MigrationOperation>,
   ) => Effect.Effect<void, MigrationError | SqlError, R>;

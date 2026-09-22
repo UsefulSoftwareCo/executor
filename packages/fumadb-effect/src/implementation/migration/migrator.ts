@@ -126,7 +126,15 @@ export const createMigrator = <R>(options: MigrationEngineOptions<R>): Migrator<
     > = Effect.gen(function* () {
       let generated: ReadonlyArray<MigrationOperation>;
       if (mode === "from-schema") {
-        generated = fromSchema(currentSchema, targetSchema, userConfig);
+        // Drops are opt-in on this path as well: a startup migration that runs
+        // without `unsafe` never destroys a table or a column. `unsafe` only
+        // supplies the default, so an adapter that states either setting keeps
+        // the value it states.
+        generated = fromSchema(currentSchema, targetSchema, {
+          ...userConfig,
+          dropUnusedColumns: userConfig.dropUnusedColumns ?? unsafe,
+          dropUnusedTables: userConfig.dropUnusedTables ?? unsafe,
+        });
       } else {
         if (generateMigrationFromDatabase === undefined) {
           return yield* new MigrationError({

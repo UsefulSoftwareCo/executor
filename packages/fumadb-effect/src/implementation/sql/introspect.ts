@@ -1192,6 +1192,9 @@ export const introspectSchema: (
         ),
     });
 
+    // The relation builders below address tables by ORM name, and `schema()`
+    // names its own copies rather than these.
+    built.ormName = ormName;
     tables[ormName] = built;
     sqlNameToTable.set(rawTable.name, built);
     foreignKeysByOrmName.set(ormName, yield* listForeignKeys(provider, rawTable));
@@ -1279,7 +1282,7 @@ export const introspectSchema: (
  *
  * Tables the target does not know are never dropped (`dropUnusedTables: false`);
  * a column the target does not know is dropped only when `dropUnusedColumns`
- * is set or the column is required.
+ * is set. Otherwise it is kept, and made nullable when it is required.
  */
 export const generateMigrationFromDatabase: (
   target: AnySchema,

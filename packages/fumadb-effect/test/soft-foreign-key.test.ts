@@ -9,6 +9,7 @@ import { Effect, Schema } from "effect";
 import { SqlError } from "effect/unstable/sql/SqlError";
 import { describe, expect } from "vitest";
 import type { OrmError } from "../src/contracts/query.ts";
+import type { OrmAdapter } from "../src/contracts/query-adapter.ts";
 import { toOrm } from "../src/implementation/query/orm.ts";
 import { createSoftForeignKey } from "../src/implementation/query/soft-foreign-key.ts";
 import { column, idColumn, schema, table } from "../src/schema.ts";
@@ -19,6 +20,31 @@ import { relationsV1 } from "./support/schemas.ts";
 const setup = <S extends AnySchema>(source: S) => {
   const memory = makeMemoryAdapter(source);
   return { memory, orm: toOrm(source, createSoftForeignKey(source, memory)) };
+};
+
+/**
+ * `setup`, with every read the engine makes recorded as `kind:table`, so a
+ * case can state how much work one write costs.
+ */
+const setupCountingReads = <S extends AnySchema>(source: S) => {
+  const memory = makeMemoryAdapter(source);
+  const reads: Array<string> = [];
+  const counted: OrmAdapter<never> = {
+    ...memory,
+    count: (table, options) => {
+      reads.push(`count:${table.ormName}`);
+      return memory.count(table, options);
+    },
+    findFirst: (table, options) => {
+      reads.push(`findFirst:${table.ormName}`);
+      return memory.findFirst(table, options);
+    },
+    findMany: (table, options) => {
+      reads.push(`findMany:${table.ormName}`);
+      return memory.findMany(table, options);
+    },
+  };
+  return { memory, reads, orm: toOrm(source, createSoftForeignKey(source, counted)) };
 };
 
 /**
@@ -601,6 +627,144 @@ describe("update", () => {
       expect(memory.dump("guards")[0]?.["ownerCode"]).toBe(null);
     }),
   );
+
+  // `guards` owns a foreign key and nothing references it, which is the case
+  // the engine used to hand straight to the adapter unchecked.
+  it.effect("rejects setting the row's own foreign key to a missing parent", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(restrictSchema);
+      yield* orm.create("owners", { id: "o1", code: "c1" });
+      yield* orm.create("guards", { id: "g1", ownerCode: "c1" });
+
+      const error = yield* expectViolation(
+        orm.updateMany("guards", {
+          where: (b) => b("id", "=", "g1"),
+          set: { ownerCode: "does-not-exist" },
+        }),
+      );
+      expect(error.reason.message).toContain("guards_owners_owner_fk");
+      expect(error.reason.operation).toBe("update");
+      expect(memory.dump("guards")[0]?.["ownerCode"]).toBe("c1");
+    }),
+  );
+
+  it.effect("accepts setting the row's own foreign key to an existing parent", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(restrictSchema);
+      yield* orm.createMany("owners", [
+        { id: "o1", code: "c1" },
+        { id: "o2", code: "c2" },
+      ]);
+      yield* orm.create("guards", { id: "g1", ownerCode: "c1" });
+
+      yield* orm.updateMany("guards", {
+        where: (b) => b("id", "=", "g1"),
+        set: { ownerCode: "c2" },
+      });
+
+      expect(memory.dump("guards")[0]?.["ownerCode"]).toBe("c2");
+    }),
+  );
+
+  it.effect("clearing the row's own foreign key to NULL is allowed", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(restrictSchema);
+      yield* orm.create("owners", { id: "o1", code: "c1" });
+      yield* orm.create("guards", { id: "g1", ownerCode: "c1" });
+
+      yield* orm.updateMany("guards", {
+        where: (b) => b("id", "=", "g1"),
+        set: { ownerCode: null },
+      });
+
+      expect(memory.dump("guards")[0]?.["ownerCode"]).toBe(null);
+    }),
+  );
+
+  // The referenced table owns a key as well, so the check must not run before
+  // the cascade that creates the row it looks for.
+  it.effect("still cascades when the updated table owns a foreign key too", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(relationsV1);
+      yield* orm.create("users", { id: "u1", name: "one" });
+      yield* orm.create("posts", { id: "p1", authorId: "u1", attachmentUrl: "a1" });
+      yield* orm.create("attachments", { id: "att1", url: "a1" });
+
+      yield* orm.updateMany("posts", {
+        where: (b) => b("id", "=", "p1"),
+        set: { attachmentUrl: "moved" },
+      });
+
+      expect(memory.dump("attachments")[0]?.["url"]).toBe("moved");
+    }),
+  );
+
+  // The `set` holds a constant, so the work of the check must not grow with
+  // the number of rows the update matches.
+  it.effect("checks a constant foreign key with one parent lookup", () =>
+    Effect.gen(function* () {
+      const { memory, orm, reads } = setupCountingReads(restrictSchema);
+      yield* orm.createMany("owners", [
+        { id: "o1", code: "c1" },
+        { id: "o2", code: "c2" },
+      ]);
+      yield* orm.createMany("guards", [
+        { id: "g1", ownerCode: "c1" },
+        { id: "g2", ownerCode: "c1" },
+        { id: "g3", ownerCode: "c1" },
+      ]);
+      reads.length = 0;
+
+      yield* orm.updateMany("guards", {
+        where: (b) => b("ownerCode", "=", "c1"),
+        set: { ownerCode: "c2" },
+      });
+
+      // one bounded read to see the update matches a row, one parent lookup
+      expect(reads).toEqual(["findFirst:guards", "findFirst:owners"]);
+      expect(memory.dump("guards").map((row) => row["ownerCode"])).toEqual(["c2", "c2", "c2"]);
+    }),
+  );
+
+  it.effect("checks nothing when the update matches no row", () =>
+    Effect.gen(function* () {
+      const { orm, reads } = setupCountingReads(restrictSchema);
+      yield* orm.create("owners", { id: "o1", code: "c1" });
+      reads.length = 0;
+
+      yield* orm.updateMany("guards", {
+        where: (b) => b("id", "=", "missing"),
+        set: { ownerCode: "does-not-exist" },
+      });
+
+      expect(reads).toEqual(["findFirst:guards"]);
+    }),
+  );
+
+  // A key the `set` writes only in part keeps one column of each row, so the
+  // rows are still read and checked.
+  it.effect("checks a key the update writes only in part", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(compositeSchema);
+      yield* orm.create("parents", { id: "parent1", tenant: "t1", code: "c1" });
+      yield* orm.create("children", { id: "child1", tenant: "t1", code: "c1" });
+
+      yield* expectViolation(
+        orm.updateMany("children", {
+          where: (b) => b("id", "=", "child1"),
+          set: { code: "c9" },
+        }),
+      );
+      expect(memory.dump("children")[0]?.["code"]).toBe("c1");
+
+      yield* orm.create("parents", { id: "parent2", tenant: "t1", code: "c2" });
+      yield* orm.updateMany("children", {
+        where: (b) => b("id", "=", "child1"),
+        set: { code: "c2" },
+      });
+      expect(memory.dump("children")[0]?.["code"]).toBe("c2");
+    }),
+  );
 });
 
 describe("upsert", () => {
@@ -625,6 +789,24 @@ describe("upsert", () => {
       });
       expect(updated.content).toBe("second");
       expect(memory.dump("posts")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("checks the foreign keys of the row it updates", () =>
+    Effect.gen(function* () {
+      const { memory, orm } = setup(restrictSchema);
+      yield* orm.create("owners", { id: "o1", code: "c1" });
+      yield* orm.create("guards", { id: "g1", ownerCode: "c1" });
+
+      const error = yield* expectViolation(
+        orm.upsert("guards", {
+          where: (b) => b("id", "=", "g1"),
+          create: { id: "g1", ownerCode: "c1" },
+          update: { ownerCode: "does-not-exist" },
+        }),
+      );
+      expect(error.reason.operation).toBe("update");
+      expect(memory.dump("guards")[0]?.["ownerCode"]).toBe("c1");
     }),
   );
 

@@ -22,8 +22,16 @@ import {
 export interface GenerateMigrationOptions {
   readonly provider: Provider;
   readonly relationMode?: RelationMode;
-  /** Drop tables that no longer exist in the target schema. Only tables known to the source schema are affected. */
+  /**
+   * Drop tables that no longer exist in the target schema. Only tables known to
+   * the source schema are affected. Destructive, so it defaults to `false`.
+   */
   readonly dropUnusedTables?: boolean;
+  /**
+   * Drop columns that no longer exist in the target schema. Destructive, so it
+   * defaults to `false`. When it is `false`, a kept column that is required and
+   * has no default is made nullable instead, so the table stays writable.
+   */
   readonly dropUnusedColumns?: boolean;
 }
 
@@ -58,8 +66,8 @@ export const generateMigrationFromSchema = (
   options: GenerateMigrationOptions,
 ): ReadonlyArray<MigrationOperation> => {
   const {
-    dropUnusedColumns = true,
-    dropUnusedTables = true,
+    dropUnusedColumns = false,
+    dropUnusedTables = false,
     provider,
     relationMode = defaultRelationMode(provider),
   } = options;
@@ -199,9 +207,28 @@ export const generateMigrationFromSchema = (
     const constraints = newTable.getUniqueConstraints();
     const operations: Array<Operation> = [];
     for (const oldColumn of Object.values(oldTable.columns)) {
-      const isUnused = newTable.columns[oldColumn.ormName] === undefined;
-      const isRequired = !oldColumn.isNullable && oldColumn.defaultValue === undefined;
-      if (!(isUnused && (dropUnusedColumns || isRequired))) continue;
+      if (newTable.columns[oldColumn.ormName] !== undefined) continue;
+      if (!dropUnusedColumns) {
+        // A kept column that is required and has no default would make every
+        // insert fail, so it is made nullable. Nothing is dropped.
+        if (oldColumn.isNullable || oldColumn.defaultValue !== undefined) continue;
+        operations.push({
+          type: "update-table",
+          name: newTable.names.sql,
+          value: [
+            {
+              type: "update-column",
+              name: oldColumn.names.sql,
+              value: oldColumn.clone({ nullable: true }),
+              updateDataType: false,
+              updateDefault: false,
+              updateNullable: true,
+            },
+          ],
+          enforce: "post",
+        });
+        continue;
+      }
       // MSSQL does not drop unique indexes together with the column.
       if (provider === "mssql" && oldColumn.isUnique) {
         for (const con of constraints) {

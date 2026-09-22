@@ -102,7 +102,15 @@ export const validateSchema = (schema: AnySchema): void => {
   if (!isValid(schema.version))
     throw new SchemaDefinitionError(`the version ${schema.version} is invalid.`);
   for (const table of Object.values(schema.tables)) {
+    // Two keys of one name compile to the same constraint twice, which the
+    // migration only discovers as "constraint already exists".
+    const keyNames = new Set<string>();
     for (const key of table.foreignKeys) {
+      if (keyNames.has(key.name))
+        throw new SchemaDefinitionError(
+          `[${key.name}] The table "${table.ormName}" declares this foreign key more than once.`,
+        );
+      keyNames.add(key.name);
       validateForeignKeyTarget(key, schema.tables);
       validateForeignKey(key);
     }

@@ -110,6 +110,10 @@ const v2OnlyUsersColumns = [
   "fatherId",
 ];
 
+/** Dropping a table or a column is opt-in, so the tests that assert it ask for it. */
+const dropping = (provider: Provider) =>
+  ({ provider, dropUnusedColumns: true, dropUnusedTables: true }) as const;
+
 describe.each(providers)("provider %s", (provider) => {
   it("creates every table from an empty database", () => {
     const ops = generateMigrationFromSchema(empty, v2, { provider });
@@ -127,7 +131,7 @@ describe.each(providers)("provider %s", (provider) => {
   });
 
   it("1.0.0 -> 2.0.0 adds columns, unique constraints, foreign keys, then drops the unused column", () => {
-    const ops = generateMigrationFromSchema(v1, v2, { provider });
+    const ops = generateMigrationFromSchema(v1, v2, dropping(provider));
     expect(describeAll(ops)).toEqual([
       ...updateTable(provider, "users", v2UsersAdditions),
       "add-unique users.unique_c_users_email (email)",
@@ -145,7 +149,7 @@ describe.each(providers)("provider %s", (provider) => {
   });
 
   it("2.0.0 -> 3.0.0 drops foreign keys first and columns last", () => {
-    const ops = generateMigrationFromSchema(v2, v3, { provider });
+    const ops = generateMigrationFromSchema(v2, v3, dropping(provider));
     expect(describeAll(ops)).toEqual([
       "drop-foreign-key users.users_accounts_account_fk",
       "drop-foreign-key users.users_users_father_fk",
@@ -161,7 +165,7 @@ describe.each(providers)("provider %s", (provider) => {
   });
 
   it("3.0.0 -> 4.0.0 converts data types and drops the unused table last", () => {
-    const ops = generateMigrationFromSchema(v3, v4, { provider });
+    const ops = generateMigrationFromSchema(v3, v4, dropping(provider));
     expect(describeAll(ops)).toEqual([
       ...updateTable(provider, "users", ["update name type", "update image type"]),
       "update-table users [drop email]",
@@ -186,7 +190,7 @@ describe.each(providers)("provider %s", (provider) => {
   });
 
   it("drops unique constraints before the columns they cover", () => {
-    const lines = describeAll(generateMigrationFromSchema(v2, v3, { provider }));
+    const lines = describeAll(generateMigrationFromSchema(v2, v3, dropping(provider)));
     const lastDropUnique = lines.findLastIndex((line) => line.startsWith("drop-unique"));
     const firstDropColumn = lines.findIndex((line) => line.includes("[drop "));
     expect(lastDropUnique).toBeGreaterThanOrEqual(0);
@@ -212,25 +216,15 @@ describe.each(providers)("provider %s", (provider) => {
 });
 
 describe("options", () => {
-  it("dropUnusedColumns: false keeps nullable columns but still drops required ones", () => {
-    // `data` is nullable, so it survives
+  it("drops nothing by default, so an unattended migration cannot lose data", () => {
+    const lines = [
+      ...describeAll(generateMigrationFromSchema(v1, v2, { provider: "postgresql" })),
+      ...describeAll(generateMigrationFromSchema(v2, v3, { provider: "postgresql" })),
+    ];
+    expect(lines.filter((line) => line.includes("[drop "))).toEqual([]);
     expect(
-      describeAll(
-        generateMigrationFromSchema(v1, v2, { provider: "postgresql", dropUnusedColumns: false }),
-      ),
-    ).not.toContain("update-table users [drop data]");
-    // every column removed in 3.0.0 is nullable
-    expect(
-      describeAll(
-        generateMigrationFromSchema(v2, v3, { provider: "postgresql", dropUnusedColumns: false }),
-      ).filter((line) => line.includes("[drop ")),
-    ).toEqual([]);
-    // `email` is required and has no default, so dropping it is unavoidable
-    expect(
-      describeAll(
-        generateMigrationFromSchema(v3, v4, { provider: "postgresql", dropUnusedColumns: false }),
-      ),
-    ).toContain("update-table users [drop email]");
+      describeAll(generateMigrationFromSchema(v3, v4, { provider: "postgresql" })),
+    ).not.toContain("drop-table accounts");
   });
 
   it("dropUnusedTables: false keeps a table that left the schema", () => {
@@ -239,9 +233,11 @@ describe("options", () => {
         generateMigrationFromSchema(v3, v4, { provider: "postgresql", dropUnusedTables: false }),
       ),
     ).not.toContain("drop-table accounts");
-    expect(describeAll(generateMigrationFromSchema(v3, v4, { provider: "postgresql" }))).toContain(
-      "drop-table accounts",
-    );
+    expect(
+      describeAll(
+        generateMigrationFromSchema(v3, v4, { provider: "postgresql", dropUnusedTables: true }),
+      ),
+    ).toContain("drop-table accounts");
   });
 
   it("still drops a foreign key that left the schema in `fumadb` mode", () => {
@@ -416,5 +412,41 @@ describe("column operations", () => {
     for (const provider of providers) {
       expect(generateMigrationFromSchema(v2, v2, { provider })).toEqual([]);
     }
+  });
+});
+
+describe.each(providers)("unused required column on %s", (provider) => {
+  it("dropUnusedColumns: false keeps nullable columns and makes required ones nullable", () => {
+    const keeping = { provider, dropUnusedColumns: false } as const;
+    // `data` is nullable, so it survives untouched
+    expect(describeAll(generateMigrationFromSchema(v1, v2, keeping))).not.toContain(
+      "update-table users [drop data]",
+    );
+    // every column removed in 3.0.0 is nullable
+    expect(
+      describeAll(generateMigrationFromSchema(v2, v3, keeping)).filter((line) =>
+        line.includes("[drop "),
+      ),
+    ).toEqual([]);
+    // `email` is required and has no default: it is kept and made nullable,
+    // so inserts that omit it still succeed. Nothing is dropped.
+    const ops = generateMigrationFromSchema(v3, v4, keeping);
+    const lines = describeAll(ops);
+    expect(lines.filter((line) => line.includes("[drop "))).toEqual([]);
+    expect(lines).toContain("update-table users [update email nullable]");
+    const alter = ops
+      .flatMap((op) => (op.type === "update-table" ? op.value : []))
+      .find((action) => action.type === "update-column" && action.name === "email");
+    expect(alter?.type === "update-column" && alter.value.isNullable).toBe(true);
+    // The source schema's column is not mutated.
+    expect(v3.tables.users?.columns.email?.isNullable).toBe(false);
+  });
+
+  it("dropUnusedColumns: true drops a required column instead of altering it", () => {
+    const lines = describeAll(
+      generateMigrationFromSchema(v3, v4, { provider, dropUnusedColumns: true }),
+    );
+    expect(lines).toContain("update-table users [drop email]");
+    expect(lines).not.toContain("update-table users [update email nullable]");
   });
 });

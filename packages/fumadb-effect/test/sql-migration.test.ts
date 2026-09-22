@@ -196,9 +196,10 @@ for (const provider of providers) {
   });
 }
 
-/** The column names the database reports for the unprefixed `accounts` table. */
-const accountsColumns = (
+/** The column names the database reports for an unprefixed table. */
+const tableColumns = (
   provider: Provider,
+  table: string,
 ): Effect.Effect<ReadonlyArray<string>, unknown, SqlClient.SqlClient> =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -208,9 +209,9 @@ const accountsColumns = (
       provider === "mysql" ? databaseName : provider === "mssql" ? "dbo" : "public";
     const rows = yield* sql.unsafe<{ readonly name: string }>(
       provider === "sqlite"
-        ? `select name from pragma_table_info('accounts')`
+        ? `select name from pragma_table_info('${table}')`
         : `select column_name as name from information_schema.columns ` +
-            `where table_name = 'accounts' and table_schema = '${schemaName}'`,
+            `where table_name = '${table}' and table_schema = '${schemaName}'`,
     ).unprepared;
     return rows.map((row) => row.name);
   });
@@ -239,12 +240,55 @@ for (const provider of providers) {
         (result) => result.execute,
       );
       expect(yield* migrator.version).toStrictEqual(Option.some("2.0.0"));
-      expect(yield* accountsColumns(provider)).toContain("email");
+      expect(yield* tableColumns(provider, "accounts")).toContain("email");
 
       yield* Effect.flatMap(migrator.down({ unsafe: true }), (result) => result.execute);
 
       expect(yield* migrator.version).toStrictEqual(Option.some("1.0.0"));
-      expect(yield* accountsColumns(provider)).not.toContain("email");
+      expect(yield* tableColumns(provider, "accounts")).not.toContain("email");
+    });
+    await Effect.runPromise(withProvider(provider, program));
+  });
+}
+
+/**
+ * 4.0.0 removes `users.email`, which is required and has no default. Without
+ * `unsafe` the column must keep its data and stop blocking inserts, so it is
+ * altered to accept NULL. SQLite cannot alter nullability: its update-column
+ * path recreates the table from the target schema, which drops the column.
+ */
+for (const provider of providers) {
+  test(`${provider}: a removed required column is made nullable without \`unsafe\``, async () => {
+    const program = Effect.gen(function* () {
+      const client = TestDB.client(sqlAdapter({ provider }));
+      const migrator = yield* client.createMigrator;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* Effect.flatMap(
+        migrator.migrateTo("3.0.0", { unsafe: true }),
+        (result) => result.execute,
+      );
+      yield* sql`insert into ${sql("users")} ${sql.insert({ id: "one", name: "a", email: "kept" })}`;
+
+      const result = yield* migrator.migrateTo("4.0.0");
+      yield* result.execute;
+      expect(yield* migrator.version).toStrictEqual(Option.some("4.0.0"));
+
+      // An insert that omits the column succeeds.
+      yield* sql`insert into ${sql("users")} ${sql.insert({ id: "two", name: "b" })}`;
+
+      if (provider === "sqlite") {
+        expect(yield* tableColumns(provider, "users")).not.toContain("email");
+        return;
+      }
+      expect(Option.getOrThrow(result.sql)).not.toMatch(/drop column/i);
+      const rows = yield* sql.unsafe<{ readonly id: string; readonly email: string | null }>(
+        `select ${quoteIdentifier("id", provider)} as id, ${quoteIdentifier("email", provider)} as email from ${quoteIdentifier("users", provider)} order by id`,
+      ).unprepared;
+      expect(rows.map((row) => [row.id, row.email])).toEqual([
+        ["one", "kept"],
+        ["two", null],
+      ]);
     });
     await Effect.runPromise(withProvider(provider, program));
   });

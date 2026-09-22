@@ -139,13 +139,24 @@ export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
   });
 
   /** Plan the migration for a version, where `latest` means the newest schema. */
-  const planMigration = (migrator: Migrator<R>, target: string) =>
-    target === "latest" ? migrator.migrateToLatest() : migrator.migrateTo(target);
+  const planMigration = (migrator: Migrator<R>, target: string, unsafe: boolean) =>
+    target === "latest"
+      ? migrator.migrateToLatest({ unsafe })
+      : migrator.migrateTo(target, { unsafe });
+
+  /**
+   * Dropping a table or a column destroys its data, so it needs a deliberate
+   * flag. Without it the migration keeps whatever the target schema dropped.
+   */
+  const unsafeFlag = Flag.Boolean("unsafe").pipe(
+    Flag.withDescription("allow dropping tables and columns the target schema no longer has"),
+    Flag.withDefault(false),
+  );
 
   const migrateUp = Command.make(
     "migrate:up",
-    {},
-    Effect.fn("FumaDB.Cli.migrateUp")(function* () {
+    { unsafe: unsafeFlag },
+    Effect.fn("FumaDB.Cli.migrateUp")(function* ({ unsafe }) {
       const migrator = yield* db.createMigrator;
       const next = yield* migrator.next;
       if (Option.isNone(next)) {
@@ -155,7 +166,7 @@ export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
           message: "Already up to date.",
         });
       }
-      const result = yield* migrator.migrateTo(next.value.version);
+      const result = yield* migrator.migrateTo(next.value.version, { unsafe });
       yield* result.execute;
       yield* Console.log(`Migration to ${next.value.version} executed.`);
     }),
@@ -163,15 +174,15 @@ export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
 
   const migrateDown = Command.make(
     "migrate:down",
-    {},
-    Effect.fn("FumaDB.Cli.migrateDown")(function* () {
+    { unsafe: unsafeFlag },
+    Effect.fn("FumaDB.Cli.migrateDown")(function* ({ unsafe }) {
       const migrator = yield* db.createMigrator;
       const previous = yield* migrator.previous;
       if (Option.isNone(previous)) {
         yield* Console.log("Cannot downgrade.");
         return yield* new MigrationError({ reason: "NoPrevious", message: "Cannot downgrade." });
       }
-      const result = yield* migrator.migrateTo(previous.value.version);
+      const result = yield* migrator.migrateTo(previous.value.version, { unsafe });
       yield* result.execute;
       yield* Console.log(`Migration to ${previous.value.version} executed.`);
     }),
@@ -184,11 +195,12 @@ export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
         Argument.withDescription("the target schema version, or `latest`"),
         Argument.optional,
       ),
+      unsafe: unsafeFlag,
     },
-    Effect.fn("FumaDB.Cli.migrateTo")(function* ({ version: argument }) {
+    Effect.fn("FumaDB.Cli.migrateTo")(function* ({ version: argument, unsafe }) {
       const migrator = yield* db.createMigrator;
       const target = yield* resolveVersion(migrator, argument);
-      const result = yield* planMigration(migrator, target);
+      const result = yield* planMigration(migrator, target, unsafe);
       yield* result.execute;
       yield* Console.log(`Migrated to version ${target}.`);
     }),
@@ -209,13 +221,14 @@ export const makeCli = <Schemas extends ReadonlyArray<AnySchema>, R>(
         Flag.withDescription("the output path of the generated SQL file"),
         Flag.optional,
       ),
+      unsafe: unsafeFlag,
     },
-    Effect.fn("FumaDB.Cli.generate")(function* ({ output, version: argument }) {
+    Effect.fn("FumaDB.Cli.generate")(function* ({ output, unsafe, version: argument }) {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const migrator = yield* db.createMigrator;
       const target = yield* resolveVersion(migrator, argument);
-      const result = yield* planMigration(migrator, target);
+      const result = yield* planMigration(migrator, target, unsafe);
       if (Option.isNone(result.sql)) {
         return yield* new MigrationError({
           reason: "Unsupported",
