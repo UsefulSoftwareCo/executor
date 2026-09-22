@@ -1,11 +1,14 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { authorizeTool } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
+import { GroupDatabase } from "../contracts/groups.ts";
+import { CurrentUserId } from "../contracts/auth.ts";
+import { visibleApps, requireAppAccess } from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import type { McpBackend } from "@executor-js/mcp";
 import { ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
 import { Context, Effect } from "effect";
-import { adminOwner, selectedApp } from "./access.ts";
+import { currentOwner, selectedApp } from "./access.ts";
 import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
@@ -21,10 +24,14 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
   const policy = yield* CurrentAuthorization;
   const sdk = yield* HostedExecutor;
+  const database = yield* GroupDatabase;
+  const user = yield* CurrentUserId;
   const initialize = yield* OrganizationDefaults;
   const context = Context.make(CurrentOrganization, organization).pipe(
     Context.add(HostedExecutor, sdk),
     Context.add(CurrentAuthorization, policy),
+    Context.add(GroupDatabase, database),
+    Context.add(CurrentUserId, user),
   );
   const backend = {
     listSkills: (input) => listAppSkills(input).pipe(Effect.provideContext(context)),
@@ -32,7 +39,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
     authorizeElicitation: (input) =>
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
+        yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, input.app);
       }).pipe(
@@ -48,10 +56,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
       (policy.tools.kind === "all" ? initialize(organization.organization) : Effect.void).pipe(
         Effect.andThen(
           Effect.flatMap(sdk, (executor) =>
-            executor.apps.list({
-              ids: permittedAppIds(policy, input.ids),
-              owner: organization.owner,
-            }),
+            executor.apps
+              .list({ ids: permittedAppIds(policy, input.ids), owner: organization.owner })
+              .pipe(Effect.flatMap(visibleApps), Effect.provideContext(context)),
           ),
         ),
       ),
@@ -59,7 +66,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
+        yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, input.app);
         return yield* executor.tools.call(input, options);
@@ -67,7 +75,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         yield* authorizeTool(request.invocation.app, request.invocation.tool);
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
+        yield* requireAppAccess(request.invocation.app, "use");
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, request.invocation.app);
         return yield* executor.tools.resume(

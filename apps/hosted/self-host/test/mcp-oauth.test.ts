@@ -1,4 +1,8 @@
 import { AppManagementHost } from "@executor-js/app-management";
+import { hostedResourceLifecycle } from "../../server/src/implementation/resource-lifecycle.ts";
+import { CurrentUserId } from "../../server/src/contracts/auth.ts";
+import { CurrentOrganization } from "../../server/src/contracts/organization.ts";
+import * as Accounts from "../../server/src/implementation/accounts.ts";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { executorSelfHostApiDocument } from "../src/contracts/api.ts";
 import type { GrantPolicy } from "@executor-js/mcp-auth/grants";
@@ -152,6 +156,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             const executor = yield* createExecutor({
               blobs,
               sources,
+              lifecycle: yield* hostedResourceLifecycle,
               storage,
               credentials,
               runtime: nodeRuntime({ workDirectory: `${directory}/builds` }),
@@ -161,6 +166,15 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                 urlPolicy: defaultUrlPolicy,
               },
             });
+            const fixtureSql = yield* SqlClient.SqlClient;
+            const fixtureDeploy = (input: Parameters<typeof executor.apps.deploy>[0]) =>
+              executor.apps.deploy(input).pipe(
+                Effect.provideService(CurrentUserId, user.id),
+                Effect.tap(
+                  ({ app }) =>
+                    fixtureSql`update hosted_app_access set audience = 'everyone' where id = ${app.id}`,
+                ),
+              );
             const initialize = yield* organizationDefaults(
               executor,
               origin,
@@ -199,19 +213,20 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                 .sort(),
               ["index.ts", "operations.json", "provider.ts"],
             );
-            const alpha = yield* executor.apps.deploy({
+            const alpha = yield* fixtureDeploy({
               owner: OwnerId.make(`organization:${a.id}`),
               name: "Alpha app",
               files: [{ path: "index.ts", content: source }],
             });
-            yield* executor.apps.deploy({
+            yield* fixtureDeploy({
               owner: OwnerId.make(`organization:${b.id}`),
               name: "Beta app",
               files: [{ path: "index.ts", content: source }],
             });
             const hosted = yield* selfHostAuth;
             const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
-            const sdk = Layer.merge(
+            const sdk = Layer.mergeAll(
+              Layer.succeed(GroupDatabase, Effect.succeed(yield* SqlClient.SqlClient)),
               Layer.succeed(HostedExecutor, Effect.succeed(executor)),
               Layer.succeed(OrganizationDefaults, initialize),
             );
@@ -503,11 +518,17 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                 headers: { "content-type": "application/x-www-form-urlencoded" },
                 body: new URLSearchParams(fields),
               });
-            const connectExecutor = (app: App, userCookie: string, organization: string) =>
+            const connectExecutor = (
+              app: App,
+              userCookie: string,
+              organization: string,
+              actor = user.id,
+            ) =>
               Effect.gen(function* () {
-                const connection = yield* executor.accountConnections.create({
-                  owner: app.owner,
-                  target: { app: app.id, requirement: "service" },
+                const connection = yield* Accounts.connectAccount(app.owner, {
+                  app: app.id,
+                  requirement: "service",
+                  destination: { kind: "shared", audience: { kind: "everyone" } },
                 });
                 const signIn = yield* executor.accountConnections
                   .startOAuth({
@@ -543,24 +564,31 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                   ),
                   Redirect,
                 );
-                const account = yield* executor.accountConnections
-                  .completeOAuth({
-                    connection: connection.id,
-                    callbackUrl: Redacted.make(HttpUrl.make(consent.url)),
-                  })
-                  .pipe(
-                    Effect.tapError((error) =>
-                      Effect.logError("Executor OAuth completion", {
-                        reason: "reason" in error ? error.reason : error.name,
-                      }),
-                    ),
-                  );
+                const account = yield* Accounts.completeOAuth(app.owner, {
+                  connection: connection.id,
+                  callbackUrl: Redacted.make(HttpUrl.make(consent.url)),
+                }).pipe(
+                  Effect.tapError((error) =>
+                    Effect.logError("Executor OAuth completion", {
+                      reason: "reason" in error ? error.reason : error.name,
+                    }),
+                  ),
+                );
                 assert.equal(
                   (yield* executor.apps.get({ app: app.id })).accounts.service,
                   account.id,
                 );
                 return account;
-              });
+              }).pipe(
+                Effect.provideService(CurrentUserId, actor),
+                Effect.provideService(CurrentOrganization, {
+                  organization: OrganizationId.make(organization),
+                  owner: app.owner,
+                  role: "owner",
+                }),
+                Effect.provideService(HostedExecutor, Effect.succeed(executor)),
+                Effect.provideService(GroupDatabase, Effect.succeed(fixtureSql)),
+              );
             const grantFor = (
               userCookie: string,
               organization: string,
@@ -708,7 +736,11 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               JSON.stringify(management).includes("apps_deploy"),
               JSON.stringify(management),
             );
-            assert.ok(!JSON.stringify(management).includes("accounts_submit"));
+            // The complete published API includes credential submission (34470f10).
+            assert.ok(
+              JSON.stringify(management).includes("accounts_submit"),
+              JSON.stringify(management),
+            );
             const connectedContext = yield* execute(
               `return await tools[${JSON.stringify(executorA.slug)}].queries.context_get({})`,
             );
@@ -864,7 +896,12 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               makeSignature(otherSession.token, secret),
             );
             const otherCookie = `executor-hosted.session_token=${encodeURIComponent(`${otherSession.token}.${otherSignature}`)}`;
-            const otherExecutorAccount = yield* connectExecutor(executorB, otherCookie, b.id);
+            const otherExecutorAccount = yield* connectExecutor(
+              executorB,
+              otherCookie,
+              b.id,
+              other.id,
+            );
             const otherGrant = yield* grantFor(
               otherCookie,
               b.id,
@@ -912,7 +949,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               ),
               [otherExecutorAccount.id],
             );
-            const secured = yield* executor.apps.deploy({
+            const secured = yield* fixtureDeploy({
               owner: OwnerId.make(`organization:${a.id}`),
               name: "Needs an account",
               files: [
@@ -956,7 +993,7 @@ export default defineApp({ accounts: { service } }, async (appContext) => ({  })
               })).status,
               403,
             );
-            const approvalApp = yield* executor.apps.deploy({
+            const approvalApp = yield* fixtureDeploy({
               owner: OwnerId.make(`organization:${a.id}`),
               name: "Approval role check",
               files: [
@@ -1253,7 +1290,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             assert.equal(wrongUser.status, 403);
             const approvalSql = yield* SqlClient.SqlClient;
             yield* approvalSql`delete from "member" where "organizationId" = ${a.id} and "userId" = ${other.id}`;
-            yield* approvalSql`update "member" set "role" = 'member' where "organizationId" = ${a.id} and "userId" = ${user.id}`;
+            yield* approvalSql`update hosted_app_access set audience = 'groups' where organization_id = ${a.id}`;
             assert.equal(
               (yield* request(approvalPath, {
                 method: "POST",
@@ -1262,7 +1299,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               })).status,
               403,
             );
-            yield* approvalSql`update "member" set "role" = 'owner' where "organizationId" = ${a.id} and "userId" = ${user.id}`;
+            yield* approvalSql`update hosted_app_access set audience = 'everyone' where organization_id = ${a.id}`;
             assert.equal(
               (yield* request(approvalPath, {
                 method: "POST",
@@ -1353,7 +1390,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             );
             nativeClient.setRequestHandler(ElicitRequestSchema, async () => {
               await Effect.runPromise(
-                sql`update "member" set "role" = 'member' where "userId" = ${user.id} and "organizationId" = ${a.id}`,
+                sql`update hosted_app_access set audience = 'groups' where organization_id = ${a.id}`,
               );
               return { action: "accept", content: {} };
             });
@@ -1380,7 +1417,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               }),
               { status: "completed", value: 0 },
             );
-            yield* sql`update "member" set "role" = 'owner' where "userId" = ${user.id} and "organizationId" = ${a.id}`;
+            yield* sql`update hosted_app_access set audience = 'everyone' where organization_id = ${a.id}`;
             nativeClient.setRequestHandler(ElicitRequestSchema, async () => ({
               action: "accept",
               content: {},
@@ -1407,7 +1444,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               assert.equal(params.message, "Tool question");
               toolQuestioned = true;
               await Effect.runPromise(
-                sql`update "member" set "role" = 'member' where "userId" = ${user.id} and "organizationId" = ${a.id}`,
+                sql`update hosted_app_access set audience = 'groups' where organization_id = ${a.id}`,
               );
               return { action: "accept", content: { answer: "must not reach the tool" } };
             });
@@ -1433,7 +1470,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               }),
               { status: "completed", value: 1 },
             );
-            yield* sql`update "member" set "role" = 'owner' where "userId" = ${user.id} and "organizationId" = ${a.id}`;
+            yield* sql`update hosted_app_access set audience = 'everyone' where organization_id = ${a.id}`;
 
             // Model-mode questions cross HTTP requests and must use the answering request's role.
             const modelQuestion = yield* Effect.promise(() =>
@@ -1450,7 +1487,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             );
             if (modelQuestion.status !== "input-required")
               throw new Error("Expected model-mode tool input");
-            yield* sql`update "member" set "role" = 'member' where "userId" = ${user.id} and "organizationId" = ${a.id}`;
+            yield* sql`update hosted_app_access set audience = 'groups' where organization_id = ${a.id}`;
             const modelDenied = yield* Effect.promise(() =>
               client.callTool({
                 name: "resume",
@@ -1476,7 +1513,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               }),
               { status: "completed", value: 1 },
             );
-            yield* sql`update "member" set "role" = 'owner' where "userId" = ${user.id} and "organizationId" = ${a.id}`;
+            yield* sql`update hosted_app_access set audience = 'everyone' where organization_id = ${a.id}`;
 
             // Revoking a separate grant during a native prompt must also stop dispatch.
             const nativeGrant = yield* grantFor(
@@ -1562,7 +1599,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               }),
               { status: "completed", value: 1 },
             );
-            yield* sql`update "member" set "role" = 'member' where "userId" = ${user.id} and "organizationId" = ${a.id}`;
+            yield* sql`update hosted_app_access set audience = 'groups' where organization_id = ${a.id}`;
             const resumedWire = yield* Effect.promise(() =>
               client.callTool({
                 name: "resume",

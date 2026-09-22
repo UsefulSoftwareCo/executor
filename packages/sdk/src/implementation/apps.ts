@@ -1,3 +1,4 @@
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
@@ -147,8 +148,9 @@ export const makeApps = (
   runtime: Runtime,
   crypto: Crypto.Crypto,
   sources: AppSourceStorage,
+  lifecycle?: ResourceLifecycle,
 ) => {
-  const authoring = makeAppAuthoring(db, sources, crypto);
+  const authoring = makeAppAuthoring(db, sources, crypto, lifecycle);
   const deploy = (input: DeployInput, copiedFrom: AppCopyOrigin | null = null) =>
     Effect.gen(function* () {
       const deployName = yield* Effect.gen(function* () {
@@ -329,8 +331,10 @@ export const makeApps = (
             copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
             createdAt: existing === undefined ? createdAt : existing.createdAt,
           };
-          if (existing === undefined) yield* createApp(tx, { ...app, name: deployName });
-          else
+          if (existing === undefined) {
+            yield* createApp(tx, { ...app, name: deployName });
+            if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements });
+          } else
             yield* query(() =>
               tx.updateMany("apps", {
                 where: (b) => b("id", "=", app.id),

@@ -358,20 +358,46 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         yield* browser.use("Data remains after reopening", (page) =>
           page.getByRole("listitem").filter({ hasText: "Saved through app runtime" }).waitFor(),
         );
-        yield* browser.login(actors.member);
-        yield* browser.use(
-          "Current member can view and query under existing hosted policy",
-          (page) => page.goto(bookmark),
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
         );
+        const shared = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: access.revision,
+            audience: { kind: "everyone" },
+          }),
+        );
+        yield* browser.login(actors.member);
+        yield* browser.use("A member can open an explicitly shared app", (page) => page.reload());
         yield* browser.use("Member can query the app", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
-        yield* browser.use("Member attempts to write", (page) =>
+        yield* browser.use("Member enters a message", (page) =>
+          page.getByLabel("Message", { exact: true }).fill("Saved by a member"),
+        );
+        yield* browser.use("Member writes to the shared app", (page) =>
           page.getByRole("button", { name: "Save message" }).click(),
         );
-        yield* browser.use("Mutation rejects a read-only organization member", (page) =>
+        yield* browser.use("Member write succeeds", (page) =>
+          page.getByRole("listitem").filter({ hasText: "Saved by a member" }).waitFor(),
+        );
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: shared.revision,
+            audience: { kind: "private" },
+          })).status,
+        ).toBe(200);
+        yield* browser.use("Revoked app session attempts a write", (page) =>
+          page.getByRole("button", { name: "Save message" }).click(),
+        );
+        yield* browser.use("Existing session loses access immediately", (page) =>
           page.getByRole("status").filter({ hasText: "Save failed" }).waitFor(),
         );
+        expect(
+          (yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/ui`)).status,
+        ).toBe(403);
         // Exercise the public rename and location APIs at the combined DNS-label boundary.
         const maxAppSlug = 63 - 2 - actors.organization.slug.length;
         expect(maxAppSlug).toBeGreaterThan(0);

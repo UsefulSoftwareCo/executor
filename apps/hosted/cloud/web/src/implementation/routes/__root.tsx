@@ -18,7 +18,9 @@ export const Route = createRootRoute({
 });
 
 function Root() {
-  const { pathname } = useLocation();
+  const { pathname, searchStr } = useLocation();
+  const devtoolsPath =
+    pathname === "/login" ? (new URLSearchParams(searchStr).get("redirect") ?? pathname) : pathname;
   if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
     return (
       <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
@@ -38,7 +40,9 @@ function Root() {
           </TeamSetupBoundary>
         </OrganizationResumeBoundary>
       </AuthBoundary>
-      <ExecutorDevtools />
+      <ExecutorDevtools
+        organization={devtoolsPath.startsWith("/org/") ? devtoolsPath.split(/[/?#]/)[2] : undefined}
+      />
     </DocumentTitleProvider>
   );
 }

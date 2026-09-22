@@ -7,6 +7,7 @@ import {
 } from "@executor-js/authorization";
 import { AppId } from "@executor-js/sdk/core";
 import { Context } from "effect";
+import { visibleApps, visibleAccounts } from "./resource-policy.ts";
 import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
@@ -161,8 +162,12 @@ export const inventory = (owner: OwnerId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const policy = yield* CurrentAuthorization;
-    const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
-    const accounts = permitsAction(policy, "read") ? yield* executor.accounts.list({ owner }) : [];
+    const apps = yield* executor.apps
+      .list({ owner, ids: permittedAppIds(policy) })
+      .pipe(Effect.flatMap(visibleApps));
+    const accounts = permitsAction(policy, "read")
+      ? yield* executor.accounts.list({ owner }).pipe(Effect.flatMap(visibleAccounts))
+      : [];
     if (policy.tools.kind === "all") return { apps, accounts };
     const selected = new Set(
       apps.flatMap((app) =>
@@ -172,6 +177,30 @@ export const inventory = (owner: OwnerId) =>
       ),
     );
     return { apps, accounts: accounts.filter((account) => selected.has(account.id)) };
+  });
+/** Initialize explicit system defaults before either inventory representation is returned. */
+export const initializeOrganizationInventory = (authentication: typeof Authentication.Service) =>
+  Effect.gen(function* () {
+    const organization = yield* CurrentOrganization;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const headers = new Headers(request.headers);
+    const principal =
+      organization.role === "member" || headers.has("authorization") || !headers.has("cookie")
+        ? null
+        : Option.getOrUndefined(yield* Effect.serviceOption(CurrentPrincipal));
+    if ((yield* CurrentAuthorization).tools.kind === "all")
+      yield* (yield* OrganizationDefaults)(
+        organization.organization,
+        principal == null
+          ? undefined
+          : {
+              userId: principal.userId,
+              name: principal.name,
+              key: authentication
+                .apiKey(headers)
+                .pipe(Effect.catchTag("OrganizationForbidden", () => Effect.fail(new Forbidden()))),
+            },
+      );
   });
 /** Organization routes do not own app/account operations. */
 export const hostedOrganizationHandlers = HttpApiBuilder.group(
@@ -204,35 +233,11 @@ export const hostedOrganizationHandlers = HttpApiBuilder.group(
         .handle("catalog", () => Effect.flatMap(HostedCatalog, (catalog) => catalog.list))
         .handle("access", () => CurrentOrganization)
         .handle("inventory", () =>
-          Effect.gen(function* () {
-            const organization = yield* CurrentOrganization;
-            const request = yield* HttpServerRequest.HttpServerRequest;
-            const headers = new Headers(request.headers);
-            const principal =
-              organization.role === "member" ||
-              headers.has("authorization") ||
-              !headers.has("cookie")
-                ? null
-                : Option.getOrUndefined(yield* Effect.serviceOption(CurrentPrincipal));
-            if ((yield* CurrentAuthorization).tools.kind === "all")
-              yield* (yield* OrganizationDefaults)(
-                organization.organization,
-                principal == null
-                  ? undefined
-                  : {
-                      userId: principal.userId,
-                      name: principal.name,
-                      key: authentication
-                        .apiKey(headers)
-                        .pipe(
-                          Effect.catchTag("OrganizationForbidden", () =>
-                            Effect.fail(new Forbidden()),
-                          ),
-                        ),
-                    },
-              );
-            return yield* inventory(organization.owner);
-          }),
+          initializeOrganizationInventory(authentication).pipe(
+            Effect.andThen(
+              Effect.flatMap(CurrentOrganization, (organization) => inventory(organization.owner)),
+            ),
+          ),
         );
     }),
 );

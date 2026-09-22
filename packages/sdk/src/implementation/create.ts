@@ -25,7 +25,7 @@ export const createExecutor = (
     const crypto = yield* Crypto.Crypto;
     const db = database(options.storage);
     const runtime = toEffectRuntime(options.runtime, options.blobs);
-    const oauth = makeOAuth(db, options.credentials, crypto, options.oauth);
+    const oauth = makeOAuth(db, options.credentials, crypto, options.oauth, options.lifecycle);
     const workflows = makeWorkflowRuns(
       options.storage,
       runtime,
@@ -46,7 +46,7 @@ export const createExecutor = (
       workflows.controls,
     );
     const apps = {
-      ...makeApps(db, runtime, crypto, options.sources),
+      ...makeApps(db, runtime, crypto, options.sources, options.lifecycle),
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };
@@ -64,9 +64,9 @@ export const createExecutor = (
       [WorkflowHost]: workflows.host,
       scheduler: schedules.dispatcher,
       schedules: schedules.operations,
-      accounts: makeAccounts(db, options.credentials, crypto),
+      accounts: makeAccounts(db, options.credentials, crypto, options.lifecycle),
       accountConnections: {
-        ...makeAccountConnections(db, options.credentials, crypto),
+        ...makeAccountConnections(db, options.credentials, crypto, options.lifecycle),
         ...oauth.connections,
       },
       apps,

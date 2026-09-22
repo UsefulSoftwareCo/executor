@@ -124,7 +124,10 @@ export class HostedAppSessions extends Context.Service<
     readonly current: (
       target: AppUiTarget,
       token: typeof AppSignInCode.Type,
-    ) => Effect.Effect<OrganizationAccess, UiUnauthorized | UiForbidden | UiFailed>;
+    ) => Effect.Effect<
+      OrganizationAccess & { readonly userId: string },
+      UiUnauthorized | UiForbidden | UiFailed
+    >;
   }
 >()("hosted/AppSessions") {}
 

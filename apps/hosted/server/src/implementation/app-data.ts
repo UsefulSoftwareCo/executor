@@ -14,7 +14,7 @@ import {
   type OrganizationId,
 } from "../contracts/organization.ts";
 import { Authentication, ApiAuthentication, Unauthorized } from "../contracts/auth.ts";
-import { adminOwner, currentOwner, selectedApp } from "./access.ts";
+import { currentOwner, selectedApp } from "./access.ts";
 
 /** Recheck both login and membership on long-lived streams; initial middleware is not a saved grant. */
 const currentAccess = (headers: Headers, organization: OrganizationId, app: AppDataInput["app"]) =>
@@ -41,7 +41,7 @@ export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
     const policy = yield* CurrentAuthorization;
     if (!permitsAction(policy, "data") || !permitsApp(policy, input.app))
       return yield* new OrganizationForbidden();
-    const owner = yield* kind === "mutate" ? adminOwner : currentOwner;
+    const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* selectedApp(executor, owner, input.app);
     return yield* executor.appData[kind](input);
@@ -74,11 +74,13 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
             Effect.provideService(ApiAuthentication, api),
             Effect.tap((access) => selectedApp(executor, access.owner, params.app)),
           );
+          const context = yield* Effect.context<Effect.Services<typeof access>>();
+          const authorized = access.pipe(Effect.provideContext(context));
           const source = yield* executor.appData.subscribe({ app: params.app, ...payload });
           return Stream.merge(
-            source.pipe(Stream.mapEffect((snapshot) => access.pipe(Effect.as(snapshot)))),
+            source.pipe(Stream.mapEffect((snapshot) => authorized.pipe(Effect.as(snapshot)))),
             Stream.tick("5 seconds").pipe(
-              Stream.mapEffect(() => access),
+              Stream.mapEffect(() => authorized),
               Stream.drain,
             ),
           );

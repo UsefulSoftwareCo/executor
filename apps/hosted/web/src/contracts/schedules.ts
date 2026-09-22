@@ -1,10 +1,11 @@
+import { protectedQuery } from "./protected-query.ts";
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
 /** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
 import type { AppId, ScheduleSettings } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/unstable/reactivity";
-import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
+import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";
 import { HostedClient } from "./api.ts";
@@ -23,7 +24,7 @@ class ScheduleKey extends Data.Class<{
 const settings = Atom.family((key: AppKey) =>
   HostedClient.query("schedules", "list", { params: key }).pipe(
     Atom.refreshOnWindowFocus,
-    acknowledgedQuery,
+    protectedQuery,
   ),
 );
 const polledSettings = Atom.family((key: AppKey) => pollingQuery(settings(key)));
@@ -67,7 +68,7 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("schedules", "runs", {
     params: { organization },
     query: { pending: true },
-  }).pipe(Atom.refreshOnWindowFocus, acknowledgedQuery),
+  }).pipe(Atom.refreshOnWindowFocus, protectedQuery),
 );
 const runsQuery = Atom.family((organization: OrganizationReference) =>
   pollingQuery(runsSource(organization)),

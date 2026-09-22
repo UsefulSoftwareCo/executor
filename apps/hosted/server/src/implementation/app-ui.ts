@@ -1,5 +1,7 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { fullAuthority } from "@executor-js/authorization";
+import { GroupDatabase } from "../contracts/groups.ts";
+import { requireAppAccess } from "./resource-policy.ts";
 /** Hosted policy around the shared app browser protocol and retained asset renderer. */
 import {
   AccountRequired,
@@ -31,7 +33,7 @@ import {
   HostedAppUiApi,
   type AppUiTarget,
 } from "../contracts/app-ui.ts";
-import { CurrentPrincipal } from "../contracts/auth.ts";
+import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   CurrentOrganization,
@@ -132,6 +134,14 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
     const sessions = yield* HostedAppSessions;
     const access = yield* sessions.current(resolved.target, token.value);
     const { app } = yield* source(resolved.target);
+    const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+    yield* selectedApp(executor, access.owner, app.id).pipe(
+      Effect.provideService(CurrentOrganization, access),
+      Effect.provideService(CurrentUserId, access.userId),
+      Effect.mapError((error) =>
+        Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+      ),
+    );
     return { ...resolved, access, app };
   });
   const assets = (version: Deployment, path: string) =>
@@ -209,6 +219,7 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
       .handle("location", ({ params }) =>
         Effect.gen(function* () {
           const access = yield* CurrentOrganization;
+          yield* requireAppAccess(params.app, "use").pipe(Effect.mapError(() => new UiForbidden()));
           const { app, version } = yield* source({
             app: params.app,
             organization: access.organization,
@@ -237,6 +248,13 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
             (yield* addresses.origin(app, currentOrganization.slug)) !== grant.target.origin
           )
             return yield* new UiForbidden();
+          const principal = yield* CurrentPrincipal;
+          const access = yield* sessions.access(principal, grant.target);
+          yield* requireAppAccess(grant.target.app, "use").pipe(
+            Effect.provideService(CurrentOrganization, access),
+            Effect.provideService(CurrentUserId, principal.userId),
+            Effect.mapError(() => new UiForbidden()),
+          );
           yield* usable(grant.target);
           const callback = new URL("/_executor/auth/callback", grant.target.origin);
           callback.hash = new URLSearchParams({
@@ -264,6 +282,8 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
       const current = yield* authorize;
       const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
       yield* selectedApp(executor, current.access.owner, current.app.id).pipe(
+        Effect.provideService(CurrentOrganization, current.access),
+        Effect.provideService(CurrentUserId, current.access.userId),
         Effect.mapError(dataFailure),
       );
       const deployment = yield* Schema.decodeUnknownEffect(DeploymentId)(payload.deployment).pipe(
@@ -281,6 +301,7 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
       return yield* executeAppData(kind, input).pipe(
         Effect.provideService(CurrentOrganization, current.access),
         Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provideService(CurrentUserId, current.access.userId),
         Effect.mapError(dataFailure),
       );
     });
@@ -290,7 +311,7 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
       .handle("mutate", ({ payload }) => data("mutate", payload))
       .handle("subscribe", ({ payload }) =>
         Effect.gen(function* () {
-          const { input } = yield* dataInput(payload);
+          const { input, current } = yield* dataInput(payload);
           const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
           const check = dataInput(payload);
           const context = yield* Effect.context<Effect.Services<typeof check>>();
@@ -300,6 +321,8 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
             .pipe(Effect.mapError(dataFailure));
           return Stream.merge(
             source.pipe(
+              Stream.provideService(CurrentUserId, current.access.userId),
+              Stream.provideService(CurrentOrganization, current.access),
               Stream.mapError(dataFailure),
               Stream.mapEffect((snapshot) =>
                 access.pipe(Effect.as({ type: "snapshot" as const, value: snapshot.value })),
@@ -373,7 +396,9 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
     Effect.gen(function* () {
       const sessions = yield* HostedAppSessions;
       const executor = yield* HostedExecutor;
+      const database = yield* GroupDatabase;
       const check = authorize.pipe(
+        Effect.provideService(GroupDatabase, database),
         Effect.provideService(HostedAppSessions, sessions),
         Effect.provideService(HostedExecutor, executor),
       );

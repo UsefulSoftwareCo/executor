@@ -1,3 +1,4 @@
+import { cloudGroupDatabase } from "./infrastructure/group-database.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { AppSignInApi, appSignInPage, appSignInScript, appPrivateHeaders } from "apps/ui/auth";
@@ -58,6 +59,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send);
     const executor = yield* cloudExecutor(yield* AppDataSupervisor.from(Api));
+    const policy = yield* cloudGroupDatabase;
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
     const appUi = hostedAppUi(appAddresses(auth.origin, base));
     const notFound = HttpServerResponse.empty({ status: 404 });
@@ -66,7 +68,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       HttpApiBuilder.layer(AppUiApi).pipe(
         Layer.provide(appUi.calls),
         Layer.provide(
-          appUi.sessionAccess.layer.pipe(Layer.provide(auth.appSessions), Layer.provide(executor)),
+          appUi.sessionAccess.layer.pipe(
+            Layer.provide(auth.appSessions),
+            Layer.provide(executor),
+            Layer.provide(policy),
+          ),
         ),
       ),
       HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
@@ -83,6 +89,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       Layer.provide(appUi.originAccess.layer),
       HttpRouter.provideRequest(auth.appSessions),
       HttpRouter.provideRequest(executor),
+      HttpRouter.provideRequest(policy),
     );
     return {
       fetch: routes.pipe(

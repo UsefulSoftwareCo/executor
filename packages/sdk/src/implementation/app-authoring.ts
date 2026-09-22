@@ -4,12 +4,17 @@ import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
 import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
 import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
-import type { Executor } from "../contracts/executor.ts";
+import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, createApp as storeApp } from "./apps.ts";
 
 /** Product hosts authorize the owner; SDK mutations enforce names and optimistic Git writes. */
-export const makeAppAuthoring = (db: Query, sources: AppSourceStorage, crypto: Crypto.Crypto) => {
+export const makeAppAuthoring = (
+  db: Query,
+  sources: AppSourceStorage,
+  crypto: Crypto.Crypto,
+  lifecycle?: ResourceLifecycle,
+) => {
   const create = (
     input: Parameters<Executor["apps"]["create"]>[0],
     copiedFrom: AppCopyOrigin | null = null,
@@ -48,6 +53,7 @@ export const makeAppAuthoring = (db: Query, sources: AppSourceStorage, crypto: C
           if (existing !== null)
             return yield* new AppNameTaken({ owner: input.owner, name: input.name });
           yield* storeApp(tx, app);
+          if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements: { accounts: {} } });
         }),
       );
       return { ...app, requirements: { accounts: {} } };

@@ -6,13 +6,7 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
 export function ApprovalsPage() {
-  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
-  if (role === "member")
-    return (
-      <p className="p-6 text-sm text-muted-foreground">
-        Only organization admins can review scheduled runs.
-      </p>
-    );
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
     <SharedApprovalsPage
       query={pendingApprovalsAtom(organization)}
@@ -30,13 +24,7 @@ export function ApprovalsPage() {
 }
 /** Scheduled answers continue in the background; no MCP client is required. */
 export function ScheduledApprovalPage({ runId }: { readonly runId: string }) {
-  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
-  if (role === "member")
-    return (
-      <p className="p-6 text-sm text-muted-foreground">
-        Only organization admins can review scheduled runs.
-      </p>
-    );
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
     <main className="mx-auto w-full max-w-2xl p-4 md:p-6">
       <Link

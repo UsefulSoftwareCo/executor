@@ -1,39 +1,48 @@
 /** Shared floating shell; each development server supplies its own capabilities. */
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Input } from "@executor-js/ui/components/input";
 import { Button } from "@executor-js/ui/components/button";
 import { Effect, Exit, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { Popover } from "radix-ui";
 import { useState } from "react";
-import { DevtoolsState, DevtoolsSuccess, LoopbackOrigin, TestRole } from "./contracts.ts";
+import { DevtoolsState, DevtoolsSuccess, LoopbackOrigin } from "./contracts.ts";
 
 class DevtoolsUnavailable extends Schema.TaggedError<DevtoolsUnavailable>()(
   "DevtoolsUnavailable",
   {},
 ) {}
 const runtime = Atom.runtime(FetchHttpClient.layer);
-const stateAtom = runtime
-  .atom(
-    Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient;
-      const response = yield* client.get("/api/devtools");
-      if (response.status === 404) return null;
-      if (response.status !== 200) return yield* new DevtoolsUnavailable();
-      return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(DevtoolsState)));
-    }).pipe(Effect.mapError(() => new DevtoolsUnavailable())),
-  )
-  .pipe(Atom.refreshOnWindowFocus);
+const stateAtom = Atom.family((organization: string) =>
+  runtime
+    .atom(
+      Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient;
+        const query = new URLSearchParams(organization ? { organization } : {});
+        const response = yield* client.get(`/api/devtools?${query}`);
+        if (response.status === 404) return null;
+        if (response.status !== 200) return yield* new DevtoolsUnavailable();
+        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(DevtoolsState)));
+      }).pipe(Effect.mapError(() => new DevtoolsUnavailable())),
+    )
+    .pipe(Atom.refreshOnWindowFocus),
+);
 
 type Action =
-  | { readonly kind: "account"; readonly role: typeof TestRole.Type }
+  | { readonly kind: "account"; readonly organization: string; readonly userId: string }
   | { readonly kind: "pair" };
+
 const actionAtom = runtime.fn((action: Action) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const response = yield* client.execute(
       HttpClientRequest.post(`/api/devtools/${action.kind}`).pipe(
-        HttpClientRequest.bodyJsonUnsafe(action.kind === "account" ? { role: action.role } : {}),
+        HttpClientRequest.bodyJsonUnsafe(
+          action.kind === "account"
+            ? { organization: action.organization, userId: action.userId }
+            : {},
+        ),
       ),
     );
     if (response.status !== 200) return yield* new DevtoolsUnavailable();
@@ -42,15 +51,16 @@ const actionAtom = runtime.fn((action: Action) =>
 );
 
 const roles = {
-  member: { title: "Member", description: "Browse apps and accounts" },
-  admin: { title: "Admin", description: "Manage apps, accounts, and members" },
-  owner: { title: "Owner", description: "Full organization access" },
+  member: { title: "Member" },
+  admin: { title: "Admin" },
+  owner: { title: "Owner" },
 };
 const hosts = { "self-host": "Self-host", cloud: "Cloud", local: "Local" };
 
-function Widget() {
-  const state = useAtomValue(stateAtom);
-  const refresh = useAtomRefresh(stateAtom);
+function Widget({ organization }: { readonly organization: string }) {
+  const state = useAtomValue(stateAtom(organization));
+  const refresh = useAtomRefresh(stateAtom(organization));
+  const [search, setSearch] = useState("");
   const pending = useAtomValue(actionAtom);
   const submit = useAtomSet(actionAtom, { mode: "promiseExit" });
   const [error, setError] = useState<string | null>(null);
@@ -58,19 +68,32 @@ function Widget() {
   if (AsyncResult.isInitial(state) || (AsyncResult.isSuccess(state) && state.value === null))
     return null;
   const capability = AsyncResult.isSuccess(state) ? state.value : null;
+  const matchingAccounts =
+    capability?.kind === "accounts"
+      ? capability.accounts.filter((account) =>
+          `${account.name} ${account.email} ${roles[account.role].title}`
+            .toLowerCase()
+            .includes(search.trim().toLowerCase()),
+        )
+      : [];
   const run = async (action: Action) => {
     setError(null);
-    setSelected(action.kind === "account" ? action.role : "pair");
+    setSelected(action.kind === "account" ? action.userId : "pair");
     const result = await submit(action);
     if (Exit.isFailure(result)) {
       setError("Could not change the test session. Check the dev server and try again.");
+      refresh();
     } else {
       // Authority changes must discard all cached product data, while preserving the current route.
       window.location.reload();
     }
   };
   return (
-    <Popover.Root>
+    <Popover.Root
+      onOpenChange={(open) => {
+        if (open) refresh();
+      }}
+    >
       <Popover.Trigger asChild>
         <Button
           variant="outline"
@@ -116,34 +139,61 @@ function Widget() {
           {capability?.kind === "accounts" && (
             <section>
               <div className="executor-devtools-section-title [&_>_span]:text-[11px] [&_>_span]:text-muted-foreground flex justify-between items-center gap-2 mb-3 [&_h2]:text-[12px] [&_h2]:font-semibold">
-                <h2>Test accounts</h2>
-                <span>{capability.organization}</span>
+                <h2>Switch user · {capability.accounts.length}</h2>
+                <span className="truncate" title={capability.organization.name}>
+                  {capability.organization.name}
+                </span>
               </div>
-              <div className="executor-devtools-accounts grid gap-1.75">
-                {capability.accounts.map((account) => (
+              <Input
+                aria-label="Search organization members"
+                placeholder="Search name or email…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="mb-3"
+              />
+              <div className="executor-devtools-accounts grid gap-1.75 max-h-72 overflow-y-auto">
+                {matchingAccounts.map((account) => (
                   <Button
-                    key={account.role}
+                    key={account.id}
                     variant="outline"
                     className="executor-devtools-account w-full h-auto min-h-19.25 py-[11px] px-[12px] text-left justify-between whitespace-normal [&_>_span:first-child]:flex [&_>_span:first-child]:flex-col [&_>_span:first-child]:gap-0.75 [&_strong]:text-[12px] [&_strong]:font-semibold [&_>_span:first-child_>_span]:text-[11px] [&_>_span:first-child_>_span]:text-muted-foreground [&_>_span:first-child_>_span]:font-normal [&_small]:text-[10px] [&_small]:text-muted-foreground [&_small]:font-normal [&_small]:wrap-anywhere [&[aria-pressed='true']]:border-ring"
-                    aria-label={`Sign in as ${roles[account.role].title}`}
-                    aria-pressed={capability.selected === account.role}
+                    aria-label={`Impersonate ${account.name}, ${roles[account.role].title}, ${account.email}`}
+                    aria-pressed={capability.selected === account.id}
                     disabled={pending.waiting}
-                    loading={pending.waiting && selected === account.role}
-                    onClick={() => run({ kind: "account", role: account.role })}
+                    loading={pending.waiting && selected === account.id}
+                    onClick={() =>
+                      run({
+                        kind: "account",
+                        organization: capability.organization.id,
+                        userId: account.id,
+                      })
+                    }
                   >
                     <span>
-                      <strong>{roles[account.role].title}</strong>
-                      <span>{roles[account.role].description}</span>
+                      <strong>{account.name}</strong>
+                      <span>{roles[account.role].title}</span>
                       <small>{account.email}</small>
                     </span>
                     <span className="executor-devtools-account-state text-[10px] text-muted-foreground">
-                      {capability.selected === account.role ? "Active" : "→"}
+                      {capability.selected === account.id
+                        ? capability.impersonating
+                          ? "Impersonating"
+                          : "Active"
+                        : "→"}
                     </span>
                   </Button>
                 ))}
+                {matchingAccounts.length === 0 && (
+                  <p className="py-4 text-center text-sm text-muted-foreground">
+                    {capability.accounts.length === 0
+                      ? "This organization has no members."
+                      : "No matching members."}
+                  </p>
+                )}
               </div>
               <p className="executor-devtools-note mt-3 text-muted-foreground text-[11px] leading-[1.6]">
-                Switch roles here. Each sign-in starts a fresh 1-hour session.
+                Local development only. Impersonate any member for up to one hour with their current
+                access.
               </p>
             </section>
           )}
@@ -182,6 +232,12 @@ function Widget() {
 }
 
 /** Discover local development tools without making requests on public product origins. */
-export function ExecutorDevtools() {
-  return Schema.is(LoopbackOrigin)(window.location.origin) ? <Widget /> : null;
+export function ExecutorDevtools({
+  organization = "",
+}: {
+  readonly organization?: string | undefined;
+}) {
+  return Schema.is(LoopbackOrigin)(window.location.origin) ? (
+    <Widget key={organization} organization={organization} />
+  ) : null;
 }

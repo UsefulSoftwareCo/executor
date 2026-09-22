@@ -1,3 +1,16 @@
+import { SqlClient } from "effect/unstable/sql";
+import { GroupDatabase } from "./contracts/groups.ts";
+import { CurrentUserId } from "./contracts/auth.ts";
+import { OrganizationId } from "./contracts/organization.ts";
+import {
+  resourceAuthority,
+  applicationAccess,
+  accountAccess,
+  safeAppMetadata,
+} from "./implementation/resource-policy.ts";
+import { StorageError, type App } from "@executor-js/sdk/core";
+import type { AppCapabilities } from "@executor-js/app-management/contracts";
+import { Context } from "effect";
 import { permitsAction, permittedAppIds } from "@executor-js/authorization";
 import { CurrentAuthorization } from "./contracts/authorization.ts";
 import { OrganizationForbidden } from "./contracts/organization.ts";
@@ -10,6 +23,41 @@ import { Effect, Encoding, Layer, Schema } from "effect";
 import { ApiAuthentication, Authentication } from "./contracts/auth.ts";
 import { OrganizationReference, CurrentOrganization } from "./contracts/organization.ts";
 
+/** Capture only the host database; identity and group grants are checked for every authoring operation. */
+export const hostedAppCapabilities = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return (app: App, identity: Context.Service.Shape<typeof AppIdentity>) =>
+    Effect.gen(function* () {
+      const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(identity.scope).pipe(
+        Effect.mapError(() => new StorageError()),
+      );
+      if (app.owner !== `organization:${organization}`)
+        return yield* new AppAccessDenied({ reason: "forbidden" });
+      const actor = yield* resourceAuthority(organization, identity.actor);
+      const access = yield* applicationAccess(app.id, actor);
+      const ids = Object.values(app.accounts).flatMap((selection) =>
+        typeof selection === "string" ? [selection] : selection,
+      );
+      const denied = yield* Effect.filter(ids, (id) =>
+        accountAccess(id, actor).pipe(
+          Effect.map((access) => !access.canUse),
+          Effect.catchTag("OrganizationForbidden", () => Effect.succeed(true)),
+        ),
+      );
+      return {
+        visible: access.canUse,
+        manage: access.canManage,
+        edit: access.canManage && denied.length === 0,
+        accounts: (yield* safeAppMetadata(app, actor)).accounts,
+      } satisfies AppCapabilities;
+    }).pipe(
+      Effect.provideService(GroupDatabase, Effect.succeed(sql)),
+      Effect.catchTag("OrganizationForbidden", () =>
+        Effect.fail(new AppAccessDenied({ reason: "forbidden" })),
+      ),
+    );
+});
+
 export const hostedAppAccess = Layer.effect(
   HostedAppAccess,
   Effect.gen(function* () {
@@ -19,10 +67,11 @@ export const hostedAppAccess = Layer.effect(
       withOrganizationRequest(
         (namespace) =>
           Effect.gen(function* () {
-            const access = yield* endpoint.identifier === "list" ||
-            endpoint.identifier === "catalog"
-              ? CurrentOrganization
-              : requireOrganizationAdmin;
+            const access = yield* ["publish", "published", "unpublish"].includes(
+              endpoint.identifier,
+            )
+              ? requireOrganizationAdmin
+              : CurrentOrganization;
             const policy = yield* CurrentAuthorization;
             if (
               ["create", "copy", "published", "unpublish"].includes(endpoint.identifier) &&
@@ -35,7 +84,8 @@ export const hostedAppAccess = Layer.effect(
                 readOwner: access.owner,
                 scope: access.organization,
                 namespace: yield* namespace,
-                canWrite: access.role !== "member",
+                canWrite: permitsAction(policy, "manage"),
+                actor: yield* CurrentUserId,
                 protectedApps: [],
                 appIds: permittedAppIds(policy),
               }),
@@ -84,12 +134,12 @@ export const hostedAppGitAccess = Layer.effect(
           );
           if (
             (grant.access.organization !== scope && grant.organizationSlug !== scope) ||
-            grant.access.role === "member" ||
             !permitsAction(grant.policy, "read")
           )
             return yield* new AppAccessDenied({ reason: "forbidden" });
           return {
             owner: grant.access.owner,
+            actor: grant.userId,
             readOwner: grant.access.owner,
             scope: grant.access.organization,
             namespace: grant.organizationSlug,

@@ -15,7 +15,9 @@ export const Route = createRootRoute({
 });
 
 function Root() {
-  const { pathname } = useLocation();
+  const { pathname, searchStr } = useLocation();
+  const devtoolsPath =
+    pathname === "/login" ? (new URLSearchParams(searchStr).get("redirect") ?? pathname) : pathname;
   return (
     <DocumentTitleProvider fallbackTitle={productTitle(hostedPageTitle(pathname))}>
       <AuthBoundary>
@@ -23,7 +25,9 @@ function Root() {
           <Outlet />
         </OrganizationResumeBoundary>
       </AuthBoundary>
-      <ExecutorDevtools />
+      <ExecutorDevtools
+        organization={devtoolsPath.startsWith("/org/") ? devtoolsPath.split(/[/?#]/)[2] : undefined}
+      />
     </DocumentTitleProvider>
   );
 }

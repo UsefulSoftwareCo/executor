@@ -1,5 +1,6 @@
 /** Privileged fixture helpers. Imported only by local test tooling, never a host entry point. */
 import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { admin } from "better-auth/plugins/admin";
 import { testUtils } from "better-auth/plugins";
 import { authOptions } from "@executor-js/hosted-server";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -18,6 +19,9 @@ export class TestAccountFailed extends Schema.TaggedError<TestAccountFailed>()(
   },
 ) {}
 
+/** Only local dev auth grants this operator admin-plugin authority; it has no organization membership. */
+export const DevtoolsOperatorId = "executor-devtools-operator";
+
 const Organization = Schema.Struct({ id: Schema.String, slug: Schema.String });
 const Member = Schema.Struct({ role: Schema.String });
 
@@ -29,6 +33,7 @@ export const testAccountAuth = (settings: {
   readonly secret: Redacted.Redacted<string>;
   readonly cookiePrefix: string;
   readonly database: BetterAuthOptions["database"];
+  readonly adminUserIds?: readonly string[];
 }) => {
   const base = authOptions({ url: settings.origin, oauthRedirectUri: Option.none() }, []);
   const helpers = testUtils();
@@ -39,7 +44,10 @@ export const testAccountAuth = (settings: {
     advanced: { ...base.advanced, cookiePrefix: settings.cookiePrefix },
     session: { ...base.session, expiresIn: 3600 },
     plugins: [
-      ...base.plugins,
+      ...base.plugins.filter((plugin) => plugin.id !== "admin"),
+      admin({
+        adminUserIds: settings.adminUserIds === undefined ? [] : [...settings.adminUserIds],
+      }),
       {
         ...helpers,
         // Better Auth 1.7.5 emits options: undefined; omit it for exact optional property types.
@@ -60,6 +68,7 @@ export const provisionTestAccount = (
   input: {
     readonly host: "self-host" | "cloud";
     readonly name: string;
+    readonly displayName?: string;
     readonly organization: string;
     readonly role: "owner" | "admin" | "member";
     readonly origin: string;
@@ -91,12 +100,20 @@ export const provisionTestAccount = (
         throw new Error("Self-host organization mismatch");
       const email = `agent-${input.name}@example.test`;
       const found = await ctx.internalAdapter.findUserByEmail(email);
-      const user =
+      let user =
         found === null
           ? await test.saveUser(
-              test.createUser({ email, name: `Agent ${input.name}`, emailVerified: true }),
+              test.createUser({
+                email,
+                name: input.displayName ?? `Agent ${input.name}`,
+                emailVerified: true,
+              }),
             )
           : found.user;
+      // Rename only the generated fixture label; keep edited profiles and stable user identities.
+      if (input.displayName !== undefined && user.name === `Agent ${input.name}`) {
+        user = await ctx.internalAdapter.updateUser(user.id, { name: input.displayName });
+      }
       const member = await ctx.adapter.findOne({
         model: "member",
         where: [
@@ -120,6 +137,7 @@ export const provisionTestAccount = (
         origin: input.origin,
         dashboardUrl: `${input.origin}/org/${organization.slug}/apps`,
         userId: user.id,
+        name: user.name,
         email,
         organizationId: organization.id,
         organizationSlug: organization.slug,

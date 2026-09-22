@@ -1,4 +1,5 @@
 import { RequiredAction } from "./authorization.ts";
+import { ConnectionDestination } from "./resource-access.ts";
 import { AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
 /** Account metadata and connection flows for an authenticated organization. */
@@ -118,7 +119,10 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.post("connect", `${prefix}/apps/:app/connections`, {
       params: app,
-      payload: Schema.Struct({ requirement: Schema.NonEmptyString }),
+      payload: Schema.Struct({
+        requirement: Schema.NonEmptyString,
+        destination: Schema.optional(ConnectionDestination),
+      }),
       success: BrowserAccountConnection,
       error: [...connectionErrors, AccountSelectionInvalid],
     }).annotate(RequiredAction, "manage"),

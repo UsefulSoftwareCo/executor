@@ -91,39 +91,27 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
         ).toEqual({ status: "answered" });
         yield* waitFor("review", "succeeded");
 
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
+        );
+        const shared = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: access.revision,
+            audience: { kind: "everyone" },
+          }),
+        );
         const configured = yield* api.request(actors.admin, "PATCH", `${path}/creator`, {
           enabled: true,
           approvalMode: "automatic",
         });
         expect(configured.status).toBe(200);
-        const settings = yield* body(Settings, configured);
-        const organization = yield* body(
-          Schema.Struct({
-            members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
-          }),
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `/api/auth/organization/get-full-organization?organizationId=${actors.organization.id}`,
-          ),
-        );
-        const member = organization.members.find((member) => member.userId === settings.actor);
-        if (member === undefined)
-          return yield* Effect.die("The schedule must retain its authenticated creator");
-        yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
-              organizationId: actors.organization.id,
-              memberId: member.id,
-              role: "admin",
-            })
-            .pipe(Effect.orDie),
-        );
+        expect((yield* body(Settings, configured)).actor).toBeTruthy();
         expect(
-          (yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
-            organizationId: actors.organization.id,
-            memberId: member.id,
-            role: "member",
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: shared.revision,
+            audience: { kind: "private" },
           })).status,
         ).toBe(200);
         expect((yield* api.request(actors.owner, "POST", `${path}/creator/run`)).status).toBe(200);

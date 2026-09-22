@@ -26,6 +26,64 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  memberGroupVisibility: {
+    file: "group-visibility.spec.ts",
+    title: "Members only see and share into their own groups",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization groups."),
+    },
+  },
+  devtoolsMembers: {
+    file: "devtools-members.spec.ts",
+    title: "Dev tools list and switch to actual organization members",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The shared picker is exercised through the full self-host development entry point.",
+      ),
+      local: na("Local has pairing instead of organization members."),
+    },
+  },
+  groupAuthoring: {
+    file: "resource-access.spec.ts",
+    title: "Groups protect app drafts and independent copies",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization group policy."),
+    },
+  },
+  resourceIsolation: {
+    file: "resource-isolation.spec.ts",
+    title: "Group resource grants and account connections cannot cross organizations",
+    targets: {
+      "self-host": na(
+        "Self-host permits one organization; real cross-organization grants are a Cloud scenario.",
+      ),
+      cloud: scheduled,
+      local: na("Local has no organization sharing policy."),
+    },
+  },
+  resourceSharing: {
+    file: "resource-sharing.spec.ts",
+    title: "Group sharing forms retain drafts and recover stale edits on desktop and mobile",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization sharing policy."),
+    },
+  },
+  resourceAccess: {
+    file: "resource-access.spec.ts",
+    title: "Groups enforce private apps and complete array credential access",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization sharing policy."),
+    },
+  },
   publishingDialog: {
     file: "publishing-dialog.spec.ts",
     title: "Publishing dialog explains readiness and keeps copied listings separate",

@@ -1,13 +1,11 @@
 import { appManagement } from "../../contracts/app-management.ts";
 import { useAtomMount } from "@effect/atom-react";
-import { PageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
 import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
 import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
 import { type AppAcknowledgement } from "@executor-js/ui/contracts/app-management";
-import { Empty } from "@executor-js/ui/dashboard/common";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
 import type { Publication } from "@executor-js/app-registry/contracts";
 import type { App } from "@executor-js/sdk";
@@ -24,7 +22,7 @@ type Selection =
 export function AddAppPage() {
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);
-  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
   const management = appManagement(organization);
   const [selection, setSelection] = useState<Selection>();
@@ -37,17 +35,6 @@ export function AddAppPage() {
       params: { organizationSlug, appId: app.id },
     });
   const back = () => setSelection(undefined);
-  if (role === undefined) return <PageSkeleton title="Add app" />;
-  if (role === "member")
-    return (
-      <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-        <Empty title="An admin can add apps">
-          <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-            Back to apps
-          </Link>
-        </Empty>
-      </div>
-    );
   if (selection?.kind === "publication")
     return (
       <InstallPublication

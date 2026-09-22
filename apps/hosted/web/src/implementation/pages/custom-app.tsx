@@ -1,32 +1,19 @@
-import { PageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { Option, Schema } from "effect";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { CustomAppForm, CustomAppKind } from "@executor-js/ui/dashboard/custom-app";
-import { Empty } from "@executor-js/ui/dashboard/common";
 import { Tabs, TabsList, TabsTrigger } from "@executor-js/ui/components/tabs";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** Admin-only remote imports use organization-bound mutations on both hosted products. */
+/** Member-owned remote imports use organization-bound mutations on both hosted products. */
 export function CustomAppPage() {
-  const { organization, role, slug: organizationSlug } = useOrganizationRoute();
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   const atoms = useDashboardAtoms();
   const navigate = useNavigate();
   const [kind, setKind] = useState<typeof CustomAppKind.Type>("mcp");
-  if (role === undefined) return <PageSkeleton title="Custom app" />;
-  if (role === "member")
-    return (
-      <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-        <Empty title="An admin can add this app">
-          <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-            Back to apps
-          </Link>
-        </Empty>
-      </div>
-    );
   return (
     <div className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-w-212.5 max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
       <Link

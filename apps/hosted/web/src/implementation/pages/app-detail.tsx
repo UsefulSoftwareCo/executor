@@ -1,3 +1,5 @@
+import { AppAccessSettings } from "./resource-settings.tsx";
+import { appAccessAtom } from "../../contracts/resource-access.ts";
 import type { AppView } from "@executor-js/ui/contracts/dashboard";
 import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
@@ -65,7 +67,10 @@ export function AppDetailPage({
       ? inventory.data.value.apps.find((item) => item.id === appId)
       : undefined;
   const selectedView = view ?? (tool === undefined ? "overview" : "tools");
-  const canInspectSource = role === "owner" || role === "admin";
+  const authority = useQuery(appAccessAtom({ organization, app: AppId.make(appId) }));
+  const access = Option.isSome(authority.data) ? authority.data.value : undefined;
+  const canInspectSource = access?.canManage === true;
+  const canUse = access?.canUse === true;
   const pending = (
     <AppDetailLoading
       view={selectedView}
@@ -93,10 +98,16 @@ export function AppDetailPage({
       actions={
         app && (
           <>
-            {openApp?.(app)}
+            {canUse && openApp?.(app)}
             {canInspectSource && (
               <>
-                <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
+                {(role === "owner" || role === "admin") && (
+                  <PublishApp
+                    app={app}
+                    atoms={appManagement(organization)}
+                    Failure={HostedFailure}
+                  />
+                )}
                 <CopyApp
                   key={app.id}
                   Failure={HostedFailure}
@@ -117,134 +128,157 @@ export function AppDetailPage({
         )
       }
     >
-      <QueryResult result={result} Failure={HostedFailure} retry={refresh} pending={pending}>
-        {(current) =>
-          selectedView === "schedules" ? (
-            <AppSchedules
-              bindings={scheduleBindings(
-                { organization, app: current.id },
-                role !== undefined && role !== "member",
-              )}
-              Failure={HostedFailure}
-            />
-          ) : selectedView === "overview" ? (
-            <AppOverview
-              app={current}
-              tools={
-                <QueryResult
-                  result={inventory.result}
+      <QueryResult
+        result={authority.result}
+        Failure={HostedFailure}
+        retry={authority.refresh}
+        pending={pending}
+      >
+        {() => (
+          <QueryResult result={result} Failure={HostedFailure} retry={refresh} pending={pending}>
+            {(current) =>
+              selectedView === "schedules" ? (
+                <AppSchedules
+                  bindings={scheduleBindings({ organization, app: current.id }, canInspectSource)}
                   Failure={HostedFailure}
-                  retry={inventory.refresh}
-                  pending={
-                    <>
-                      <div className="mb-1 flex min-h-9 items-center border-b pb-3">
-                        <h3 className="text-sm font-medium">Tools</h3>
-                      </div>
-                      <OverviewCardLoading label="Loading tools preview" />
-                    </>
-                  }
-                >
-                  {(inventory) => (
-                    <AppOverviewTools
-                      app={current}
-                      accounts={inventory.accounts}
-                      query={toolsAtom({ organization, app: current.id })}
+                />
+              ) : selectedView === "overview" ? (
+                <AppOverview
+                  app={current}
+                  tools={
+                    <QueryResult
+                      result={inventory.result}
                       Failure={HostedFailure}
-                    />
-                  )}
-                </QueryResult>
-              }
-              accounts={
+                      retry={inventory.refresh}
+                      pending={
+                        <>
+                          <div className="mb-1 flex min-h-9 items-center border-b pb-3">
+                            <h3 className="text-sm font-medium">Tools</h3>
+                          </div>
+                          <OverviewCardLoading label="Loading tools preview" />
+                        </>
+                      }
+                    >
+                      {(inventory) =>
+                        canUse ? (
+                          <AppOverviewTools
+                            app={current}
+                            accounts={inventory.accounts}
+                            query={toolsAtom({ organization, app: current.id })}
+                            Failure={HostedFailure}
+                          />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            This app is not shared with you. You can manage its settings.
+                          </p>
+                        )
+                      }
+                    </QueryResult>
+                  }
+                  accounts={
+                    <QueryResult
+                      result={inventory.result}
+                      Failure={HostedFailure}
+                      retry={inventory.refresh}
+                      pending={<OverviewCardLoading label="Loading accounts preview" />}
+                    >
+                      {(inventory) => (
+                        <AppOverviewAccounts app={current} accounts={inventory.accounts} />
+                      )}
+                    </QueryResult>
+                  }
+                  source={
+                    canInspectSource && (
+                      <QueryView
+                        query={appManagement(organization).source(current.id)}
+                        Failure={HostedFailure}
+                        pending={<OverviewCardLoading label="Loading source preview" />}
+                      >
+                        {(source) => <AppOverviewSource source={source} />}
+                      </QueryView>
+                    )
+                  }
+                />
+              ) : selectedView === "settings" ? (
+                access === undefined ? (
+                  <AppSettingsLoading app={current} />
+                ) : (
+                  <AppSettings
+                    app={current}
+                    renameAction={canInspectSource && <AppRename app={current} />}
+                    deleteAction={canInspectSource && <DeleteApp app={current} />}
+                    notice={
+                      !canInspectSource &&
+                      "The app creator and organization admins can rename or delete this app."
+                    }
+                  >
+                    <section className="rounded-lg border p-5">
+                      <AppAccessSettings app={current.id} />
+                    </section>
+                  </AppSettings>
+                )
+              ) : selectedView === "source" ||
+                selectedView === "history" ||
+                selectedView === "deployments" ? (
+                access === undefined ? (
+                  <AppDetailLoading
+                    view={selectedView}
+                    app={current}
+                    canInspectSource={canInspectSource}
+                  />
+                ) : !canInspectSource ? (
+                  <p className="p-5 text-sm text-muted-foreground">
+                    The app creator and organization admins can inspect app source.
+                  </p>
+                ) : selectedView === "deployments" ? (
+                  <AppDeployments key={current.id} app={current} />
+                ) : (
+                  <AppSource key={current.id} app={current} view={selectedView} />
+                )
+              ) : current.activeDeployment === null ? (
+                <p className="p-5 text-sm text-muted-foreground">
+                  Deploy this app before using its tools or selecting accounts.
+                </p>
+              ) : (
                 <QueryResult
                   result={inventory.result}
                   Failure={HostedFailure}
                   retry={inventory.refresh}
-                  pending={<OverviewCardLoading label="Loading accounts preview" />}
+                  pending={pending}
                 >
-                  {(inventory) => (
-                    <AppOverviewAccounts app={current} accounts={inventory.accounts} />
-                  )}
-                </QueryResult>
-              }
-              source={
-                canInspectSource && (
-                  <QueryView
-                    query={appManagement(organization).source(current.id)}
-                    Failure={HostedFailure}
-                    pending={<OverviewCardLoading label="Loading source preview" />}
-                  >
-                    {(source) => <AppOverviewSource source={source} />}
-                  </QueryView>
-                )
-              }
-            />
-          ) : selectedView === "settings" ? (
-            role === undefined ? (
-              <AppSettingsLoading app={current} />
-            ) : (
-              <AppSettings
-                app={current}
-                renameAction={canInspectSource && <AppRename app={current} />}
-                deleteAction={canInspectSource && <DeleteApp app={current} />}
-                notice={
-                  !canInspectSource && "Only organization admins can rename or delete this app."
-                }
-              />
-            )
-          ) : selectedView === "source" ||
-            selectedView === "history" ||
-            selectedView === "deployments" ? (
-            role === undefined ? (
-              <AppDetailLoading
-                view={selectedView}
-                app={current}
-                canInspectSource={canInspectSource}
-              />
-            ) : role === "member" ? (
-              <p className="p-5 text-sm text-muted-foreground">
-                Only organization admins can inspect app source.
-              </p>
-            ) : selectedView === "deployments" ? (
-              <AppDeployments key={current.id} app={current} />
-            ) : (
-              <AppSource key={current.id} app={current} view={selectedView} />
-            )
-          ) : current.activeDeployment === null ? (
-            <p className="p-5 text-sm text-muted-foreground">
-              Deploy this app before using its tools or selecting accounts.
-            </p>
-          ) : (
-            <QueryResult
-              result={inventory.result}
-              Failure={HostedFailure}
-              retry={inventory.refresh}
-              pending={pending}
-            >
-              {(inventory) =>
-                selectedView === "tools" ? (
-                  <AppTools app={current} accounts={inventory.accounts} selected={tool} />
-                ) : (
-                  <AppAccounts
-                    app={current}
-                    accounts={inventory.accounts}
-                    chooseAction={
-                      canInspectSource && (
-                        <Button variant="outline" size="sm" asChild>
-                          <Link
-                            to="/org/$organizationSlug/apps/$appId/setup"
-                            params={{ organizationSlug, appId }}
-                          >
-                            Choose accounts
-                          </Link>
-                        </Button>
+                  {(inventory) =>
+                    selectedView === "tools" ? (
+                      canUse ? (
+                        <AppTools app={current} accounts={inventory.accounts} selected={tool} />
+                      ) : (
+                        <p className="p-5 text-sm text-muted-foreground">
+                          This app is not shared with you. You can manage its settings.
+                        </p>
                       )
-                    }
-                  />
-                )
-              }
-            </QueryResult>
-          )
-        }
+                    ) : (
+                      <AppAccounts
+                        app={current}
+                        accounts={inventory.accounts}
+                        chooseAction={
+                          canInspectSource && (
+                            <Button variant="outline" size="sm" asChild>
+                              <Link
+                                to="/org/$organizationSlug/apps/$appId/setup"
+                                params={{ organizationSlug, appId }}
+                              >
+                                Choose accounts
+                              </Link>
+                            </Button>
+                          )
+                        }
+                      />
+                    )
+                  }
+                </QueryResult>
+              )
+            }
+          </QueryResult>
+        )}
       </QueryResult>
     </AppDetailLayout>
   );

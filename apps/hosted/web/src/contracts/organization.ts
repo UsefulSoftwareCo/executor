@@ -1,3 +1,4 @@
+import { protectedQuery } from "./protected-query.ts";
 import {
   organizationTargetAtom,
   organizationPresentationAtom,
@@ -131,7 +132,7 @@ export const organizationPresentation = Atom.family((reference: OrganizationRefe
 export const inventoryAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("organization", "inventory", { params: { organization } }).pipe(
     Atom.refreshOnWindowFocus,
-    acknowledgedQuery,
+    protectedQuery,
   ),
 );
 /** Follow native pagination so search includes members beyond Better Auth's first page. */

@@ -1,5 +1,7 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
+import { GroupDatabase } from "../contracts/groups.ts";
+import { CurrentUserId } from "../contracts/auth.ts";
 import {
   restrictMcpBackend,
   permitsDelivery,
@@ -112,13 +114,14 @@ export const dispatchHostedMcp = <E, R>(
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
           Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentUserId, fresh.userId),
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
     const backend = yield* scoped(access);
-    const services = yield* Effect.context<HostedExecutor | OrganizationDefaults>().pipe(
-      Effect.map(Context.pick(HostedExecutor, OrganizationDefaults)),
-    );
+    const services = yield* Effect.context<
+      HostedExecutor | OrganizationDefaults | GroupDatabase
+    >().pipe(Effect.map(Context.pick(HostedExecutor, OrganizationDefaults, GroupDatabase)));
     // Native elicitation can wait inside this HTTP request. Recheck the grant and
     // membership before each dispatch, including calls following the approved one.
     const current = authentication

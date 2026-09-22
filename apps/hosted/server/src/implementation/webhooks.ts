@@ -8,7 +8,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { webhookCallback } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { adminOwner, currentOwner, selectedApp } from "./access.ts";
+import { appManagerOwner, appReaderOwner, selectedApp, checkAccounts } from "./access.ts";
 
 /** Public callback authentication belongs to the selected app's signature verifier. */
 export const hostedWebhookCallback = Effect.flatMap(
@@ -25,15 +25,17 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
     return handlers
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* currentOwner;
+          const owner = yield* appReaderOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          return yield* executor.webhooks.get(params);
+          const subscription = yield* executor.webhooks.get(params);
+          yield* checkAccounts(executor, owner, subscription.accounts);
+          return subscription;
         }),
       )
       .handle("confirmRemoval", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
           return yield* executor.webhooks.confirmRemoval(params);
@@ -41,9 +43,10 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
       )
       .handle("setupLink", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
+          yield* checkAccounts(executor, owner, (yield* executor.webhooks.get(params)).accounts);
           yield* executor.webhookSetup.read(params);
           const request = yield* HttpServerRequest.HttpServerRequest;
           const headers = new Headers(request.headers);
@@ -58,7 +61,7 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
       )
       .handle("definitions", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* currentOwner;
+          const owner = yield* appReaderOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* selectedApp(executor, owner, params.app);
           return yield* executor.webhooks.definitions(params);
@@ -66,15 +69,21 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
       )
       .handle("list", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* currentOwner;
+          const owner = yield* appReaderOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          return yield* executor.webhooks.list(params);
+          const subscriptions = yield* executor.webhooks.list(params);
+          return yield* Effect.filter(subscriptions, (subscription) =>
+            checkAccounts(executor, owner, subscription.accounts).pipe(
+              Effect.as(true),
+              Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
+            ),
+          );
         }),
       )
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* selectedApp(executor, owner, params.app);
           return yield* executor.webhooks.create({ ...params, ...payload });
@@ -82,17 +91,21 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
       )
       .handle("reconcile", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
+          const subscription = yield* executor.webhooks.get(params);
+          yield* checkAccounts(executor, owner, subscription.accounts);
           return yield* executor.webhooks.reconcile(params);
         }),
       )
       .handle("remove", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
+          const subscription = yield* executor.webhooks.get(params);
+          yield* checkAccounts(executor, owner, subscription.accounts);
           return yield* executor.webhooks.remove(params);
         }),
       );

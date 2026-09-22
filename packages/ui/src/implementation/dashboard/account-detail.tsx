@@ -4,7 +4,7 @@ import { useState, type ComponentType, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
-import { displayDate, providerDisplayUrl } from "../../contracts/dashboard.ts";
+import { providerDisplayUrl } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 import { ProviderIcon, SectionHeading } from "./common.tsx";
@@ -19,6 +19,7 @@ export function AccountDetails<E>({
   signInAction,
   disconnectAction,
   readOnlyMessage,
+  children,
 }: {
   readonly data: AccountDetail;
   readonly rename: (label: string) => Promise<Exit.Exit<Account, E>>;
@@ -26,6 +27,7 @@ export function AccountDetails<E>({
   readonly signInAction: ReactNode;
   readonly disconnectAction: ReactNode;
   readonly readOnlyMessage: ReactNode;
+  readonly children?: ReactNode;
 }) {
   const { account, provider, apps, canManage } = data;
   const [draftLabel, setLabel] = useState<string>();
@@ -53,6 +55,7 @@ export function AccountDetails<E>({
             </p>
           </div>
         </div>
+        {canManage && <div className="shrink-0">{signInAction}</div>}
       </div>
       <div className="account-detail max-w-145">
         {canManage ? (
@@ -103,21 +106,13 @@ export function AccountDetails<E>({
         ) : (
           <p className="muted text-muted-foreground">{readOnlyMessage}</p>
         )}
-        {canManage && (
-          <section className="account-section border-t border-t-border mt-7.5 pt-5.5">
-            <SectionHeading>Sign-in</SectionHeading>
-            {signInAction}
-          </section>
-        )}
         <section className="account-section border-t border-t-border mt-7.5 pt-5.5">
           <SectionHeading>
-            Apps <span className="muted text-muted-foreground">{apps.length}</span>
+            Used by <span className="muted text-muted-foreground">{apps.length}</span>
           </SectionHeading>
           <AccountApps apps={apps} />
         </section>
-        <div className="account-metadata flex flex-col gap-2 text-[12px] text-muted-foreground pt-7">
-          <span>Added {displayDate(account.createdAt)}</span>
-        </div>
+        {children}
         {canManage && (
           <div className="account-disconnect mt-6.5 border-t border-t-border pt-4.5 [&_a]:text-destructive">
             {disconnectAction}
@@ -135,7 +130,13 @@ export function DisconnectAccount<E>({
   onDisconnected,
   cancel,
   Failure,
+  title = "Disconnect account?",
+  submitLabel = "Disconnect account",
+  impact,
 }: {
+  readonly title?: string;
+  readonly submitLabel?: string;
+  readonly impact?: ReactNode;
   readonly data: AccountDetail;
   readonly disconnect: () => Promise<Exit.Exit<unknown, E>>;
   readonly onDisconnected: () => void;
@@ -149,7 +150,7 @@ export function DisconnectAccount<E>({
     <>
       <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
-          Disconnect account?
+          {title}
         </h1>
       </div>
       <div className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25">
@@ -170,11 +171,12 @@ export function DisconnectAccount<E>({
             Affected apps <span className="muted text-muted-foreground">{apps.length}</span>
           </SectionHeading>
           <AccountApps apps={apps} />
-          {apps.length > 0 && (
-            <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-              These apps will need an account selected before they can run.
-            </p>
-          )}
+          {impact ??
+            (apps.length > 0 && (
+              <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
+                These apps will need an account selected before they can run.
+              </p>
+            ))}
         </section>
         {error && <Failure cause={error} />}
         <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px]">
@@ -194,7 +196,7 @@ export function DisconnectAccount<E>({
               onDisconnected();
             }}
           >
-            Disconnect account
+            {submitLabel}
           </Button>
           {cancel}
         </div>

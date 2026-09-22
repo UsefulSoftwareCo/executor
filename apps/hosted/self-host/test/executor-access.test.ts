@@ -1,5 +1,5 @@
 import { AppManagementHost } from "@executor-js/app-management";
-import { GroupDatabase } from "@executor-js/hosted-server/groups";
+import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { OrganizationId as ReferenceOrganizationId } from "@executor-js/hosted-server";
 import { memoryBlobStore } from "@executor-js/sdk/blobs";
 /** Request services must stay lazy, including when database acquisition fails. */
@@ -38,7 +38,7 @@ const selfHostApi = HttpApiBuilder.layer(HostedApi).pipe(
 );
 
 const origin = "http://localhost:4400";
-test("health and denied actions do not acquire the SDK; allowed failures keep their HTTP contracts", () =>
+test("health and unavailable policy do not acquire the SDK; failures keep their HTTP contracts", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -57,6 +57,7 @@ test("health and denied actions do not acquire the SDK; allowed failures keep th
         const organization = OrganizationId.make("org_fixture");
         const member = yield* hostedMcpBackend.pipe(
           Effect.provideService(HostedExecutor, acquireSdk),
+          Effect.provideService(GroupDatabase, Effect.fail(new GroupsUnavailable())),
           Effect.provideService(OrganizationDefaults, () => Effect.void),
           Effect.provideService(CurrentOrganization, {
             organization,
@@ -87,10 +88,7 @@ test("health and denied actions do not acquire the SDK; allowed failures keep th
         });
         const routes = selfHostApi.pipe(
           HttpRouter.provideRequest(
-            Layer.succeed(
-              GroupDatabase,
-              Effect.die("Group storage is outside this legacy fixture"),
-            ),
+            Layer.succeed(GroupDatabase, Effect.fail(new GroupsUnavailable())),
           ),
           HttpRouter.provideRequest(
             Layer.mergeAll(
@@ -136,7 +134,7 @@ test("health and denied actions do not acquire the SDK; allowed failures keep th
             headers: { origin, "content-type": "application/json" },
             body: JSON.stringify({ tool: "hello", input: {} }),
           });
-        assert.equal((yield* call()).status, 403);
+        assert.equal((yield* call()).status, 500);
         assert.equal(yield* Ref.get(acquisitions), 0);
         yield* Ref.set(signedIn, false);
         assert.equal((yield* request("/api/organizations/org_fixture/inventory")).status, 401);
@@ -150,9 +148,9 @@ test("health and denied actions do not acquire the SDK; allowed failures keep th
           Effect.flatMap(Schema.decodeUnknownEffect(StorageError)),
         );
         assert.ok(Schema.is(StorageError)(failure));
-        assert.equal(yield* Ref.get(acquisitions), 1);
+        assert.equal(yield* Ref.get(acquisitions), 0);
         assert.equal((yield* request("/api/organizations/org_fixture/inventory")).status, 500);
-        assert.equal(yield* Ref.get(acquisitions), 2);
+        assert.equal(yield* Ref.get(acquisitions), 1);
       }),
     ),
   ));

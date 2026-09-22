@@ -81,20 +81,14 @@ export function DashboardNavigation({
 }) {
   return (
     <>
-      {items
-        .filter(
-          (item) =>
-            item.label !== "Approvals" ||
-            (organization?.role !== undefined && organization.role !== "member"),
-        )
-        .map((item) => (
-          <NavigationItem
-            key={item.to}
-            item={item}
-            organizationSlug={organization?.slug}
-            pendingPage={pendingPage}
-          />
-        ))}
+      {items.map((item) => (
+        <NavigationItem
+          key={item.to}
+          item={item}
+          organizationSlug={organization?.slug}
+          pendingPage={pendingPage}
+        />
+      ))}
     </>
   );
 }

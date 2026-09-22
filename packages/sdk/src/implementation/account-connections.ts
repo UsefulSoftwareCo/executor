@@ -1,5 +1,6 @@
 /** Reusable setup lifecycle. Hosts own access checks and browser links; optional targets select the saved account. */
 import { Clock, type Crypto, Effect, Schema } from "effect";
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
   type CreateAccountConnection,
   type GetAccountConnection,
@@ -24,6 +25,7 @@ export const makeAccountConnections = (
   db: Query,
   credentials: Credentials,
   crypto: Crypto.Crypto,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const provider = (id: typeof Provider.Type.id) =>
     Effect.gen(function* () {
@@ -43,7 +45,7 @@ export const makeAccountConnections = (
         reconnectAccount:
           row.reconnectAccount === null
             ? null
-            : yield* makeAccounts(db, credentials, crypto).get({
+            : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
                 account: row.reconnectAccount,
                 owner: row.owner,
               }),
@@ -111,7 +113,7 @@ export const makeAccountConnections = (
           const saved = yield* lockConnection(tx, input, crypto);
           if (saved.state.status === "completed") return saved.state.account;
           const row = yield* openConnection(tx, input);
-          const accounts = makeAccounts(tx, credentials, crypto);
+          const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
           let account;
           if (row.reconnectAccount !== null) {
             const existing = yield* accounts.get({
@@ -133,6 +135,7 @@ export const makeAccountConnections = (
               label: input.label,
               fields: input.fields,
             });
+          if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
           yield* finishConnection(tx, input, account);
           return account;
         }),

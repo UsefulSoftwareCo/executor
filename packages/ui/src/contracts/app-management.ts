@@ -1,7 +1,7 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
 import type { App, AppId, DeploymentId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
-import { Data, Effect } from "effect";
+import { Data, Effect, type Cause } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { Atom } from "effect/unstable/reactivity";
 import { acknowledge, acknowledgedQuery } from "./mutations.ts";
@@ -24,17 +24,18 @@ export const makeAppManagementAtoms = <R, E>(
   runtime: Atom.AtomRuntime<R>,
   client: Effect.Effect<Client<E>, never, R>,
   params: { readonly organization?: string },
+  retainFailure?: (cause: Cause.Cause<E>) => boolean,
 ) => {
   const catalog = runtime
     .atom(Effect.flatMap(client, (api) => api.catalog({ params, query: {} })))
-    .pipe(Atom.refreshOnWindowFocus, acknowledgedQuery);
+    .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure));
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
-    .pipe(acknowledgedQuery);
+    .pipe((source) => acknowledgedQuery(source, retainFailure));
   const source = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.source({ params: { ...params, app } })))
-      .pipe(Atom.refreshOnWindowFocus, acknowledgedQuery),
+      .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure)),
   );
   const history = Atom.family((app: AppId) =>
     runtime

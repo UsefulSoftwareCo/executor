@@ -8,11 +8,13 @@ export function AppSettings({
   renameAction,
   deleteAction,
   notice,
+  children,
 }: {
   readonly app: App;
   readonly renameAction?: ReactNode;
   readonly deleteAction?: ReactNode;
   readonly notice?: ReactNode;
+  readonly children?: ReactNode;
 }) {
   return (
     <div className="w-full">
@@ -48,6 +50,7 @@ export function AppSettings({
             </p>
           </section>
         )}
+        {children}
         {deleteAction && (
           <section aria-label="Delete app" className="rounded-lg border border-destructive/30 p-5">
             <div className="flex flex-wrap items-start justify-between gap-5">

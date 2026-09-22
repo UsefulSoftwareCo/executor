@@ -1,3 +1,6 @@
+import { requireAppAccess } from "./resource-policy.ts";
+import { GroupDatabase } from "../contracts/groups.ts";
+import { CurrentOrganization } from "../contracts/organization.ts";
 /** Scheduled work has a saved actor, not a retained browser session or an invented service account. */
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -21,7 +24,13 @@ import {
   OrganizationId,
 } from "../contracts/organization.ts";
 import { ExecutionAdmission } from "../contracts/execution-admission.ts";
-import { currentOwner, adminOwner, selectedApp } from "./access.ts";
+import {
+  currentOwner,
+  appManagerOwner,
+  appReaderOwner,
+  selectedApp,
+  checkInvocationAccounts,
+} from "./access.ts";
 
 /** Capture the actual host SQL client and policy while preserving per-run membership checks. */
 export const makeScheduledAuthority = (executor: Executor) =>
@@ -41,9 +50,17 @@ export const makeScheduledAuthority = (executor: Executor) =>
         const members = yield* Schema.decodeUnknownEffect(
           Schema.Array(Schema.Struct({ role: OrganizationRole })),
         )(rows).pipe(Effect.mapError(() => new StorageError()));
-        if (members.length !== 1 || members[0]?.role === "member")
+        if (members.length !== 1 || members[0] === undefined)
           return yield* new OrganizationForbidden();
-        yield* selectedApp(executor, target.owner, target.app);
+        yield* selectedApp(executor, target.owner, target.app).pipe(
+          Effect.provideService(GroupDatabase, Effect.succeed(sql)),
+          Effect.provideService(CurrentUserId, target.actor),
+          Effect.provideService(CurrentOrganization, {
+            organization,
+            owner: target.owner,
+            role: members[0].role,
+          }),
+        );
         if (target.phase === "start") yield* admit(organization);
       });
   });
@@ -57,7 +74,7 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
   handlers
     .handle("list", ({ params }) =>
       Effect.gen(function* () {
-        const owner = yield* currentOwner;
+        const owner = yield* appReaderOwner(params.app);
         const executor = yield* Effect.flatten(HostedExecutor);
         return yield* executor.schedules.list({ app: params.app, owner });
       }),
@@ -72,7 +89,7 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
     )
     .handle("configure", ({ params, payload }) =>
       Effect.gen(function* () {
-        const owner = yield* adminOwner;
+        const owner = yield* appManagerOwner(params.app);
         const actor = yield* CurrentUserId;
         if (actor === undefined) return yield* new Forbidden();
         const executor = yield* Effect.flatten(HostedExecutor);
@@ -90,7 +107,7 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
     )
     .handle("runNow", ({ params }) =>
       Effect.gen(function* () {
-        const owner = yield* adminOwner;
+        const owner = yield* appManagerOwner(params.app);
         const executor = yield* Effect.flatten(HostedExecutor);
         yield* selectedApp(executor, owner, params.app);
         const result = yield* executor.schedules.runNow({
@@ -104,17 +121,33 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
     )
     .handle("runs", ({ query }) =>
       Effect.gen(function* () {
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
-        return yield* executor.schedules.runs({ ...query, owner });
+        if (query.app !== undefined) yield* requireAppAccess(query.app, "read");
+        const runs = yield* executor.schedules.runs({ ...query, owner });
+        return yield* Effect.filter(runs, (run) =>
+          Effect.gen(function* () {
+            yield* selectedApp(executor, owner, run.app);
+            if (query.pending) yield* requireAppAccess(run.app, "manage");
+            return true;
+          }).pipe(
+            Effect.catchTags({
+              OrganizationForbidden: () => Effect.succeed(false),
+              AccountNotFound: () => Effect.succeed(false),
+              AppNotFound: () => Effect.succeed(false),
+            }),
+          ),
+        );
       }),
     )
     .handle("approval", ({ params }) =>
       Effect.gen(function* () {
         yield* browserOnly;
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
         const pending = yield* executor.schedules.approval({ run: params.run, owner });
+        yield* requireAppAccess(pending.run.app, "manage");
+        yield* checkInvocationAccounts(executor, owner, pending.invocation);
         const app = yield* selectedApp(executor, owner, pending.run.app);
         return yield* Schema.decodeUnknownEffect(BrowserApprovalView)({
           status: "pending",
@@ -136,9 +169,11 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
     .handle("answer", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* browserOnly;
-        const owner = yield* adminOwner;
+        const owner = yield* currentOwner;
         const executor = yield* Effect.flatten(HostedExecutor);
         const pending = yield* executor.schedules.approval({ run: params.run, owner });
+        yield* requireAppAccess(pending.run.app, "manage");
+        yield* checkInvocationAccounts(executor, owner, pending.invocation);
         yield* selectedApp(executor, owner, pending.run.app);
         const response = yield* Schema.decodeUnknownEffect(ApprovalResponse)(payload.response).pipe(
           Effect.mapError(() => new RequestInvalid()),

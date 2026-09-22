@@ -29,7 +29,10 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
-export const startManagedServer = (target: typeof Target.Service) =>
+export const startManagedServer = (
+  target: typeof Target.Service,
+  entry: "product" | "development" = "product",
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
@@ -81,7 +84,9 @@ export const startManagedServer = (target: typeof Target.Service) =>
             [
               target.metadata.target === "local"
                 ? "apps/local/server/src/main.ts"
-                : "apps/hosted/self-host/src/main.ts",
+                : entry === "development"
+                  ? "apps/hosted/testing/self-host.ts"
+                  : "apps/hosted/self-host/src/main.ts",
             ],
             {
               extendEnv: false,
@@ -164,4 +169,29 @@ export const startManagedServer = (target: typeof Target.Service) =>
       return yield* new ServerFailed({ message: "Control listener must use TCP" });
     yield* start;
     return `http://127.0.0.1:${server.address.port}`;
+  });
+
+/** Start the complete self-host development entry point beside the production test target. */
+export const startDevelopmentServer = (target: typeof Target.Service) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const port = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const services = yield* Layer.build(
+          NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
+        );
+        const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+        if (!("port" in server.address))
+          return yield* new ServerFailed({ message: "Development listener must use TCP" });
+        return server.address.port;
+      }),
+    );
+    const directory = `${target.directory}/devtools`;
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+    const origin = `http://127.0.0.1:${port}`;
+    yield* startManagedServer(
+      { ...target, directory, metadata: { ...target.metadata, origin, target: "self-host" } },
+      "development",
+    );
+    return origin;
   });

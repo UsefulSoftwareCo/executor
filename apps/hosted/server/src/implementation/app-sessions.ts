@@ -239,7 +239,7 @@ export const hostedAppSessions = (
         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
           return yield* new UiUnauthorized();
         yield* parent(session.parent, session.user);
-        return yield* membership(session.user, target);
+        return { ...(yield* membership(session.user, target)), userId: session.user };
       }),
   });
 };

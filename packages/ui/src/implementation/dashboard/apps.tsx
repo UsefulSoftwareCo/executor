@@ -17,9 +17,10 @@ import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 /** A card for each configured app and its selected accounts. */
 export function AppsPage<E>({
   action,
+  filters,
   query,
   Failure,
-}: QueryProps<Inventory, E> & { readonly action?: ReactNode }) {
+}: QueryProps<Inventory, E> & { readonly action?: ReactNode; readonly filters?: ReactNode }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
   return (
@@ -31,6 +32,7 @@ export function AppsPage<E>({
     >
       <div className="list-toolbar apps-toolbar mb-4 grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
         <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
+        {filters}
       </div>
       <QueryResult result={result} Failure={Failure} retry={refresh} pending={<AppCardsSkeleton />}>
         {(data) => <AppsList data={data} search={search} />}

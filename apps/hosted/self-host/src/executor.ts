@@ -1,3 +1,4 @@
+import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorSelfHostApiDocument } from "./contracts/api.ts";
 import { AppManagementHost } from "@executor-js/app-management";
 import { remoteRegistry } from "@executor-js/app-registry";
@@ -108,6 +109,7 @@ export const selfHostExecutor = (skills: readonly SourceFile[], egress: HostEgre
             registry,
             blobs,
             publisher: undefined,
+            access: yield* hostedAppCapabilities,
           }),
         ),
         Layer.succeed(HostedExecutor, Effect.succeed(executor)),

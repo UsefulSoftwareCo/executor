@@ -5,13 +5,13 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import type { AppSkillInputs } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { currentOwner } from "./access.ts";
+import { appReaderOwner } from "./access.ts";
 
 /** Read metadata under the request's explicit organization, including apps awaiting account setup. */
 export const listAppSkills = (input: Omit<typeof AppSkillInputs.list.Type, "owner">) =>
   Effect.gen(function* () {
     yield* authorizeApp(input.app);
-    const owner = yield* currentOwner;
+    const owner = yield* appReaderOwner(input.app);
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.skills.list({ ...input, owner });
   });
@@ -19,7 +19,7 @@ export const listAppSkills = (input: Omit<typeof AppSkillInputs.list.Type, "owne
 export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner">) =>
   Effect.gen(function* () {
     yield* authorizeApp(input.app);
-    const owner = yield* currentOwner;
+    const owner = yield* appReaderOwner(input.app);
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.skills.read({ ...input, owner });
   });

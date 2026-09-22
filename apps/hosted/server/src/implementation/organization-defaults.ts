@@ -1,3 +1,4 @@
+import { organizationAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
 import type { HostedApiDocument } from "../contracts/api.ts";
 import { sourceFilesEqual } from "@executor-js/sdk/core";
 import {
@@ -54,6 +55,7 @@ export const organizationDefaults = (
           const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
           if (existing === undefined) {
             yield* executor.apps.deploy({ owner, name: "Executor", files: source.files }).pipe(
+              organizationAppCreation,
               Effect.catchTags({
                 AppNameTaken: () => Effect.void,
                 AppSlugTaken: () => Effect.void,
@@ -112,13 +114,13 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        const automaticSelection = (
-          selected: typeof app.accounts.service,
-          accounts: Readonly<Record<string, AccountId>>,
-        ) =>
-          selected === undefined ||
-          (typeof selected === "string" && Object.values(accounts).includes(selected));
+        // A login must never switch a configured app to another person's identity.
+        const automaticSelection = (selected: typeof app.accounts.service) =>
+          selected === undefined;
         const saved = yield* savedAccount(state.accounts);
+        // A recorded account that was deliberately deleted is not a new-user setup.
+        // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
+        if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
         if (
           saved !== undefined &&
           (saved.provider !== requirement.provider || saved.method !== "apiKey")
@@ -129,8 +131,7 @@ export const organizationDefaults = (
         if (
           state.deployment === current.activeDeployment &&
           saved !== undefined &&
-          (app.accounts.service === saved.id ||
-            !automaticSelection(app.accounts.service, state.accounts))
+          (app.accounts.service === saved.id || !automaticSelection(app.accounts.service))
         )
           return;
         // Better Auth reads through its own database adapter. Resolve the key
@@ -156,6 +157,9 @@ export const organizationDefaults = (
               const locked = yield* executor.apps.get({ owner, app: app.id });
               if (locked.activeDeployment !== current.activeDeployment) return;
               const saved = yield* savedAccount(state.accounts);
+              // A recorded account that was deliberately deleted is not a new-user setup.
+              // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
+              if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
               if (
                 saved !== undefined &&
                 (saved.provider !== requirement.provider || saved.method !== "apiKey")
@@ -165,17 +169,19 @@ export const organizationDefaults = (
                 saved !== undefined
                   ? saved
                   : token !== undefined
-                    ? yield* executor.accounts.add({
-                        owner,
-                        provider: requirement.provider,
-                        method: "apiKey",
-                        label: user.name,
-                        fields: Redacted.make({ token: Redacted.value(token.key), organization }),
-                      })
+                    ? yield* executor.accounts
+                        .add({
+                          owner,
+                          provider: requirement.provider,
+                          method: "apiKey",
+                          label: user.name,
+                          fields: Redacted.make({ token: Redacted.value(token.key), organization }),
+                        })
+                        .pipe(personalAccountCreation(user.userId))
                     : yield* new StorageError();
-              // Shared app selection remains the current hosted model; per-user selection is deferred.
+              // Keep existing fixed bindings; per-member account contexts remain deferred.
               const selected = locked.accounts.service;
-              const automatic = automaticSelection(selected, state.accounts);
+              const automatic = automaticSelection(selected);
               if (automatic && selected !== account.id)
                 yield* executor.apps.update({
                   app: app.id,

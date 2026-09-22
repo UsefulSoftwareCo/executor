@@ -1,3 +1,4 @@
+import { AccountAccessSettings } from "./resource-settings.tsx";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import type { AccountDetail } from "@executor-js/ui/contracts/dashboard";
 import { useAtomSet } from "@effect/atom-react";
@@ -61,7 +62,7 @@ function AccountView({
   readonly data: AccountDetail;
   readonly view: "details" | "disconnect";
 }) {
-  const { organization, slug: organizationSlug, role } = useOrganizationRoute();
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   const account = data.account.id;
   const params = { organization, account };
   const navigate = useNavigate();
@@ -70,10 +71,18 @@ function AccountView({
   const reconnect = useAtomSet(reconnectAccountAtom, { mode: "promiseExit" });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<HostedError>>();
-  const canManage = data.canManage && (role === "owner" || role === "admin");
+  const canManage = data.canManage;
   if (view === "disconnect")
     return canManage ? (
       <DisconnectAccount
+        title="Delete account?"
+        submitLabel="Delete account"
+        impact={
+          <p className="text-sm text-muted-foreground">
+            This account and its app selections will be removed. Other selected accounts stay
+            connected.
+          </p>
+        }
         data={data}
         Failure={HostedFailure}
         disconnect={() => disconnect()}
@@ -90,13 +99,13 @@ function AccountView({
         }
       />
     ) : (
-      <p>Only organization admins can disconnect accounts.</p>
+      <p>You do not have permission to delete this account.</p>
     );
   return (
     <AccountDetails<HostedError>
       data={{ ...data, canManage }}
       Failure={HostedFailure}
-      readOnlyMessage="Only organization admins can manage this account."
+      readOnlyMessage="You can use this account. Its owner and organization admins manage it."
       rename={rename}
       signInAction={
         <>
@@ -126,15 +135,17 @@ function AccountView({
         </>
       }
       disconnectAction={
-        <Button variant="ghost" asChild>
+        <Button variant="destructive" asChild>
           <Link
             to="/org/$organizationSlug/accounts/$accountId/disconnect"
             params={{ organizationSlug, accountId: account }}
           >
-            Disconnect account
+            Delete account
           </Link>
         </Button>
       }
-    />
+    >
+      <AccountAccessSettings account={account} />
+    </AccountDetails>
   );
 }

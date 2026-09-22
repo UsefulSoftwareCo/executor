@@ -10,6 +10,7 @@ import {
   type ExecutorOptions,
 } from "@executor-js/sdk/core";
 import { Config, Effect, type Redacted, Schema } from "effect";
+import { hostedResourceLifecycle } from "./resource-lifecycle.ts";
 
 /** Explicit connection URL shared by Better Auth and Executor; never logged or returned. */
 export const databaseUrl = Config.Redacted("DATABASE_URL").pipe(
@@ -52,7 +53,9 @@ export const postgresExecutor = (
   Effect.gen(function* () {
     const storage = options?.storage ?? (yield* makeExecutorStorage({ provider: "postgresql" }));
     const credentials = yield* aesGcmCredentials(secret, globalThis.crypto);
+    const lifecycle = yield* hostedResourceLifecycle;
     return yield* createExecutor({
+      lifecycle,
       storage,
       ...(options?.workflows === undefined ? {} : { workflows: options.workflows }),
       ...(options?.webhookOrigin === undefined ? {} : { webhookOrigin: options.webhookOrigin }),

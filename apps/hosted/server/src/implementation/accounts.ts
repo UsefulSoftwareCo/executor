@@ -1,6 +1,10 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permitsApp } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
+import { recordConnection, checkConnection, checkDestination } from "./connection-policy.ts";
+import { accountDestination } from "./resource-lifecycle.ts";
+import { requireAccountAccess, requireAppAccess, visibleApps } from "./resource-policy.ts";
+import type { ConnectionDestination } from "../contracts/resource-access.ts";
 /** Account use cases, connection grants and OAuth routes share the same ownership checks. */
 import {
   HttpUrl,
@@ -16,17 +20,19 @@ import { HostedApi } from "../contracts/api.ts";
 import { ApiAuthentication, Authentication } from "../contracts/auth.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { adminOwner, currentOwner, ownedConnection } from "./access.ts";
+import { appManagerOwner, accountManagerOwner, currentOwner, ownedConnection } from "./access.ts";
 
 /** Read provider metadata through the public SDK, including for accounts with no remaining apps. */
 export const getAccount = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
+    yield* requireAccountAccess(account, "read");
     const metadata = yield* executor.accounts.get({ owner, account });
     const provider = yield* executor.accounts.provider({ owner, account });
     const policy = yield* CurrentAuthorization;
-    const apps = (yield* executor.apps.list({ owner, account })).filter((app) =>
-      permitsApp(policy, app.id),
+    const apps = yield* executor.apps.list({ owner, account }).pipe(
+      Effect.map((apps) => apps.filter((app) => permitsApp(policy, app.id))),
+      Effect.flatMap(visibleApps),
     );
     if (policy.tools.kind !== "all" && apps.length === 0) return yield* new OrganizationForbidden();
     return { account: metadata, provider, apps };
@@ -35,14 +41,20 @@ export const getAccount = (owner: OwnerId, account: AccountId) =>
 export const reconnectAccount = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
+    const access = yield* requireAccountAccess(account, "manage");
     const existing = yield* executor.accounts.get({ owner, account });
-    return yield* executor.accountConnections.create({
-      owner,
-      account,
-      provider: existing.provider,
-    });
+    const destination =
+      access.ownership.kind === "personal" ? ({ kind: "personal" } as const) : access.ownership;
+    yield* checkDestination(destination);
+    return yield* executor.accountConnections
+      .create({
+        owner,
+        account,
+        provider: existing.provider,
+      })
+      .pipe(Effect.flatMap((connection) => recordConnection(connection, destination)));
   });
-/** Remove saved credentials; unresolved selections stay visible instead of switching identities. */
+/** Delete saved credentials and remove their selections through the transactional lifecycle hook. */
 export const disconnectAccount = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -58,12 +70,24 @@ export const renameAccount = (owner: OwnerId, account: AccountId, label: string)
 /** Create a sign-in request for an app requirement belonging to this organization. */
 export const connectAccount = (
   owner: OwnerId,
-  input: { readonly app: AppId; readonly requirement: string },
+  input: {
+    readonly app: AppId;
+    readonly requirement: string;
+    readonly destination?: typeof ConnectionDestination.Type | undefined;
+  },
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
+    yield* requireAppAccess(input.app, "manage");
     yield* executor.apps.get({ owner, app: input.app });
-    return yield* executor.accountConnections.create({ owner, target: input });
+    yield* checkDestination(input.destination ?? { kind: "personal" });
+    return yield* executor.accountConnections
+      .create({ owner, target: { app: input.app, requirement: input.requirement } })
+      .pipe(
+        Effect.flatMap((connection) =>
+          recordConnection(connection, input.destination ?? { kind: "personal" }),
+        ),
+      );
   });
 /** Connection metadata never grants access to another organization's request or app. */
 export const getConnection = (
@@ -72,7 +96,9 @@ export const getConnection = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    return yield* ownedConnection(executor, owner, input.connection);
+    const connection = yield* ownedConnection(executor, owner, input.connection);
+    yield* checkConnection(connection);
+    return connection;
   });
 /** Save credentials and complete the connection's selected app requirement. */
 export const submitConnection = (
@@ -81,8 +107,12 @@ export const submitConnection = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* ownedConnection(executor, owner, input.connection);
-    return yield* executor.accountConnections.submit({ ...input, owner });
+    const intent = yield* checkConnection(
+      yield* ownedConnection(executor, owner, input.connection),
+    );
+    return yield* executor.accountConnections
+      .submit({ ...input, owner })
+      .pipe(accountDestination(intent.destination));
   });
 /** OAuth client resolution and credentials remain inside the trusted SDK. */
 export const startOAuth = (
@@ -91,7 +121,7 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* ownedConnection(executor, owner, input.connection);
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
     return yield* executor.accountConnections.startOAuth({ ...input, owner });
   });
 /** Completion rechecks connection and target ownership before saving provider credentials. */
@@ -101,11 +131,15 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* ownedConnection(executor, owner, input.connection);
-    return yield* executor.accountConnections.completeOAuth({ ...input, owner });
+    const intent = yield* checkConnection(
+      yield* ownedConnection(executor, owner, input.connection),
+    );
+    return yield* executor.accountConnections
+      .completeOAuth({ ...input, owner })
+      .pipe(accountDestination(intent.destination));
   });
 
-/** All account management uses the current admin role, including OAuth return requests. */
+/** Account policy and persisted connection ownership protect management and OAuth return requests. */
 export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts", (handlers) =>
   Effect.gen(function* () {
     const auth = yield* Authentication;
@@ -118,21 +152,30 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
         Effect.gen(function* () {
           const owner = yield* currentOwner;
           const data = yield* getAccount(owner, params.account);
-          return { ...data, canManage: (yield* CurrentOrganization).role !== "member" };
+          return {
+            ...data,
+            canManage: (yield* requireAccountAccess(params.account, "read")).canManage,
+          };
         }),
       )
       .handle("reconnect", ({ params }) =>
-        Effect.flatMap(adminOwner, (owner) => reconnectAccount(owner, params.account)),
+        Effect.flatMap(accountManagerOwner(params.account), (owner) =>
+          reconnectAccount(owner, params.account),
+        ),
       )
       .handle("disconnect", ({ params }) =>
-        Effect.flatMap(adminOwner, (owner) => disconnectAccount(owner, params.account)),
+        Effect.flatMap(accountManagerOwner(params.account), (owner) =>
+          disconnectAccount(owner, params.account),
+        ),
       )
       .handle("rename", ({ params, payload }) =>
-        Effect.flatMap(adminOwner, (owner) => renameAccount(owner, params.account, payload.label)),
+        Effect.flatMap(accountManagerOwner(params.account), (owner) =>
+          renameAccount(owner, params.account, payload.label),
+        ),
       )
       .handle("connect", ({ params, payload }) =>
         Effect.gen(function* () {
-          const owner = yield* adminOwner;
+          const owner = yield* appManagerOwner(params.app);
           const request = yield* HttpServerRequest.HttpServerRequest;
           const headers = new Headers(request.headers);
           const organization = yield* CurrentOrganization;
@@ -147,22 +190,22 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
         }),
       )
       .handle("connection", ({ params }) =>
-        Effect.flatMap(adminOwner, (owner) => getConnection(owner, params)).pipe(
+        Effect.flatMap(currentOwner, (owner) => getConnection(owner, params)).pipe(
           Effect.map((connection) => ({ ...connection, redirectUri })),
         ),
       )
       .handle("submit", ({ params, payload }) =>
-        Effect.flatMap(adminOwner, (owner) =>
+        Effect.flatMap(currentOwner, (owner) =>
           submitConnection(owner, { connection: params.connection, ...payload }),
         ),
       )
       .handle("startOAuth", ({ params, payload }) =>
-        Effect.flatMap(adminOwner, (owner) =>
+        Effect.flatMap(currentOwner, (owner) =>
           startOAuth(owner, { connection: params.connection, ...payload, redirectUri }),
         ).pipe(Effect.map((signIn) => ({ ...signIn, redirectUri }))),
       )
       .handle("completeOAuth", ({ params, payload }) =>
-        Effect.flatMap(adminOwner, (owner) =>
+        Effect.flatMap(currentOwner, (owner) =>
           completeOAuth(owner, { connection: params.connection, ...payload }),
         ),
       );

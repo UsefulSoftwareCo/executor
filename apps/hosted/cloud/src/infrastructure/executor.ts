@@ -1,3 +1,4 @@
+import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorCloudApiDocument } from "../contracts/api.ts";
 import { AppManagementHost } from "@executor-js/app-management";
 import { createAppRegistry, makeRegistryStorage, storedRegistry } from "@executor-js/app-registry";
@@ -114,6 +115,7 @@ export const cloudExecutor = Effect.fn(function* (
           registry,
           blobs,
           publisher: createAppRegistry({ storage: registryStorage, executor, sources }),
+          access: yield* hostedAppCapabilities.pipe(Effect.provideContext(services)),
         },
       };
     }).pipe(Effect.mapError(() => new StorageError())),

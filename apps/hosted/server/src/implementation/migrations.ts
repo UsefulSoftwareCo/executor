@@ -5,6 +5,7 @@ import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { migrateGroups } from "./group-schema.ts";
+import { migrateResourceAccess } from "./resource-schema.ts";
 
 /** Migration failures stop startup; callers must not log the driver's secret-bearing cause. */
 export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFailed>()(
@@ -50,6 +51,7 @@ export const migrateHostedSchemas = (options: BetterAuthOptions) =>
       Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
     );
     yield* migrateGroups.pipe(
+      Effect.andThen(migrateResourceAccess),
       Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
     );
   });

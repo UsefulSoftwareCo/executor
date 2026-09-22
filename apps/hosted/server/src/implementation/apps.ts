@@ -1,3 +1,4 @@
+import { requireAppAccess, currentResourceAuthority, safeAppMetadata } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
 import {
@@ -14,7 +15,7 @@ import { HostedApi } from "../contracts/api.ts";
 import type { DeployApp, InstallApp } from "../contracts/apps.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { adminOwner, checkAccounts, currentOwner, selectedApp } from "./access.ts";
+import { appManagerOwner, checkAccounts, currentOwner } from "./access.ts";
 
 /** Prepare ordinary source and create an app without replacing an existing name. */
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
@@ -64,7 +65,9 @@ export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>
 export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    return yield* executor.apps.get({ ...input, owner });
+    yield* requireAppAccess(input.app, "read");
+    const app = yield* executor.apps.get({ ...input, owner });
+    return yield* safeAppMetadata(app, yield* currentResourceAuthority);
   });
 /** Validate organization ownership before saving reusable account selections. */
 export const selectAccounts = (
@@ -75,7 +78,8 @@ export const selectAccounts = (
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* executor.apps.get({ owner, app: input.app });
     yield* checkAccounts(executor, owner, input.accounts);
-    return yield* executor.apps.update(input);
+    const saved = yield* executor.apps.update(input);
+    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
   });
 /** Retained source is administrative data; deployments from other owners stay private. */
 export const appDeployments = (owner: OwnerId, app: AppId) =>
@@ -104,18 +108,22 @@ export const activateApp = (
   Effect.gen(function* () {
     yield* appSource(owner, app, deployment);
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, app);
-    return yield* executor.apps.activate({ owner, app, deployment, expectedDeployment });
+    yield* requireAppAccess(app, "manage");
+    const current = yield* executor.apps.get({ owner, app });
+    yield* checkAccounts(executor, owner, current.accounts);
+    const saved = yield* executor.apps.activate({ owner, app, deployment, expectedDeployment });
+    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
   });
 /** Keep the configured identity and selections while changing its organization-local name. */
 export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    return yield* executor.apps.rename({
+    const saved = yield* executor.apps.rename({
       owner,
       app,
       name,
     });
+    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
   });
 /** Delete one configured copy while preserving its reusable accounts. */
 export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
@@ -128,33 +136,39 @@ export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
 export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handlers) =>
   handlers
     .handle("install", ({ payload }) =>
-      Effect.flatMap(adminOwner, (owner) => installApp(owner, payload)),
+      Effect.flatMap(currentOwner, (owner) => installApp(owner, payload)),
     )
     .handle("importCustom", ({ payload }) =>
-      Effect.flatMap(adminOwner, (owner) => importCustomApp(owner, payload.source)),
+      Effect.flatMap(currentOwner, (owner) => importCustomApp(owner, payload.source)),
     )
     .handle("deploy", ({ payload }) =>
-      Effect.flatMap(adminOwner, (owner) => deployApp(owner, payload)),
+      Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
     )
     .handle("get", ({ params }) => Effect.flatMap(currentOwner, (owner) => getApp(owner, params)))
     .handle("selectAccounts", ({ params, payload }) =>
-      Effect.flatMap(adminOwner, (owner) => selectAccounts(owner, { app: params.app, ...payload })),
+      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+        selectAccounts(owner, { app: params.app, ...payload }),
+      ),
     )
     .handle("deployments", ({ params }) =>
-      Effect.flatMap(adminOwner, (owner) => appDeployments(owner, params.app)),
+      Effect.flatMap(appManagerOwner(params.app), (owner) => appDeployments(owner, params.app)),
     )
     .handle("source", ({ params, query }) =>
-      Effect.flatMap(adminOwner, (owner) => appSource(owner, params.app, query.deployment)),
+      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+        appSource(owner, params.app, query.deployment),
+      ),
     )
     .handle("activate", ({ params, payload }) =>
-      Effect.flatMap(adminOwner, (owner) =>
+      Effect.flatMap(appManagerOwner(params.app), (owner) =>
         activateApp(owner, params.app, payload.deployment, payload.expectedDeployment),
       ),
     )
     .handle("rename", ({ params, payload }) =>
-      Effect.flatMap(adminOwner, (owner) => renameApp(owner, params.app, payload.name)),
+      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+        renameApp(owner, params.app, payload.name),
+      ),
     )
     .handle("remove", ({ params }) =>
-      Effect.flatMap(adminOwner, (owner) => removeApp(owner, params)),
+      Effect.flatMap(appManagerOwner(params.app), (owner) => removeApp(owner, params)),
     ),
 );

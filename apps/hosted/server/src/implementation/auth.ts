@@ -3,6 +3,7 @@ import { explicitOrganizationAuth } from "./organization-auth.ts";
 import { mcpOAuthPlugins } from "./mcp-oauth.ts";
 import type { BetterAuthOptions } from "better-auth";
 import { organization } from "better-auth/plugins/organization";
+import { admin } from "better-auth/plugins/admin";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -61,6 +62,7 @@ export const authOptions = (
     account: { encryptOAuthTokens: true },
     onAPIError: { errorURL: `${settings.url}/login` },
     plugins: [
+      admin(),
       explicitOrganizationAuth,
       apiKeys,
       organization({ disableOrganizationDeletion: true }),

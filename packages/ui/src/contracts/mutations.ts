@@ -1,12 +1,16 @@
-import { Option } from "effect";
+import { Option, type Cause } from "effect";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 /**
  * Publish server-confirmed changes before a mutation completes. Refresh failures
  * retain that confirmed value alongside the typed read error; a later successful
  * read replaces it. Writes patch existing data only, never fabricate a record.
+ * Products may discard previous data on an authoritative access-denied failure.
  */
-export const acknowledgedQuery = <A, E>(source: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+export const acknowledgedQuery = <A, E>(
+  source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  retainFailure?: (cause: Cause.Cause<E>) => boolean,
+) => {
   const query: Atom.Writable<
     AsyncResult.AsyncResult<A, E>,
     ((current: A) => A) | undefined
@@ -15,7 +19,9 @@ export const acknowledgedQuery = <A, E>(source: Atom.Atom<AsyncResult.AsyncResul
       const result = get(source);
       const previous = get.self<AsyncResult.AsyncResult<A, E>>();
       if (AsyncResult.isFailure(result))
-        return AsyncResult.failureWithPrevious(result.cause, { previous, waiting: result.waiting });
+        return retainFailure?.(result.cause) === false
+          ? AsyncResult.failure<A, E>(result.cause, { waiting: result.waiting })
+          : AsyncResult.failureWithPrevious(result.cause, { previous, waiting: result.waiting });
       if (result.waiting && Option.isSome(previous)) return AsyncResult.waiting(previous.value);
       return result;
     },

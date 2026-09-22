@@ -73,3 +73,26 @@ belongs. Ownership does not grant access to another resource.
 **Tool**:
 An operation exposed by a live app evaluation. Availability can depend on the
 configured app's accounts and the service's current capabilities.
+
+## Hosted access
+
+**Group**:
+A named set of current members of one organization, used to share apps and accounts.
+
+**App access**:
+Who can use a hosted app: its creator only, selected groups, or everyone in the organization.
+
+**Personal account**:
+A saved provider account whose metadata and use are private to one organization member.
+
+**Shared account**:
+An organization account with its own group or Everyone access, independent of app access.
+
+**Account offer**:
+A saved account made available for an app requirement, with a default for members who have access.
+
+**Member choice**:
+An explicit On or Off for an offered account. No choice means follow its default.
+
+**Management access**:
+Permission to configure a resource. It does not grant permission to use its credentials.

@@ -67,6 +67,7 @@ import {
   OwnerId,
   SourceCommit,
   SourceFiles,
+  type SelectedAccounts,
 } from "@executor-js/sdk/core";
 import {
   Publication,
@@ -91,8 +92,17 @@ export class AppIdentity extends Context.Service<
     readonly canWrite: boolean;
     readonly appIds?: ReadonlyArray<AppId> | undefined;
     readonly protectedApps: ReadonlyArray<AppId>;
+    /** Hosted principals are individual users; local pairing may omit an actor. */
+    readonly actor?: string | undefined;
   }
 >()("apps/Identity") {}
+/** Product policy separates discovery, source management, execution-sensitive edits, and credential metadata. */
+export interface AppCapabilities {
+  readonly visible: boolean;
+  readonly manage: boolean;
+  readonly edit: boolean;
+  readonly accounts: SelectedAccounts;
+}
 /** App UI and API access reuse the host's current pairing or organization boundary. */
 export class AppAccess extends HttpApiMiddleware.Service<AppAccess, { provides: AppIdentity }>()(
   "apps/Access",

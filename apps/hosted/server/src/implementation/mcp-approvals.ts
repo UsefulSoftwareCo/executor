@@ -1,5 +1,7 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
+import { checkInvocationAccounts } from "./access.ts";
+import { CurrentUserId } from "../contracts/auth.ts";
 /** Browser identity selects the same MCP host partition as the original bearer grant. */
 import {
   BrowserApprovalAddress,
@@ -37,7 +39,6 @@ const browserAccess = Effect.gen(function* () {
   // The incoming Origin was checked above. Internal cookie verification also needs it on GET.
   headers.set("origin", auth.origin);
   const access = yield* auth.browserGrant(headers, query.grantId);
-  if (access.access.role === "member") return HttpServerResponse.empty({ status: 403 });
   const address = yield* Schema.decodeUnknownEffect(BrowserApprovalAddress)({
     sessionId: query.sessionId,
     requestId: url.pathname.split("/").at(-1),
@@ -88,11 +89,21 @@ export const hostedMcpApproval = (
       const backend = yield* hostedMcpBackend.pipe(
         Effect.provideService(CurrentOrganization, access.access),
         Effect.provideService(CurrentAuthorization, grantAuthorization(access.grant.policy)),
+        Effect.provideService(CurrentUserId, access.userId),
       );
       const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));
       yield* restricted.authorizeElicitation(
         view.request.status === "approval-required" ? view.request.invocation : view.request.tool,
       );
+      if (view.request.status === "approval-required")
+        yield* checkInvocationAccounts(
+          yield* Effect.flatten(HostedExecutor),
+          access.access.owner,
+          view.request.invocation,
+        ).pipe(
+          Effect.provideService(CurrentOrganization, access.access),
+          Effect.provideService(CurrentUserId, access.userId),
+        );
     }
     if (request.method !== "POST") {
       if (view.status !== "pending") return HttpServerResponse.jsonUnsafe(view);
@@ -114,6 +125,8 @@ export const hostedMcpApproval = (
       HttpServerError: () => Effect.succeed(HttpServerResponse.empty({ status: 400 })),
       AppNotFound: () => Effect.succeed(HttpServerResponse.jsonUnsafe({ status: "unavailable" })),
       StorageError: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
+      OrganizationForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+      AccountNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
       ElicitationFailed: (error) =>
         Effect.succeed(
           HttpServerResponse.empty({ status: error.reason === "forbidden" ? 403 : 503 }),

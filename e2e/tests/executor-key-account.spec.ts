@@ -116,18 +116,18 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           page.goto("about:blank"),
         );
         yield* evidence.step(
-          "Automatic accounts retain the deferred shared selection behavior",
+          "Personal managed keys never rebind the shared app on another member login",
           Effect.gen(function* () {
             const admin = yield* read(actors.admin);
             const selected = admin.apps.find((item) => item.id === app.id)?.accounts.service;
-            expect(selected).toBeDefined();
-            expect(selected).not.toBe(accountId);
-            expect(admin.accounts.filter((account) => account.method === "apiKey")).toHaveLength(2);
-            expect((yield* body(Identity, yield* call(actors.owner))).role).toBe("admin");
+            expect(selected).toBeUndefined();
+            expect(admin.accounts.filter((account) => account.method === "apiKey")).toHaveLength(1);
+            expect(admin.accounts.some((account) => account.id === accountId)).toBe(false);
+            expect((yield* body(Identity, yield* call(actors.owner))).role).toBe("owner");
             expect(
               (yield* read(actors.member)).apps.find((item) => item.id === app.id)?.accounts
                 .service,
-            ).toBe(selected);
+            ).toBeUndefined();
             expect((yield* call(actors.member)).status).toBe(403);
             yield* read(actors.owner);
           }),

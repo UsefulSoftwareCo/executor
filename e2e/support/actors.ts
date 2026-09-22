@@ -26,6 +26,34 @@ export class Actors extends Context.Service<
     }),
   );
 }
+const DevelopmentMembers = Schema.Struct({
+  organization: Schema.Struct({ id: Schema.String }),
+  accounts: Schema.Array(
+    Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }),
+  ),
+});
+const signInDevelopmentFixture = (session: Session, role: "owner" | "admin" | "member") =>
+  Effect.gen(function* () {
+    const api = yield* SessionClients;
+    const directory = yield* body(
+      DevelopmentMembers,
+      yield* api.request(session, "GET", "/api/devtools"),
+    );
+    const emails = {
+      owner: "agent-agent@example.test",
+      admin: "agent-admin@example.test",
+      member: "agent-rhys-member@example.test",
+    };
+    const member = directory.accounts.find(
+      (account) => account.email === emails[role] && account.role === role,
+    );
+    if (!member)
+      return yield* new ActorsUnavailable({ message: "Expected development fixture member" });
+    return yield* api.request(session, "POST", "/api/devtools/account", {
+      organization: directory.organization.id,
+      userId: member.id,
+    });
+  });
 /** Lifecycle tests own this fresh session, so sign-out cannot revoke shared actor fixtures. */
 export const freshOwnerSession = Effect.gen(function* () {
   const target = yield* Target;
@@ -37,7 +65,7 @@ export const freshOwnerSession = Effect.gen(function* () {
         "Session lifecycle checks require managed Cloud sign-in or self-host password sign-in",
     });
   const response = yield* target.metadata.target === "cloud"
-    ? clients.request(session, "POST", "/api/devtools/account", { role: "owner" })
+    ? signInDevelopmentFixture(session, "owner")
     : clients.request(session, "POST", "/api/auth/sign-in/email", {
         email: "owner@example.test",
         password,
@@ -108,7 +136,7 @@ export const provisionCloudActors = Effect.gen(function* () {
   const signIn = (role: "owner" | "admin" | "member") =>
     Effect.gen(function* () {
       const session = yield* api.session();
-      yield* ready((yield* api.request(session, "POST", "/api/devtools/account", { role })).status);
+      yield* ready((yield* signInDevelopmentFixture(session, role)).status);
       return session;
     });
   const owner = yield* signIn("owner");

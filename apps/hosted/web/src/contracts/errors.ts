@@ -12,11 +12,23 @@ export type HostedError =
   | Schema.SchemaError;
 const errorMessage = Match.type<HostedError>().pipe(
   Match.tagsExhaustive({
+    AccessConflict: ({ reason }) =>
+      ({
+        changed:
+          "Access settings changed while you were editing. Use Reset changes to load the latest settings, then try again.",
+        groups_changed:
+          "One of the selected groups is no longer available. Choose the current groups.",
+        creator_unavailable:
+          "Only me is available for apps with a current creator. Choose groups or everyone instead.",
+        personal_account:
+          "Personal accounts stay private. Connect a shared account to give your team access.",
+      })[reason],
     ScheduleNotFound: () => "This schedule or run is no longer available.",
     ScheduleConflict: () =>
       "The schedule is busy or changed. Check its current status and try again.",
     ScheduleInvalid: () => "Update the interval or calendar timing in the app source.",
-    GroupNotFound: () => "This group is no longer available in this organization.",
+    GroupNotFound: () =>
+      "This group is unavailable or you do not have access. Ask an organization admin.",
     GroupsUnavailable: () => "Groups could not be loaded or saved. Try again.",
     GroupConflict: ({ reason }) =>
       ({
@@ -116,7 +128,8 @@ const errorMessage = Match.type<HostedError>().pipe(
     OrganizationIconInvalid: () => "Choose a PNG, JPG, or WebP image up to 2 MB.",
     OrganizationIconUnavailable: () => "The organization icon is unavailable. Try again.",
     OrganizationIconNotFound: () => "This organization icon is no longer available.",
-    OrganizationForbidden: () => "Your role does not allow this action. Ask an organization admin.",
+    OrganizationForbidden: () =>
+      "You do not have permission to do this. Ask an organization admin.",
     Unauthorized: () => "Your session has ended. Sign in again.",
     Forbidden: () => "You do not have permission to make this request.",
     AuthenticationUnavailable: () => "Sign-in is unavailable. Try again shortly.",

@@ -35,7 +35,7 @@ export const GroupInput = Schema.Struct({
 /** Public group projection contains no provider credentials or resource access rules. */
 export const Group = Schema.Struct({ id: GroupId, revision: GroupRevision, ...GroupInput.fields });
 export type Group = typeof Group.Type;
-/** Eligible members come only from the requested organization's existing membership. */
+/** Admins receive eligible organization members; members see people in their visible groups. */
 export const GroupMember = Schema.Struct({
   id: GroupMemberId,
   userId: Principal.fields.userId,
@@ -43,13 +43,13 @@ export const GroupMember = Schema.Struct({
   email: Schema.String,
 });
 export type GroupMember = typeof GroupMember.Type;
-/** One request supplies groups, membership choices, and server-derived management authority. */
+/** One request supplies authorized groups, their members, and server-derived management authority. */
 export const GroupsView = Schema.Struct({
   groups: Schema.Array(Group),
   members: Schema.Array(GroupMember),
   canManage: Schema.Boolean,
 });
-/** The group was removed or does not belong to the requested organization. */
+/** The group is missing or unavailable to this viewer; inaccessible group IDs disclose nothing. */
 export class GroupNotFound extends Schema.TaggedError<GroupNotFound>()(
   "GroupNotFound",
   {},

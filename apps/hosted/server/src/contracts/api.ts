@@ -1,3 +1,4 @@
+import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
@@ -146,6 +147,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedTools,
     HostedOrganization,
     HostedGroups,
+    HostedResourceAccess,
     HostedAppData,
   )
   .add(

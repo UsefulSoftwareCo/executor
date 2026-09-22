@@ -161,6 +161,7 @@ test("default setup preserves source, build and storage failures through HTTP an
           const organization = OrganizationId.make(id);
           const backend = yield* hostedMcpBackend.pipe(
             Effect.provideService(HostedExecutor, Effect.succeed(executor)),
+            Effect.provideService(GroupDatabase, Effect.succeed(sql)),
             Effect.provideService(OrganizationDefaults, initialize),
             Effect.provideService(CurrentOrganization, {
               organization,
@@ -246,13 +247,16 @@ test(
           const originalAccount = saved[0];
           assert.ok(originalAccount);
           yield* executor.accounts.remove({ owner, account: originalAccount.id });
-          yield* initialize(organization, user);
-          const repaired = yield* executor.accounts.list({ owner });
-          assert.equal(repaired.length, 1);
-          assert.notEqual(repaired[0]?.id, originalAccount.id);
+          yield* initialize(organization, {
+            ...user,
+            key: Effect.die("Deleted accounts must not be recreated from their key"),
+          });
+          assert.deepEqual(yield* executor.accounts.list({ owner }), []);
+          // This bare SDK fixture retains missing references; the hosted deletion
+          // journey separately verifies its transactional selection cleanup.
           assert.equal(
             (yield* executor.apps.get({ owner, app: app.id })).accounts.service,
-            repaired[0]?.id,
+            originalAccount.id,
           );
           yield* executor.apps.remove({ owner, app: app.id });
           yield* initialize(organization, {

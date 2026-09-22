@@ -1,3 +1,5 @@
+import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+import { QueryView } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Cause, Exit, Option } from "effect";
@@ -108,6 +110,7 @@ function GroupContent({
             <Members
               members={data.members.filter((member) => selected.memberIds.includes(member.id))}
             />
+            <GroupApps group={selected.id} />
             {admin && (
               <div className="mt-8 border-t pt-5">
                 <h3 className="text-sm font-medium text-destructive">Delete group</h3>
@@ -131,7 +134,7 @@ function GroupContent({
           <div className="rounded-lg border border-dashed p-8 text-center">
             <h2 className="font-medium">Group unavailable</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This group was removed or is not in this organization.
+              This group is unavailable or you do not have access. Ask an organization admin.
             </p>
           </div>
         )
@@ -538,5 +541,40 @@ function GroupEditor({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function GroupApps({ group }: { readonly group: string }) {
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
+  return (
+    <section className="mt-7 space-y-3">
+      <h3 className="text-sm font-medium">Apps</h3>
+      <QueryView query={resourceDirectoryAtom(organization)} Failure={HostedFailure}>
+        {(data) => {
+          const apps = data.apps.filter(
+            ({ access }) =>
+              access.audience.kind === "everyone" ||
+              (access.audience.kind === "groups" &&
+                access.audience.groups.some((id) => id === group)),
+          );
+          return apps.length ? (
+            <div className="divide-y rounded-lg border">
+              {apps.map(({ app }) => (
+                <Link
+                  className="block p-4 text-sm hover:bg-muted"
+                  key={app.id}
+                  to="/org/$organizationSlug/apps/$appId"
+                  params={{ organizationSlug, appId: app.id }}
+                >
+                  {app.name}
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No apps available to you in this group.</p>
+          );
+        }}
+      </QueryView>
+    </section>
   );
 }

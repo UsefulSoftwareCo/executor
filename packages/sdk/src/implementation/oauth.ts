@@ -1,3 +1,4 @@
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
 import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import {
@@ -81,6 +82,7 @@ export const makeOAuth = (
   credentials: Credentials,
   crypto: Crypto.Crypto,
   options?: OAuthOptions,
+  lifecycle?: ResourceLifecycle,
 ) => {
   const hash = (value: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
@@ -393,7 +395,10 @@ export const makeOAuth = (
                 set: { encryptedCredentials },
               }),
             );
-          } else yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
+          } else {
+            yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
+            if (lifecycle) yield* lifecycle.accountCreated(saved);
+          }
           const grant = {
             encrypted: encryptedGrant,
             status: ready,
@@ -412,13 +417,14 @@ export const makeOAuth = (
               set: { status: "completed", encrypted: new Uint8Array() },
             }),
           );
+          if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
           yield* finishConnection(tx, input, saved);
           return saved;
         }),
       );
     }).pipe(Effect.withSpan("oauth.completeOAuth"));
 
-  const resolve = (account: StoredAccount, provider: ProviderDefinition) =>
+  const resolveCredentials = (account: StoredAccount, provider: ProviderDefinition) =>
     Effect.gen(function* () {
       if (provider.auth[account.method]?.type === "secrets")
         return yield* credentials.decrypt(account.id, account.encryptedCredentials);
@@ -524,5 +530,13 @@ export const makeOAuth = (
         return Redacted.make(fields);
       }
     }).pipe(Effect.withSpan("oauth.resolve"));
+  const resolve = (account: StoredAccount, provider: ProviderDefinition) =>
+    Effect.gen(function* () {
+      if (lifecycle) yield* lifecycle.accountResolving(account);
+      const fields = yield* resolveCredentials(account, provider);
+      // A remote token refresh can outlive a permission change or account deletion.
+      if (lifecycle) yield* lifecycle.accountResolving(account);
+      return fields;
+    });
   return { connections: { startOAuth, completeOAuth }, resolve };
 };

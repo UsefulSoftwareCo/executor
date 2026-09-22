@@ -1,3 +1,5 @@
+import { refreshResourceDirectory } from "./resource-access.ts";
+import { protectedQuery } from "./protected-query.ts";
 /** Organization-specific app queries and mutations use the shared hosted API. */
 import {
   AppId,
@@ -12,13 +14,7 @@ import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
 import { HostedClient } from "./api.ts";
-import {
-  acknowledge,
-  acknowledgedQuery,
-  upsert,
-  currentQuery,
-  invalidate,
-} from "@executor-js/ui/contracts/mutations";
+import { acknowledge, upsert, currentQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import { inventoryAtom } from "./organization.ts";
 import { accountAtom, acknowledgeAccount } from "./accounts.ts";
 import { selectedIds } from "@executor-js/ui/contracts/dashboard";
@@ -42,7 +38,7 @@ const appQuery = Atom.family(
   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
     HostedClient.query("apps", "get", { params: key }).pipe(
       Atom.refreshOnWindowFocus,
-      acknowledgedQuery,
+      protectedQuery,
     ),
 );
 const deploymentsQuery = Atom.family((key: AppKey) =>
@@ -94,6 +90,7 @@ const removeApp = Atom.family((key: AppKey) =>
       Effect.tap(() =>
         Effect.sync(() => {
           const current = AsyncResult.value(get(appAtom(key)));
+          refreshResourceDirectory(get, key.organization);
           acknowledge(get, inventoryAtom(key.organization), (data) => ({
             ...data,
             apps: data.apps.filter((app) => app.id !== key.app),
@@ -201,6 +198,7 @@ export function acknowledgeApp(
   organization: OrganizationReference,
   saved: App,
 ) {
+  refreshResourceDirectory(get, organization);
   const previous = AsyncResult.value(get(appAtom({ organization, app: saved.id })));
   const accounts = new Set([
     ...selectedIds(saved),

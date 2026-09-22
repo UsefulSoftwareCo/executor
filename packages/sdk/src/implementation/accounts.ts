@@ -3,7 +3,7 @@ import { AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
 import { Clock, type Crypto, Effect, Schema } from "effect";
 import { Account, AccountNotFound } from "../contracts/account.ts";
-import type { Executor } from "../contracts/executor.ts";
+import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
 import { AccountId, StorageError, type OwnerId } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
@@ -30,7 +30,12 @@ export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["
   storedAccount(db, input.account, input.owner);
 
 /** Bind account operations to caller-owned storage and credentials. */
-export const makeAccounts = (db: Query, credentials: Credentials, crypto: Crypto.Crypto) => ({
+export const makeAccounts = (
+  db: Query,
+  credentials: Credentials,
+  crypto: Crypto.Crypto,
+  lifecycle?: ResourceLifecycle,
+) => ({
   add: (input: Parameters<Executor["accounts"]["add"]>[0]) =>
     Effect.gen(function* () {
       const row = yield* query(() =>
@@ -58,7 +63,12 @@ export const makeAccounts = (db: Query, credentials: Credentials, crypto: Crypto
         createdAt: new Date(yield* Clock.currentTimeMillis),
       };
       const encryptedCredentials = yield* credentials.encrypt(account.id, fields);
-      yield* query(() => db.create("accounts", { ...account, encryptedCredentials }));
+      yield* transaction(db, (tx) =>
+        Effect.gen(function* () {
+          yield* query(() => tx.create("accounts", { ...account, encryptedCredentials }));
+          if (lifecycle) yield* lifecycle.accountCreated(account);
+        }),
+      );
       return account;
     }).pipe(Effect.withSpan("sdk.accounts.add")),
   get: (input: Parameters<Executor["accounts"]["get"]>[0]) =>
@@ -150,6 +160,12 @@ export const makeAccounts = (db: Query, credentials: Credentials, crypto: Crypto
             tx.findFirst("workflowAccounts", { where: (b) => b("account", "=", row.id) }),
           );
           if (workflow !== null) return yield* new AccountWorkflowsActive({ account: row.id });
+          if (lifecycle) {
+            const account = yield* Schema.decodeUnknownEffect(Account)(row).pipe(
+              Effect.mapError(() => new StorageError()),
+            );
+            yield* lifecycle.accountRemoving(account);
+          }
           yield* query(() =>
             tx.deleteMany("oauthGrants", { where: (b) => b("id", "=", input.account) }),
           );

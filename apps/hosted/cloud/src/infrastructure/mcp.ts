@@ -1,3 +1,4 @@
+import { cloudGroupDatabase } from "./group-database.ts";
 import { ExecutionRejected } from "@executor-js/mcp";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
@@ -36,6 +37,7 @@ const makeMcpSessions = Effect.gen(function* () {
   const reportErrors = yield* cloudSentry;
   const auth = yield* cloudAuth(unavailableAuthEmail);
   const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+  const policy = yield* cloudGroupDatabase;
   const analytics = yield* cloudAnalytics;
   const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
   return Effect.gen(function* () {
@@ -48,6 +50,7 @@ const makeMcpSessions = Effect.gen(function* () {
       ),
     ).pipe(
       Effect.provide(executor),
+      Effect.provide(policy),
       Effect.provide(auth.mcpIdentity),
       Effect.provide(HttpServer.layerServices),
     );
@@ -56,34 +59,28 @@ const makeMcpSessions = Effect.gen(function* () {
         Effect.provideService(CurrentUserId, access.userId),
         Effect.provideService(
           admitExecution,
-          access.access.role === "member"
-            ? Effect.fail(
-                new ExecutionRejected({
-                  message: "An organization administrator must run executions.",
-                }),
-              )
-            : meter.consume(access.access.organization).pipe(
-                Effect.catchTags({
-                  ExecutionLimitReached: () =>
-                    Effect.fail(
-                      new ExecutionRejected({
-                        message:
-                          "Your organization has used its execution allowance. Open Billing to change plans.",
-                      }),
-                    ),
-                  ExecutionAdmissionUnavailable: () =>
-                    Effect.fail(
-                      new ExecutionRejected({
-                        message:
-                          "We could not check your execution allowance. No code ran. Try again.",
-                      }),
-                    ),
-                }),
-              ),
+          meter.consume(access.access.organization).pipe(
+            Effect.catchTags({
+              ExecutionLimitReached: () =>
+                Effect.fail(
+                  new ExecutionRejected({
+                    message:
+                      "Your organization has used its execution allowance. Open Billing to change plans.",
+                  }),
+                ),
+              ExecutionAdmissionUnavailable: () =>
+                Effect.fail(
+                  new ExecutionRejected({
+                    message: "We could not check your execution allowance. No code ran. Try again.",
+                  }),
+                ),
+            }),
+          ),
         ),
       ),
     ).pipe(
       Effect.provide(executor),
+      Effect.provide(policy),
       Effect.provide(auth.mcpIdentity),
       Effect.provide(HttpServer.layerServices),
     );

@@ -1,4 +1,9 @@
-import { AppAccessDenied, AppIdentity, appManagementApi } from "./contracts/api.ts";
+import {
+  AppAccessDenied,
+  AppIdentity,
+  appManagementApi,
+  type AppCapabilities,
+} from "./contracts/api.ts";
 export * from "./contracts/api.ts";
 /** Product-authorized app authoring, release discovery, and ordinary Git access. */
 import { Context, Effect, Layer, Schema } from "effect";
@@ -15,10 +20,10 @@ import {
   AppId,
   AppSlug,
   AppNotFound,
-  OwnerId,
   SourceCommit,
   SourceError,
   StorageError,
+  type App,
   type AppSourceStorage,
   type BlobStorage,
   type Executor,
@@ -40,6 +45,13 @@ export class AppManagementHost extends Context.Service<
   Effect.Effect<
     {
       readonly executor: Executor;
+      /** Optional product-owned policy; local pairing uses the identity's existing authority. */
+      readonly access?:
+        | ((
+            app: App,
+            identity: Context.Service.Shape<typeof AppIdentity>,
+          ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>)
+        | undefined;
       readonly sources: AppSourceStorage;
       readonly repositories: RepositoryBackend;
       readonly registry: Registry;
@@ -67,10 +79,39 @@ const writeIdentity = AppIdentity.pipe(
       : Effect.fail(new AppAccessDenied({ reason: "forbidden" })),
   ),
 );
-const ownedSource = (executor: Executor, owner: OwnerId | null, app: AppId) =>
+type ManagementHost = Effect.Success<Context.Service.Shape<typeof AppManagementHost>>;
+const capabilities = (
+  host: ManagementHost,
+  app: App,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+) =>
+  host.access === undefined
+    ? Effect.succeed({ visible: true, manage: true, edit: true, accounts: app.accounts })
+    : host.access(app, identity);
+const projectApp = <A extends App>(
+  host: ManagementHost,
+  app: A,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+) =>
+  capabilities(host, app, identity).pipe(
+    Effect.map((access) => ({ ...app, accounts: access.accounts })),
+  );
+const ownedSource = (
+  host: ManagementHost,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+  id: AppId,
+  edit = false,
+) =>
   Effect.gen(function* () {
-    const target = owner === null ? { app } : { owner, app };
-    return yield* executor.apps.get(target);
+    if (identity.appIds !== undefined && !identity.appIds.includes(id))
+      return yield* new AppAccessDenied({ reason: "forbidden" });
+    const app = yield* host.executor.apps.get(
+      identity.readOwner === null ? { app: id } : { owner: identity.readOwner, app: id },
+    );
+    const access = yield* capabilities(host, app, identity);
+    if (!access.manage || (edit && !access.edit))
+      return yield* new AppAccessDenied({ reason: "forbidden" });
+    return { app, access };
   });
 const editIdentity = (app: AppId) =>
   writeIdentity.pipe(
@@ -90,31 +131,40 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
       .handle("list", () =>
         Effect.gen(function* () {
           const identity = yield* AppIdentity;
-          return yield* (yield* Effect.flatten(AppManagementHost)).executor.apps.list({
+          const host = yield* Effect.flatten(AppManagementHost);
+          const apps = yield* host.executor.apps.list({
             ...(identity.readOwner === null ? {} : { owner: identity.readOwner }),
             ids: identity.appIds,
           });
+          return (yield* Effect.forEach(apps, (app) =>
+            capabilities(host, app, identity).pipe(
+              Effect.map((access) =>
+                access.visible ? [{ ...app, accounts: access.accounts }] : [],
+              ),
+            ),
+          )).flat();
         }),
       )
       .handle("create", ({ payload }) =>
         Effect.gen(function* () {
           const identity = yield* writeIdentity;
-          return yield* (yield* Effect.flatten(AppManagementHost)).executor.apps.create({
-            ...payload,
-            owner: identity.owner,
-          });
+          const host = yield* Effect.flatten(AppManagementHost);
+          return yield* host.executor.apps
+            .create({ ...payload, owner: identity.owner })
+            .pipe(Effect.flatMap((app) => projectApp(host, app, identity)));
         }),
       )
       .handle("source", ({ params }) =>
         Effect.gen(function* () {
-          const identity = yield* writeIdentity;
+          const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          const app = yield* ownedSource(host.executor, identity.readOwner, params.app);
+          const { app, access } = yield* ownedSource(host, identity, params.app);
           const source = yield* host.executor.apps.workspace({
             owner: app.owner,
             app: params.app,
           });
-          const canEdit = !identity.protectedApps.includes(params.app);
+          const canEdit =
+            identity.canWrite && access.edit && !identity.protectedApps.includes(params.app);
           return {
             ...source,
             namespace: identity.namespace,
@@ -137,7 +187,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         Effect.gen(function* () {
           const identity = yield* editIdentity(params.app);
           const host = yield* Effect.flatten(AppManagementHost);
-          const app = yield* ownedSource(host.executor, identity.readOwner, params.app);
+          const { app } = yield* ownedSource(host, identity, params.app, true);
           return yield* host.executor.apps.commit({
             ...payload,
             owner: app.owner,
@@ -149,7 +199,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         Effect.gen(function* () {
           const identity = yield* editIdentity(params.app);
           const host = yield* Effect.flatten(AppManagementHost);
-          const app = yield* ownedSource(host.executor, identity.readOwner, params.app);
+          const { app } = yield* ownedSource(host, identity, params.app, true);
           const files = yield* host.sources.read({
             code: app.code,
             commit: payload.expectedSource,
@@ -160,7 +210,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             app: app.id,
             files,
           });
-          return { app: deployed.app, source: deployed.source };
+          return { app: yield* projectApp(host, deployed.app, identity), source: deployed.source };
         }),
       )
       .handle("copy", ({ payload }) =>
@@ -169,28 +219,30 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const host = yield* Effect.flatten(AppManagementHost);
           const from =
             "app" in payload.from
-              ? (yield* ownedSource(host.executor, identity.readOwner, payload.from.app)).id
+              ? (yield* ownedSource(host, identity, payload.from.app)).app.id
               : yield* resolvePublication(host.registry, payload.from);
-          return yield* host.executor.apps.copy({
-            owner: identity.owner,
-            from,
-            name: payload.name,
-          });
+          return yield* host.executor.apps
+            .copy({
+              owner: identity.owner,
+              from,
+              name: payload.name,
+            })
+            .pipe(Effect.flatMap((app) => projectApp(host, app, identity)));
         }),
       )
       .handle("git", ({ params }) =>
         Effect.gen(function* () {
-          const identity = yield* writeIdentity;
+          const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          const app = yield* ownedSource(host.executor, identity.readOwner, params.app);
+          const { app } = yield* ownedSource(host, identity, params.app);
           return { path: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git` };
         }),
       )
       .handle("history", ({ params }) =>
         Effect.gen(function* () {
-          const identity = yield* writeIdentity;
+          const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          const app = yield* ownedSource(host.executor, identity.readOwner, params.app);
+          const { app } = yield* ownedSource(host, identity, params.app);
           return yield* host.repositories.history(app.code);
         }),
       )
@@ -198,7 +250,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         Effect.gen(function* () {
           const identity = yield* editIdentity(params.app);
           const host = yield* Effect.flatten(AppManagementHost);
-          yield* ownedSource(host.executor, identity.readOwner, params.app);
+          yield* ownedSource(host, identity, params.app, true);
           if (host.publisher === undefined || identity.namespace === null)
             return yield* new AppAccessDenied({ reason: "forbidden" });
           return yield* host.publisher.publish({
@@ -216,7 +268,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
       )
       .handle("published", () =>
         Effect.gen(function* () {
-          const identity = yield* writeIdentity;
+          const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
           return host.publisher === undefined ? [] : yield* host.publisher.owned(identity.owner);
         }),
@@ -295,13 +347,13 @@ export const gitRoutes = (() => {
     // Local root access spans owner partitions. Never choose an arbitrary same-named app.
     if (matches.length !== 1 || match === undefined)
       return yield* new AppAccessDenied({ reason: "forbidden" });
-    const app = yield* ownedSource(host.executor, identity.readOwner, match.id);
+    const { app, access } = yield* ownedSource(host, identity, match.id);
     if (app.slug !== slug) return yield* new AppAccessDenied({ reason: "forbidden" });
     const url = new URL(request.url, "http://executor.invalid");
     const write =
       url.pathname.endsWith("/git-receive-pack") ||
       url.searchParams.get("service") === "git-receive-pack";
-    if (write && (!identity.canWrite || identity.protectedApps.includes(app.id)))
+    if (write && (!identity.canWrite || !access.edit || identity.protectedApps.includes(app.id)))
       return yield* new AppAccessDenied({ reason: "forbidden" });
     return HttpServerResponse.fromWeb(
       yield* host.repositories.request(app.code, yield* HttpServerRequest.toWeb(request)),

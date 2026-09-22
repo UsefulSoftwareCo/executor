@@ -64,9 +64,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             page.waitForURL(`**/org/${actors.organization.slug}/apps`),
           );
           yield* browser.use(`${role} has the correct Add permission`, (page) =>
-            page
-              .getByRole("link", { name: "Add app", exact: true })
-              .waitFor({ state: role === "owner" ? "visible" : "hidden" }),
+            page.getByRole("link", { name: "Add app", exact: true }).waitFor({ state: "visible" }),
           );
           yield* browser.checkpoint(`${role} signed in through self-host password login`);
         }

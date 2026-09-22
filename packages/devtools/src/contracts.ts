@@ -23,14 +23,28 @@ export const LoopbackOrigin = Schema.String.check(
 
 /** Test membership roles supported by hosted products. Local has no account roles. */
 export const TestRole = Schema.Literals(["member", "admin", "owner"]);
+/** A selectable person is identified by user ID, independently of their current role. */
+export const DevtoolsAccount = Schema.Struct({
+  id: Schema.NonEmptyString,
+  role: TestRole,
+  name: Schema.String,
+  email: Schema.String,
+});
+/** The viewed organization determines membership; a login-wide active organization does not. */
+export const DevtoolsOrganization = Schema.Struct({
+  id: Schema.NonEmptyString,
+  slug: Schema.NonEmptyString,
+  name: Schema.String,
+});
 /** A host advertises only the development capability it implements. */
 export const DevtoolsState = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("accounts"),
     host: Schema.Literals(["self-host", "cloud"]),
-    organization: Schema.String,
-    accounts: Schema.Array(Schema.Struct({ role: TestRole, email: Schema.String })),
-    selected: Schema.NullOr(TestRole),
+    organization: DevtoolsOrganization,
+    accounts: Schema.Array(DevtoolsAccount),
+    selected: Schema.NullOr(Schema.String),
+    impersonating: Schema.Boolean,
   }),
   Schema.Struct({
     kind: Schema.Literal("pairing"),
@@ -38,7 +52,10 @@ export const DevtoolsState = Schema.Union([
     paired: Schema.Boolean,
   }),
 ]);
-/** A role selects a fixed fixture, never a supplied user ID. */
-export const TestSignIn = Schema.Struct({ role: TestRole });
+/** The server verifies that this user still belongs to the explicitly selected local organization. */
+export const TestSignIn = Schema.Struct({
+  organization: Schema.NonEmptyString,
+  userId: Schema.NonEmptyString,
+});
 /** A successful action changes the browser's HttpOnly session cookie. */
 export const DevtoolsSuccess = Schema.Struct({ status: Schema.Literal(true) });

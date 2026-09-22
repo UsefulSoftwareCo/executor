@@ -9,11 +9,32 @@ import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
 import type { ToolInvocationOptions } from "./tools.ts";
+import type { App } from "./apps.ts";
+import type { Account } from "./account.ts";
+import type { AccountConnectionId, StorageError } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import type { AppSourceStorage } from "./source.ts";
 
+/** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
+export interface ResourceLifecycle {
+  /** Recheck product authority immediately before acquiring and returning account credentials. */
+  readonly accountResolving: (account: Account) => Effect.Effect<void, StorageError>;
+  /** Recheck a saved connection after external authentication, before committing its result. */
+  readonly connectionCompleting: (
+    connection: AccountConnectionId,
+  ) => Effect.Effect<void, StorageError>;
+  /** Called once after inserting a new configured app, before its transaction commits. */
+  readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
+  /** Called once for a newly saved account, including secrets and OAuth completion. */
+  readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
+  /** Called after active-work checks, before deleting credentials in the same transaction. */
+  readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
+}
+
 /** Caller-owned SQL, blobs, execution and encryption; constructors do not migrate or close them. */
 export interface ExecutorOptions {
+  /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
+  readonly lifecycle?: ResourceLifecycle;
   /** Public callback origin, provided by the serving product. Local providers need a reachable tunnel. */
   readonly workflows?: WorkflowRuntime;
   readonly webhookOrigin?: string;

@@ -78,7 +78,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           }),
         );
         yield* evidence.step(
-          "Owner deploys an app; member cannot deploy",
+          "New apps are private until their creator shares them",
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
               name,
@@ -87,11 +87,18 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             expect(deployed.status).toBe(200);
             created.app = (yield* body(App, deployed)).id;
             expect(
-              (yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
-                name: `${name} denied`,
-                files,
-              })).status,
+              (yield* api.request(actors.member, "GET", `${prefix}/apps/${created.app}`)).status,
             ).toBe(403);
+            const access = yield* body(
+              Schema.Struct({ revision: Schema.String }),
+              yield* api.request(actors.owner, "GET", `${prefix}/apps/${created.app}/access`),
+            );
+            expect(
+              (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${created.app}/access`, {
+                revision: access.revision,
+                audience: { kind: "everyone" },
+              })).status,
+            ).toBe(200);
             const read = yield* api.request(actors.member, "GET", `${prefix}/apps/${created.app}`);
             expect(read.status).toBe(200);
             expect((yield* body(App, read)).id).toBe(created.app);
@@ -104,7 +111,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
               actors.owner,
               "POST",
               `${prefix}/apps/${created.app}/connections`,
-              { requirement: "service" },
+              {
+                requirement: "service",
+                destination: { kind: "shared", audience: { kind: "everyone" } },
+              },
             );
             expect(connection.status).toBe(200);
             const { id } = yield* body(Resource, connection);
@@ -131,7 +141,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           }),
         );
         yield* evidence.step(
-          "Member discovers tools; only admin invokes",
+          "Members and admins can use explicitly shared apps and accounts",
           Effect.gen(function* () {
             const tools = yield* api.request(
               actors.member,
@@ -153,7 +163,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
                 `${prefix}/apps/${created.app}/tools/call`,
                 call,
               )).status,
-            ).toBe(403);
+            ).toBe(200);
             const invoked = yield* api.request(
               actors.admin,
               "POST",
@@ -181,9 +191,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
               .waitFor({ state: "visible" }),
           );
           yield* browser.use(`${role} has the correct Add permission`, (page) =>
-            page
-              .getByRole("link", { name: "Add app", exact: true })
-              .waitFor({ state: role === "owner" ? "visible" : "hidden" }),
+            page.getByRole("link", { name: "Add app", exact: true }).waitFor({ state: "visible" }),
           );
           yield* browser.checkpoint(`${role} dashboard on the hosted target`);
         }
@@ -221,6 +229,16 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             });
             expect(imported.status).toBe(200);
             created = (yield* body(App, imported)).id;
+            const access = yield* body(
+              Schema.Struct({ revision: Schema.String }),
+              yield* api.request(actors.owner, "GET", `${prefix}/apps/${created}/access`),
+            );
+            expect(
+              (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${created}/access`, {
+                revision: access.revision,
+                audience: { kind: "everyone" },
+              })).status,
+            ).toBe(200);
           }),
         );
         yield* evidence.step(

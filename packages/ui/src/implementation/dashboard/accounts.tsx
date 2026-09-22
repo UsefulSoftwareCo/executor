@@ -17,6 +17,7 @@ export function AccountsPage<E>({
 }: QueryProps<Inventory, E> & {
   readonly action?: ReactNode;
   readonly accountAction?: (account: AccountSummary) => ReactNode;
+  readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
@@ -46,10 +47,12 @@ function AccountsList({
   data,
   search,
   accountAction,
+  accountMeta,
 }: {
   readonly data: Inventory;
   readonly search: string;
   readonly accountAction?: (account: AccountSummary) => ReactNode;
+  readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
   const { AppLink, AccountLink } = useDashboard();
   const accounts = data.accounts.filter((account) =>
@@ -92,6 +95,7 @@ function AccountsList({
                         </>
                       )}
                       <span>{account.method}</span>
+                      {accountMeta?.(account)}
                       {accountNeedsSignIn(account) && (
                         <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                           Needs sign-in

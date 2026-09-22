@@ -3,7 +3,11 @@ import { Effect, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/unstable/sql";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HostedApi } from "../contracts/api.ts";
-import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+import {
+  CurrentOrganization,
+  OrganizationForbidden,
+  OrganizationRole,
+} from "../contracts/organization.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import {
   Group,
@@ -47,12 +51,30 @@ const lockAdmin = Effect.gen(function* () {
   return organization.organization;
 });
 
+const groupReader = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const { organization } = yield* CurrentOrganization;
+  const user = yield* CurrentUserId;
+  if (user === undefined) return yield* new OrganizationForbidden();
+  const rows =
+    yield* sql`select id, role from member where "organizationId" = ${organization} and "userId" = ${user}`;
+  const actor = (yield* decodeRows(
+    Schema.Struct({ id: GroupMemberId, role: OrganizationRole }),
+    rows,
+  ))[0];
+  if (rows.length !== 1 || actor === undefined) return yield* new OrganizationForbidden();
+  return { ...actor, organization };
+});
+
 const readGroup = (id: GroupId, lock = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const { organization } = yield* CurrentOrganization;
-    const rows =
-      yield* sql`select id, name, description, revision from hosted_groups where id = ${id} and organization_id = ${organization} ${lock ? sql`for update` : sql``}`;
+    const actor = yield* groupReader;
+    const { organization } = actor;
+    const rows = yield* sql`select g.id, g.name, g.description, g.revision from hosted_groups g
+      where g.id = ${id} and g.organization_id = ${organization}
+      and (${actor.role !== "member"} or exists (select 1 from hosted_group_members gm where gm.group_id = g.id and gm.member_id = ${actor.id}))
+      ${lock ? sql`for update` : sql``}`;
     const group = (yield* decodeRows(StoredGroup, rows))[0];
     if (group === undefined) return yield* new GroupNotFound();
     const members =
@@ -67,19 +89,20 @@ const readGroup = (id: GroupId, lock = false) =>
 
 const listGroups = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const access = yield* CurrentOrganization;
+  const access = yield* groupReader;
   const groups =
-    yield* sql`select id, name, description, revision from hosted_groups where organization_id = ${access.organization} order by lower(name), id`.pipe(
-      Effect.flatMap((rows) => decodeRows(StoredGroup, rows)),
-    );
+    yield* sql`select g.id, g.name, g.description, g.revision from hosted_groups g where g.organization_id = ${access.organization}
+    and (${access.role !== "member"} or exists (select 1 from hosted_group_members gm where gm.group_id = g.id and gm.member_id = ${access.id}))
+    order by lower(g.name), g.id`.pipe(Effect.flatMap((rows) => decodeRows(StoredGroup, rows)));
+  const groupIds = groups.map((group) => group.id);
   const memberships =
-    yield* sql`select gm.group_id as "group", gm.member_id as member from hosted_group_members gm join hosted_groups g on g.id = gm.group_id join member m on m.id = gm.member_id where g.organization_id = ${access.organization} and m."organizationId" = ${access.organization} order by gm.member_id`.pipe(
+    yield* sql`select gm.group_id as "group", gm.member_id as member from hosted_group_members gm join hosted_groups g on g.id = gm.group_id join member m on m.id = gm.member_id where g.organization_id = ${access.organization} and m."organizationId" = ${access.organization} and ${sql.in("g.id", groupIds)} order by gm.member_id`.pipe(
       Effect.flatMap((rows) => decodeRows(Membership, rows)),
     );
   const members =
-    yield* sql`select m.id, m."userId", u.name, u.email from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization} order by lower(u.name), m.id`.pipe(
-      Effect.flatMap((rows) => decodeRows(GroupMember, rows)),
-    );
+    yield* sql`select m.id, m."userId", u.name, u.email from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization}
+    and (${access.role !== "member"} or exists (select 1 from hosted_group_members gm where gm.member_id = m.id and ${sql.in("gm.group_id", groupIds)}))
+    order by lower(u.name), m.id`.pipe(Effect.flatMap((rows) => decodeRows(GroupMember, rows)));
   return {
     groups: groups.map((group) => ({
       ...group,
