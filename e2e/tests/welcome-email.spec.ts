@@ -43,10 +43,11 @@ quick heads up: i hate getting emails as much as you do, so you won't get many f
 
 on to the useful part. if you're still working out where to start, here's a prompt you can hand to your agent:
 
-"add the executor mcp server at ${target.origin}/mcp, then read the executor docs at https://executor.sh/docs and work out how you can best use executor to help me."
+"add the executor mcp server at ${target.origin}/mcp, then read the executor docs at ${target.origin}/docs and work out how you can best use executor to help me."
 
 if you get stuck or have questions, just reply. this was an automated email but replies go straight to me, and i'd love to hear what you're using executor for.`);
         expect(welcome?.html).toContain("<p>hey Taylor,</p>");
+        expect(welcome?.html).toContain(`read the executor docs at ${target.origin}/docs`);
         const link = welcome?.text.match(
           /and if you'd rather not get these at all, the unsubscribe link is right here: (\S+)$/,
         )?.[1];

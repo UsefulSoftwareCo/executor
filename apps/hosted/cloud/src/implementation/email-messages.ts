@@ -90,9 +90,6 @@ export const invitationEmailMessage = ({
   };
 };
 
-/** Public docs live on the marketing site, not on the deployment origin. */
-const docsUrl = "https://executor.sh/docs";
-
 /**
  * A personal, all-lowercase welcome with matching text and HTML; recipient names are
  * escaped, never markup. It carries one starter prompt with the deployment's MCP URL and
@@ -104,6 +101,8 @@ export const welcomeEmailMessage = (
   links: UnsubscribeLinks,
   origin: string,
 ): AuthEmail => {
+  // IaC serves the docs and MCP endpoint on the same canonical cloud origin.
+  const docsUrl = `${origin}/docs`;
   const firstName = name.trim().split(/\s+/)[0];
   const greeting = firstName && !firstName.includes("@") ? `hey ${firstName},` : "hey there,";
   const starterPrompt = `add the executor mcp server at ${origin}/mcp, then read the executor docs at ${docsUrl} and work out how you can best use executor to help me.`;
