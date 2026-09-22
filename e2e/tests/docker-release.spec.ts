@@ -6,161 +6,246 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { driver } from "../support/platform.ts";
 
-it.live("released image keeps login and a deployed app across a container restart", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
-      const architecture = yield* Config.String("EXECUTOR_E2E_DOCKER_ARCH");
-      const id = `executor-release-${randomBytes(8).toString("hex")}`;
-      const run = (args: readonly string[], env: Record<string, string> = {}) =>
-        processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
-      expect(
-        (yield* run(["image", "inspect", "--format", "{{.Architecture}}", image])).trim(),
-      ).toBe(architecture);
-      const port = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const listener = yield* Effect.acquireRelease(
-            Effect.sync(() => createServer()),
-            (listener) =>
-              driver(
-                "release port",
-                () => new Promise<void>((resolve) => listener.close(() => resolve())),
-              ).pipe(Effect.orDie),
-          );
-          return yield* driver(
-            "allocate port",
-            () =>
-              new Promise<number>((resolve, reject) => {
-                listener.once("error", reject);
-                listener.listen(0, "127.0.0.1", () => {
-                  const address = listener.address();
-                  if (address === null || typeof address === "string")
-                    reject(new Error("No test port"));
-                  else resolve(address.port);
-                });
-              }),
-          );
-        }),
-      );
-      const origin = `http://127.0.0.1:${port}`;
-      const secret = randomBytes(32).toString("hex");
-      const key = randomBytes(32).toString("hex");
-      yield* Effect.acquireRelease(run(["volume", "create", id]), () =>
-        run(["volume", "rm", id]).pipe(Effect.orDie),
-      );
-      yield* Effect.acquireRelease(
-        run(
-          [
-            "run",
-            "--detach",
-            "--name",
-            id,
-            "--init",
-            "--publish",
-            `127.0.0.1:${port}:4400`,
-            "--volume",
-            `${id}:/app/data`,
-            "--env",
-            "BETTER_AUTH_SECRET",
-            "--env",
-            "EXECUTOR_ENCRYPTION_KEY",
-            "--env",
-            "BETTER_AUTH_URL",
-            image,
-          ],
-          { BETTER_AUTH_SECRET: secret, EXECUTOR_ENCRYPTION_KEY: key, BETTER_AUTH_URL: origin },
-        ),
-        () => run(["rm", "--force", id]).pipe(Effect.orDie),
-      );
-      const request = (route: string, data?: unknown, cookie?: string) =>
-        driver("image HTTP request", () =>
-          fetch(`${origin}${route}`, {
-            method: data === undefined ? "GET" : "POST",
-            headers: {
-              origin,
-              "content-type": "application/json",
-              ...(cookie === undefined ? {} : { cookie }),
-            },
-            ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+for (const mode of ["explicit", "local", "railway"] as const)
+  it.live(`released image keeps login and encrypted credentials across restart (${mode})`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+        const architecture = yield* Config.String("EXECUTOR_E2E_DOCKER_ARCH");
+        const id = `executor-release-${randomBytes(8).toString("hex")}`;
+        const run = (args: readonly string[], env: Record<string, string> = {}) =>
+          processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
+        expect(
+          (yield* run(["image", "inspect", "--format", "{{.Architecture}}", image])).trim(),
+        ).toBe(architecture);
+        const port = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const listener = yield* Effect.acquireRelease(
+              Effect.sync(() => createServer()),
+              (listener) =>
+                driver(
+                  "release port",
+                  () => new Promise<void>((resolve) => listener.close(() => resolve())),
+                ).pipe(Effect.orDie),
+            );
+            return yield* driver(
+              "allocate port",
+              () =>
+                new Promise<number>((resolve, reject) => {
+                  listener.once("error", reject);
+                  listener.listen(0, "127.0.0.1", () => {
+                    const address = listener.address();
+                    if (address === null || typeof address === "string")
+                      reject(new Error("No test port"));
+                    else resolve(address.port);
+                  });
+                }),
+            );
           }),
         );
-      yield* Effect.addFinalizer((exit) =>
-        Exit.isFailure(exit)
-          ? run([
+        const address = `http://127.0.0.1:${port}`;
+        // Keep the container listener outside the OS ephemeral port range used
+        // by the embedded app runtime. Only the published host port is random.
+        const containerPort = 8080;
+        const origin =
+          mode === "railway"
+            ? "https://release.up.railway.app"
+            : `http://localhost:${mode === "local" ? containerPort : port}`;
+        const secret = randomBytes(32).toString("hex");
+        const key = randomBytes(32).toString("hex");
+        yield* Effect.acquireRelease(run(["volume", "create", id]), () =>
+          run(["volume", "rm", id]).pipe(Effect.orDie),
+        );
+        // Railway volumes do not inherit the image directory's owner.
+        if (mode === "railway")
+          yield* run([
+            "run",
+            "--rm",
+            "--user",
+            "0",
+            "--entrypoint",
+            "sh",
+            "--volume",
+            `${id}:/app/data`,
+            image,
+            "-c",
+            "chown 0:0 /app/data && chmod 755 /app/data",
+          ]);
+        const environment: Record<string, string> = {
+          PORT: String(containerPort),
+          ...(mode === "explicit"
+            ? {
+                BETTER_AUTH_SECRET: secret,
+                EXECUTOR_ENCRYPTION_KEY: key,
+                BETTER_AUTH_URL: origin,
+                RAILWAY_PUBLIC_DOMAIN: "ignored.invalid/path",
+              }
+            : {}),
+          ...(mode === "railway" ? { RAILWAY_PUBLIC_DOMAIN: "release.up.railway.app" } : {}),
+        };
+        const start = () =>
+          run(
+            [
+              "run",
+              "--detach",
+              "--name",
+              id,
+              "--init",
+              "--publish",
+              `127.0.0.1:${port}:${containerPort}`,
+              "--volume",
+              `${id}:/app/data`,
+              ...Object.keys(environment).flatMap((name) => ["--env", name]),
+              image,
+            ],
+            environment,
+          );
+        yield* Effect.acquireRelease(start(), () => run(["rm", "--force", id]).pipe(Effect.orDie));
+        const request = (route: string, data?: unknown, cookie?: string) =>
+          driver("image HTTP request", () =>
+            fetch(`${address}${route}`, {
+              method: data === undefined ? "GET" : "POST",
+              headers: {
+                origin,
+                "content-type": "application/json",
+                ...(cookie === undefined ? {} : { cookie }),
+              },
+              ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+            }),
+          );
+        yield* Effect.addFinalizer((exit) =>
+          Exit.isFailure(exit)
+            ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+            : Effect.void,
+        );
+        const ready = request("/health").pipe(
+          Effect.flatMap((r) => (r.status === 200 ? Effect.void : Effect.fail("not ready"))),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 200 }),
+        );
+        yield* ready;
+        const serverPid = (yield* run(["exec", id, "cat", "/proc/1/task/1/children"])).trim();
+        expect(serverPid).toMatch(/^\d+$/);
+        const serverStatus = yield* run(["exec", id, "cat", `/proc/${serverPid}/status`]);
+        expect(serverStatus).toMatch(/^Uid:\s+1000\s+1000\s+1000\s+1000$/m);
+        const discovery = yield* request("/.well-known/oauth-authorization-server");
+        const metadata = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ issuer: Schema.String }),
+        )(yield* driver("OAuth origin", () => discovery.json()));
+        expect(metadata.issuer).toBe(`${origin}/api/auth`);
+        if (mode !== "explicit") {
+          expect(
+            (yield* run([
               "exec",
               id,
-              "tail",
-              "-n",
-              "40",
-              "/app/data/diagnostics/executor-selfhost.jsonl",
-            ]).pipe(Effect.flatMap(Console.error), Effect.ignore)
-          : Effect.void,
-      );
-      const ready = request("/health").pipe(
-        Effect.flatMap((r) => (r.status === 200 ? Effect.void : Effect.fail("not ready"))),
-        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 200 }),
-      );
-      yield* ready;
-      const root = yield* request("/");
-      expect(root.status).toBe(200);
-      expect(yield* driver("dashboard HTML", () => root.text())).toContain("<html");
-      const setup = yield* request("/api/auth/self-host/setup", {
-        name: "Release Owner",
-        email: "release@example.test",
-        password: "Synthetic-release-password-123!",
-        organizationName: "Release lab",
-      });
-      expect(setup.status).toBe(200);
-      const cookie = setup.headers
-        .getSetCookie()
-        .map((part) => part.split(";")[0])
-        .join("; ");
-      const organizations = yield* request("/api/auth/organization/list", undefined, cookie);
-      expect(organizations.status).toBe(200);
-      const parsed = yield* Schema.decodeUnknownEffect(
-        Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
-      )(yield* driver("organization response", () => organizations.json()));
-      const prefix = `/api/organizations/${parsed[0].id}`;
-      const deployed = yield* request(
-        `${prefix}/apps/deploy`,
-        {
-          name: "Image check",
-          files: [
-            {
-              path: "index.ts",
-              content: `import { defineApp, query, object } from "apps"; import isNumber from "is-number"; export default defineApp({ accounts: {} }, { queries: { check: query({ input: object({}) }, async () => isNumber("2")) } });`,
-            },
-            {
-              path: "package.json",
-              content: JSON.stringify({ dependencies: { "is-number": "7.0.0" } }),
-            },
-          ],
-        },
-        cookie,
-      );
-      expect(
-        deployed.status,
-        yield* driver("deployment result", () => deployed.clone().text()),
-      ).toBe(200);
-      const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-        yield* driver("deployment response", () => deployed.json()),
-      );
-      for (const restart of [false, true]) {
-        if (restart) {
-          yield* run(["restart", "--time", "15", id]);
-          yield* ready;
+              "stat",
+              "-c",
+              "%a",
+              "/app/data/auth-secret.key",
+              "/app/data/encryption.key",
+            ])).trim(),
+          ).toBe("600\n600");
         }
-        const viewer = yield* request("/api/viewer", undefined, cookie);
-        expect(viewer.status).toBe(200);
-        const called = yield* request(
-          `${prefix}/apps/${app.id}/tools/call`,
-          { tool: "queries.check", input: {} },
+        const root = yield* request("/");
+        expect(root.status).toBe(200);
+        expect(yield* driver("dashboard HTML", () => root.text())).toContain("<html");
+        const setup = yield* request("/api/auth/self-host/setup", {
+          name: "Release Owner",
+          email: "release@example.test",
+          password: "Synthetic-release-password-123!",
+          organizationName: "Release lab",
+        });
+        expect(setup.status).toBe(200);
+        const cookie = setup.headers
+          .getSetCookie()
+          .map((part) => part.split(";")[0])
+          .join("; ");
+        const organizations = yield* request("/api/auth/organization/list", undefined, cookie);
+        expect(organizations.status).toBe(200);
+        const parsed = yield* Schema.decodeUnknownEffect(
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+        )(yield* driver("organization response", () => organizations.json()));
+        const prefix = `/api/organizations/${parsed[0].id}`;
+        const deployed = yield* request(
+          `${prefix}/apps/deploy`,
+          {
+            name: "Image check",
+            files: [
+              {
+                path: "index.ts",
+                content: `import { defineApp, defineProvider, secrets, string, query, object } from "apps"; import isNumber from "is-number"; const service = defineProvider({ name: "Release test", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } }); export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ queries: { check: query({ input: object({}) }, async () => isNumber("2") && accounts.service.fields.token === "synthetic-release-token") } }));`,
+              },
+              {
+                path: "package.json",
+                content: JSON.stringify({ dependencies: { "is-number": "7.0.0" } }),
+              },
+            ],
+          },
           cookie,
         );
-        expect(called.status).toBe(200);
-        expect(yield* driver("query response", () => called.json())).toBe(true);
-      }
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-);
+        expect(
+          deployed.status,
+          yield* driver("deployment result", () => deployed.clone().text()),
+        ).toBe(200);
+        const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+          yield* driver("deployment response", () => deployed.json()),
+        );
+        const connectionResponse = yield* request(
+          `${prefix}/apps/${app.id}/connections`,
+          { requirement: "service" },
+          cookie,
+        );
+        expect(connectionResponse.status).toBe(200);
+        const connection = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+          yield* driver("connection response", () => connectionResponse.json()),
+        );
+        const connected = yield* request(
+          `${prefix}/connections/${connection.id}/submit`,
+          { method: "key", label: "Release account", fields: { token: "synthetic-release-token" } },
+          cookie,
+        );
+        expect(connected.status).toBe(200);
+        for (const restart of [false, true]) {
+          if (restart) {
+            yield* run(["stop", "--time", "15", id]);
+            yield* run(["rm", id]);
+            yield* start();
+            yield* ready;
+          }
+          const viewer = yield* request("/api/viewer", undefined, cookie);
+          expect(viewer.status).toBe(200);
+          const called = yield* request(
+            `${prefix}/apps/${app.id}/tools/call`,
+            { tool: "queries.check", input: {} },
+            cookie,
+          );
+          expect(called.status).toBe(200);
+          expect(yield* driver("query response", () => called.json())).toBe(true);
+        }
+        if (mode !== "explicit") {
+          yield* run(["stop", "--time", "15", id]);
+          yield* run(["rm", id]);
+          // Losing one key must not silently generate a replacement for existing data.
+          yield* run([
+            "run",
+            "--rm",
+            "--volume",
+            `${id}:/app/data`,
+            image,
+            ...(mode === "local"
+              ? ["rm", "/app/data/encryption.key"]
+              : ["sh", "-c", "printf broken-key > /app/data/encryption.key"]),
+          ]);
+          yield* start();
+          expect((yield* run(["wait", id])).trim()).not.toBe("0");
+          const logs = yield* run(["logs", id]);
+          expect(logs).toContain(
+            mode === "local"
+              ? "EXECUTOR_ENCRYPTION_KEY is missing for an existing database"
+              : "Saved EXECUTOR_ENCRYPTION_KEY is invalid",
+          );
+          expect(logs).not.toContain("broken-key");
+        }
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );

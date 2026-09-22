@@ -68,7 +68,10 @@ limits. Browser login tests still exercise the actual password form.
 
 The self-host release-image check runs against a prebuilt Docker image, outside
 the source-server targets. It covers first-admin setup, an npm-dependent app,
-tool execution, and retained login/app execution after a container restart:
+encrypted account access, and retained login/app execution after replacing the
+container with the same volume. It runs with explicit settings, local defaults,
+and Railway's domain/port variables plus a root-owned volume. It also checks
+non-root execution, generated key permissions, and refusal to replace missing keys:
 
 ```sh
 EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \

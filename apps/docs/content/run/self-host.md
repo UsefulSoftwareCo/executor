@@ -13,13 +13,17 @@ does not offer the hosted Google and GitHub sign-in buttons.
 
 ## Configure it
 
-Three settings are required. The container will not start without them.
+No environment variables are needed for local Docker or a Railway service with a
+public domain. On first boot, Executor generates separate session and encryption
+keys and saves them in the data volume. Later boots reuse those files.
+
+These settings override the defaults:
 
 | Variable                             | Required | Purpose                                                                  |
 | ------------------------------------ | -------- | ------------------------------------------------------------------------ |
-| `BETTER_AUTH_URL`                    | yes      | The exact public origin you load in the browser.                         |
-| `BETTER_AUTH_SECRET`                 | yes      | Session secret. At least 32 characters. Rotating it signs everyone out.  |
-| `EXECUTOR_ENCRYPTION_KEY`            | yes      | Key that encrypts stored credentials. Exactly 64 hexadecimal characters. |
+| `BETTER_AUTH_URL`                    | no       | Public origin. Defaults to Railway's HTTPS domain, then `http://localhost:4400` (or `PORT`). |
+| `BETTER_AUTH_SECRET`                 | no       | Override the saved session secret. At least 32 characters. Rotating it signs everyone out. |
+| `EXECUTOR_ENCRYPTION_KEY`            | no       | Override the saved credential encryption key. Exactly 64 hexadecimal characters. |
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
@@ -36,8 +40,8 @@ A startup line records it when the derived default turns private fetch on. Set
 in the instance shares that network position, so grant it deliberately.
 
 `BETTER_AUTH_URL` must match the scheme, host and port you actually use. If it
-does not, browser sign-in is rejected as an invalid origin. Origins are never
-inferred from a request header.
+does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred
+from a request header. Set `BETTER_AUTH_URL` when you use a custom domain.
 
 Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
 account by OAuth uses it. The SSO callback is
@@ -52,19 +56,18 @@ Use `ghcr.io/usefulsoftwareco/executor-selfhost:beta` for Executor v2 on Linux
 amd64 or arm64. The `latest` tag still serves v1. Start with a new volume;
 this image does not migrate an existing v1 database.
 
-Supply the three required variables through your secret manager, then run:
+For a local installation, run:
 
 ```bash
 docker pull ghcr.io/usefulsoftwareco/executor-selfhost:beta
 docker run --detach --name executor-v2 --init --restart unless-stopped \
   --publish 127.0.0.1:4400:4400 \
   --volume executor-v2-data:/app/data \
-  --env BETTER_AUTH_URL --env BETTER_AUTH_SECRET --env EXECUTOR_ENCRYPTION_KEY \
   ghcr.io/usefulsoftwareco/executor-selfhost:beta
 ```
 
-Use `BETTER_AUTH_URL=http://localhost:4400` for a local instance, or your exact
-HTTPS origin for a server. Add `--env NAME` for any optional settings above.
+Open `http://localhost:4400`. For a server outside Railway, set `BETTER_AUTH_URL`
+to its exact HTTPS origin. Add `--env NAME` for any settings above.
 To pin a release, replace `beta` with `beta-<full Git commit SHA>`.
 
 The container publishes port `4400` on loopback only, as
@@ -82,11 +85,35 @@ The first person to finish setup becomes the owner, and one organization is
 created. After that, people join through invitations, or through SSO when you
 have configured it.
 
+## Deploy on Railway
+
+1. Create a service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`.
+2. Attach a new persistent volume at `/app/data`.
+3. Generate a public domain in the service's networking settings. Route it to port `4400`, or your configured `PORT`.
+4. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
+5. Deploy and open the public domain to create the first administrator.
+
+No database service or secret variables are needed. Executor reads
+`RAILWAY_PUBLIC_DOMAIN` and `PORT`. The container prepares the root-owned volume,
+then runs the server as the unprivileged `node` user. You do not need
+`RAILWAY_RUN_UID=0` or a custom start command. Keep one replica per volume.
+
+For a custom domain, set `BETTER_AUTH_URL` to that exact HTTPS origin. App web
+pages need the additional wildcard domain described below; the dashboard, API,
+and MCP endpoint use the service domain.
+
 ## Storage
 
 Everything that must survive a restart lives in the named volume `executor-v2-data`,
-mounted at `/app/data`. That is the database, the encrypted credentials and the
-diagnostics.
+mounted at `/app/data`. This includes the database, app source and builds, app
+data, diagnostics, and generated keys (`auth-secret.key` and `encryption.key`).
+The key files are readable only by the server user. Back up the whole volume.
+
+If you supply keys through environment variables, keep those values in your
+secret manager as well; Executor does not save those overrides to disk. Keep
+the same key source across upgrades. If a saved key is missing or invalid for
+an existing database, startup fails instead of creating a replacement. Restore
+the original key. Changing the encryption key makes existing credentials unreadable.
 
 Back up by snapshotting that volume. Do not remove it when you update the image.
 Before updating, stop the container and back up the volume. Pull the new image,
@@ -103,7 +130,7 @@ cd executor-v2
 docker compose -f apps/hosted/self-host/compose.yaml up --build -d
 ```
 
-Supply the same required variables. This Compose setup uses a separate named
+Compose also works without environment variables. This setup uses a separate named
 volume, `pglite-data`; do not confuse it with the published-image example above.
 
 ## Serving app web pages

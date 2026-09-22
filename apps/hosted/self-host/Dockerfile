@@ -12,7 +12,7 @@ RUN bun run --cwd packages/telemetry build:motel
 RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd apps/hosted/self-host build
 FROM node:24.14.0-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git gosu && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production EXECUTOR_ENVIRONMENT=self-host HOST=0.0.0.0 PORT=4400 DASHBOARD_DIR=/app/web EXECUTOR_DATA_DIR=/app/data
 WORKDIR /app
 # Keep workspace packages and the compiler available for app deployment at runtime.
@@ -25,7 +25,8 @@ COPY --from=build --chown=node:node /build/apps/hosted/self-host/dist ./apps/hos
 COPY --from=build --chown=node:node /build/apps/hosted/self-host/web/dist ./web
 RUN mkdir -p /app/data && chown node:node /app/data && chmod 700 /app/data
 VOLUME /app/data
-USER node
+COPY --chmod=755 apps/hosted/self-host/entrypoint.sh /usr/local/bin/executor-entrypoint
+ENTRYPOINT ["executor-entrypoint"]
 EXPOSE 4400
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e 'fetch("http://127.0.0.1:" + process.env.PORT + "/health").then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))'

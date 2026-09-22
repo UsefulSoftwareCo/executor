@@ -10,17 +10,14 @@ The beta image is `ghcr.io/usefulsoftwareco/executor-selfhost:beta`, for Linux
 amd64 and arm64. The `latest` tag still belongs to Executor v1. Use a new data
 volume for v2; this is not an in-place v1 data migration.
 
-Supply `BETTER_AUTH_SECRET` and `EXECUTOR_ENCRYPTION_KEY` from your secret manager.
-Keep a stable random signing secret of at least 32 characters and a separate
-32-byte encryption key encoded as 64 hexadecimal characters.
+No environment variables are required locally. Executor generates and saves its
+session and encryption keys in the persistent volume on first boot.
 
 ```sh
-export BETTER_AUTH_URL=http://localhost:4400
 docker pull ghcr.io/usefulsoftwareco/executor-selfhost:beta
 docker run --detach --name executor-v2 --init --restart unless-stopped \
   --publish 127.0.0.1:4400:4400 \
   --volume executor-v2-data:/app/data \
-  --env BETTER_AUTH_URL --env BETTER_AUTH_SECRET --env EXECUTOR_ENCRYPTION_KEY \
   ghcr.io/usefulsoftwareco/executor-selfhost:beta
 ```
 
@@ -40,26 +37,16 @@ git clone --depth 1 --branch v2 https://github.com/UsefulSoftwareCo/executor.git
 cd executor-v2
 ```
 
-Use your secret manager to supply these environment variables to Docker Compose:
-
-| Variable                  | Value                                                                       |
-| ------------------------- | --------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`      | A saved random secret of at least 32 characters.                            |
-| `EXECUTOR_ENCRYPTION_KEY` | A separate saved random key: 32 bytes encoded as 64 hexadecimal characters. |
-
-Keep these values stable across restarts and upgrades. The encryption key is needed
-to read connected account credentials. A database backup alone cannot recover them.
-
 For a local installation:
 
 ```sh
-export BETTER_AUTH_URL=http://localhost:4400
-docker compose -f apps/hosted/self-host/compose.yaml config --quiet
 docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
 ```
 
-The configuration check fails if either required secret is missing. It does not
-print the resolved configuration or secret values.
+Optional overrides are `BETTER_AUTH_URL` (exact public origin),
+`BETTER_AUTH_SECRET` (at least 32 characters), and `EXECUTOR_ENCRYPTION_KEY`
+(exactly 64 hexadecimal characters). Explicit keys stay in your secret manager;
+the server saves only keys it generates. Keep the original values across upgrades.
 
 Open [http://localhost:4400](http://localhost:4400) and complete the first-admin setup.
 Self-host uses password login by default. Add an app, then connect an account from
@@ -68,13 +55,29 @@ instructions for your client. MCP uses browser sign-in.
 
 The health endpoint is [http://localhost:4400/health](http://localhost:4400/health).
 
+## Railway
+
+Create an image service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`,
+attach a new volume at `/app/data`, and generate a public domain routed to port
+`4400` (or your `PORT`). Set the healthcheck path to `/health` with a 120-second
+startup timeout. Deploy, open the domain, and create the first administrator.
+
+Executor derives its HTTPS origin from `RAILWAY_PUBLIC_DOMAIN`, generates keys,
+and prepares Railway's root-owned mount before dropping to the `node` user.
+No secret variables, external database, custom start command, or
+`RAILWAY_RUN_UID` override are needed. Use one replica. For a custom domain,
+set `BETTER_AUTH_URL` to its exact HTTPS origin. App web pages still require
+wildcard DNS as described below.
+
 ## Data and updates
 
 The named `pglite-data` volume stores the database, app source, builds, app data,
-and diagnostics under `/app/data`. Keep one server instance per data volume.
+diagnostics, and generated `auth-secret.key` and `encryption.key` files under `/app/data`. Keep one server instance per data volume.
 
-Before an upgrade, stop the server and back up the volume. Keep both configured
-secrets in your secret manager. To build and start an updated version:
+Before an upgrade, stop the server and back up the whole volume, including the
+key files. Keep any explicit secret overrides in your secret manager. An existing
+database with a missing or invalid saved key will not start; restore the original
+key instead of generating a replacement. To build and start an updated version:
 
 ```sh
 git pull --ff-only

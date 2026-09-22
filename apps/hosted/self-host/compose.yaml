@@ -6,13 +6,14 @@ services:
       context: ../../..
       dockerfile: apps/hosted/self-host/Dockerfile
     environment:
-      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set the dashboard origin}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set a stable secret of at least 32 characters}
+      BETTER_AUTH_URL:
+      BETTER_AUTH_SECRET:
+      RAILWAY_PUBLIC_DOMAIN:
       SSO_DISCOVERY_URL: ${SSO_DISCOVERY_URL:-}
       SSO_CLIENT_ID: ${SSO_CLIENT_ID:-}
       SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:-}
       SSO_ALLOWED_DOMAINS: ${SSO_ALLOWED_DOMAINS:-}
-      EXECUTOR_ENCRYPTION_KEY: ${EXECUTOR_ENCRYPTION_KEY:?Set a stable 32-byte hexadecimal encryption key}
+      EXECUTOR_ENCRYPTION_KEY:
       # OAuth transport exceptions are explicit and parsed at startup.
       EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:

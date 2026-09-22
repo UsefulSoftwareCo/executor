@@ -35,7 +35,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { dataDirectory, appUiBaseUrl } from "./contracts/config.ts";
 import { safeHttpClient } from "@executor-js/utils/safe-fetch";
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
-import { Config, Deferred, Effect, Layer, Option, Path, Schema } from "effect";
+import { Config, ConfigProvider, Deferred, Effect, Layer, Option, Path, Schema } from "effect";
+import { selfHostConfiguration } from "./implementation/bootstrap.ts";
 import {
   HttpRouter,
   HttpServer,
@@ -213,4 +214,12 @@ const server = Layer.unwrap(
   Layer.provide(NodeHttpServer.layerHttpServices),
 );
 
-if (import.meta.main) NodeRuntime.runMain(Layer.launch(server));
+if (import.meta.main)
+  NodeRuntime.runMain(
+    Effect.gen(function* () {
+      const configuration = yield* selfHostConfiguration;
+      return yield* Layer.launch(server).pipe(
+        Effect.provideService(ConfigProvider.ConfigProvider, configuration),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerHttpServices)),
+  );
