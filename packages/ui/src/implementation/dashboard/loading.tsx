@@ -1,42 +1,6 @@
 import { Skeleton } from "../components/skeleton.tsx";
 import type { ReactNode } from "react";
-
-/** Stable page geometry shared by content and its loading state. */
-export function PageFrame({
-  title,
-  description,
-  count,
-  action,
-  children,
-}: {
-  readonly title: string;
-  readonly description?: string;
-  readonly count?: number;
-  readonly action?: ReactNode;
-  readonly children: ReactNode;
-}) {
-  return (
-    <section className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-      <div className="page-heading flex justify-between items-center gap-4 min-h-12 mb-4.5 max-[740px]:items-start">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
-            {title}
-            {count !== undefined && (
-              <span className="ml-2 align-middle font-mono text-[13px] font-normal text-muted-foreground">
-                {count}
-              </span>
-            )}
-          </h1>
-          {description && (
-            <p className="mt-1.25 text-[13px] leading-[1.6] text-muted-foreground">{description}</p>
-          )}
-        </div>
-        {action}
-      </div>
-      {children}
-    </section>
-  );
-}
+import { PageFrame, PageHeader } from "./page.tsx";
 
 /** Card-shaped placeholders use the same grid and footprint as installed apps. */
 export function AppCardsSkeleton() {
@@ -124,7 +88,8 @@ export function PageSkeleton({
   readonly description?: string;
 }) {
   return (
-    <PageFrame title={title} {...(description === undefined ? {} : { description })}>
+    <PageFrame>
+      <PageHeader title={title} description={description} />
       <DetailSkeleton label={`Loading ${title.toLowerCase()}`} />
     </PageFrame>
   );
@@ -140,15 +105,17 @@ export function InventoryPageSkeleton({
 }) {
   const apps = kind === "apps";
   return (
-    <PageFrame
-      action={action}
-      title={apps ? "Apps" : "Accounts"}
-      description={
-        apps
-          ? "Your installed apps and their selected accounts."
-          : "Saved sign-ins, available to your apps."
-      }
-    >
+    <PageFrame>
+      <PageHeader
+        title={apps ? "Apps" : "Accounts"}
+        description={
+          apps
+            ? "Your installed apps and their selected accounts."
+            : "Saved sign-ins, available to your apps."
+        }
+      >
+        {action}
+      </PageHeader>
       <div
         className={
           apps

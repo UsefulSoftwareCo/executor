@@ -1,6 +1,7 @@
+import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { OrganizationSlug, OrganizationReference } from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { PageFrame, PageSkeleton } from "@executor-js/ui/dashboard/loading";
+import { PageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -102,7 +103,8 @@ export function OrganizationDetailsBoundary({ children }: { readonly children: R
   const route = useOrganizationRoute();
   if (organization === null && route.metadataFailed)
     return (
-      <PageFrame title="Organization settings">
+      <PageFrame>
+        <PageHeader title="Organization settings" />
         <p role="alert">Unable to load organization settings.</p>
         <Button variant="outline" onClick={route.retry}>
           Try again

@@ -1,3 +1,4 @@
+import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit } from "effect";
 import { useState, type ReactNode } from "react";
@@ -66,12 +67,8 @@ function OrganizationSettings({
     organization.checking || renaming.waiting || changingSlug.waiting || changingLogo.waiting;
   useDocumentTitle(productTitle(`${organization.name} settings`));
   return (
-    <section className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
-        <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
-          {organization.name}
-        </h1>
-      </div>
+    <PageFrame>
+      <PageHeader title={organization.name} />
       {organization.role !== "member" && (
         <div className="organization-settings flex flex-col gap-3">
           <OrganizationName disabled={pending} />
@@ -82,7 +79,7 @@ function OrganizationSettings({
       )}
       <OrganizationMembers emailInvitations={emailInvitations} />
       {organization.role !== "member" && footer && <div className="mt-6">{footer}</div>}
-    </section>
+    </PageFrame>
   );
 }
 

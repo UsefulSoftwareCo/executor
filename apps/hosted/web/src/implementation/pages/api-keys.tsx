@@ -1,4 +1,5 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Redacted } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -82,14 +83,8 @@ function PersonalAccessTokens() {
     2,
   );
   return (
-    <section className="mx-auto w-full max-w-5xl p-6 max-sm:p-4">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">API keys</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Personal access tokens for scripts and agents.
-          </p>
-        </div>
+    <PageFrame>
+      <PageHeader title="API keys" description="Personal access tokens for scripts and agents.">
         <Button
           onClick={() => {
             setError(undefined);
@@ -99,7 +94,7 @@ function PersonalAccessTokens() {
         >
           Create token
         </Button>
-      </div>
+      </PageHeader>
       <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
         Tokens have your current permissions. Changes to your organization memberships and roles
         apply automatically. Tokens stay active when you sign out.
@@ -421,6 +416,6 @@ function PersonalAccessTokens() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </PageFrame>
   );
 }

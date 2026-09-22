@@ -1,4 +1,5 @@
 import { EmptyState } from "./empty-state.tsx";
+import { PageFrame, PageHeader } from "./page.tsx";
 import type { ComponentType, ReactNode } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ApprovalListItem } from "../../contracts/schedules.ts";
@@ -16,11 +17,8 @@ export function ApprovalsPage<E>({
   readonly review: (item: ApprovalListItem) => ReactNode;
 }) {
   return (
-    <main className="mx-auto w-full max-w-5xl p-4 md:p-6">
-      <h1 className="mb-2 text-[22px] font-semibold tracking-tight">Approvals</h1>
-      <p className="mb-5 text-sm text-muted-foreground">
-        Review scheduled runs before they continue.
-      </p>
+    <PageFrame>
+      <PageHeader title="Approvals" description="Review scheduled runs before they continue." />
       <QueryView query={query} Failure={Failure}>
         {(items) =>
           items.length === 0 ? (
@@ -49,6 +47,6 @@ export function ApprovalsPage<E>({
           )
         }
       </QueryView>
-    </main>
+    </PageFrame>
   );
 }

@@ -1,5 +1,6 @@
+import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
-import { PageFrame, AccountRowsSkeleton } from "./loading.tsx";
+import { AccountRowsSkeleton } from "./loading.tsx";
 import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -22,12 +23,14 @@ export function AccountsPage<E>({
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
   return (
-    <PageFrame
-      title="Accounts"
-      description="Saved sign-ins, available to your apps."
-      {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
-      action={props.action}
-    >
+    <PageFrame>
+      <PageHeader
+        title="Accounts"
+        description="Saved sign-ins, available to your apps."
+        {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
+      >
+        {props.action}
+      </PageHeader>
       <div className="list-toolbar mb-4 flex flex-wrap items-center gap-[10px_16px]">
         <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />
       </div>

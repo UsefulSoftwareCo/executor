@@ -1,7 +1,8 @@
+import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import type { ReactNode } from "react";
 import { useId } from "react";
 import { Button } from "@executor-js/ui/components/button";
-import { InventoryPageSkeleton, PageFrame } from "@executor-js/ui/dashboard/loading";
+import { InventoryPageSkeleton } from "@executor-js/ui/dashboard/loading";
 import {
   DashboardFrame,
   DashboardNavigation,
@@ -92,7 +93,8 @@ export function DashboardEntryPending({
 /** An unresolved organization keeps its dashboard frame and offers an explicit retry. */
 export function OrganizationLookupError({ retry }: { readonly retry: () => void }) {
   return (
-    <PageFrame title="Apps" description="Your installed apps and their selected accounts.">
+    <PageFrame>
+      <PageHeader title="Apps" description="Your installed apps and their selected accounts." />
       <div role="alert" className="space-y-3 rounded-lg border p-4 text-sm">
         <h2 className="font-medium">Unable to load your organizations</h2>
         <p>Try again to open your workspace.</p>

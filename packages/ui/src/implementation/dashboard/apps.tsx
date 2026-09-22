@@ -1,5 +1,6 @@
+import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
-import { PageFrame, AppCardsSkeleton } from "./loading.tsx";
+import { AppCardsSkeleton } from "./loading.tsx";
 import { Card } from "@executor-js/ui/components/card";
 import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
@@ -24,12 +25,14 @@ export function AppsPage<E>({
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
   return (
-    <PageFrame
-      title="Apps"
-      description="Your installed apps and their selected accounts."
-      {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
-      action={action}
-    >
+    <PageFrame>
+      <PageHeader
+        title="Apps"
+        description="Your installed apps and their selected accounts."
+        {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
+      >
+        {action}
+      </PageHeader>
       <div className="list-toolbar apps-toolbar mb-4 grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
         <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
         {filters}

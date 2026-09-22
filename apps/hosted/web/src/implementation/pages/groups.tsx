@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@executor-js/ui/components/dialog";
-import { PageFrame } from "@executor-js/ui/dashboard/loading";
+import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
 import { useOrganizationRoute } from "../components/organization.tsx";
@@ -42,7 +42,8 @@ export function GroupsPage({ id }: { readonly id?: string }) {
   const data = AsyncResult.value(result);
   useDocumentTitle(productTitle("Groups"));
   return (
-    <PageFrame title="Groups" description="Organize the people in your team.">
+    <PageFrame>
+      <PageHeader title="Groups" description="Organize the people in your team." />
       {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} retry={refresh} />}
       {Option.isSome(data) ? (
         <GroupContent key={`${organization}:${id ?? "list"}`} data={data.value} id={id} />
