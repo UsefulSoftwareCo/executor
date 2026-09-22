@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Option } from "effect";
 import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+import { Button } from "@executor-js/ui/components/button";
+import { Link } from "@tanstack/react-router";
 import { useQuery } from "@executor-js/ui/dashboard/context";
 import {
   Select,
@@ -14,14 +17,36 @@ import { useOrganizationRoute } from "../components/organization.tsx";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 /** Personal and shared credentials use one list; management remains a separate explicit mode. */
 export function AccountsPage() {
-  const { organization } = useOrganizationRoute();
+  const { organization, slug: organizationSlug } = useOrganizationRoute();
   const [view, setView] = useState<"available" | "managed">("available");
   const directory = useQuery(resourceDirectoryAtom(organization, view));
   return (
     <SharedPage
       query={resourceInventoryAtom(organization, view)}
       Failure={HostedFailure}
-      action={
+      empty={
+        <EmptyState
+          title={view === "managed" ? "No accounts to manage" : "No accounts available"}
+          action={
+            view === "managed" ? (
+              <Button variant="outline" onClick={() => setView("available")}>
+                View available accounts
+              </Button>
+            ) : (
+              <Button asChild>
+                <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+                  Choose an app
+                </Link>
+              </Button>
+            )
+          }
+        >
+          {view === "managed"
+            ? "Accounts you can manage will appear here."
+            : "Open an app to connect an account, or ask a teammate to share one."}
+        </EmptyState>
+      }
+      filters={
         <Select
           value={view}
           onValueChange={(value) => {

@@ -26,8 +26,10 @@ export function AppSkills<E>({
   app,
   bindings,
   Failure,
+  canEdit,
 }: {
   readonly app: App;
+  readonly canEdit: boolean;
   readonly bindings: SkillBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
@@ -35,17 +37,29 @@ export function AppSkills<E>({
     <section aria-label="App skills" className="flex min-h-full flex-col">
       {app.activeDeployment === null ? (
         <EmptyStatePanel title="No deployment yet">
-          Deploy this app to browse its skills.
+          {canEdit
+            ? "Deploy this app to browse its skills."
+            : "The app owner needs to deploy this app before its skills are available."}
         </EmptyStatePanel>
       ) : (
         <QueryView query={bindings.bundle} Failure={Failure} pending={<SkillBrowserLoading />}>
-          {(catalog) => <SkillCatalog key={catalog.deployment} app={app} catalog={catalog} />}
+          {(catalog) => (
+            <SkillCatalog key={catalog.deployment} app={app} catalog={catalog} canEdit={canEdit} />
+          )}
         </QueryView>
       )}
     </section>
   );
 }
-function SkillCatalog({ app, catalog }: { readonly app: App; readonly catalog: AppSkillBundle }) {
+function SkillCatalog({
+  app,
+  catalog,
+  canEdit,
+}: {
+  readonly app: App;
+  readonly catalog: AppSkillBundle;
+  readonly canEdit: boolean;
+}) {
   const [selected, setSelected] = useState<string>();
   const current = catalog.skills.find((skill) => skill.name === selected) ?? catalog.skills[0];
   if (current === undefined)
@@ -54,17 +68,21 @@ function SkillCatalog({ app, catalog }: { readonly app: App; readonly catalog: A
         title="No skills yet"
         icon={<HugeiconsIcon icon={BookOpen01Icon} aria-hidden size={26} strokeWidth={1.3} />}
         action={
-          <CopyButton
-            code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
-            label="Copy prompt"
-            text="Copy prompt"
-            variant="default"
-            size="default"
-            inline
-          />
+          canEdit && (
+            <CopyButton
+              code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
+              label="Copy prompt"
+              text="Copy prompt"
+              variant="default"
+              size="default"
+              inline
+            />
+          )
         }
       >
-        Copy this prompt and paste it into your agent to add skills for this app.
+        {canEdit
+          ? "Copy this prompt and paste it into your agent to add skills for this app."
+          : "The app owner can add skills for its common tasks."}
       </EmptyStatePanel>
     );
   return (

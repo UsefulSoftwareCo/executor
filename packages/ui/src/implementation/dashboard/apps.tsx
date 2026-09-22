@@ -14,14 +14,20 @@ import {
 } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { Button } from "../components/button.tsx";
 
 /** A card for each configured app and its selected accounts. */
 export function AppsPage<E>({
   action,
   filters,
+  empty,
   query,
   Failure,
-}: QueryProps<Inventory, E> & { readonly action?: ReactNode; readonly filters?: ReactNode }) {
+}: QueryProps<Inventory, E> & {
+  readonly action?: ReactNode;
+  readonly filters?: ReactNode;
+  readonly empty?: ReactNode;
+}) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
   return (
@@ -31,27 +37,61 @@ export function AppsPage<E>({
         description="Your installed apps and their selected accounts."
         {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
       >
-        {action}
+        {(!Option.isSome(data) || data.value.apps.length > 0) && action}
       </PageHeader>
       <div className="list-toolbar apps-toolbar mb-4 grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
-        <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
+        {(!Option.isSome(data) || data.value.apps.length > 0 || search.length > 0) && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
+        )}
         {filters}
       </div>
       <QueryResult result={result} Failure={Failure} retry={refresh} pending={<AppCardsSkeleton />}>
-        {(data) => <AppsList data={data} search={search} />}
+        {(data) => (
+          <AppsList
+            data={data}
+            search={search}
+            clearSearch={() => setSearch("")}
+            empty={
+              empty ?? (
+                <Empty title="No apps yet" action={action}>
+                  Add an app to get started.
+                </Empty>
+              )
+            }
+          />
+        )}
       </QueryResult>
     </PageFrame>
   );
 }
-function AppsList({ data, search }: { readonly data: Inventory; readonly search: string }) {
+function AppsList({
+  data,
+  search,
+  clearSearch,
+  empty,
+}: {
+  readonly data: Inventory;
+  readonly search: string;
+  readonly clearSearch: () => void;
+  readonly empty: ReactNode;
+}) {
   const { AppLink } = useDashboard();
   const apps = data.apps.filter((app) => app.name.toLowerCase().includes(search.toLowerCase()));
   return (
     <>
       {data.apps.length === 0 ? (
-        <Empty title="No apps yet">Add an app from the catalog to get started.</Empty>
+        empty
       ) : apps.length === 0 ? (
-        <Empty title="No matching apps">Try another name.</Empty>
+        <Empty
+          title="No matching apps"
+          action={
+            <Button variant="outline" onClick={clearSearch}>
+              Clear search
+            </Button>
+          }
+        >
+          Try another name.
+        </Empty>
       ) : (
         <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
           {apps.map((app) => {

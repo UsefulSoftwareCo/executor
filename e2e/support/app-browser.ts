@@ -272,7 +272,7 @@ export const checkAppBrowser = (input: {
         .click(),
     );
     yield* browser.use("The workflow has an explicit empty history", (page) =>
-      page.getByText("No runs to show.", { exact: true }).waitFor({ state: "visible" }),
+      page.getByRole("heading", { name: "No runs yet", exact: true }).waitFor({ state: "visible" }),
     );
     yield* browser.use("Return to all runs", (page) =>
       page.getByRole("button", { name: "All runs", exact: true }).click(),
@@ -300,6 +300,12 @@ export const checkAppBrowser = (input: {
         .getByText("Prepare a small report", { exact: true })
         .waitFor({ state: "visible" }),
     );
+    yield* browser.use("Overview tools have loaded", (page) =>
+      page
+        .getByRole("region", { name: "App tools preview" })
+        .getByText("queries.hello", { exact: true })
+        .waitFor({ state: "visible" }),
+    );
     expect(
       yield* browser.use("Overview has no capability badges", (page) =>
         page.getByLabel("App capabilities", { exact: true }).count(),
@@ -310,13 +316,21 @@ export const checkAppBrowser = (input: {
         page.getByRole("heading", { name: "Overview", level: 2, exact: true }).count(),
       ),
     ).toBe(0);
-    const cardHeights = yield* browser.use("Overview cards have one fixed height", (page) =>
-      page
-        .locator(".app-overview > div > section")
-        .evaluateAll((cards) => cards.map((card) => card.getBoundingClientRect().height)),
+    const cards = yield* browser.use("Only empty overview cards collapse", (page) =>
+      page.locator(".app-overview > div > section").evaluateAll((cards) =>
+        cards.map((card) => ({
+          height: card.getBoundingClientRect().height,
+          empty: card.querySelector(".empty-state") !== null,
+        })),
+      ),
     );
-    expect(cardHeights.length).toBeGreaterThanOrEqual(4);
-    expect(cardHeights.every((height) => height === 320)).toBe(true);
+    expect(cards.length).toBeGreaterThanOrEqual(4);
+    expect(cards.some((card) => card.empty)).toBe(true);
+    expect(cards.some((card) => !card.empty)).toBe(true);
+    for (const card of cards) {
+      if (card.empty) expect(card.height).toBeLessThan(320);
+      else expect(card.height).toBe(320);
+    }
     yield* browser.checkpoint("Overview with skills and workflows");
     yield* browser.use("Open Skills from its Overview card", (page) =>
       page

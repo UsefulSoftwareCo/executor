@@ -4,7 +4,7 @@ import { QueryView } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Cause, Exit, Option } from "effect";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useForm, useStore } from "@tanstack/react-form";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -111,6 +111,13 @@ function GroupContent({
             <h3 className="mb-3 text-sm font-medium">Members · {selected.memberIds.length}</h3>
             <Members
               members={data.members.filter((member) => selected.memberIds.includes(member.id))}
+              action={
+                admin ? (
+                  <Button variant="outline" onClick={() => setEdit(selected)}>
+                    Add members
+                  </Button>
+                ) : undefined
+              }
             />
             <GroupApps group={selected.id} />
             {admin && (
@@ -142,24 +149,26 @@ function GroupContent({
         )
       ) : (
         <>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border px-3 sm:max-w-80">
-              <HugeiconsIcon icon={Search01Icon} size={16} className="text-muted-foreground" />
-              <input
-                className="w-full bg-transparent outline-none max-sm:text-base"
-                aria-label="Search groups"
-                placeholder="Search groups…"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </label>
-            {admin && (
-              <Button onClick={() => setEdit("new")} disabled={mutation.waiting}>
-                <HugeiconsIcon icon={Add01Icon} size={16} />
-                Create group
-              </Button>
-            )}
-          </div>
+          {data.groups.length > 0 && (
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border px-3 sm:max-w-80">
+                <HugeiconsIcon icon={Search01Icon} size={16} className="text-muted-foreground" />
+                <input
+                  className="w-full bg-transparent outline-none max-sm:text-base"
+                  aria-label="Search groups"
+                  placeholder="Search groups…"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </label>
+              {admin && (
+                <Button onClick={() => setEdit("new")} disabled={mutation.waiting}>
+                  <HugeiconsIcon icon={Add01Icon} size={16} />
+                  Create group
+                </Button>
+              )}
+            </div>
+          )}
           {filtered.length ? (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {filtered.map((group) => (
@@ -197,11 +206,26 @@ function GroupContent({
               ))}
             </div>
           ) : (
-            <EmptyState title={search ? "No matching groups" : "No groups yet"}>
+            <EmptyState
+              title={search ? "No matching groups" : "No groups yet"}
+              icon={!search ? <HugeiconsIcon icon={UserGroupIcon} aria-hidden /> : undefined}
+              action={
+                search ? (
+                  <Button variant="outline" onClick={() => setSearch("")}>
+                    Clear search
+                  </Button>
+                ) : admin ? (
+                  <Button onClick={() => setEdit("new")} disabled={mutation.waiting}>
+                    <HugeiconsIcon icon={Add01Icon} size={16} />
+                    Create group
+                  </Button>
+                ) : undefined
+              }
+            >
               {search
                 ? "Try another name."
                 : admin
-                  ? "Create a group and choose its members."
+                  ? "Share apps and accounts with the people in your team."
                   : "An organization admin can create groups."}
             </EmptyState>
           )}
@@ -275,7 +299,13 @@ function MemberAvatar({ member }: { readonly member: GroupMember }) {
     </Avatar>
   );
 }
-function Members({ members }: { readonly members: readonly GroupMember[] }) {
+function Members({
+  members,
+  action,
+}: {
+  readonly members: readonly GroupMember[];
+  readonly action?: ReactNode;
+}) {
   return members.length ? (
     <div className="divide-y rounded-lg border">
       {members.map((member) => (
@@ -289,7 +319,9 @@ function Members({ members }: { readonly members: readonly GroupMember[] }) {
       ))}
     </div>
   ) : (
-    <EmptyState title="No members yet">No members in this group.</EmptyState>
+    <EmptyState size="compact" title="No members yet" action={action}>
+      Members of this group can use the apps and accounts shared with it.
+    </EmptyState>
   );
 }
 function GroupEditor({
@@ -570,7 +602,17 @@ function GroupApps({ group }: { readonly group: string }) {
               ))}
             </div>
           ) : (
-            <EmptyState title="No apps available">
+            <EmptyState
+              size="compact"
+              title="No apps available"
+              action={
+                <Button asChild variant="outline" size="sm">
+                  <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+                    Browse apps
+                  </Link>
+                </Button>
+              }
+            >
               No apps are available to you in this group.
             </EmptyState>
           );

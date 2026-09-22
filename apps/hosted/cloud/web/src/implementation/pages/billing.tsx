@@ -104,68 +104,82 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
         retry={refresh}
         pending={<DetailSkeleton label="Loading plans" />}
       >
-        {(billing) => (
-          <div className="catalog-grid grid grid-cols-3 gap-3 max-[1050px]:grid-cols-2 max-[640px]:grid-cols-1">
-            {billing.plans.map((plan) => {
-              const subscription = billing.subscriptions.find(
-                (subscription) =>
-                  subscription.planId === plan.id &&
-                  ["active", "trialing", "scheduled"].includes(subscription.status),
-              );
-              return (
-                <Card key={plan.id} asChild className="gap-0 rounded-lg shadow-none">
-                  <article className="plan-card flex flex-col gap-4.5 border border-border rounded-[8px] p-[20px] min-h-45 [&_h2]:text-[15px] [&_h2]:font-medium [&_button]:mt-auto">
-                    <h2>{plan.name}</h2>
-                    <p className="plan-price text-[24px] font-medium [&_span]:text-[13px] [&_span]:text-muted-foreground [&_span]:font-normal">
-                      {plan.price === null ? (
-                        "Free"
-                      ) : (
-                        <>
-                          {new Intl.NumberFormat("en-US", {
-                            style: "currency",
-                            currency: "USD",
-                            maximumFractionDigits: 0,
-                          }).format(plan.price.amount)}
-                          <span>
-                            {" "}
-                            / {plan.price.unit === "member" ? "member / " : ""}
-                            {plan.price.interval}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                    <Button
-                      variant={subscription ? "outline" : "default"}
-                      disabled={busy || !!subscription}
-                      onClick={async () => {
-                        setError(null);
-                        const result = await checkout({
-                          params: { organization: organization.organization },
-                          payload: { plan: plan.id },
-                        });
-                        if (Exit.isFailure(result))
-                          setError(
-                            "Unable to confirm the plan change. Check your current plan before trying again.",
-                          );
-                        else if (result.value.url === null) refresh();
-                        else if (!openBillingUrl(result.value.url))
-                          setError(
-                            "Unable to confirm the plan change. Check your current plan before trying again.",
-                          );
-                      }}
-                    >
-                      {subscription
-                        ? subscription.status === "scheduled"
-                          ? "Scheduled"
-                          : "Current plan"
-                        : `Choose ${plan.name}`}
-                    </Button>
-                  </article>
-                </Card>
-              );
-            })}
-          </div>
-        )}
+        {(billing) =>
+          billing.plans.length === 0 ? (
+            <EmptyState
+              title="Plans unavailable"
+              action={
+                <Button variant="outline" onClick={refresh} disabled={result.waiting}>
+                  Refresh plans
+                </Button>
+              }
+            >
+              We couldn’t find any plans. Refresh to try again, or contact support if this
+              continues.
+            </EmptyState>
+          ) : (
+            <div className="catalog-grid grid grid-cols-3 gap-3 max-[1050px]:grid-cols-2 max-[640px]:grid-cols-1">
+              {billing.plans.map((plan) => {
+                const subscription = billing.subscriptions.find(
+                  (subscription) =>
+                    subscription.planId === plan.id &&
+                    ["active", "trialing", "scheduled"].includes(subscription.status),
+                );
+                return (
+                  <Card key={plan.id} asChild className="gap-0 rounded-lg shadow-none">
+                    <article className="plan-card flex flex-col gap-4.5 border border-border rounded-[8px] p-[20px] min-h-45 [&_h2]:text-[15px] [&_h2]:font-medium [&_button]:mt-auto">
+                      <h2>{plan.name}</h2>
+                      <p className="plan-price text-[24px] font-medium [&_span]:text-[13px] [&_span]:text-muted-foreground [&_span]:font-normal">
+                        {plan.price === null ? (
+                          "Free"
+                        ) : (
+                          <>
+                            {new Intl.NumberFormat("en-US", {
+                              style: "currency",
+                              currency: "USD",
+                              maximumFractionDigits: 0,
+                            }).format(plan.price.amount)}
+                            <span>
+                              {" "}
+                              / {plan.price.unit === "member" ? "member / " : ""}
+                              {plan.price.interval}
+                            </span>
+                          </>
+                        )}
+                      </p>
+                      <Button
+                        variant={subscription ? "outline" : "default"}
+                        disabled={busy || !!subscription}
+                        onClick={async () => {
+                          setError(null);
+                          const result = await checkout({
+                            params: { organization: organization.organization },
+                            payload: { plan: plan.id },
+                          });
+                          if (Exit.isFailure(result))
+                            setError(
+                              "Unable to confirm the plan change. Check your current plan before trying again.",
+                            );
+                          else if (result.value.url === null) refresh();
+                          else if (!openBillingUrl(result.value.url))
+                            setError(
+                              "Unable to confirm the plan change. Check your current plan before trying again.",
+                            );
+                        }}
+                      >
+                        {subscription
+                          ? subscription.status === "scheduled"
+                            ? "Scheduled"
+                            : "Current plan"
+                          : `Choose ${plan.name}`}
+                      </Button>
+                    </article>
+                  </Card>
+                );
+              })}
+            </div>
+          )
+        }
       </QueryResult>
     </section>
   );

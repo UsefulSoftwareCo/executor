@@ -65,6 +65,7 @@ function PersonalAccessTokens() {
   const [copied, setCopied] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const pending = creating || revoking;
+  const empty = AsyncResult.isSuccess(keys) && keys.value.apiKeys.length === 0;
   const example = `curl '${window.location.origin}/api/organizations/${encodeURIComponent(organization.organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_API_KEY>'`;
   const mcpExample = JSON.stringify(
     {
@@ -85,15 +86,17 @@ function PersonalAccessTokens() {
   return (
     <PageFrame>
       <PageHeader title="API keys" description="Personal access tokens for scripts and agents.">
-        <Button
-          onClick={() => {
-            setError(undefined);
-            setForm(true);
-          }}
-          disabled={pending}
-        >
-          Create token
-        </Button>
+        {!empty && (
+          <Button
+            onClick={() => {
+              setError(undefined);
+              setForm(true);
+            }}
+            disabled={pending}
+          >
+            Create token
+          </Button>
+        )}
       </PageHeader>
       <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
         Tokens have your current permissions. Changes to your organization memberships and roles
@@ -104,14 +107,16 @@ function PersonalAccessTokens() {
           {error}
         </p>
       )}
-      <Card className="py-0 shadow-none">
+      <Card className={empty ? "border-0 py-0 shadow-none" : "py-0 shadow-none"}>
         <CardContent className="p-0">
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <h2 className="text-sm font-medium">Your tokens</h2>
-            <Button variant="ghost" size="sm" onClick={refresh} disabled={keys.waiting}>
-              Refresh
-            </Button>
-          </div>
+          {!empty && (
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <h2 className="text-sm font-medium">Your tokens</h2>
+              <Button variant="ghost" size="sm" onClick={refresh} disabled={keys.waiting}>
+                Refresh
+              </Button>
+            </div>
+          )}
           {AsyncResult.isInitial(keys) ? (
             <p role="status" className="p-6 text-sm text-muted-foreground">
               Loading tokens…
@@ -127,7 +132,21 @@ function PersonalAccessTokens() {
             </div>
           ) : keys.value.apiKeys.length === 0 ? (
             <div className="p-6">
-              <EmptyState heading="h3" title="No tokens yet">
+              <EmptyState
+                heading="h3"
+                title="No tokens yet"
+                action={
+                  <Button
+                    disabled={pending}
+                    onClick={() => {
+                      setError(undefined);
+                      setForm(true);
+                    }}
+                  >
+                    Create token
+                  </Button>
+                }
+              >
                 Create a separate token for each script so you can revoke access independently.
               </EmptyState>
             </div>

@@ -52,6 +52,9 @@ layer(TestLive, { excludeTestServices: true })("Local app browsing", (it) => {
         expect(pairing.status).toBe(200);
         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
         yield* browser.use("Pair the local browser", (page) => page.goto(url));
+        yield* browser.use("The paired inventory is visible", (page) =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        );
         yield* checkAppBrowser({
           url: `/apps/${app.id}`,
           listUrl: "/apps",

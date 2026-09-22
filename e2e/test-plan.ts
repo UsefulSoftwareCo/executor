@@ -26,6 +26,51 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  emptyStateRecovery: {
+    file: "empty-state-recovery.spec.ts",
+    title: "Empty states preserve drafts and respect app permissions",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted authoring and membership scenario."),
+    },
+  },
+  emptyAccountSearch: {
+    file: "empty-state-recovery.spec.ts",
+    title: "Empty account searches can be cleared without losing selections",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Shared picker exercised through hosted connections."),
+    },
+  },
+  emptyStateMcp: {
+    file: "empty-state-mcp.spec.ts",
+    title: "Empty organization consent offers a valid self-host recovery",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud routes new users through team setup."),
+      local: na("Local uses pairing."),
+    },
+  },
+  emptyStateBilling: {
+    file: "empty-state-billing.spec.ts",
+    title: "Empty billing catalog can be refreshed",
+    targets: {
+      "self-host": na("Billing is cloud only."),
+      cloud: scheduled,
+      local: na("Billing is cloud only."),
+    },
+  },
+  emptyStates: {
+    file: "empty-states.spec.ts",
+    title: "Empty states guide first use and recover from filters",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted role and group flows; shared presentation is covered on self-host."),
+    },
+  },
   sourceHighlighting: {
     file: "source-highlighting.spec.ts",
     title: "Source browser highlights CSS, Markdown, JSON, and HTML files",

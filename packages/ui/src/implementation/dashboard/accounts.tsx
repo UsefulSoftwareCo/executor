@@ -9,6 +9,7 @@ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dash
 import { selectedIds, displayDate, accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { Button } from "../components/button.tsx";
 
 /** Saved account metadata is shared across app references, without exposing credential values. */
 export function AccountsPage<E>({
@@ -17,6 +18,8 @@ export function AccountsPage<E>({
   ...props
 }: QueryProps<Inventory, E> & {
   readonly action?: ReactNode;
+  readonly filters?: ReactNode;
+  readonly empty?: ReactNode;
   readonly accountAction?: (account: AccountSummary) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
@@ -29,10 +32,13 @@ export function AccountsPage<E>({
         description="Saved sign-ins, available to your apps."
         {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
       >
-        {props.action}
+        {(!Option.isSome(data) || data.value.accounts.length > 0) && props.action}
       </PageHeader>
       <div className="list-toolbar mb-4 flex flex-wrap items-center gap-[10px_16px]">
-        <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />
+        {(!Option.isSome(data) || data.value.accounts.length > 0 || search.length > 0) && (
+          <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />
+        )}
+        {props.filters}
       </div>
       <QueryResult
         result={result}
@@ -40,7 +46,21 @@ export function AccountsPage<E>({
         retry={refresh}
         pending={<AccountRowsSkeleton />}
       >
-        {(data) => <AccountsList data={data} search={search} {...props} />}
+        {(data) => (
+          <AccountsList
+            data={data}
+            search={search}
+            clearSearch={() => setSearch("")}
+            {...props}
+            empty={
+              props.empty ?? (
+                <Empty title="No accounts yet" action={props.action}>
+                  Add an account to use it with your apps.
+                </Empty>
+              )
+            }
+          />
+        )}
       </QueryResult>
     </PageFrame>
   );
@@ -51,9 +71,13 @@ function AccountsList({
   search,
   accountAction,
   accountMeta,
+  empty,
+  clearSearch,
 }: {
   readonly data: Inventory;
   readonly search: string;
+  readonly empty: ReactNode;
+  readonly clearSearch: () => void;
   readonly accountAction?: (account: AccountSummary) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
@@ -64,9 +88,18 @@ function AccountsList({
   return (
     <>
       {data.accounts.length === 0 ? (
-        <Empty title="No accounts yet">Add an account to use it with your apps.</Empty>
+        empty
       ) : accounts.length === 0 ? (
-        <Empty title="No matching accounts">Try another label or provider.</Empty>
+        <Empty
+          title="No matching accounts"
+          action={
+            <Button variant="outline" onClick={clearSearch}>
+              Clear search
+            </Button>
+          }
+        >
+          Try another label or provider.
+        </Empty>
       ) : (
         <div className="inventory border border-border rounded-[8px] overflow-hidden">
           <div className="inventory-header accounts-grid bg-muted text-muted-foreground py-[9px] px-[16px] text-[11px] grid grid-cols-[minmax(200px,_1.5fr)_minmax(130px,_0.8fr)_minmax(170px,_1fr)] gap-6.25 items-center max-[1000px]:grid-cols-[minmax(0,_1.3fr)_minmax(0,_1fr)] max-[1000px]:gap-4 max-[1000px]:[.inventory-header&_>_span:nth-child(2)]:hidden max-[740px]:hidden max-[740px]:grid-cols-1 max-[740px]:gap-3">

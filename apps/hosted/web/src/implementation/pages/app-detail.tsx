@@ -147,6 +147,7 @@ export function AppDetailPage({
               selectedView === "skills" ? (
                 <AppSkills
                   app={current}
+                  canEdit={canInspectSource}
                   bindings={appBrowserBindings(organization, current)}
                   Failure={HostedFailure}
                 />
@@ -158,6 +159,8 @@ export function AppDetailPage({
                 />
               ) : selectedView === "schedules" ? (
                 <AppSchedules
+                  app={current}
+                  canEdit={canInspectSource}
                   bindings={scheduleBindings({ organization, app: current.id }, canInspectSource)}
                   Failure={HostedFailure}
                 />

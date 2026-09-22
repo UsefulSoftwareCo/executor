@@ -21,7 +21,7 @@ export function AppOverviewEntries<E>({
   return (
     <>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
         aria-label="App skills preview"
       >
         <EntryHeader app={app} view="skills" label="Skills" />
@@ -42,7 +42,7 @@ export function AppOverviewEntries<E>({
         </div>
       </section>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
         aria-label="App workflows preview"
       >
         <EntryHeader app={app} view="workflows" label="Workflows" />

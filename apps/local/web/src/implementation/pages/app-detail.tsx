@@ -111,6 +111,7 @@ export function AppDetailPage({
           tab === "skills" ? (
             <AppSkills
               app={current.app}
+              canEdit
               bindings={appBrowserBindings(current.app)}
               Failure={Failure}
             />
@@ -121,7 +122,12 @@ export function AppDetailPage({
               Failure={Failure}
             />
           ) : tab === "schedules" ? (
-            <AppSchedules bindings={scheduleBindings({ app: id })} Failure={Failure} />
+            <AppSchedules
+              app={current.app}
+              canEdit
+              bindings={scheduleBindings({ app: id })}
+              Failure={Failure}
+            />
           ) : tab === "overview" ? (
             <AppOverview
               app={current.app}

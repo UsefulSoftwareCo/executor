@@ -120,10 +120,27 @@ export function CatalogPage<E, P>({
       {AsyncResult.isFailure(publicResult) && (
         <PublicationFailure cause={publicResult.cause} retry={retryPublic} />
       )}
-      {!entries.length && (result.waiting || publicResult.waiting) ? (
+      {!entries.length && (AsyncResult.isInitial(result) || AsyncResult.isInitial(publicResult)) ? (
         <LoadingRows />
-      ) : !entries.length ? (
-        <Empty title="No matching apps">Try another name.</Empty>
+      ) : !entries.length &&
+        (AsyncResult.isFailure(result) ||
+          AsyncResult.isFailure(publicResult)) ? null : !entries.length ? (
+        <Empty
+          title={search ? "No matching apps" : "No apps available"}
+          action={
+            search ? (
+              <Button variant="outline" onClick={() => setSearch("")}>
+                Clear search
+              </Button>
+            ) : (
+              action
+            )
+          }
+        >
+          {search
+            ? "Try another name or connect your own service."
+            : "Connect your own service to get started."}
+        </Empty>
       ) : (
         <>
           <div className="catalog-list border-t border-t-border">

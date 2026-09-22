@@ -7,6 +7,7 @@ import {
   AccountRequired,
   ScheduleApprovalMode,
   type AppSchedule,
+  type App,
   type ScheduleSettings,
 } from "@executor-js/sdk";
 import { useState, type ComponentType, type ReactNode } from "react";
@@ -41,9 +42,47 @@ const timingText = (timing: Row["timing"]) => {
 };
 /** Compact shared controls. No organization model or role checks enter this view. */
 export function AppSchedules<E>({
+  app,
+  canEdit,
+  ...props
+}: {
+  readonly app: App;
+  readonly canEdit: boolean;
+  readonly bindings: ScheduleBindings<E>;
+  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+}) {
+  const { AppLink } = useDashboard();
+  if (app.activeDeployment === null)
+    return (
+      <SchedulesLayout>
+        <EmptyState
+          title="No deployment yet"
+          action={
+            canEdit ? (
+              <Button asChild>
+                <AppLink app={app.id} view="source">
+                  Open source
+                </AppLink>
+              </Button>
+            ) : undefined
+          }
+        >
+          {canEdit
+            ? "Deploy this app to load its schedules."
+            : "The app owner needs to deploy this app before its schedules are available."}
+        </EmptyState>
+      </SchedulesLayout>
+    );
+  return <LiveSchedules {...props} app={app} canEdit={canEdit} />;
+}
+function LiveSchedules<E>({
+  app,
+  canEdit,
   bindings,
   Failure,
 }: {
+  readonly app: App;
+  readonly canEdit: boolean;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
@@ -52,7 +91,14 @@ export function AppSchedules<E>({
     <SchedulesLayout>
       <QueryView query={bindings.settings} Failure={Failure} pending={<SchedulesPending />}>
         {(saved) => (
-          <ScheduleList saved={saved} discovery={discovery} bindings={bindings} Failure={Failure} />
+          <ScheduleList
+            app={app}
+            canEdit={canEdit}
+            saved={saved}
+            discovery={discovery}
+            bindings={bindings}
+            Failure={Failure}
+          />
         )}
       </QueryView>
     </SchedulesLayout>
@@ -106,16 +152,21 @@ function SchedulesPending() {
 }
 
 function ScheduleList<E>({
+  app,
+  canEdit,
   saved,
   discovery,
   bindings,
   Failure,
 }: {
+  readonly app: App;
+  readonly canEdit: boolean;
   readonly saved: readonly ScheduleSettings[];
   readonly discovery: ReturnType<typeof useQuery<readonly AppSchedule[], E>>;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
+  const { AppLink } = useDashboard();
   const rows = new Map<string, Row>();
   for (const setting of saved)
     rows.set(setting.name, {
@@ -140,8 +191,21 @@ function ScheduleList<E>({
     onSuccess: () => ({
       error: null,
       empty: (
-        <EmptyState title="No schedules yet">
-          Add a schedule to this app’s source to run tasks automatically.
+        <EmptyState
+          title="No schedules yet"
+          action={
+            canEdit ? (
+              <Button asChild variant="outline">
+                <AppLink app={app.id} view="source">
+                  Open source
+                </AppLink>
+              </Button>
+            ) : undefined
+          }
+        >
+          {canEdit
+            ? "Add a schedule to this app’s source to run tasks automatically."
+            : "The app owner can add schedules to run tasks automatically."}
         </EmptyState>
       ),
     }),

@@ -18,6 +18,7 @@ import { Option } from "effect";
 import { useDashboard, useQuery, QueryResult } from "./context.tsx";
 import { ProviderIcon } from "./common.tsx";
 import { cn } from "../lib/utils.ts";
+import { Button } from "../components/button.tsx";
 
 /** The app home shows current configuration; hosts supply independent tool, account, and source reads. */
 export function AppOverview({
@@ -35,16 +36,43 @@ export function AppOverview({
 }) {
   const { AppLink } = useDashboard();
   const draft = app.activeDeployment === null;
+  if (draft)
+    return (
+      <div className="p-7 max-[740px]:p-4">
+        <EmptyState
+          title="No deployment yet"
+          action={
+            source ? (
+              <Button asChild>
+                <AppLink app={app.id} view="source">
+                  Open source
+                </AppLink>
+              </Button>
+            ) : undefined
+          }
+        >
+          {source
+            ? "Your draft is saved. Open its source to deploy the first version."
+            : "The app owner needs to deploy this app before it can be used."}
+        </EmptyState>
+        {source && (
+          <section aria-label="App source" className="mt-4 max-w-2xl rounded-lg border p-5">
+            <h3 className="mb-3 text-sm font-medium">Source</h3>
+            {source}
+          </section>
+        )}
+      </div>
+    );
   return (
     <div className="app-overview w-full">
       <div
         className={cn(
-          "grid grid-cols-1 gap-4 p-7 max-[740px]:p-4",
+          "grid grid-cols-1 items-start gap-4 p-7 max-[740px]:p-4",
           source ? "min-[1100px]:grid-cols-3" : "min-[900px]:grid-cols-2",
         )}
       >
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
           aria-label="App accounts"
         >
           <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
@@ -63,7 +91,7 @@ export function AppOverview({
           <div className="min-h-0 flex-1 overflow-auto">{accounts}</div>
         </section>
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
           aria-label="App tools preview"
         >
           {tools}

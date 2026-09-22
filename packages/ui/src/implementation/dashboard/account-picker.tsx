@@ -45,6 +45,9 @@ export function AccountPicker<E>({
   const selection = app.accounts[slot];
   const selected = typeof selection === "string" ? [selection] : (selection ?? []);
   const available = accounts.filter((account) => account.provider === requirement.provider);
+  const filtered = available.filter((account) =>
+    account.label.toLowerCase().includes(search.toLowerCase()),
+  );
   const many = requirement.cardinality === "many";
   const choose = async (value: AccountId | readonly AccountId[] | undefined) => {
     if (pending) return;
@@ -94,68 +97,81 @@ export function AccountPicker<E>({
           />
         )}
         <div className="flex flex-col gap-1">
-          {available
-            .filter((account) => account.label.toLowerCase().includes(search.toLowerCase()))
-            .map((account) => {
-              const duplicate = available.filter((item) => item.label === account.label).length > 1;
-              const sameSecond = available.some(
-                (item) =>
-                  item.id !== account.id &&
-                  item.label === account.label &&
-                  item.createdAt.toLocaleString() === account.createdAt.toLocaleString(),
-              );
-              const auth = requirement.definition.auth[account.method];
-              const detail = auth?.type === "oauth2" ? "Browser sign-in" : auth?.label;
-              const content = (
-                <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate font-medium">
-                    {account.label || "Unnamed account"}
-                  </span>
-                  <span className="block text-xs text-muted-foreground">
-                    {detail}
-                    {duplicate &&
-                      ` · Added ${sameSecond ? account.createdAt.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 }) : account.createdAt.toLocaleString()}`}
-                  </span>
+          {filtered.map((account) => {
+            const duplicate = available.filter((item) => item.label === account.label).length > 1;
+            const sameSecond = available.some(
+              (item) =>
+                item.id !== account.id &&
+                item.label === account.label &&
+                item.createdAt.toLocaleString() === account.createdAt.toLocaleString(),
+            );
+            const auth = requirement.definition.auth[account.method];
+            const detail = auth?.type === "oauth2" ? "Browser sign-in" : auth?.label;
+            const content = (
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block truncate font-medium">
+                  {account.label || "Unnamed account"}
                 </span>
-              );
-              return many ? (
-                <label
-                  key={account.id}
-                  className="flex min-h-14 cursor-pointer items-center gap-3 rounded-md border p-3 text-sm has-data-[state=checked]:border-foreground/40"
-                >
-                  <Checkbox
-                    disabled={pending}
-                    checked={draft.includes(account.id)}
-                    onCheckedChange={(checked) =>
-                      setDraft(
-                        checked === true
-                          ? [...draft, account.id]
-                          : draft.filter((id) => id !== account.id),
-                      )
-                    }
-                  />
-                  {content}
-                </label>
-              ) : (
-                <Button
-                  key={account.id}
-                  variant="ghost"
-                  className="h-auto min-h-14 justify-start gap-3 p-3"
+                <span className="block text-xs text-muted-foreground">
+                  {detail}
+                  {duplicate &&
+                    ` · Added ${sameSecond ? account.createdAt.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 }) : account.createdAt.toLocaleString()}`}
+                </span>
+              </span>
+            );
+            return many ? (
+              <label
+                key={account.id}
+                className="flex min-h-14 cursor-pointer items-center gap-3 rounded-md border p-3 text-sm has-data-[state=checked]:border-foreground/40"
+              >
+                <Checkbox
                   disabled={pending}
-                  onClick={() => {
-                    void choose(account.id);
-                  }}
-                >
-                  {content}
-                  {selected.includes(account.id) && (
-                    <HugeiconsIcon icon={Tick02Icon} size={16} aria-label="In use" />
-                  )}
+                  checked={draft.includes(account.id)}
+                  onCheckedChange={(checked) =>
+                    setDraft(
+                      checked === true
+                        ? [...draft, account.id]
+                        : draft.filter((id) => id !== account.id),
+                    )
+                  }
+                />
+                {content}
+              </label>
+            ) : (
+              <Button
+                key={account.id}
+                variant="ghost"
+                className="h-auto min-h-14 justify-start gap-3 p-3"
+                disabled={pending}
+                onClick={() => {
+                  void choose(account.id);
+                }}
+              >
+                {content}
+                {selected.includes(account.id) && (
+                  <HugeiconsIcon icon={Tick02Icon} size={16} aria-label="In use" />
+                )}
+              </Button>
+            );
+          })}
+          {available.length > 0 && filtered.length === 0 && (
+            <EmptyState
+              size="compact"
+              title="No matching accounts"
+              action={
+                <Button variant="outline" size="sm" onClick={() => setSearch("")}>
+                  Clear search
                 </Button>
-              );
-            })}
+              }
+            >
+              Try another account name.
+            </EmptyState>
+          )}
           {available.length === 0 && (
             <EmptyState size="compact" title="No saved accounts">
-              Close this dialog and connect an account.
+              {connectAction
+                ? "Connect an account below to use it with this app."
+                : "Close this dialog and connect an account."}
             </EmptyState>
           )}
         </div>

@@ -71,24 +71,26 @@ export function McpAuthorizePage() {
         </p>
       }
     >
-      <div className="mcp-consent-organization grid gap-2 text-[13px] [font-weight:550] [&_[data-slot='select-trigger']]:w-full">
-        <label htmlFor="mcp-organization">Organization</label>
-        <Select value={organization} onValueChange={setSelected} disabled={state.waiting}>
-          <SelectTrigger id="mcp-organization">
-            <SelectValue placeholder="Choose an organization" />
-          </SelectTrigger>
-          <SelectContent>
-            {available.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {item.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {available.length > 0 && (
+        <div className="mcp-consent-organization grid gap-2 text-[13px] [font-weight:550] [&_[data-slot='select-trigger']]:w-full">
+          <label htmlFor="mcp-organization">Organization</label>
+          <Select value={organization} onValueChange={setSelected} disabled={state.waiting}>
+            <SelectTrigger id="mcp-organization">
+              <SelectValue placeholder="Choose an organization" />
+            </SelectTrigger>
+            <SelectContent>
+              {available.map((item) => (
+                <SelectItem key={item.id} value={item.id}>
+                  {item.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       {available.length === 0 ? (
         <EmptyState size="compact" title="No organizations">
-          Join or create an organization in Executor, then return here to connect.
+          Ask an organization admin for an invitation, then return here to connect.
         </EmptyState>
       ) : (
         <McpConsentSummary target={target} destination={destination} />
@@ -102,13 +104,15 @@ export function McpAuthorizePage() {
         <Button variant="outline" disabled={state.waiting} onClick={() => decide(false)}>
           Cancel
         </Button>
-        <Button
-          disabled={organization === "" || state.waiting}
-          loading={state.waiting}
-          onClick={() => decide(true)}
-        >
-          Connect
-        </Button>
+        {available.length > 0 && (
+          <Button
+            disabled={organization === "" || state.waiting}
+            loading={state.waiting}
+            onClick={() => decide(true)}
+          >
+            Connect
+          </Button>
+        )}
       </div>
     </McpConsentLayout>
   );

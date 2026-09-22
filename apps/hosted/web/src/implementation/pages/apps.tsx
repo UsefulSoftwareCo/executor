@@ -3,6 +3,7 @@ import { Option } from "effect";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { AppsPage as SharedPage } from "@executor-js/ui/dashboard/apps";
 import { Button } from "@executor-js/ui/components/button";
+import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import {
   Select,
   SelectContent,
@@ -25,6 +26,38 @@ export function AppsPage() {
     <SharedPage
       query={resourceInventoryAtom(organization, view, group)}
       Failure={HostedFailure}
+      empty={
+        <EmptyState
+          title={
+            group !== "all" || view === "managed"
+              ? "No apps match these filters"
+              : "No apps available"
+          }
+          action={
+            group !== "all" || view === "managed" ? (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setGroup("all");
+                  setView("available");
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : (
+              <Button asChild>
+                <Link to="/org/$organizationSlug/apps/add" params={{ organizationSlug }}>
+                  Add app
+                </Link>
+              </Button>
+            )
+          }
+        >
+          {group !== "all" || view === "managed"
+            ? "Choose another view to see your apps."
+            : "Add an app or ask a teammate to share one with you."}
+        </EmptyState>
+      }
       action={
         <Button asChild>
           <Link to="/org/$organizationSlug/apps/add" params={{ organizationSlug }}>

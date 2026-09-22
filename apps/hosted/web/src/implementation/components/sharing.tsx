@@ -21,6 +21,8 @@ import type {
   AccessRevision,
 } from "@executor-js/hosted-server/resource-access";
 import { appError, type HostedError } from "../../contracts/errors.ts";
+import { Link } from "@tanstack/react-router";
+import { useOrganizationRoute } from "./organization.tsx";
 
 type AudienceInputProps = {
   readonly groups: readonly Group[];
@@ -118,11 +120,7 @@ export function AudienceInput(props: AudienceInputProps) {
                 Unavailable group
               </label>
             ))}
-          {!props.groups.length && (
-            <EmptyState size="compact" icon={null} title="No groups available">
-              No groups are available to share with.
-            </EmptyState>
-          )}
+          {!props.groups.length && <GroupSetup />}
         </div>
       )}
       {props.error && (
@@ -131,6 +129,35 @@ export function AudienceInput(props: AudienceInputProps) {
         </p>
       )}
     </fieldset>
+  );
+}
+function GroupSetup() {
+  const { slug: organizationSlug, role } = useOrganizationRoute();
+  const canCreate = role === "owner" || role === "admin";
+  return (
+    <EmptyState
+      size="compact"
+      className="px-3 md:px-3"
+      title="No groups available"
+      action={
+        canCreate ? (
+          <Button asChild variant="outline" size="sm">
+            <Link
+              to="/org/$organizationSlug/groups"
+              params={{ organizationSlug }}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open Groups
+            </Link>
+          </Button>
+        ) : undefined
+      }
+    >
+      {canCreate
+        ? "Create a group in a new tab, then return here to select it."
+        : "Ask an organization admin to create a group for the people you want to share with."}
+    </EmptyState>
   );
 }
 /** A failed save is visible at the form and focused without resetting the draft. */
