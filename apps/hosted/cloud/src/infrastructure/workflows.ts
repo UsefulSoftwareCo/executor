@@ -1,7 +1,8 @@
 /** One native Cloudflare workflow routes every run to its retained Dynamic Worker app build. */
+import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Workflow } from "@cloudflare/workers-types";
-import { Cause, Effect, Schema, Option, Result } from "effect";
+import { Cause, Clock, Effect, Exit, Schema, Option, Result } from "effect";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import {
   WorkflowHost,
@@ -64,14 +65,28 @@ const runWorkflow = (input: {
       sleep: (name, duration) => safe(step.sleep(name, duration)),
       sleepUntil: (name, timestamp) => safe(step.sleepUntil(name, timestamp)),
     };
-    return yield* executor[WorkflowHost].execute(run, driver);
+    const started = yield* Clock.currentTimeMillis;
+    return yield* executor[WorkflowHost].execute(run, driver).pipe(
+      Effect.onExit((exit) =>
+        Effect.flatMap(Clock.currentTimeMillis, (finished) =>
+          recordBackgroundUsage("workflow_attempt_completed", "workflows", {
+            run_id: run,
+            outcome: Exit.isSuccess(exit) ? "success" : "failure",
+            ok: Exit.isSuccess(exit),
+            duration_ms: Math.max(0, finished - started),
+          }),
+        ),
+      ),
+    );
   }).pipe(Effect.orDie);
 /** Step callbacks run inside the app's Dynamic Worker; the Cloudflare engine owns the journal. */
 export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   "AppWorkflows",
   Effect.gen(function* () {
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
-    return (input: { run: string }) => runWorkflow(input).pipe(Effect.provide(executor));
+    const analytics = yield* cloudAnalytics;
+    return (input: { run: string }) =>
+      Effect.scoped(analytics.wrap(runWorkflow(input).pipe(Effect.provide(executor))));
   }),
 ) {}
 

@@ -1,4 +1,5 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
@@ -350,6 +351,7 @@ export const hostedAppUi = (
         Effect.provideService(CurrentOrganization, current.access),
         Effect.provideService(CurrentAuthorization, fullAuthority),
         Effect.provideService(CurrentUserId, current.access.userId),
+        Effect.provideService(CurrentUsage, { source: "app_ui" }),
         Effect.mapError(dataFailure),
       );
     });
@@ -377,7 +379,12 @@ export const hostedAppUi = (
           );
           const source = yield* executor.appData
             .subscribe(input)
-            .pipe(Effect.mapError(dataFailure));
+            .pipe(
+              Effect.provideService(CurrentUserId, current.access.userId),
+              Effect.provideService(CurrentOrganization, current.access),
+              Effect.provideService(CurrentUsage, { source: "app_ui" }),
+              Effect.mapError(dataFailure),
+            );
           return Stream.merge(
             source.pipe(
               Stream.provideService(CurrentUserId, current.access.userId),
@@ -547,13 +554,19 @@ export const hostedAppUi = (
         Effect.mapError(() => new UiForbidden()),
       );
     }
-    return yield* appDocument({
+    const document = yield* appDocument({
       profile: selected?.id,
       expectedProfileRevision: selected?.revision,
       origin: current.target.origin,
       deployment: version.id,
       asset: (path) => assets(version, path),
     });
+    yield* recordUsage("app_viewed", { app_id: current.app.id, deployment_id: version.id }).pipe(
+      Effect.provideService(CurrentUserId, current.access.userId),
+      Effect.provideService(CurrentOrganization, current.access),
+      Effect.provideService(CurrentUsage, { source: "app_ui" }),
+    );
+    return document;
   }).pipe(
     Effect.catchTag("UiUnauthorized", (error) =>
       Effect.gen(function* () {

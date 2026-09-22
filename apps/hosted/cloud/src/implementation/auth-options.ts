@@ -17,6 +17,7 @@ import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-prox
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { emailCodeExpiresIn, emailCodeMessage, invitationEmailMessage } from "./email-messages.ts";
+import { nativeAuthAnalytics, type NativeAuthUsage } from "./auth-analytics.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
 import { cloudEmulators } from "../infrastructure/emulators.ts";
 import { emulatedSocialProviders } from "./emulated-auth.ts";
@@ -129,6 +130,8 @@ export const cloudAuthOptions = (
   send: SendAuthEmail,
   billing?: CloudBillingHooks,
   onSignup?: (userId: string) => Promise<void>,
+  onLogin?: (userId: string) => Promise<void>,
+  onOperation?: (usage: NativeAuthUsage) => Promise<void>,
 ) => {
   const base = authOptions(settings, ipAddressHeaders);
   return {
@@ -158,7 +161,8 @@ export const cloudAuthOptions = (
         create: {
           // Consume anonymous attribution on every successful sign-in, including
           // returning users. It must never be linked to a second account later.
-          after: async (_session, context) => {
+          after: async (session, context) => {
+            if (onLogin !== undefined) await onLogin(session.userId);
             if (!context) return;
             for (const name of [heroVisitorCookie, heroCookieName, heroPreviewCookie])
               context.setCookie(name, "", {
@@ -207,6 +211,7 @@ export const cloudAuthOptions = (
         ),
     },
     plugins: [
+      ...(onOperation === undefined ? [] : [nativeAuthAnalytics(onOperation)]),
       ...Option.match(settings.emulators, {
         onSome: (services) => [emulatedSocialProviders(services)],
         onNone: () => [],

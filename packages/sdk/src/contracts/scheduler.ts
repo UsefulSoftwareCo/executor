@@ -1,6 +1,7 @@
 import { ProfileId } from "./shared.ts";
 /** Effect-only host lifecycle. These privileged operations are not mounted on the SDK HTTP API. */
-import type { Effect } from "effect";
+import { Context, Effect } from "effect";
+import type { ScheduledRun } from "./schedules.ts";
 import type { AppId, OwnerId, StorageError } from "./shared.ts";
 
 /** Authorize the saved actor against current product membership and app/account access before every dispatch. */
@@ -25,3 +26,13 @@ export interface ScheduleDispatcher {
   readonly recover: (runner: string) => Effect.Effect<void, StorageError>;
   readonly nextWake: Effect.Effect<Date | null, StorageError>;
 }
+
+/** Optional host observer runs after a terminal transition commits, without payloads or credentials. */
+export const ScheduleObservation = Context.Reference<{
+  readonly completed: (
+    run: Pick<
+      ScheduledRun,
+      "id" | "scheduleId" | "app" | "owner" | "status" | "startedAt" | "finishedAt"
+    >,
+  ) => Effect.Effect<void>;
+}>("executor/ScheduleObservation", { defaultValue: () => ({ completed: () => Effect.void }) });

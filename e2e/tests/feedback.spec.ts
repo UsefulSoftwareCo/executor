@@ -16,7 +16,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud feedback", (it) => {
         const target = yield* Target;
         expect(
           target.metadata.mode,
-          "This scenario requires managed Cloud with analytics disabled",
+          "This scenario requires managed Cloud with the local analytics collector",
         ).toBe("managed");
         const anonymous = yield* api.session();
         const route = "/api/organizations/{organization}/feedback";
@@ -56,9 +56,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud feedback", (it) => {
         ]) {
           expect((yield* api.request(actors.member, "POST", endpoint, payload)).status).toBe(400);
         }
-        const unavailable = yield* api.request(actors.member, "POST", endpoint, feedback);
-        expect(unavailable.status).toBe(503);
-        expect(unavailable.body).toEqual({ _tag: "FeedbackUnavailable" });
+        const accepted = yield* api.request(actors.member, "POST", endpoint, feedback);
+        expect(accepted.status).toBe(200);
+        expect(accepted.body).toEqual({ status: "accepted" });
       }),
     ),
   );

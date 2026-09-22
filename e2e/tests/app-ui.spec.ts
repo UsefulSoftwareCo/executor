@@ -134,7 +134,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           page.getByRole("heading", { name: "Sign in to Executor", exact: true }).waitFor(),
         );
         yield* browser.login(actors.owner);
-        // Inventory provisions the ordinary Executor app's managed account for this owner.
+        // Inventory provisions the ordinary Executor app and this user's personal profile.
         const inventory = yield* body(
           Schema.Struct({
             apps: Schema.Array(
@@ -147,11 +147,22 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
         );
-        expect(
-          inventory.apps.find((item) => item.slug === "executor")?.accounts.service,
-        ).toBeDefined();
         const management = inventory.apps.find((item) => item.slug === "executor");
         if (management === undefined) return yield* Effect.die("Executor app was not installed");
+        expect(management.accounts).toEqual({});
+        const profiles = yield* body(
+          Schema.Array(
+            Schema.Struct({
+              id: Schema.String,
+              accounts: Schema.Struct({ service: Schema.String }),
+            }),
+          ),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${management.id}/profiles`),
+        );
+        expect(profiles).toHaveLength(1);
+        const profile = profiles[0];
+        if (profile === undefined) return yield* Effect.die("Executor profile was not installed");
+        const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
         const source = yield* body(
           Schema.Struct({
             files: Schema.Array(
@@ -207,7 +218,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: 'return await tools.search({ query: "executor", limit: 100 });',
+                  // Keep the discovery assertion below MCP's output limit as signatures grow.
+                  code: 'const result = await tools.search({ query: "executor", limit: 100 }); return { items: result.items.map(({ path }) => ({ path })) };',
                 },
               },
               undefined,
@@ -220,16 +232,16 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
         )((yield* Schema.decodeUnknownEffect(Completed)(search.structuredContent)).execution.value);
         expect(discovered.items.map((item) => item.path)).toContain(
-          "tools.executor.queries.appUi_location",
+          `${tools}.queries.appUi_location`,
         );
         expect(discovered.items.map((item) => item.path)).not.toContain(
-          "tools.executor.mutations.appUi_authorize",
+          `${tools}.mutations.appUi_authorize`,
         );
         expect(discovered.items.map((item) => item.path)).not.toContain(
-          "tools.executor.queries.viewer_get",
+          `${tools}.queries.viewer_get`,
         );
         expect(discovered.items.map((item) => item.path)).not.toContain(
-          "tools.executor.mutations.appData_subscribe",
+          `${tools}.mutations.appData_subscribe`,
         );
         const lookup = yield* client.use(
           "Get the canonical app URL using the MCP grant",
@@ -238,7 +250,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools.executor.queries.appUi_location({ path: ${JSON.stringify({ organization: actors.organization.id, app: app.id })} });`,
+                  code: `return await ${tools}.queries.appUi_location({ path: ${JSON.stringify({ organization: actors.organization.id, app: app.id })} });`,
                 },
               },
               undefined,
@@ -256,7 +268,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools.executor.queries.appUi_location({ path: ${JSON.stringify({ organization: "other-organization", app: app.id })} });`,
+                  code: `return await ${tools}.queries.appUi_location({ path: ${JSON.stringify({ organization: "other-organization", app: app.id })} });`,
                 },
               },
               undefined,

@@ -81,7 +81,10 @@ const attributes = (organizationId: string, response: Api.ProjectBackwardCompat)
     };
   });
 
-const testFilters = [{ key: "executor_test", operator: "exact", type: "event", value: [true] }];
+const testFilters = [
+  { key: "executor_test", operator: "exact", type: "event", value: [true] },
+  { key: "executor_internal", operator: "exact", type: "person", value: [true] },
+];
 
 /** Provider failures keep credential-bearing API bodies redacted in CLI diagnostics. */
 export class PostHogProvisioningFailed extends Schema.TaggedError<PostHogProvisioningFailed>()(
@@ -138,7 +141,7 @@ export const postHogProjectProvider = () =>
               news.name !== output.name ||
               news.timezone !== output.timezone ||
               JSON.stringify(news.appUrls) !== JSON.stringify(output.appUrls) ||
-              output.recording ||
+              !output.recording ||
               output.autocapture !== true ||
               output.exceptions !== false ||
               output.filterTests !== true ||
@@ -178,7 +181,7 @@ export const postHogProjectProvider = () =>
             app_urls: [...news.appUrls],
             timezone: news.timezone,
             tags: [...new Set([...(current?.tags ?? []), marker(id)])],
-            session_recording_opt_in: false,
+            session_recording_opt_in: true,
             autocapture_opt_out: true,
             autocapture_exceptions_opt_in: false,
             test_account_filters_default_checked: true,

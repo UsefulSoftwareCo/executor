@@ -236,9 +236,18 @@ export const scenarios = {
       ),
     },
   },
+  productAnalytics: {
+    file: "product-analytics.spec.ts",
+    title: "Cloud product events preserve identity and dashboard replay masks private data",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host does not export product analytics or replay."),
+      local: na("Local does not export product analytics or replay."),
+    },
+  },
   feedback: {
     file: "feedback.spec.ts",
-    title: "Cloud feedback enforces its API contract and reports disabled ingestion",
+    title: "Cloud feedback enforces its API contract and reaches the local ingestion service",
     targets: {
       cloud: scheduled,
       "self-host": na("PostHog feedback belongs to Cloud."),

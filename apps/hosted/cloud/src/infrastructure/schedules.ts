@@ -1,3 +1,5 @@
+import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
+import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { ProfileHost } from "@executor-js/sdk/core";
 import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
@@ -21,6 +23,7 @@ import { billingLive } from "../implementation/billing.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 
 const makeScheduleCoordinator = Effect.gen(function* () {
+  const analytics = yield* cloudAnalytics;
   const resources = yield* cloudExecutor(yield* AppDataSupervisor);
   const billing = yield* billingLive;
   const meter = yield* BillingMeter.pipe(Effect.provide(billing));
@@ -58,28 +61,51 @@ const makeScheduleCoordinator = Effect.gen(function* () {
       ),
     );
     const run = Effect.scoped(
-      provide(
-        Effect.gen(function* () {
-          const executor = yield* Effect.flatten(HostedExecutor);
-          const authorize = yield* ScheduledAuthority;
-          yield* lifecycle.withPermits(1)(
-            Effect.gen(function* () {
-              if (!initialized) {
-                yield* executor.scheduler.recover("cloud");
-                initialized = true;
-              }
-            }),
-          );
-          // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
-          yield* executor[ProfileHost].tick(concurrency);
-          yield* executor.scheduler.tick({
-            runner: "cloud",
-            maxCandidates: concurrency,
-            authorize,
-            execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
-          });
-          yield* arm;
-        }),
+      analytics.wrap(
+        provide(
+          Effect.gen(function* () {
+            const executor = yield* Effect.flatten(HostedExecutor);
+            const authorize = yield* ScheduledAuthority;
+            yield* lifecycle.withPermits(1)(
+              Effect.gen(function* () {
+                if (!initialized) {
+                  yield* executor.scheduler.recover("cloud");
+                  initialized = true;
+                }
+              }),
+            );
+            // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
+            yield* executor[ProfileHost].tick(concurrency);
+            yield* executor.scheduler.tick({
+              runner: "cloud",
+              maxCandidates: concurrency,
+              authorize,
+              execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
+            });
+            yield* arm;
+          }),
+        ).pipe(
+          Effect.provideService(ScheduleObservation, {
+            completed: (run) =>
+              recordBackgroundUsage("schedule_run_completed", run.owner, {
+                run_id: run.id,
+                schedule_id: run.scheduleId,
+                app_id: run.app,
+                status: run.status,
+                outcome:
+                  run.status === "succeeded"
+                    ? "success"
+                    : run.status === "cancelled"
+                      ? "cancelled"
+                      : "failure",
+                ok: run.status === "succeeded",
+                duration_ms:
+                  run.finishedAt === null
+                    ? 0
+                    : Math.max(0, run.finishedAt.getTime() - run.startedAt.getTime()),
+              }),
+          }),
+        ),
       ),
     ).pipe(
       lifetime.background,

@@ -1,4 +1,5 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
@@ -160,6 +161,7 @@ export const dispatchHostedMcp = <E, R>(
         return url.toString();
       }),
       Effect.provideService(RequestCaller, mcpSessionKey(access)),
+      Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
   });
 

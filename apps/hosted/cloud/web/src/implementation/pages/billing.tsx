@@ -55,6 +55,8 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
           Billing
         </h1>
         <Button
+          data-product-area="billing"
+          data-product-action="open_portal"
           variant="outline"
           disabled={busy}
           onClick={async () => {
@@ -148,6 +150,8 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
                         )}
                       </p>
                       <Button
+                        data-product-area="billing"
+                        data-product-action="select_plan"
                         variant={subscription ? "outline" : "default"}
                         disabled={busy || !!subscription}
                         onClick={async () => {

@@ -1,4 +1,5 @@
 import { PasskeyEnrollment } from "../components/passkey-enrollment.tsx";
+import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { LoginLegalFooter, LoginPage, loginSearch } from "@executor-js/hosted-web/pages/login";
@@ -77,6 +78,7 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
     AsyncResult.isSuccess(verifying) ||
     AsyncResult.isSuccess(signing);
   const failure = (cause: Cause.Cause<AuthFailed>) => {
+    reportBrowserUsage({ area: "auth", action: "sign_in", outcome: "failure" });
     const value = Cause.squash(cause);
     setError(value instanceof AuthFailed ? value.message : "Sign-in failed. Try again.");
   };
@@ -88,7 +90,10 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
         loading={signing.waiting}
         onClick={async () => {
           setError(null);
+          reportBrowserUsage({ area: "auth", action: "passkey", outcome: "started" });
           const result = await passkey(props.redirect);
+          if (Exit.isSuccess(result))
+            reportBrowserUsage({ area: "auth", action: "passkey", outcome: "success" });
           if (Exit.isFailure(result)) failure(result.cause);
         }}
       >
@@ -100,12 +105,24 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
           event.preventDefault();
           setError(null);
           if (!sent) {
+            reportBrowserUsage({ area: "auth", action: "send_email_code", outcome: "started" });
             const result = await send(email.trim());
+            reportBrowserUsage({
+              area: "auth",
+              action: "send_email_code",
+              outcome: Exit.isSuccess(result) ? "success" : "failure",
+            });
             if (Exit.isFailure(result)) failure(result.cause);
             else setSent(true);
           } else {
+            reportBrowserUsage({ area: "auth", action: "verify_email_code", outcome: "started" });
             const otp = String(new FormData(event.currentTarget).get("otp"));
             const result = await verify({ email: email.trim(), otp, redirect: props.redirect });
+            reportBrowserUsage({
+              area: "auth",
+              action: "verify_email_code",
+              outcome: Exit.isSuccess(result) ? "success" : "failure",
+            });
             if (Exit.isFailure(result)) failure(result.cause);
           }
         }}

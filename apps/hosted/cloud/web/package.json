@@ -21,7 +21,7 @@
     "@tanstack/react-router": "^1.170.38",
     "better-auth": "1.7.5",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "posthog-js": "1.372.5",
+    "posthog-js": "1.434.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

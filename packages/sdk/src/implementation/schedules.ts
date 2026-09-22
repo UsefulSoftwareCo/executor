@@ -15,6 +15,7 @@ import {
   ScheduleConflict,
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
+import { ScheduleObservation } from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { ExecutorDatabase } from "./storage.ts";
@@ -171,9 +172,25 @@ export const makeSchedules = (
               set: { activeRun: null },
             }),
           );
+          return {
+            id: run.id,
+            scheduleId: run.scheduleId,
+            app: run.app,
+            owner: run.owner,
+            status,
+            startedAt: run.startedAt,
+            finishedAt,
+          };
         }
       }),
-    ).pipe(Effect.catchTag("ScheduleNotFound", () => Effect.void));
+    ).pipe(
+      Effect.flatMap((completed) =>
+        completed === undefined
+          ? Effect.void
+          : Effect.flatMap(ScheduleObservation, (observer) => observer.completed(completed)),
+      ),
+      Effect.catchTag("ScheduleNotFound", () => Effect.void),
+    );
   const getApproval = (input: typeof ScheduleInputs.approval.Type) =>
     Effect.gen(function* () {
       const run = yield* readRun(input.run, input.owner);

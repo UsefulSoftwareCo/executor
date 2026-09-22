@@ -1,6 +1,6 @@
 import { cloudEntryInitialValues } from "./implementation/entry.ts";
 import { startErrorReporting, reactErrorHandlers } from "./implementation/error-reporting.tsx";
-import { startAnalytics, capturePageview } from "./implementation/analytics.tsx";
+import { startAnalytics, capturePageview, pauseReplay } from "./implementation/analytics.tsx";
 import { Effect } from "effect";
 import { PageTelemetry } from "@executor-js/hosted-web/contracts/telemetry";
 import { BrowserTelemetry } from "@executor-js/telemetry/browser";
@@ -26,6 +26,7 @@ if (!publicEmailPage) {
 const router = createDashboardRouter();
 if (!publicEmailPage) {
   router.subscribe("onBeforeNavigate", ({ toLocation }) => {
+    pauseReplay();
     PageTelemetry.runFork(
       Effect.flatMap(BrowserTelemetry, (telemetry) =>
         telemetry.navigation({ type: "start", path: toLocation.pathname }),

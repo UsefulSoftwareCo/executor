@@ -16,7 +16,8 @@ import { Input } from "@executor-js/ui/components/input";
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import {
   OnboardingDraft,
   OnboardingInvitation,
@@ -114,7 +115,20 @@ function TeamEntry({
   const created = useAtomValue(createTeamAtom(userId));
   const refresh = useAtomRefresh(prepareTeamAtom(userId));
   const reset = useAtomSet(createTeamAtom(userId));
+  const step = AsyncResult.isInitial(prepared)
+    ? "preparing"
+    : AsyncResult.isFailure(prepared)
+      ? "prepare_failed"
+      : Schema.is(OnboardingInvitation)(prepared.value)
+        ? "invitation"
+        : Schema.is(OnboardingDraft)(prepared.value)
+          ? "team_details"
+          : "ready";
+  useEffect(() => {
+    reportBrowserUsage({ area: "onboarding", action: step, outcome: "viewed" });
+  }, [step]);
   const retry = () => {
+    reportBrowserUsage({ area: "onboarding", action: "retry", outcome: "started" });
     reset(Atom.Reset);
     refresh();
   };
@@ -212,13 +226,24 @@ function TeamForm({
           onSubmit={async (event) => {
             event.preventDefault();
             if (pending) return;
+            reportBrowserUsage({ area: "onboarding", action: "create_team", outcome: "started" });
             setError(null);
             const name = new FormData(event.currentTarget).get("name");
             if (typeof name !== "string" || !name.trim()) {
               setError("Enter a team name.");
+              reportBrowserUsage({
+                area: "onboarding",
+                action: "team_name_validation",
+                outcome: "failure",
+              });
               return;
             }
             const result = await create({ name: name.trim(), logo: icon.logo });
+            reportBrowserUsage({
+              area: "onboarding",
+              action: "create_team",
+              outcome: Exit.isSuccess(result) ? "success" : "failure",
+            });
             if (Exit.isFailure(result)) setError("Unable to create your team. Try again.");
           }}
         >

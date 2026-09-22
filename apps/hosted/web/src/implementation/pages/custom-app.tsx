@@ -1,3 +1,4 @@
+import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { Option, Schema } from "effect";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -33,7 +34,14 @@ export function CustomAppPage() {
         value={kind}
         onValueChange={(value) => {
           const parsed = Schema.decodeUnknownOption(CustomAppKind)(value);
-          if (Option.isSome(parsed)) setKind(parsed.value);
+          if (Option.isSome(parsed)) {
+            reportBrowserUsage({
+              area: "apps",
+              action: `select_${parsed.value}`,
+              outcome: "started",
+            });
+            setKind(parsed.value);
+          }
         }}
       >
         <TabsList aria-label="App template">

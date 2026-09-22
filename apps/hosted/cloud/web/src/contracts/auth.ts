@@ -1,3 +1,4 @@
+import { observeBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { BrowserAtoms } from "@executor-js/hosted-web/contracts/telemetry";
 import { passkeyClient } from "@better-auth/passkey/client";
 import { createAuthClient } from "better-auth/client";
@@ -40,6 +41,7 @@ export const passkeySignInAtom = BrowserAtoms.fn((redirect: string) =>
 /** Register with the server's configured origin and relying-party identity. */
 export const addPasskeyAtom = BrowserAtoms.fn((name: string) =>
   authRequest((options) => cloudAuthClient.passkey.addPasskey({ name }, options)).pipe(
+    (work) => observeBrowserUsage("auth", "add_passkey", work),
     Effect.withSpan("ui.auth.addPasskey"),
     Effect.asVoid,
   ),

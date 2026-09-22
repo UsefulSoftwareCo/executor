@@ -1,4 +1,5 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Cause, Exit } from "effect";
@@ -38,8 +39,15 @@ export function McpAuthorizePage() {
   const available = AsyncResult.isSuccess(organizations) ? organizations.value : [];
   const organization = selected || available[0]?.id || "";
   const decide = async (accept: boolean) => {
+    const action = accept ? "approve_connection" : "decline_connection";
+    reportBrowserUsage({ area: "mcp", action, outcome: "started" });
     setError(null);
     const result = await consent({ accept, organization, query });
+    reportBrowserUsage({
+      area: "mcp",
+      action,
+      outcome: Exit.isSuccess(result) ? "success" : "failure",
+    });
     if (Exit.isFailure(result)) {
       const failure = Cause.squash(result.cause);
       setError(

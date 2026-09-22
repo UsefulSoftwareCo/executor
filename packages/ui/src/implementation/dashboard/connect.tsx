@@ -69,9 +69,23 @@ export function McpInstallInstructions({
         }}
       >
         <TabsList aria-label="Installation method">
-          <TabsTrigger value="installer">Quick install</TabsTrigger>
-          <TabsTrigger value="claude">Claude Code</TabsTrigger>
-          <TabsTrigger value="json">Manual config</TabsTrigger>
+          <TabsTrigger
+            data-product-area="connect"
+            data-product-action="select_installer"
+            value="installer"
+          >
+            Quick install
+          </TabsTrigger>
+          <TabsTrigger
+            data-product-area="connect"
+            data-product-action="select_claude"
+            value="claude"
+          >
+            Claude Code
+          </TabsTrigger>
+          <TabsTrigger data-product-area="connect" data-product-action="select_json" value="json">
+            Manual config
+          </TabsTrigger>
         </TabsList>
         {(["installer", "claude", "json"] as const).map((method) => (
           <TabsContent key={method} value={method}>
@@ -89,6 +103,8 @@ export function McpInstallInstructions({
                   {method === "json" ? "MCP configuration" : "Terminal"}
                 </span>
                 <Button
+                  data-product-area="connect"
+                  data-product-action={`copy_${method}`}
                   variant="ghost"
                   size="sm"
                   onClick={() => {

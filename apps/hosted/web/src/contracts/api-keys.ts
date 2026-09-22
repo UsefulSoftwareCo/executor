@@ -1,3 +1,4 @@
+import { observeBrowserUsage } from "./product-analytics.ts";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { Atom } from "effect/unstable/reactivity";
@@ -60,6 +61,7 @@ const request = <A>(
             }),
       ),
     ),
+    (work) => observeBrowserUsage("api_keys", operation, work),
     Effect.provide(FetchHttpClient.layer),
   );
 

@@ -1,4 +1,5 @@
 /** Real Better Auth OTP, database migrations, and invitation delivery with a captured mail boundary. */
+import type { NativeAuthUsage } from "../src/implementation/auth-analytics.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -145,6 +146,8 @@ test(
             const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
             const messages: AuthEmail[] = [];
             const signups: string[] = [];
+            const logins: string[] = [];
+            const operations: NativeAuthUsage[] = [];
             let deliveryFails = false;
             const options = {
               ...cloudAuthOptions(
@@ -159,6 +162,12 @@ test(
                 undefined,
                 async (userId) => {
                   signups.push(userId);
+                },
+                async (userId) => {
+                  logins.push(userId);
+                },
+                async (usage) => {
+                  operations.push(usage);
                 },
               ),
               database,
@@ -244,6 +253,23 @@ test(
               cookie,
             );
             assert.equal(invitation.status, 200);
+            assert.ok(
+              operations.some(
+                (usage) =>
+                  usage.operation === "organization.invite-member" &&
+                  usage.userId === signedInUser.user.id &&
+                  usage.status === 200,
+              ),
+            );
+            const beforePrivateRead = operations.length;
+            yield* Effect.promise(() =>
+              auth.api.listOrganizations({ headers: new Headers({ cookie }) }),
+            );
+            assert.equal(
+              operations.length,
+              beforePrivateRead,
+              "Private auth calls must not require a request analytics context",
+            );
             assert.equal(messages.length, 2);
             const inviteMail = messages[1];
             assert.ok(inviteMail);
@@ -316,6 +342,7 @@ test(
                 );
               }
             }
+            assert.deepEqual(logins, [signedInUser.user.id, signedInUser.user.id]);
             assert.deepEqual(
               signups,
               [signedInUser.user.id],

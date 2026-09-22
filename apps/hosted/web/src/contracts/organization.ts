@@ -1,3 +1,4 @@
+import { observeBrowserUsage } from "./product-analytics.ts";
 import { protectedQuery } from "./protected-query.ts";
 import {
   organizationTargetAtom,
@@ -64,6 +65,12 @@ const request = <A>(
           )
         : Effect.succeed(data),
     ),
+    (work) =>
+      observeBrowserUsage(
+        "organization",
+        operation.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+        work,
+      ),
     Effect.withSpan(`ui.organization.${operation}`),
   );
 

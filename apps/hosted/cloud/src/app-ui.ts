@@ -12,6 +12,8 @@ import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
 import { requestTiming } from "@executor-js/telemetry/http";
 import { cloudSentry } from "./implementation/error-reporting.ts";
+import { cloudAnalytics } from "./implementation/product-analytics.ts";
+import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import { cloudEmail } from "./infrastructure/email.ts";
@@ -42,6 +44,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       main: import.meta.url,
       ...(yield* cloudObservability),
       env: {
+        ...(yield* postHogBindings).env,
         AppWorkflows: Cloudflare.Workflow("AppWorkflows", {
           className: "AppWorkflows",
           scriptName: (yield* Api).workerName,
@@ -66,6 +69,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
   }),
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
+    const analytics = yield* cloudAnalytics;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send);
     const executor = yield* cloudExecutor(yield* AppDataSupervisor.from(Api));
@@ -103,6 +107,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const lifetime = yield* previewLifetime;
     return {
       fetch: handle.pipe(
+        analytics.wrap,
         reportErrors,
         Effect.catch(() =>
           Effect.succeed(

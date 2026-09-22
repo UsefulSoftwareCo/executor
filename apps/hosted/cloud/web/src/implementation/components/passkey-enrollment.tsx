@@ -70,7 +70,13 @@ function Enrollment({
         >
           Create a passkey
         </Button>
-        <Button variant="ghost" disabled={adding.waiting} onClick={() => dismiss(userId)}>
+        <Button
+          data-product-area="auth"
+          data-product-action="skip_passkey"
+          variant="ghost"
+          disabled={adding.waiting}
+          onClick={() => dismiss(userId)}
+        >
           Not now
         </Button>
         {AsyncResult.isFailure(enrollment) && (

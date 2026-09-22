@@ -1,4 +1,6 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import { McpSchema } from "effect/unstable/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
@@ -12,7 +14,7 @@ import {
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { appTargets, type McpBackend } from "@executor-js/mcp";
 import { ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
-import { Context, Effect } from "effect";
+import { Context, Effect, Option } from "effect";
 import { currentOwner, selectedApp, ownProfile, checkInvocationAccounts } from "./access.ts";
 import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
@@ -38,9 +40,24 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Context.add(GroupDatabase, database),
     Context.add(CurrentUserId, user),
   );
+  const observe = <A, E, R>(operation: string, work: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUsage;
+      const client = yield* Effect.serviceOption(McpSchema.McpServerClient);
+      return yield* observeProductOperation({ area: "mcp", operation }, work).pipe(
+        Effect.provideService(CurrentUsage, {
+          ...current,
+          source: "mcp",
+          ...(Option.isSome(client)
+            ? { client_name: client.value.clientInfo.name.slice(0, 100) }
+            : {}),
+        }),
+        Effect.provideContext(context),
+      );
+    });
   const backend = {
-    listSkills: (input) => listAppSkills(input).pipe(Effect.provideContext(context)),
-    readSkill: (input) => readAppSkill(input).pipe(Effect.provideContext(context)),
+    listSkills: (input) => observe("listSkills", listAppSkills(input)),
+    readSkill: (input) => observe("readSkill", readAppSkill(input)),
     authorizeElicitation: (input) =>
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
@@ -54,7 +71,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
             return yield* new ElicitationFailed({ reason: "forbidden" });
         }
       }).pipe(
-        Effect.provideContext(context),
+        (work) => observe("authorizeElicitation", work),
         Effect.catchTags({
           OrganizationForbidden: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AppNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
@@ -71,6 +88,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
               .pipe(Effect.flatMap(visibleApps), Effect.provideContext(context)),
           ),
         ),
+        (work) => observe("listApps", work),
       ),
     listTargets: (input) =>
       Effect.gen(function* () {
@@ -89,8 +107,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
           .list({ owner })
           .pipe(Effect.flatMap(visibleAccounts));
         return appTargets(app, profiles, accounts);
-      }).pipe(Effect.provideContext(context)),
-    listTools: (input) => listTools(input).pipe(Effect.provideContext(context)),
+      }).pipe((work) => observe("listTargets", work)),
+    listTools: (input) => observe("listTools", listTools(input)),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
@@ -99,7 +117,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, input.app, input.profile);
         return yield* executor.tools.call(input, options);
-      }).pipe(Effect.provideContext(context)),
+      }).pipe((work) => observe("callTool", work)),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         yield* authorizeTool(request.invocation.app, request.invocation.tool);
@@ -107,11 +125,17 @@ export const hostedMcpBackend = Effect.gen(function* () {
         yield* requireAppAccess(request.invocation.app, "use");
         const executor = yield* sdk;
         yield* checkInvocationAccounts(executor, owner, request.invocation);
-        return yield* executor.tools.resume(
-          { requestId: request.requestId, owner, response },
-          options,
-        );
-      }).pipe(Effect.provideContext(context)),
+        const usage = yield* CurrentUsage;
+        return yield* executor.tools
+          .resume({ requestId: request.requestId, owner, response }, options)
+          .pipe(
+            Effect.provideService(CurrentUsage, {
+              ...usage,
+              app_id: request.invocation.app,
+              tool_name: request.invocation.tool,
+            }),
+          );
+      }).pipe((work) => observe("resumeInvocation", work)),
   } satisfies McpBackend<Error>;
   return backend;
 });

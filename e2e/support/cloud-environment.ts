@@ -1,6 +1,7 @@
 import { Effect, FileSystem, Path, Redacted, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { HttpClient } from "effect/unstable/http";
+import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
 
@@ -42,6 +43,7 @@ export const startCloudEnvironment = (input: {
     const emulators = `${directory}/emulators.json`;
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+    const analyticsPort = yield* startAnalyticsCollector(directory);
     const databasePassword = randomBytes(24).toString("hex");
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
@@ -60,6 +62,12 @@ export const startCloudEnvironment = (input: {
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
       EXECUTOR_BUILD_VERSION: input.commit,
+      POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+      VITE_POSTHOG_KEY: "synthetic-ingestion-key",
+      VITE_POSTHOG_PATH: "/api/0123456789abcdef",
+      VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
+      VITE_EXECUTOR_ENVIRONMENT: "test-local",
+      VITE_EXECUTOR_RELEASE: input.commit,
       CLOUD_DEV_API_PORT: String(input.apiPort),
       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,

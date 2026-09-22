@@ -21,6 +21,7 @@ import {
   postHogExperimentProvider,
 } from "./src/infrastructure/posthog-experiment.ts";
 import { stackState } from "./src/infrastructure/state.ts";
+import { usageReports } from "./src/infrastructure/usage-reports.ts";
 import { cloudOrigin } from "./src/infrastructure/stage.ts";
 
 export default Alchemy.Stack(
@@ -51,29 +52,14 @@ export default Alchemy.Stack(
     const dashboard = yield* PostHogDashboard("Usage", {
       projectId: project.id,
       name: "Executor V2 usage",
-      description: "Acquisition and product activity. Synthetic traffic is excluded.",
+      description:
+        "Acquisition, activation, feature use, failures and return use. Internal and synthetic activity are excluded by default.",
     }).pipe(retain());
-    for (const [id, name, event] of [
-      ["Visitors", "Daily visitors", "$pageview"],
-      ["Executions", "Tool executions", "tool_execution_completed"],
-      ["Connections", "Accounts connected", "account_connected"],
-    ] as const) {
-      yield* PostHogInsight(id, {
+    for (const report of usageReports) {
+      yield* PostHogInsight(report.id, {
         projectId: project.id,
         dashboardId: dashboard.id,
-        name,
-        description: `Executor V2 ${name.toLowerCase()}.`,
-        query: {
-          kind: "InsightVizNode",
-          source: {
-            kind: "TrendsQuery",
-            version: 4,
-            dateRange: { date_from: "-30d" },
-            interval: "day",
-            filterTestAccounts: true,
-            series: [{ kind: "EventsNode", event, math: id === "Visitors" ? "dau" : "total" }],
-          },
-        },
+        ...report,
       }).pipe(retain());
     }
     const hero = yield* PostHogHeroExperiment("HeroExperiment", {

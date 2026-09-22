@@ -16,10 +16,7 @@ const Batch = Schema.Struct({
     Schema.Struct({
       event: Schema.String,
       distinct_id: Schema.String,
-      properties: Schema.Record(
-        Schema.String,
-        Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
-      ),
+      properties: Schema.Record(Schema.String, Schema.Json),
     }),
   ),
 });

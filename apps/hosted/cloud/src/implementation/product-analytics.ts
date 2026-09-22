@@ -2,10 +2,20 @@
 import { heroPreviewCookie, readHeroVisitor } from "@executor-js/marketing/experiments";
 import { evaluateHeroFlag } from "./hero-experiment.ts";
 import { FeedbackUnavailable, type Feedback } from "../contracts/feedback.ts";
+import type { ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
 import type { Executor } from "@executor-js/sdk/core";
-import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
+import {
+  CurrentUserId,
+  CurrentOrganization,
+  ProductAnalytics,
+  recordUsage,
+  observeUsage,
+  usageFailure,
+  type UsageEvent,
+  type UsageProperties,
+} from "@executor-js/hosted-server";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Cause, Context, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Context, Effect, Exit, Option, Redacted, Schema } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -20,14 +30,15 @@ const Settings = Schema.Struct({
   path: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}$/)),
   environment: Schema.String,
   release: Schema.String,
+  internalUserIds: Schema.optional(Schema.Array(Schema.String)),
 });
 type Settings = typeof Settings.Type;
 type EventName =
-  | "tool_execution_completed"
-  | "account_connected"
-  | "app_deployed"
+  | UsageEvent
   | "feedback_submitted"
   | "cloud_signup_completed"
+  | "cloud_login_completed"
+  | "analytics_events_dropped"
   | "$identify";
 type Properties = Readonly<Record<string, string | number | boolean>>;
 interface Event {
@@ -69,6 +80,19 @@ export const recordCloudSignup = (userId: string) =>
     });
   });
 
+/** Count successful session creation without recording login credentials or callback URLs. */
+export const recordCloudLogin = (userId: string) =>
+  Effect.flatMap(Analytics, (analytics) =>
+    Effect.sync(() =>
+      analytics.add({
+        event: "cloud_login_completed",
+        distinct_id: userId,
+        timestamp: new Date().toISOString(),
+        properties: {},
+      }),
+    ),
+  );
+
 /** Submit only the declared feedback text, with identity derived from the authenticated request. */
 export const submitFeedback = (feedback: Feedback) =>
   Effect.gen(function* () {
@@ -93,25 +117,6 @@ const readSettings = (read: Effect.Effect<unknown>) =>
     )(Redacted.isRedacted(value) ? Redacted.value(value) : value).pipe(Effect.orDie);
   });
 
-const record = (event: EventName, properties: Properties) =>
-  Effect.gen(function* () {
-    const actor = yield* CurrentUserId;
-    if (actor === undefined) return;
-    const organization = yield* Effect.serviceOption(CurrentOrganization);
-    const analytics = yield* Analytics;
-    analytics.add({
-      event,
-      distinct_id: actor,
-      timestamp: new Date().toISOString(),
-      properties: {
-        ...properties,
-        ...(Option.isSome(organization)
-          ? { organization_id: organization.value.organization }
-          : {}),
-      },
-    });
-  });
-
 /** Drain one bounded batch through the owning request's Alchemy finalizer. */
 export const withProductAnalytics = <A, E, R>(
   handler: Effect.Effect<A, E, R>,
@@ -121,6 +126,11 @@ export const withProductAnalytics = <A, E, R>(
     const config = yield* settings;
     if (!config) return yield* handler;
     const events: Event[] = [];
+    let dropped = 0;
+    const add = (event: Event) => {
+      if (events.length < 1000) events.push(event);
+      else dropped++;
+    };
     const client = yield* HttpClient.HttpClient;
     const send = (batch: readonly Event[]) =>
       client
@@ -136,7 +146,16 @@ export const withProductAnalytics = <A, E, R>(
                   environment: config.environment,
                   release: config.release,
                   executor_test: config.environment.startsWith("test-"),
-                  $process_person_profile: event.event === "$identify",
+                  executor_internal: config.internalUserIds?.includes(event.distinct_id) === true,
+                  ...(event.properties.actor_type === "automation"
+                    ? { $process_person_profile: false }
+                    : {
+                        $set: {
+                          executor_internal:
+                            config.internalUserIds?.includes(event.distinct_id) === true,
+                        },
+                        $process_person_profile: true,
+                      }),
                 },
               })),
             }),
@@ -154,75 +173,176 @@ export const withProductAnalytics = <A, E, R>(
     yield* Effect.addFinalizer(() =>
       events.length === 0
         ? Effect.void
-        : send(events).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+        : send(
+            dropped === 0
+              ? events
+              : [
+                  ...events,
+                  {
+                    event: "analytics_events_dropped",
+                    distinct_id: "analytics-exporter",
+                    timestamp: new Date().toISOString(),
+                    properties: { dropped_events: dropped },
+                  },
+                ],
+          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
     );
     return yield* handler.pipe(
       Effect.provideService(Analytics, {
         submit: (event) => send([event]).pipe(Effect.mapError(() => new FeedbackUnavailable())),
-        add: (event) => {
-          if (events.length < 100) events.push(event);
-        },
+        add,
+      }),
+      Effect.provideService(ProductAnalytics, {
+        enabled: true,
+        capture: (event) =>
+          add({
+            event: event.event,
+            distinct_id: event.userId,
+            timestamp: new Date().toISOString(),
+            properties: {
+              ...event.context,
+              ...event.properties,
+              ...(event.organizationId === undefined
+                ? {}
+                : { organization_id: event.organizationId }),
+            },
+          }),
       }),
     );
   }).pipe(Effect.provide(FetchHttpClient.layer));
 
-/** Instrument product operations at the host boundary, including MCP calls and resumptions. */
+/** Background work has its own identity and never counts as an active human. */
+export const recordBackgroundUsage = (
+  event: "schedule_run_completed" | "workflow_attempt_completed",
+  identity: string,
+  properties: UsageProperties,
+) =>
+  Effect.flatMap(Analytics, (analytics) =>
+    Effect.sync(() =>
+      analytics.add({
+        event,
+        distinct_id: `automation:${identity}`,
+        timestamp: new Date().toISOString(),
+        properties: {
+          ...properties,
+          source: event === "schedule_run_completed" ? "schedule" : "workflow",
+          actor_type: "automation",
+        },
+      }),
+    ),
+  );
+
+/** Instrument completed tool work while keeping approval pauses out of completion counts. */
+const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+  properties: UsageProperties,
+  work: Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const started = yield* Clock.currentTimeMillis;
+    yield* recordUsage("tool_execution_started", properties);
+    return yield* work.pipe(
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          const timed = {
+            ...properties,
+            duration_ms: Math.max(0, (yield* Clock.currentTimeMillis) - started),
+          };
+          if (Exit.isFailure(exit)) {
+            yield* recordUsage("tool_execution_completed", {
+              ...timed,
+              ...usageFailure(exit.cause),
+            });
+            return;
+          }
+          const status = exit.value.status;
+          if (status !== "approval-required") {
+            yield* recordUsage("tool_execution_completed", {
+              ...timed,
+              status,
+              ok: status === "completed",
+              outcome:
+                status === "completed"
+                  ? "success"
+                  : status === "cancelled"
+                    ? "cancelled"
+                    : "failure",
+            });
+          } else {
+            yield* recordUsage("tool_approval_requested", { ...timed, status });
+          }
+        }),
+      ),
+    );
+  });
+
+/** Product host boundaries cover API/MCP work and private app queries without inspecting payloads. */
 export const withExecutorAnalytics = (executor: Executor): Executor => ({
   ...executor,
   tools: {
     ...executor.tools,
     call: (input, options) =>
-      executor.tools.call(input, options).pipe(
-        Effect.tap((result) =>
-          result.status === "completed"
-            ? record("tool_execution_completed", {
-                app_id: input.app,
-                tool_name: input.tool,
-                ok: true,
-              })
-            : Effect.void,
-        ),
-        Effect.tapCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : record("tool_execution_completed", {
-                app_id: input.app,
-                tool_name: input.tool,
-                ok: false,
-              }),
-        ),
+      observeTool(
+        { app_id: input.app, tool_name: input.tool },
+        executor.tools.call(input, options),
       ),
     resume: (input, options) =>
-      executor.tools.resume(input, options).pipe(
-        Effect.tap((result) => {
-          switch (result.status) {
-            case "completed":
-              return record("tool_execution_completed", { resumed: true, ok: true });
-            case "failed":
-              return record("tool_execution_completed", { resumed: true, ok: false });
-            case "denied":
-            case "cancelled":
-            case "already-consumed":
-              return Effect.void;
-          }
-        }),
+      observeTool({ resumed: true }, executor.tools.resume(input, options)),
+  },
+  appData: {
+    ...executor.appData,
+    query: (input) =>
+      observeUsage(
+        "app_query_completed",
+        { app_id: input.app, operation: input.name },
+        executor.appData.query(input),
+      ),
+    mutate: (input) =>
+      observeUsage(
+        "app_mutation_completed",
+        { app_id: input.app, operation: input.name },
+        executor.appData.mutate(input),
+      ),
+    subscribe: (input) =>
+      observeUsage(
+        "app_subscription_started",
+        { app_id: input.app, operation: input.name },
+        executor.appData.subscribe(input),
       ),
   },
   accountConnections: {
     ...executor.accountConnections,
     submit: (input) =>
-      executor.accountConnections
-        .submit(input)
-        .pipe(Effect.tap(() => record("account_connected", { method: "credentials" }))),
+      executor.accountConnections.submit(input).pipe(
+        Effect.tap((account) =>
+          recordUsage("account_connected", {
+            method: "credentials",
+            account_id: account.id,
+            provider_id: account.provider,
+          }),
+        ),
+      ),
     completeOAuth: (input) =>
-      executor.accountConnections
-        .completeOAuth(input)
-        .pipe(Effect.tap(() => record("account_connected", { method: "oauth" }))),
+      executor.accountConnections.completeOAuth(input).pipe(
+        Effect.tap((account) =>
+          recordUsage("account_connected", {
+            method: "oauth",
+            account_id: account.id,
+            provider_id: account.provider,
+          }),
+        ),
+      ),
   },
   apps: {
     ...executor.apps,
     deploy: (input) =>
-      executor.apps.deploy(input).pipe(Effect.tap(() => record("app_deployed", {}))),
+      executor.apps.deploy(input).pipe(
+        Effect.tap((result) =>
+          recordUsage("app_deployed", {
+            app_id: result.app.id,
+            deployment_id: result.deployment.id,
+          }),
+        ),
+      ),
   },
 });
 

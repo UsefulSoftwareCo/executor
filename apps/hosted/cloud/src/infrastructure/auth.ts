@@ -6,10 +6,13 @@ import { OrganizationId } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
 import { clearHeroIdentityOnSignOut } from "../implementation/hero-experiment.ts";
-import { recordCloudSignup } from "../implementation/product-analytics.ts";
+import { recordCloudSignup, recordCloudLogin } from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 /** Native Alchemy auth binding, shared by the HTTP Worker and MCP session objects. */
 import {
+  CurrentUsage,
+  CurrentUserId,
+  recordUsage,
   Authentication,
   accountApiKey,
   pinnedKeyMetadata,
@@ -92,6 +95,20 @@ export const cloudAuth = (send: SendAuthEmail) =>
           ),
       },
       (userId) => runCallback(recordCloudSignup(userId)),
+      (userId) => runCallback(recordCloudLogin(userId)),
+      (usage) =>
+        runCallback(
+          recordUsage("product_operation_completed", {
+            area: "auth",
+            operation: usage.operation,
+            status_code: usage.status,
+            ok: usage.status < 400,
+            outcome: usage.status < 400 ? "success" : "failure",
+          }).pipe(
+            Effect.provideService(CurrentUserId, usage.userId),
+            Effect.provideService(CurrentUsage, { source: "dashboard" }),
+          ),
+        ),
     );
     const auth = yield* BetterAuth({
       ...options,

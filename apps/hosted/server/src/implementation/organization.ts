@@ -1,4 +1,5 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   fullAuthority,
@@ -109,6 +110,7 @@ export const withOrganizationRequest = <E, R>(
         Effect.provideService(CurrentOrganization, grant.access),
         Effect.provideService(CurrentOrganizationNamespace, Effect.succeed(grant.organizationSlug)),
         Effect.provideService(CurrentUserId, grant.userId),
+        Effect.provideService(CurrentUsage, { source: "api" }),
       )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }
     if (
@@ -133,6 +135,7 @@ export const withOrganizationRequest = <E, R>(
         auth.organizationSlug(headers, organization),
       ),
       Effect.provideService(CurrentUserId, principal.userId),
+      Effect.provideService(CurrentUsage, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),
       Effect.provideService(CurrentAuthorization, fullAuthority),
     )).pipe(
@@ -147,9 +150,18 @@ export const requireOrganizationLive = Layer.effect(
   Effect.gen(function* () {
     const auth = yield* Authentication;
     const api = yield* ApiAuthentication;
-    return (response, { endpoint }) =>
+    return (response, { endpoint, group }) =>
       withOrganizationRequest(
-        () => response,
+        () =>
+          observeProductOperation(
+            { area: group.identifier, operation: endpoint.identifier, method: endpoint.method },
+            response,
+            (result) => ({
+              status_code: result.status,
+              ok: result.status < 400,
+              outcome: result.status < 400 ? "success" : "failure",
+            }),
+          ),
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
       ).pipe(
         Effect.provideService(Authentication, auth),
