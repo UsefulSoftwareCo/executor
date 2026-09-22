@@ -29,6 +29,7 @@ import {
 } from "../components/organization.tsx";
 import { OrganizationMembers } from "../components/organization-members.tsx";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
 
 /** Hosts may compose extra admin settings and a footer below the members list. */
 export function OrganizationPage({
@@ -315,7 +316,7 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
               }}
               required
               pattern="[a-z0-9]+(-[a-z0-9]+)*"
-              maxLength={80}
+              maxLength={organizationSlugMaxLength}
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -329,7 +330,9 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
           )}
         </CardContent>
         <CardFooter>
-          <p id="organization-slug-hint">Lowercase letters, numbers, hyphens · 80 characters max</p>
+          <p id="organization-slug-hint">
+            Lowercase letters, numbers, hyphens · {organizationSlugMaxLength} characters max
+          </p>
           <div className="organization-setting-action flex items-center gap-2.5 text-[12px] [&_>_button]:h-7.5 [&_>_button]:py-0 [&_>_button]:px-[12px] [&_>_button]:text-[12px] [&_>_button]:bg-transparent [&_>_button]:shadow-none max-[640px]:[&_>_button]:min-h-10">
             {saved && <span role="status">Saved</span>}
             <Button

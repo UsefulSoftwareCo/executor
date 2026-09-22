@@ -7,9 +7,13 @@ import { Effect, Option } from "effect";
 import { testStage } from "./stage.ts";
 
 /** Configured stages keep retained builds; a destroyed test stage leaves nothing behind. */
-export const AppBuilds = Cloudflare.R2.Bucket("AppBuilds").pipe(
-  retain(testStage.pipe(Effect.map(Option.isNone), Effect.orDie)),
-);
+export const AppBuilds = Cloudflare.R2.Bucket(
+  "AppBuilds",
+  testStage.pipe(
+    Effect.map((stage) => ({ forceDestroy: Option.isSome(stage) })),
+    Effect.orDie,
+  ),
+).pipe(retain(testStage.pipe(Effect.map(Option.isNone), Effect.orDie)));
 
 /** Resolve a binding at composition; storage I/O executes in the current Worker invocation. */
 export const cloudBlobs = Effect.gen(function* () {

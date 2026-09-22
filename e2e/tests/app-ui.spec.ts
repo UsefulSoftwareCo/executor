@@ -6,6 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
@@ -69,7 +70,6 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-const InvalidAddress = Schema.Struct({ reason: Schema.Literal("too_long") });
 
 layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
   it.effect(scenarios.appUi.title, (context) =>
@@ -111,11 +111,9 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           { name: "save", input: { body: "Saved from the management API" } },
         );
         expect(seeded.status).toBe(200);
-        const location = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`);
-        expect(location.status).toBe(200);
-        const { url } = yield* body(Location, location);
-        expect(new URL(url).hostname.split(".")[0]).toBe(
-          `${app.slug}--${actors.organization.slug}`,
+        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
+        expect(new URL(url).hostname.split(".").slice(0, 2).join(".")).toBe(
+          `${app.slug}.${actors.organization.slug}`,
         );
         const bookmark = `${url}/inbox/unread?filter=new#latest`;
         yield* browser.omitNetworkTrace;
@@ -273,9 +271,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         )(denied.structuredContent);
         expect(failed.execution.ok).toBe(false);
 
-        yield* browser.use("An existing dashboard login automatically opens the app", (page) =>
-          page.goto(`${mcpLocation.url}/inbox/unread?filter=new#latest`),
-        );
+        yield* openPrivateApp(`${mcpLocation.url}/inbox/unread?filter=new#latest`);
         yield* browser.use("App query executes after authentication", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
@@ -370,7 +366,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
         );
         yield* browser.login(actors.member);
-        yield* browser.use("A member can open an explicitly shared app", (page) => page.reload());
+        yield* openPrivateApp(bookmark);
         yield* browser.use("Member can query the app", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
@@ -398,8 +394,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(
           (yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/ui`)).status,
         ).toBe(403);
-        // Exercise the public rename and location APIs at the combined DNS-label boundary.
-        const maxAppSlug = 63 - 2 - actors.organization.slug.length;
+        // Each app has its own complete DNS label, independent of the team slug length.
+        const maxAppSlug = 63;
         expect(maxAppSlug).toBeGreaterThan(0);
         const boundaryName = "a".repeat(maxAppSlug);
         expect(
@@ -411,14 +407,20 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(boundary.status).toBe(200);
         const boundaryUrl = (yield* body(Location, boundary)).url;
         expect(new URL(boundaryUrl).hostname.split(".")[0]?.length).toBe(63);
+        yield* browser.login(actors.owner);
+        yield* openPrivateApp(boundaryUrl);
+        yield* browser.use("A 63-character app label serves the authenticated app", (page) =>
+          page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
+        );
+        yield* browser.checkpoint("The longest app hostname works over verified HTTPS");
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/name`, {
             name: `${boundaryName}a`,
           })).status,
         ).toBe(200);
-        const tooLong = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`);
-        expect(tooLong.status).toBe(422);
-        expect((yield* body(InvalidAddress, tooLong)).reason).toBe("too_long");
+        const normalized = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`);
+        expect(normalized.status).toBe(200);
+        expect((yield* body(Location, normalized)).url).toBe(boundaryUrl);
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/name`, {
             name: app.name,

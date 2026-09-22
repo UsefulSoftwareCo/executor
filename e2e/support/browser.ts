@@ -67,6 +67,17 @@ export class Browser extends Context.Service<
       const scope = yield* Effect.scope;
       const navigations: { at: string; url: string; elapsedMs: number; page: number }[] = [];
       const traceIds = new Set<string>();
+      const failureReads: Promise<void>[] = [];
+      const failedResources: {
+        url: string;
+        kind: string;
+        status?: number;
+        error?: string;
+        site?: string;
+        mode?: string;
+        appCookie?: boolean;
+        originMatches?: boolean;
+      }[] = [];
       let page: Page | undefined;
       let tracing = true;
       const context = yield* driver("create browser context", () =>
@@ -102,6 +113,9 @@ export class Browser extends Context.Service<
           }
           const video = page?.video();
           yield* driver("close browser context", () => context.close()).pipe(Effect.orDie);
+          yield* driver("collect sanitized resource failures", () =>
+            Promise.all(failureReads),
+          ).pipe(Effect.orDie);
           if (video) {
             const source = yield* driver("resolve recording", () => video.path()).pipe(
               Effect.orDie,
@@ -110,6 +124,7 @@ export class Browser extends Context.Service<
             yield* evidence.artifact("Browser recording", "video/webm", "raw.webm");
           }
           yield* evidence.json("navigation.json", navigations);
+          yield* evidence.json("failed-resources.json", failedResources);
           for (const id of traceIds) yield* evidence.browserTrace(id);
         }),
       );
@@ -145,6 +160,48 @@ export class Browser extends Context.Service<
           current.on("request", (request) => {
             const id = request.headers()["traceparent"]?.split("-")[1];
             if (id && /^[a-f0-9]{32}$/.test(id)) traceIds.add(id);
+          });
+          // Retain safe failure evidence even when OAuth requires discarding the network trace.
+          current.on("response", (response) => {
+            const kind = response.request().resourceType();
+            const status = response.status();
+            if (
+              status < 400 &&
+              !(kind === "script" && response.headers()["content-type"]?.includes("text/html"))
+            )
+              return;
+            const url = new URL(response.url());
+            failureReads.push(
+              response
+                .request()
+                .allHeaders()
+                .then((headers) => {
+                  failedResources.push({
+                    url: `${url.origin}${url.pathname}`,
+                    kind,
+                    status,
+                    site: headers["sec-fetch-site"] ?? "absent",
+                    mode: headers["sec-fetch-mode"] ?? "absent",
+                    appCookie: headers.cookie?.includes("__Host-executor_app=") === true,
+                    originMatches: headers.origin === undefined || headers.origin === url.origin,
+                  });
+                })
+                .catch(() => {
+                  failedResources.push({ url: `${url.origin}${url.pathname}`, kind, status });
+                }),
+            );
+          });
+          current.on("requestfailed", (request) => {
+            const url = new URL(request.url());
+            const reason = request.failure()?.errorText;
+            failedResources.push({
+              url: `${url.origin}${url.pathname}`,
+              kind: request.resourceType(),
+              error:
+                reason !== undefined && /^net::ERR_[A-Z_]+$/.test(reason)
+                  ? reason
+                  : "NETWORK_ERROR",
+            });
           });
           return { page: current, focus, capture };
         }),

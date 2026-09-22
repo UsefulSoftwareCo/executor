@@ -157,6 +157,29 @@ export const startCloudEnvironment = (input: {
           Effect.orDie,
         ),
     );
+    // The image starts a temporary Unix-only server during initdb. Wait for its
+    // final TCP listener before migrations and fixture setup compete to use it.
+    yield* processes
+      .exitCode(
+        ChildProcess.make(
+          "docker",
+          ["exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "executor", "-d", "executor"],
+          {
+            env: dockerEnv,
+            extendEnv: false,
+            stdout: "ignore",
+            stderr: "ignore",
+          },
+        ),
+      )
+      .pipe(
+        Effect.flatMap((code) =>
+          code === 0
+            ? Effect.void
+            : Effect.fail(new CloudStartFailed({ operation: "Postgres TCP readiness" })),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
+      );
     const built = yield* processes.exitCode(
       ChildProcess.make("bun", ["run", "framework:build"], {
         cwd: cloud,

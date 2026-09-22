@@ -6,6 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
@@ -73,10 +74,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const { url } = yield* body(
-          Schema.Struct({ url: Schema.String }),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`),
-        );
+        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
         yield* browser.login(actors.owner);
         const [header, timing] = yield* browser.use(
           "Open the real app and capture its subscription identity",

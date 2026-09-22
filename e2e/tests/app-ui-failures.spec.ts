@@ -6,6 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
@@ -59,10 +60,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const { url } = yield* body(
-          Schema.Struct({ url: Schema.String }),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`),
-        );
+        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
         const tracePayload = { resourceSpans: [{ scopeSpans: [{ spans: [] }] }] };
         for (const signal of ["traces", "logs"] as const) {
           expect(
@@ -78,9 +76,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
           ).toBe(401);
         }
         yield* browser.login(actors.owner);
-        yield* browser.use("A React render failure reaches the host fallback", (page) =>
-          page.goto(`${url}/#render`),
-        );
+        yield* openPrivateApp(`${url}/#render`);
         yield* browser.use("The page shows a failure instead of remaining blank", (page) =>
           page.getByRole("dialog", { name: "This app stopped working" }).waitFor(),
         );
@@ -225,14 +221,9 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const { url } = yield* body(
-          Schema.Struct({ url: Schema.String }),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/ui`),
-        );
+        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
         yield* browser.login(actors.owner);
-        yield* browser.use("Crash before an authored telemetry client exists", (page) =>
-          page.goto(`${url}/#boot`),
-        );
+        yield* openPrivateApp(`${url}/#boot`);
         yield* browser.use("Open crash details", (page) =>
           // The first app visit includes the cross-origin sign-in journey.
           page.getByText("Error details", { exact: true }).click({ timeout: 60_000 }),

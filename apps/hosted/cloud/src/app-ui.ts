@@ -5,7 +5,7 @@ import { AppSignInApi, appSignInPage, appSignInScript, appPrivateHeaders } from 
 import { AppUiApi } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Layer } from "effect";
+import { Config, Effect, Layer, Option } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
@@ -32,6 +32,9 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
     const { dev } = yield* AlchemyContext;
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+    const placementRegion = yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION").pipe(
+      Config.option,
+    );
     if (base === undefined)
       return yield* Effect.die(new Error("App UI requires EXECUTOR_APP_UI_BASE_URL"));
     return {
@@ -50,6 +53,12 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         date: "2026-09-08",
         flags: ["nodejs_compat", "global_fetch_strictly_public"],
       },
+      ...(dev
+        ? {}
+        : Option.match(placementRegion, {
+            onNone: () => ({}),
+            onSome: (region) => ({ placement: { region } }),
+          })),
       ...(dev ? {} : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
       dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
     };

@@ -258,10 +258,17 @@ const make = Effect.gen(function* () {
       yield* browser.use("Approve the client connection", (page) =>
         page.getByRole("button", { name: "Connect", exact: true }).click(),
       );
-      yield* browser.use("The browser returns to the client callback", (page) =>
-        page.waitForURL((url) => url.origin === new URL(receiver.url).origin),
-      );
+      // The receiver validates the callback path and state before releasing the code.
+      // A browser load event can abort even after this response is visibly rendered.
       const code = yield* receiver.code;
+      yield* browser.use("The callback accepted the authorization", (page) =>
+        page.getByRole("heading", { name: "Connected to Executor", exact: true }).waitFor(),
+      );
+      const callbackOrigin = yield* browser.use("The callback page belongs to the client", (page) =>
+        Promise.resolve(new URL(page.url()).origin),
+      );
+      if (callbackOrigin !== new URL(receiver.url).origin)
+        return yield* new OAuthFailed({ operation: "callback origin", status: 0 });
       const exchanged = yield* exchange({
         grant_type: "authorization_code",
         client_id: clientId,

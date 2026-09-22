@@ -99,7 +99,7 @@ proxy:
 EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
 ```
 
-Each page is served at `<app-slug>--<organization-slug>.<base>`, forwarded to
+Each page is served at `<app-slug>.<organization-slug>.<base>`, forwarded to
 container port 4400. That whole first label must fit in 63 characters, so keep
 app and organization slugs short. On localhost the origin is derived for you and
 you do not need to set this.

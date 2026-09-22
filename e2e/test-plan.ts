@@ -347,6 +347,15 @@ export const scenarios = {
       local: na("This scenario uses hosted deployment and app authentication."),
     },
   },
+  appDomainStatus: {
+    file: "app-domain-status.spec.ts",
+    title: "app domains show pending setup, retry failures and expose only ready links",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloud provisions team certificates; self-host operators manage TLS."),
+      local: na("Local app origins do not provision cloud certificates."),
+    },
+  },
   appUiFailures: {
     file: "app-ui-failures.spec.ts",
     title: "private app failures stay visible and recover without losing drafts",

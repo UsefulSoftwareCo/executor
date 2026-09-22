@@ -42,6 +42,7 @@
         "@alchemy.run/better-auth": "2.0.0-beta.79",
         "@better-auth/passkey": "1.7.5",
         "@cloudflare/worker-bundler": "0.2.4",
+        "@distilled.cloud/cloudflare": "1.0.0-rc.12",
         "@distilled.cloud/posthog": "1.0.0-rc.12",
         "@distilled.cloud/sentry": "1.0.0-rc.12",
         "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",

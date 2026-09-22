@@ -6,7 +6,7 @@ import { SourceSnapshot, Account, AccountConnection, App, AppSlug } from "@execu
 import { appAddresses } from "@executor-js/hosted-server/app-ui";
 import { AppUiBaseUrl } from "@executor-js/hosted-server/app-ui/contracts";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
-import { UiFailed } from "apps/ui/contracts";
+import { UiForbidden } from "apps/ui/contracts";
 import { ConfigProvider, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import { SqlClient } from "effect/unstable/sql";
@@ -88,7 +88,7 @@ test("app host routing uses exact configured suffixes and leaves the dashboard r
     addresses.origin({ slug: AppSlug.make("support-inbox") }, OrganizationSlug.make("my-team")),
   );
   const host = new URL(address).host;
-  assert.equal(host, "support-inbox--my-team.localhost:4400");
+  assert.equal(host, "support-inbox.my-team.localhost:4400");
   assert.deepEqual(Option.getOrThrow(addresses.fromHost(host)).find, { slug: "support-inbox" });
   assert.equal(Option.getOrThrow(addresses.fromHost(host)).slug, "my-team");
   for (const invalid of [
@@ -96,7 +96,7 @@ test("app host routing uses exact configured suffixes and leaves the dashboard r
     host + ".example.net",
     "user@" + host,
     host + "/path",
-    "app-invalid.example.localhost:4400",
+    "app-invalid.extra.example.localhost:4400",
     "support--inbox--my-team.localhost:4400",
     "support-inbox---my-team.localhost:4400",
     "support-inbox-my-team.localhost:4400",
@@ -243,7 +243,7 @@ test(
               ).url;
               assert.equal(
                 new URL(appOrigin).hostname,
-                `${app.slug}--${organization.slug}.localhost`,
+                `${app.slug}.${organization.slug}.localhost`,
               );
               const returnTo = "/inbox?folder=starred#message-42";
               const page = yield* Effect.promise(() =>
@@ -307,7 +307,7 @@ test(
                 )).status,
                 200,
               );
-              const otherOrigin = appOrigin.replace(`${app.slug}--`, `${otherApp.slug}--`);
+              const otherOrigin = appOrigin.replace(`${app.slug}.`, `${otherApp.slug}.`);
               // Even copying the proof cookie and code to another valid app cannot consume this attempt.
               assert.equal(
                 (yield* Effect.promise(() =>
@@ -606,6 +606,21 @@ test(
                 { message: "Hello Grace", connected: true },
               );
               yield* sql`update "member" set role = 'member' where "organizationId" = ${saved.organization}`;
+              // A private app remains usable by its creator under the current sharing policy.
+              assert.equal(
+                (yield* Effect.promise(() =>
+                  send(saved.appOrigin, "/_executor/api/mutate", call, saved.appCookie),
+                )).status,
+                200,
+              );
+              const [policy] = yield* Schema.decodeUnknownEffect(
+                Schema.Array(Schema.Struct({ creator: Schema.NonEmptyString })),
+              )(
+                yield* sql`select creator_id as creator from hosted_app_access where id = ${saved.app}`,
+              );
+              assert.ok(policy);
+              // Revocation must affect the existing app session without a new sign-in.
+              yield* sql`update hosted_app_access set creator_id = null where id = ${saved.app}`;
               assert.equal(
                 (yield* Effect.promise(() =>
                   send(saved.appOrigin, "/_executor/api/mutate", call, saved.appCookie),
@@ -623,17 +638,16 @@ test(
                 )).status,
                 403,
               );
+              yield* sql`update hosted_app_access set creator_id = ${policy.creator} where id = ${saved.app}`;
               yield* sql`update "member" set role = 'owner' where "organizationId" = ${saved.organization}`;
               // Corrupt selections/ownership cannot turn an app session into cross-organization authority.
               yield* sql`update executor_accounts set owner = 'organization:other' where id = ${saved.account}`;
               const wrongAccount = yield* Effect.promise(() =>
                 send(saved.appOrigin, "/_executor/api/mutate", call, saved.appCookie),
               );
-              assert.equal(wrongAccount.status, 422);
-              assert.equal(
-                Schema.decodeUnknownSync(UiFailed)(yield* Effect.promise(() => wrongAccount.json()))
-                  .reason,
-                "account_required",
+              assert.equal(wrongAccount.status, 403);
+              Schema.decodeUnknownSync(UiForbidden)(
+                yield* Effect.promise(() => wrongAccount.json()),
               );
               yield* sql`update executor_accounts set owner = ${`organization:${saved.organization}`} where id = ${saved.account}`;
               yield* sql`update executor_apps set owner = 'organization:other' where id = ${saved.app}`;
@@ -674,7 +688,7 @@ test(
                 )).status,
                 403,
               );
-              const renamed = saved.appOrigin.replace(`--${saved.slug}.`, "--renamed.");
+              const renamed = saved.appOrigin.replace(`.${saved.slug}.`, ".renamed.");
               assert.equal(
                 (yield* Effect.promise(() =>
                   send(renamed, "/_executor/api/mutate", call, saved.appCookie),

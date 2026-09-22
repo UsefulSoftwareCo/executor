@@ -1,4 +1,4 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
 import { Exit, Redacted } from "effect";
@@ -54,22 +54,45 @@ function DeployedOpenAppAction({
   readonly deployment: NonNullable<App["activeDeployment"]>;
 }) {
   const { organization, slug } = useOrganizationRoute();
-  const result = useAtomValue(
-    appUiLocationAtom({
-      organization,
-      slug,
-      app: app.id,
-      appSlug: app.slug,
-      deployment,
-    }),
-  );
+  const location = appUiLocationAtom({
+    organization,
+    slug,
+    app: app.id,
+    appSlug: app.slug,
+    deployment,
+  });
+  const result = useAtomValue(location);
+  const refresh = useAtomRefresh(location);
   if (AsyncResult.isFailure(result))
     return (
-      <span className="max-w-sm text-sm text-muted-foreground" role="status">
-        {appUiError(result.cause)}
+      <div className="flex items-center gap-2">
+        <span className="max-w-sm text-sm text-muted-foreground" role="status">
+          {appUiError(result.cause)}
+        </span>
+        <Button variant="outline" onClick={refresh}>
+          Check again
+        </Button>
+      </div>
+    );
+  if (!AsyncResult.isSuccess(result)) return null;
+  if (result.value.status === "pending")
+    return (
+      <span className="text-sm text-muted-foreground" role="status">
+        Preparing app domain…
       </span>
     );
-  if (!AsyncResult.isSuccess(result) || result.value.url === null) return null;
+  if (result.value.status === "failed")
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-foreground" role="status">
+          App domain setup needs attention.
+        </span>
+        <Button variant="outline" onClick={refresh}>
+          Check again
+        </Button>
+      </div>
+    );
+  if (result.value.status !== "ready") return null;
   return (
     <Button variant="outline" asChild>
       <a href={result.value.url} target="_blank" rel="noopener noreferrer">

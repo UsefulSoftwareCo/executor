@@ -5,22 +5,26 @@ import { Effect, Option, Schema } from "effect";
 import { AppUiAddressInvalid, AppUiHostnameLabel, type AppUiBaseUrl } from "../contracts/app-ui.ts";
 import { OrganizationSlug } from "../contracts/organization.ts";
 
-/** Hosted app--organization addresses resolve current names before authorizing immutable app and organization IDs. */
+/** Hosted app.organization addresses resolve current names before authorizing immutable identities. */
 export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | undefined) => {
   const base = baseUrl === undefined ? undefined : new URL(baseUrl);
   const dashboardHost = new URL(dashboardOrigin).host;
   const origin = (app: Pick<App, "slug">, slug: OrganizationSlug) =>
     Effect.gen(function* () {
       if (base === undefined) return yield* new UiFailed({ reason: "unavailable" });
-      const value = `${app.slug}--${slug}`;
-      const label = yield* Schema.decodeUnknownEffect(AppUiHostnameLabel)(value).pipe(
+      const labels = yield* Schema.decodeUnknownEffect(Schema.Array(AppUiHostnameLabel))([
+        app.slug,
+        slug,
+      ]).pipe(
         Effect.mapError(
           () =>
-            new AppUiAddressInvalid({ reason: value.length > 63 ? "too_long" : "invalid_slug" }),
+            new AppUiAddressInvalid({
+              reason: app.slug.length > 63 || slug.length > 63 ? "too_long" : "invalid_slug",
+            }),
         ),
       );
       const url = new URL(base);
-      const hostname = `${label}.${base.hostname}`;
+      const hostname = `${labels.join(".")}.${base.hostname}`;
       url.hostname = hostname;
       if (url.hostname !== hostname)
         return yield* new AppUiAddressInvalid({ reason: "invalid_slug" });
@@ -38,19 +42,20 @@ export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | un
       !url.hostname.endsWith(suffix)
     )
       return Option.none();
-    const label = Schema.decodeUnknownOption(AppUiHostnameLabel)(
-      url.hostname.slice(0, -suffix.length),
+    const labels = url.hostname.slice(0, -suffix.length).split(".");
+    if (labels.length !== 2) return Option.none();
+    return Option.flatMap(
+      Schema.decodeUnknownOption(Schema.Array(AppUiHostnameLabel))(labels),
+      ([app, slug]) => {
+        return Schema.decodeUnknownOption(
+          Schema.Struct({
+            find: Schema.Struct({ slug: AppSlug }),
+            slug: OrganizationSlug,
+            origin: HttpUrl,
+          }),
+        )({ find: { slug: app }, slug, origin: url.origin });
+      },
     );
-    return Option.flatMap(label, (label) => {
-      const [app, slug] = label.split("--");
-      return Schema.decodeUnknownOption(
-        Schema.Struct({
-          find: Schema.Struct({ slug: AppSlug }),
-          slug: OrganizationSlug,
-          origin: HttpUrl,
-        }),
-      )({ find: { slug: app }, slug, origin: url.origin });
-    });
   };
   return {
     dashboardOrigin,

@@ -32,6 +32,7 @@ import {
   HostedAppRuntime,
   HostedAppSessions,
   HostedAppUiApi,
+  type AppUiAddressInvalid,
   type AppUiTarget,
 } from "../contracts/app-ui.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
@@ -55,7 +56,13 @@ const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
   );
 
 /** Build handlers only. The host chooses their route table, origin base, runtime, and Better Auth store. */
-export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
+export const hostedAppUi = (
+  addresses: ReturnType<typeof appAddresses>,
+  domainStatus: (
+    team: Pick<AppUiTarget, "slug"> & { readonly id: AppUiTarget["organization"] },
+  ) => Effect.Effect<"ready" | "pending" | "failed", UiFailed | AppUiAddressInvalid> = () =>
+    Effect.succeed("ready"),
+) => {
   const requestOrigin = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const host = addresses.fromHost(request.headers.host);
@@ -134,9 +141,10 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
     if (Option.isNone(token)) return yield* new UiUnauthorized();
     const sessions = yield* HostedAppSessions;
     const access = yield* sessions.current(resolved.target, token.value);
-    const { app } = yield* source(resolved.target);
     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-    yield* selectedApp(executor, access.owner, app.id).pipe(
+    // Authorization needs current app/account grants, not a hydrated Git checkout.
+    // Page and asset handlers check deployment ownership when loading their content.
+    const app = yield* selectedApp(executor, access.owner, resolved.target.app).pipe(
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(CurrentUserId, access.userId),
       Effect.mapError((error) =>
@@ -225,14 +233,13 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
             app: params.app,
             organization: access.organization,
           });
-          if (!addresses.enabled) return { url: null };
+          if (!addresses.enabled || !version.files.some((file) => file.path === "ui/index.html"))
+            return { status: "unavailable" as const, url: null };
           const sessions = yield* HostedAppSessions;
           const organization = yield* sessions.organization({ id: access.organization });
-          return {
-            url: version.files.some((file) => file.path === "ui/index.html")
-              ? yield* addresses.origin(app, organization.slug)
-              : null,
-          };
+          const url = yield* addresses.origin(app, organization.slug);
+          const status = yield* domainStatus(organization);
+          return status === "ready" ? { status, url } : { status, url: null };
         }),
       )
       .handle("authorize", ({ payload }) =>
@@ -281,12 +288,6 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
   const dataInput = (payload: typeof UiOperation.Type) =>
     Effect.gen(function* () {
       const current = yield* authorize;
-      const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-      yield* selectedApp(executor, current.access.owner, current.app.id).pipe(
-        Effect.provideService(CurrentOrganization, current.access),
-        Effect.provideService(CurrentUserId, current.access.userId),
-        Effect.mapError(dataFailure),
-      );
       const deployment = yield* Schema.decodeUnknownEffect(DeploymentId)(payload.deployment).pipe(
         Effect.mapError(unavailable),
       );
@@ -335,7 +336,13 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
               Stream.provideService(CurrentUserId, current.access.userId),
               Stream.provideService(CurrentOrganization, current.access),
               Stream.provideService(GroupDatabase, groups),
-              Stream.mapError(dataFailure),
+              // A re-executed query can notice revocation before the heartbeat.
+              // Preserve the product's denial instead of reporting a tool failure.
+              Stream.catch((error) =>
+                Stream.fromEffect(
+                  access.pipe(Effect.flatMap(() => Effect.fail(dataFailure(error)))),
+                ),
+              ),
               Stream.mapEffect((snapshot) =>
                 Effect.gen(function* () {
                   yield* access.pipe(Effect.withSpan("app.ui.snapshot.authorize"));

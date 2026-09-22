@@ -234,7 +234,7 @@ function UiPicture({ clock }: ClockProps) {
           <i key={dot} className="h-0.75 w-0.75 rounded-full bg-[#ccc]" />
         ))}
         <span className="pl-1.25 font-mono text-[6px] text-[#aaa]">
-          app--demo-org.executor.website
+          app.demo-org.executor.website
         </span>
       </div>
       <div className="grid gap-1.25 p-3 text-left">

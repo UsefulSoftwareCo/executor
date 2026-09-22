@@ -21,8 +21,10 @@ import { AuthenticationUnavailable, Forbidden, Unauthorized, RequireUser } from 
 export const OrganizationId = Schema.NonEmptyString.pipe(Schema.brand("OrganizationId"));
 export type OrganizationId = typeof OrganizationId.Type;
 /** Canonical URL handle, unique across all organizations in this hosted installation. */
+export const organizationSlugMaxLength = 45;
+/** Team handles leave room for a production wildcard certificate name. */
 export const OrganizationSlug = Schema.String.check(
-  Schema.isMaxLength(80),
+  Schema.isMaxLength(organizationSlugMaxLength),
   Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
 ).pipe(Schema.brand("OrganizationSlug"));
 export type OrganizationSlug = typeof OrganizationSlug.Type;

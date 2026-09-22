@@ -1,6 +1,7 @@
 import { executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
+import { AppDomainCoordinatorLive, cloudAppDomains } from "./infrastructure/app-domains.ts";
 import { WorkflowHost } from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
 import { HostedExecutor } from "@executor-js/hosted-server";
@@ -142,7 +143,11 @@ export default Api.make(
     yield* AppWorkflows;
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
     const schedules = yield* cloudSchedules;
-    const appUi = hostedAppUi(appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)));
+    const appDomains = yield* cloudAppDomains;
+    const appUi = hostedAppUi(
+      appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
+      appDomains.status,
+    );
     const mcp = yield* cloudMcp;
     const billing = yield* billingLive.pipe(Effect.orDie);
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
@@ -202,6 +207,8 @@ export default Api.make(
       Layer.provide(auth.apiIdentity),
     );
     const routes = Layer.mergeAll(
+      HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
+      HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
       authoringRoutes,
       api,
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
@@ -254,6 +261,7 @@ export default Api.make(
         AppDataSupervisorLive,
         McpSessionsLive,
         ScheduleCoordinatorLive,
+        AppDomainCoordinatorLive,
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,

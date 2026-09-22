@@ -41,10 +41,10 @@ export const AppUiBaseUrl = Schema.String.check(
   }),
 ).pipe(Schema.brand("AppUiBaseUrl"));
 export type AppUiBaseUrl = typeof AppUiBaseUrl.Type;
-/** One DNS label with an unambiguous app--organization separator and single hyphens inside each slug. */
+/** One DNS label; the app and team are separate labels. */
 export const AppUiHostnameLabel = Schema.String.check(
   Schema.isMaxLength(63),
-  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*--[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
 ).pipe(Schema.brand("AppUiHostnameLabel"));
 /** App and organization names cannot be silently shortened or changed to create a browser origin. */
 export class AppUiAddressInvalid extends Schema.TaggedError<AppUiAddressInvalid>()(
@@ -52,6 +52,14 @@ export class AppUiAddressInvalid extends Schema.TaggedError<AppUiAddressInvalid>
   { reason: Schema.Literals(["too_long", "invalid_slug"]) },
   { httpApiStatus: 422 },
 ) {}
+/** Domain readiness is separate from app deployment and authorization. A pending domain has no usable link. */
+export const AppUiLocation = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
+  Schema.Struct({
+    status: Schema.Literals(["unavailable", "pending", "failed"]),
+    url: Schema.Null,
+  }),
+]);
 /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
 export const AppUiAttempt = Schema.Struct({
   kind: Schema.Literal("attempt"),
@@ -141,7 +149,7 @@ export const HostedAppUi = HttpApiGroup.make("appUi")
   .add(
     HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
       params: { organization: OrganizationReference, app: AppId },
-      success: Schema.Struct({ url: Schema.NullOr(HttpUrl) }),
+      success: AppUiLocation,
       error: [UiForbidden, UiFailed, AppUiAddressInvalid],
     })
       .annotate(

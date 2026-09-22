@@ -1,7 +1,6 @@
 /** Cloud app hostnames are operator-provisioned separately from the dashboard's CDN origin. */
 import { AppUiBaseUrl } from "@executor-js/hosted-server/app-ui";
 import { Config, Effect, Option, Schema } from "effect";
-import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { testStage } from "../infrastructure/stage.ts";
 
 /** Disabled until the stage has an app-domain route and certificates; never fall back to another stage's domain. */
@@ -23,14 +22,16 @@ export const cloudAppUiPort = Config.Number("CLOUD_DEV_APP_UI_PORT").pipe(
   ),
 );
 
-/** A preview owns only its synthetic organization's app hosts, never the zone-wide production route. */
+/** A preview owns its dedicated suffix, so every team works without replacing the production route. */
 export const cloudAppUiRoute = Effect.gen(function* () {
   const base = yield* cloudAppUiBase;
   if (base === undefined) return yield* Effect.die(new Error("App UI base is required"));
   const preview = yield* testStage;
-  if (Option.isNone(preview)) return `*.${new URL(base).hostname}/*`;
-  const organization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(OrganizationSlug)),
-  );
-  return `*--${organization}.${new URL(base).hostname}/*`;
+  const hostname = new URL(base).hostname;
+  if (Option.isSome(preview)) {
+    const zone = yield* Config.NonEmptyString("EXECUTOR_APP_DOMAIN_ZONE");
+    if (!hostname.endsWith(`.${zone}`))
+      return yield* Effect.die(new Error("Test stages require a dedicated app-domain subdomain"));
+  }
+  return `*.${hostname}/*`;
 });

@@ -529,7 +529,7 @@ return await tools.executor.queries.appUi_location({
 });
 ```
 
-The response is `{ url: "https://<app-slug>--<org-slug>.executor.website" }`
+The response is `{ url: "https://<app-slug>.<org-slug>.executor.website" }`
 on Executor Cloud. Self-host uses its configured app domain. Use the returned
 URL rather than constructing one. `url: null` means the app has no UI or the
 host has no app domain configured. Deployment builds and activates the UI;

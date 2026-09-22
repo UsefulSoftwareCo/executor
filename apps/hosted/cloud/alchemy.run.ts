@@ -18,6 +18,13 @@ import { developmentWeb } from "./src/infrastructure/development.ts";
 import { authEmailInfrastructure } from "./src/infrastructure/email.ts";
 import { uploadCloudSourceMaps } from "./src/infrastructure/sentry.ts";
 import { stackState } from "./src/infrastructure/state.ts";
+import {
+  AppDomainLifecycle,
+  AppDomainLifecycleProvider,
+  ResumeAppDomains,
+} from "./src/infrastructure/app-domain-lifecycle.ts";
+import { appDomainControlSecret } from "./src/infrastructure/app-domain-control.ts";
+import { cloudOrigin } from "./src/infrastructure/stage.ts";
 
 export default Alchemy.Stack(
   "executor-next-hosted",
@@ -25,6 +32,7 @@ export default Alchemy.Stack(
     providers: Layer.mergeAll(
       Cloudflare.providers(),
       Command.providers(),
+      AppDomainLifecycleProvider(),
       // No PlanetScale resources or credentials are needed for local cloud development.
       Docker.providers(),
       Layer.unwrap(
@@ -48,7 +56,22 @@ export default Alchemy.Stack(
     yield* DatabaseConnection;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
-    if ((yield* cloudAppUiBase.pipe(Effect.orDie)) !== undefined) yield* AppPages;
+    const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
+    if (appBase !== undefined) {
+      yield* AppPages;
+      if (!(yield* AlchemyContext).dev) {
+        const lifecycle = yield* AppDomainLifecycle("AppDomains", {
+          origin: yield* cloudOrigin.pipe(Effect.orDie),
+          workerName: api.workerName,
+          deployment: api.hash,
+        });
+        yield* ResumeAppDomains({
+          origin: lifecycle.origin,
+          secret: (yield* appDomainControlSecret).text,
+          deployment: api.hash,
+        });
+      }
+    }
     yield* uploadCloudSourceMaps(api.hash).pipe(Effect.orDie);
     return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
   }).pipe(Effect.provide(Layer.mergeAll(ApiLive, AppCompilerLive, InvocationTelemetryLive))),

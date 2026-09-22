@@ -6,7 +6,7 @@ import {
   organizationIconContentType,
 } from "@executor-js/hosted-server/organization-icon";
 import { SqlError } from "effect/unstable/sql";
-import { OrganizationLogo } from "@executor-js/hosted-server";
+import { OrganizationLogo, organizationSlugMaxLength } from "@executor-js/hosted-server";
 import {
   TeamIconOwner,
   CompanyLookup,
@@ -42,7 +42,7 @@ const teamSlug = (name: string) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 73)
+    .slice(0, organizationSlugMaxLength - 7)
     .replace(/-+$/g, "") || "team";
 
 /** Retry an idempotent setup only after the failed SQL transaction has released its connection. */

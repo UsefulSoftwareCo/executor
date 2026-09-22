@@ -3,7 +3,7 @@ import { organizationHttpClient } from "./organization-reference.ts";
 import { HostedAppUiApi, AppSignInId } from "@executor-js/hosted-server/app-ui/contracts";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type { AppId, AppSlug, DeploymentId } from "@executor-js/sdk";
-import { Cause, Data, Effect, Match, Option, Schema } from "effect";
+import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
 import type { HttpApiEndpoint } from "effect/unstable/httpapi";
 import type { HttpClientError } from "effect/unstable/http";
@@ -25,9 +25,12 @@ class AppUiKey extends Data.Class<{
 const location = Atom.family((key: AppUiKey) =>
   AppUiClient.runtime
     .atom(
-      Effect.flatMap(AppUiClient, (client) =>
-        client.appUi.location({ params: { organization: key.organization, app: key.app } }),
-      ),
+      Stream.fromEffectSchedule(
+        Effect.flatMap(AppUiClient, (client) =>
+          client.appUi.location({ params: { organization: key.organization, app: key.app } }),
+        ),
+        Schedule.spaced("3 seconds"),
+      ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
     )
     .pipe(Atom.refreshOnWindowFocus),
 );
@@ -48,14 +51,16 @@ export type AppUiError =
       (typeof HostedAppUiApi.groups.appUi.endpoints)[keyof typeof HostedAppUiApi.groups.appUi.endpoints]
     >
   | HttpClientError.HttpClientError
-  | Schema.SchemaError;
+  | Schema.SchemaError
+  | Cause.NoSuchElementError;
 const message = Match.type<AppUiError>().pipe(
   Match.tagsExhaustive({
+    NoSuchElementError: () => "App domain status is unavailable. Try again.",
     AppUiAddressInvalid: (error) =>
       Match.value(error.reason).pipe(
         Match.when(
           "too_long",
-          () => "Shorten the app name or team slug. Together with --, they must fit 63 characters.",
+          () => "Shorten the team slug. The app domain is too long for this host.",
         ),
         Match.when(
           "invalid_slug",
