@@ -49,7 +49,10 @@ export function SetupDialog<E>({
     >
       <DialogContent className="sm:max-w-[420px]">
         <DialogTitle>Create a new profile</DialogTitle>
-        <DialogDescription>Give this profile a name. You can add accounts next.</DialogDescription>
+        <DialogDescription>
+          Profiles let you use this app with different combinations of accounts. Each profile has
+          its own webhooks and schedules. Give this profile a name, then add accounts.
+        </DialogDescription>
         <form
           className="space-y-5"
           onSubmit={async (event) => {
