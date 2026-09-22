@@ -1,6 +1,8 @@
 ---
 import RailLayout from "../layouts/RailLayout.astro";
-import { pricingTiers } from "../content/site-copy";
+import { pricingTiers as createPricingTiers } from "../content/site-copy";
+import { siteOrigin } from "../content/site-origin.ts";
+const pricingTiers = createPricingTiers(siteOrigin);
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 

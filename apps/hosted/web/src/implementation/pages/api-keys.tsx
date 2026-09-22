@@ -21,12 +21,9 @@ import {
   ApiKeyFailed,
 } from "../../contracts/api-keys.ts";
 import { OrganizationDetailsBoundary, useOrganization } from "../components/organization.tsx";
+import { documentationUrl } from "../../contracts/documentation.ts";
 
-// Local previews may serve the same documentation build on a separate loopback origin.
-const tokenDocsUrl = new URL(
-  "api-keys/#personal-access-tokens",
-  import.meta.env.VITE_EXECUTOR_DOCS_BASE_URL ?? "https://v2.executor.sh/docs/",
-).href;
+const tokenDocsUrl = documentationUrl("api-keys/#personal-access-tokens");
 
 const date = (value: string | null) =>
   value === null ? "Never" : new Date(value).toLocaleString();

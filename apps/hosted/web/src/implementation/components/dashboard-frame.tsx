@@ -13,6 +13,7 @@ import type { OrganizationAccess } from "@executor-js/hosted-server/organization
 import { DashboardShell as SharedShell } from "@executor-js/ui/dashboard/shell";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { SessionMenu } from "./auth.tsx";
+import { documentationUrl } from "../../contracts/documentation.ts";
 
 const items = [
   { to: "/org/$organizationSlug/connect", label: "Connect", icon: Plug01Icon },
@@ -126,6 +127,7 @@ export function DashboardFrame({
   };
   return (
     <SharedShell
+      docsUrl={documentationUrl()}
       brand={
         organizationSlug === undefined ? (
           <div {...brand} />

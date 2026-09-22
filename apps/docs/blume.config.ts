@@ -1,4 +1,5 @@
 import { defineConfig } from "blume";
+import { siteOrigin } from "@executor-js/marketing/site-origin";
 
 // Analytics settings come from the deployment, never from this file. The Site
 // build command in apps/hosted/cloud/src/main.ts binds the PostHog stack
@@ -83,7 +84,7 @@ export default defineConfig({
           scripts: [{ content: analyticsSettings }],
         },
       }),
-  deployment: { output: "static", site: "https://v2.executor.sh", base: "/docs" },
+  deployment: { output: "static", site: siteOrigin, base: "/docs" },
   // The marketing site is light-only and sets the same faces, so both halves of
   // the public origin read as one product.
   theme: {
@@ -104,7 +105,7 @@ export default defineConfig({
         "Executor holds the credentials for services you already use and turns them into tools.",
         "Reach for it when an agent needs to call a real service without holding the credential:",
         "connect an account once, then call the app through one MCP endpoint at `<origin>/mcp`.",
-        "The hosted origin is `https://v2.executor.sh`. Executor also runs locally and self-hosted.",
+        `The hosted origin is \`${siteOrigin}\`. Executor also runs locally and self-hosted.`,
       ].join("\n"),
     },
   },

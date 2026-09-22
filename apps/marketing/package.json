@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./experiments": "./src/content/hero-experiment.ts"
+    "./experiments": "./src/content/hero-experiment.ts",
+    "./site-origin": "./src/content/site-origin.ts"
   },
   "scripts": {
     "build": "astro build",

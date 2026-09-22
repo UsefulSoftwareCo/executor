@@ -14,6 +14,7 @@ import {
 } from "../content/site-copy";
 import { testimonials } from "../content/testimonials";
 import { appStructure } from "../content/app-structure";
+import { siteOrigin } from "../content/site-origin.ts";
 
 // ---------------------------------------------------------------------------
 // `/index.md` — the homepage as Markdown, for agents.
@@ -27,12 +28,12 @@ import { appStructure } from "../content/app-structure";
 // ---------------------------------------------------------------------------
 
 const machineSummaries = [
-  ["Docs", "https://executor.sh/docs"],
-  ["Setup prompt", "https://executor.sh/setup-prompt.md"],
-  ["Pricing", "https://executor.sh/pricing.md"],
-  ["llms.txt", "https://executor.sh/llms.txt"],
+  ["Docs", `${siteOrigin}/docs`],
+  ["Setup prompt", `${siteOrigin}/setup-prompt.md`],
+  ["Pricing", `${siteOrigin}/pricing.md`],
+  ["llms.txt", `${siteOrigin}/llms.txt`],
   ["GitHub", GITHUB_URL],
-  ["Cloud", "https://executor.sh/"],
+  ["Cloud", `${siteOrigin}/`],
 ] as const;
 
 const capabilityLines = capabilities.map(
@@ -40,17 +41,18 @@ const capabilityLines = capabilities.map(
     `${i + 1}. **${title}**${comingSoon ? " _(coming soon)_" : ""} — ${body}`,
 );
 
-const pricingLines = pricingTiers.map(({ name, price, audience, featuresLabel, features, cta }) =>
-  [
-    `### ${name} — ${price}`,
-    "",
-    audience,
-    "",
-    ...(featuresLabel === undefined ? [] : [`${featuresLabel}:`, ""]),
-    ...features.map((f) => `- ${f}`),
-    "",
-    cta,
-  ].join("\n"),
+const pricingLines = pricingTiers(siteOrigin).map(
+  ({ name, price, audience, featuresLabel, features, cta }) =>
+    [
+      `### ${name} — ${price}`,
+      "",
+      audience,
+      "",
+      ...(featuresLabel === undefined ? [] : [`${featuresLabel}:`, ""]),
+      ...features.map((f) => `- ${f}`),
+      "",
+      cta,
+    ].join("\n"),
 );
 
 const faqLines = faqs.map(({ question, answer }) => `### ${question}\n\n${answer}`);
@@ -117,7 +119,7 @@ client secrets remain with the host. Apps can require approval before a tool run
 
 ## Ways to run it
 
-- **Cloud:** run your tools without managing a server. https://executor.sh/
+- **Cloud:** run your tools without managing a server. ${siteOrigin}/
 - **Desktop:** run Executor on your computer, with local apps and private app pages.
 - **CLI:** run the local server from your terminal.
 - **Self-hosted:** run the hosted server on infrastructure you control.
@@ -127,7 +129,7 @@ app pages. Cloud app pages and hosted app data are still in development.
 
 ## Pricing
 
-Start free, pay per member. Full details: https://executor.sh/pricing.md
+Start free, pay per member. Full details: ${siteOrigin}/pricing.md
 
 ${pricingLines.join("\n\n")}
 

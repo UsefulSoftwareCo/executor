@@ -10,15 +10,20 @@ import {
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
 import { useMediaQuery } from "../hooks/media-query.ts";
 
-const resources = [
-  { label: "Docs", href: "https://executor.sh/docs", icon: BookOpen01Icon },
-  {
-    label: "Feedback",
-    href: "https://github.com/UsefulSoftwareCo/executor/issues",
-    icon: Message01Icon,
-  },
-  { label: "Star on GitHub", href: "https://github.com/UsefulSoftwareCo/executor", icon: StarIcon },
-] as const;
+const resources = (docsUrl: string) =>
+  [
+    { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
+    {
+      label: "Feedback",
+      href: "https://github.com/UsefulSoftwareCo/executor/issues",
+      icon: Message01Icon,
+    },
+    {
+      label: "Star on GitHub",
+      href: "https://github.com/UsefulSoftwareCo/executor",
+      icon: StarIcon,
+    },
+  ] as const;
 
 /** Between the phone layout and a wide screen the rail starts collapsed; the toggle still wins. */
 const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
@@ -34,10 +39,10 @@ const navigationClass =
 const collapsedClass =
   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
 
-function ResourceLinks() {
+function ResourceLinks({ docsUrl }: { readonly docsUrl: string }) {
   return (
     <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2">
-      {resources.map(({ label, href, icon }) => (
+      {resources(docsUrl).map(({ label, href, icon }) => (
         <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
           <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
           <span>{label}</span>
@@ -54,12 +59,15 @@ function ResourceLinks() {
  * that opens the same navigation, resource links and footer in a bottom sheet.
  */
 export function DashboardShell({
+  docsUrl,
   brand,
   navigation,
   identity,
   footer,
   children,
 }: {
+  /** The owning product chooses same-origin or public documentation. */
+  readonly docsUrl: string;
   readonly brand: ReactNode;
   readonly navigation: ReactNode;
   /** Centered in the phone top bar in place of the brand, for example an organization switcher. */
@@ -110,7 +118,7 @@ export function DashboardShell({
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
         <div className="sidebar-utilities mt-auto [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
-          <ResourceLinks />
+          <ResourceLinks docsUrl={docsUrl} />
           {footer}
         </div>
       </aside>
@@ -143,7 +151,7 @@ export function DashboardShell({
           <div className="mx-auto mb-2 h-1 w-9 rounded-full bg-border" aria-hidden />
           <nav aria-label="Main navigation">{navigation}</nav>
           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
-            <ResourceLinks />
+            <ResourceLinks docsUrl={docsUrl} />
             {footer}
           </div>
         </DialogContent>

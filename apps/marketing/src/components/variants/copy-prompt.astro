@@ -3,6 +3,7 @@
 // carrying the three agent marks. Copies `setupPrompt`; the click handler
 // lives in pages/index.astro.
 import { setupPrompt } from "../../content/site-copy";
+import { siteOrigin } from "../../content/site-origin.ts";
 
 const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
   eager: true,
@@ -22,7 +23,7 @@ const marks = ["claude", "codex", "cursor"];
 <button
   type="button"
   class="btn-ghost copy-btn doc__copy max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center inline-flex items-center gap-[0.4rem] bg-transparent [color:var(--color-ink-2)] [border:1px_dashed_var(--color-rule-strong)] rounded-[8px] py-[0.7rem] px-[1.1rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:color_0.15s_ease,_border-color_0.15s_ease] hover:text-ink hover:[border-color:var(--color-ink-3)]"
-  data-copy={setupPrompt}
+  data-copy={setupPrompt(siteOrigin)}
   data-event="marketing_setup_prompt_copied"
 >
   <span class="doc__copy-logos inline-flex mr-[0.35rem] [&_img]:w-4 [&_img]:h-4 [&_img]:p-[2px] [&_img]:rounded-[999px] [&_img]:bg-surface [&_img]:[box-shadow:0_0_0_1px_var(--color-rule)] [&_img]:object-contain [&_img_+_img]:-ml-1.25" aria-hidden="true">

@@ -12,6 +12,7 @@
     "eval": "blume eval"
   },
   "dependencies": {
+    "@executor-js/marketing": "workspace:*",
     "astro": "^7.3.2",
     "blume": "1.7.3",
     "cookie": "^2.0.1"

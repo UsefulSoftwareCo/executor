@@ -12,6 +12,12 @@ From the repository root:
 - `bun run --cwd apps/marketing dev` runs Astro alone for marketing development.
   Product and sign-in links need the combined cloud origin.
 
+The cloud Site resource supplies `EXECUTOR_SITE_ORIGIN` from its canonical origin.
+Marketing prompts, Markdown endpoints, `llms.txt`, and docs metadata use that value.
+Standalone builds default to `https://v2.executor.sh`; malformed overrides fail the build.
+Cloud dashboard docs links stay on the current origin. Local and self-host dashboards
+use the public v2 docs because they do not serve the cloud documentation assets.
+
 Cloud development at `https://127.0.0.1:5395` serves the static marketing build
 beside the dashboard's Vite server. Rebuild marketing after edits and reload the
 page; dashboard hot reload is unchanged.

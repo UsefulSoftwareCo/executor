@@ -3,6 +3,7 @@ import * as Command from "alchemy/Command";
 import { Effect } from "effect";
 import { postHogBindings } from "./posthog.ts";
 import { sentryBindings } from "./sentry.ts";
+import { cloudOrigin } from "./stage.ts";
 
 /** Alchemy reuses this resource when the API and development server request it. */
 export const cloudSite = Effect.gen(function* () {
@@ -12,6 +13,10 @@ export const cloudSite = Effect.gen(function* () {
     cwd: "../../..",
     command: "bun run hosted:cloud:site:build",
     outdir: "apps/hosted/cloud/.generated/site",
-    env: { ...analytics.build, ...sentry.build },
+    env: {
+      ...analytics.build,
+      ...sentry.build,
+      EXECUTOR_SITE_ORIGIN: yield* cloudOrigin.pipe(Effect.orDie),
+    },
   });
 });

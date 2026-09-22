@@ -20,6 +20,7 @@ import { Button } from "@executor-js/ui/components/button";
 import { Failure } from "./components/common.tsx";
 import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
+import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
 
 /** Finish pairing and session checks before mounting any dashboard data consumers. */
 export function AuthenticationGate({
@@ -115,6 +116,7 @@ function Dashboard() {
     return <Connect expired />;
   return (
     <DashboardShell
+      docsUrl={publicDocsBaseUrl}
       brand={
         <Link
           to="/apps"

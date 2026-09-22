@@ -1,4 +1,8 @@
-# Executor
+import type { APIRoute } from "astro";
+
+import { siteOrigin } from "../content/site-origin.ts";
+
+const body = `# Executor
 
 > The cloud for agent apps.
 
@@ -25,21 +29,21 @@ Executor hosts your apps, connects your accounts, and keeps the source and deplo
 
 ## Docs
 
-- [Documentation](https://executor.sh/docs): Executor documentation.
+- [Documentation](${siteOrigin}/docs): Executor documentation.
 
 ## Product
 
-- [Website](https://executor.sh): product overview and getting started.
-- [Pricing](https://executor.sh/pricing): plans for Executor Cloud.
-- [Install](https://executor.sh/#install): install the CLI and connect your first agent.
+- [Website](${siteOrigin}): product overview and getting started.
+- [Pricing](${siteOrigin}/pricing): plans for Executor Cloud.
+- [Install](${siteOrigin}/#install): install the CLI and connect your first agent.
 
 ## For agents
 
 Markdown representations of the pages above, for machines rather than browsers.
 
-- [/index.md](https://executor.sh/index.md): the homepage as Markdown — what Executor is, how it works, what you get, ways to run it, pricing, and FAQ.
-- [/setup-prompt.md](https://executor.sh/setup-prompt.md): a prompt to paste into a coding agent. It connects over MCP and helps build and deploy a first app.
-- [/pricing.md](https://executor.sh/pricing.md): the Executor Cloud plans as Markdown.
+- [/index.md](${siteOrigin}/index.md): the homepage as Markdown — what Executor is, how it works, what you get, ways to run it, pricing, and FAQ.
+- [/setup-prompt.md](${siteOrigin}/setup-prompt.md): a prompt to paste into a coding agent. It connects over MCP and helps build and deploy a first app.
+- [/pricing.md](${siteOrigin}/pricing.md): the Executor Cloud plans as Markdown.
 
 ## Source
 
@@ -48,3 +52,13 @@ Markdown representations of the pages above, for machines rather than browsers.
 ## Community
 
 - [Discord](https://discord.gg/eF29HBHwM6): support and discussion.
+`;
+
+/** Serve the agent index with links belonging to this deployment. */
+export const GET: APIRoute = () =>
+  new Response(body, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+    },
+  });

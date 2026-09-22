@@ -246,6 +246,15 @@ export const scenarios = {
     title: "Hero experiments render stable HTML and isolate previews",
     targets: cloudOnboarding,
   },
+  deploymentLinks: {
+    file: "deployment-links.spec.ts",
+    title: "Cloud product links follow the deployment origin",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host uses public docs and does not serve the marketing site."),
+      local: na("Local uses public docs and does not serve the marketing site."),
+    },
+  },
   teamCreateRoute: {
     file: "team-create-route.spec.ts",
     title: "Team setup routing waits for membership and redirects existing members",
