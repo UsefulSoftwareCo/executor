@@ -28,7 +28,13 @@ export const list = query({ input: object({}), output: array(string()) }, async 
 export const add = mutation({ input: object({ text: string() }), output: string() }, async ({ db }, input) => {
   await db.items.insert(input); return input.text;
 });
-export default defineApp({ accounts: {}, database }, { queries: { list }, mutations: { add } });`,
+export const hostCache = query({ input: object({ key: string() }), output: string() }, async (_, { key }) => {
+  try {
+    const cache = await caches.open("executor-private-runtime-builds-v1");
+    return (await cache.match(key)) === undefined ? "isolated" : "visible";
+  } catch { return "unavailable"; }
+});
+export default defineApp({ accounts: {}, database }, { queries: { list, hostCache }, mutations: { add } });`,
   },
   {
     path: "ui/index.html",
@@ -241,6 +247,30 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           ),
         ).toBe("Keep this draft");
 
+        if (target.metadata.target === "cloud") {
+          const deployment = yield* body(
+            Schema.Struct({ build: Schema.String }),
+            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
+          );
+          const isolation = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${app.id}/data/query`,
+            {
+              name: "hostCache",
+              input: {
+                key: new URL(
+                  `/_executor/runtime-build-cache/${encodeURIComponent(deployment.build)}`,
+                  target.metadata.origin,
+                ).href,
+              },
+            },
+          );
+          expect(isolation.status).toBe(200);
+          expect(["isolated", "unavailable"]).toContain(isolation.body);
+          yield* evidence.json("runtime-cache-isolation.json", { result: isolation.body });
+        }
+
         const exported = yield* telemetry.query(traceId).pipe(
           Effect.flatMap((result) => {
             const spans = result.data.map((row) => row.span);
@@ -378,6 +408,23 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
           );
           yield* evidence.json(`app-normal-reload-${sample}.json`, reloadTrace);
+          if (target.metadata.target === "cloud") {
+            const loads = reloadTrace.data.filter(
+              (row) => row.span.operationName === "runtime.cloud.build.cached",
+            );
+            expect(
+              reloadTrace.data.filter((row) => row.span.operationName === "runtime.cloud.query"),
+              "Notification registration does not repeat an unchanged initial query",
+            ).toHaveLength(1);
+            expect(
+              loads,
+              "A warm query does not load or transfer its retained server build",
+            ).toHaveLength(0);
+            expect(
+              reloadTrace.data.some((row) => row.span.operationName === "storage.blob.get"),
+              "Warm queries must not reread the server bundle from R2",
+            ).toBe(false);
+          }
           yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
         }
         yield* browser.use("Fail only the next subscription attempt", (page) =>
@@ -485,12 +532,22 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           }),
         );
         yield* browser.login(actors.member);
+        // Test the query stream's own authorization heartbeat. The independent
+        // deployment watcher otherwise reloads to a 403 page first.
+        let blockedVersions = 0;
+        yield* browser.use("Keep revocation observable in the query stream", (page) =>
+          page.route("**/_executor/version", (route) => {
+            blockedVersions++;
+            return route.abort();
+          }),
+        );
         yield* browser.use("A permitted member opens a fresh subscription", (page) =>
           page.goto(url),
         );
         yield* browser.use("The member receives the app data", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor({ timeout: 60_000 }),
         );
+        expect(blockedVersions).toBeGreaterThan(0);
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
             revision: shared.revision,

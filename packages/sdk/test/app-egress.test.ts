@@ -54,6 +54,7 @@ const probe = (options: {
           await apps.call({
             app: "egress-probe",
             build,
+            database: options.database,
             accounts: {},
             tool: "queries.probe",
             input: { url: options.url },

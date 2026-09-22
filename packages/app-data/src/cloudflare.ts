@@ -16,11 +16,12 @@ export const FacetBundle = WorkerBundle;
 export const FacetInvocation = Schema.Struct({
   id: Schema.NonEmptyString,
   identity: Schema.NonEmptyString,
-  bundle: FacetBundle,
   body: Schema.String,
   write: Schema.Boolean,
   headers: Schema.Record(Schema.String, Schema.String),
 });
+/** The supervisor attaches the revision before releasing its serialized invocation. */
+export const FacetResult = Schema.Struct({ value: Schema.Json, revision: Schema.Int });
 const causes = new WeakMap<AppDatabaseError, unknown>();
 /** Internal diagnostics, deliberately absent from the serialized error. */
 export const facetFailureCause = (error: AppDatabaseError): unknown => causes.get(error);
@@ -72,7 +73,10 @@ export const makeFacetSupervisor = (
       string,
       { cancel: Deferred.Deferred<void>; done: Deferred.Deferred<void> }
     >();
-    const acquire = (invocation: typeof FacetInvocation.Type) =>
+    const acquire = (
+      invocation: typeof FacetInvocation.Type,
+      load: () => Promise<typeof FacetBundle.Type>,
+    ) =>
       Effect.try({
         try: () => {
           if (activeIdentity !== invocation.identity) {
@@ -82,16 +86,22 @@ export const makeFacetSupervisor = (
           // An abort invalidates stubs. Reacquire on every serialized invocation.
           return Schema.decodeUnknownSync(FacetEntrypoint)(
             state.facets.get("data", () => {
-              const worker = loader.get(`${state.id.toString()}:${invocation.identity}`, () => ({
-                ...invocation.bundle,
-                modules: workerModules(invocation.bundle.modules),
-                compatibilityDate: "2026-07-30",
-                ...(globalOutbound === undefined
-                  ? // Same-zone URLs must use their public Worker routes, not the underlying origin.
-                    { compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"] }
-                  : // The flag would override this outbound and send fetch to the shared network.
-                    { compatibilityFlags: ["nodejs_compat"], globalOutbound }),
-              }));
+              const worker = loader.get(
+                `${state.id.toString()}:${invocation.identity}`,
+                async () => {
+                  const bundle = Schema.decodeUnknownSync(Schema.toType(FacetBundle))(await load());
+                  return {
+                    ...bundle,
+                    modules: workerModules(bundle.modules),
+                    compatibilityDate: "2026-07-30",
+                    ...(globalOutbound === undefined
+                      ? // Same-zone URLs must use their public Worker routes, not the underlying origin.
+                        { compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"] }
+                      : // The flag would override this outbound and send fetch to the shared network.
+                        { compatibilityFlags: ["nodejs_compat"], globalOutbound }),
+                  };
+                },
+              );
               return { class: worker.getDurableObjectClass("ExecutorAppData") };
             }),
           );
@@ -173,12 +183,16 @@ export const makeFacetSupervisor = (
     );
     const invoke = (
       invocation: typeof FacetInvocation.Type,
+      load: () => Promise<typeof FacetBundle.Type>,
       elicitation: ((input: unknown) => Promise<unknown>) | null,
       workflows: ((input: unknown) => Promise<unknown>) | null,
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const entrypoint = yield* acquire(invocation);
+          const entrypoint = yield* acquire(invocation, load);
+          // Reads share the invocation lock with writes. Capture the revision before
+          // execution so a later write cannot make an old query look current.
+          const observedRevision = yield* revision;
           if (invocation.write)
             yield* Effect.acquireRelease(begin, () => finish.pipe(Effect.catch(() => Effect.void)));
           const run = Effect.gen(function* () {
@@ -218,7 +232,7 @@ export const makeFacetSupervisor = (
               Effect.mapError(failed),
             );
           });
-          return yield* run;
+          return { value: yield* run, revision: observedRevision };
         }),
       ).pipe(
         // Storage operations already serialize inside the facet. Queue here so aborting
@@ -228,6 +242,7 @@ export const makeFacetSupervisor = (
     return {
       invoke: (
         input: typeof FacetInvocation.Type,
+        load: () => Promise<typeof FacetBundle.Type>,
         elicitation: ((input: unknown) => Promise<unknown>) | null = null,
         workflows: ((input: unknown) => Promise<unknown>) | null = null,
       ) =>
@@ -252,7 +267,7 @@ export const makeFacetSupervisor = (
                 }),
             );
             return yield* Effect.raceFirst(
-              invoke(invocation, elicitation, workflows),
+              invoke(invocation, load, elicitation, workflows),
               Deferred.await(handle.cancel).pipe(Effect.andThen(Effect.interrupt)),
             );
           }),

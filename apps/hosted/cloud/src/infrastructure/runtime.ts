@@ -10,7 +10,9 @@ import {
 import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-js/telemetry";
 import {
   BuildId,
+  BlobStore,
   Json,
+  type RuntimeBuildUnavailable,
   RuntimeBuildFailed,
   RuntimeProtocolFailed,
   runtimeAdapter,
@@ -28,9 +30,10 @@ import {
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Redacted, Result, Schema } from "effect";
-import { facetIdentity } from "@executor-js/app-data/cloudflare";
+import { facetIdentity, FacetResult } from "@executor-js/app-data/cloudflare";
 import type { AppDataSupervisor } from "./app-data.ts";
 import { dataChanges } from "../implementation/data-changes.ts";
+import { cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { workerModules } from "@executor-js/app-data/worker-bundle";
 import type { CloudBundle } from "../contracts/builds.ts";
@@ -69,6 +72,7 @@ const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) => {
 /** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
 export const cloudRuntime = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
+  origin: string,
 ) {
   const loader = yield* Cloudflare.WorkerLoader("AppLoader");
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
@@ -89,7 +93,7 @@ export const cloudRuntime = Effect.fn(function* (
         }
       });
     const dispatch = <A, E>(
-      bundle: CloudBundle,
+      bundle: Effect.Effect<CloudBundle, RuntimeBuildUnavailable, BlobStore>,
       command: HostRequest,
       context: HostContext,
       schema: Schema.Decoder<A>,
@@ -105,16 +109,20 @@ export const cloudRuntime = Effect.fn(function* (
           );
           // The identity includes app, build and current credentials. Reuse never crosses account contexts.
           const worker = yield* loader
-            .get(identity, () => ({
-              mainModule: "__executor_rpc.js",
-              modules: {
-                ...workerModules(bundle.modules),
-                "__executor_rpc.js": appRpcBridge(bundle.mainModule),
-              },
-              compatibilityDate: "2026-07-30",
-              // Same-zone URLs must use their public Worker routes, not the underlying origin.
-              compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
-            }))
+            .get(identity, () =>
+              bundle.pipe(
+                Effect.map((bundle) => ({
+                  mainModule: "__executor_rpc.js",
+                  modules: {
+                    ...workerModules(bundle.modules),
+                    "__executor_rpc.js": appRpcBridge(bundle.mainModule),
+                  },
+                  compatibilityDate: "2026-07-30",
+                  // Same-zone URLs must use their public Worker routes, not the underlying origin.
+                  compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+                })),
+              ),
+            )
             .pipe(Effect.withSpan("runtime.cloud.worker.load"));
           // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
           const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
@@ -191,8 +199,9 @@ export const cloudRuntime = Effect.fn(function* (
           Effect.annotateCurrentSpan({ "dispatch.cause": causeOf(error) }),
         ),
       );
-    const load = (build: BuildId) =>
-      loadCloudBuild(build).pipe(Effect.provide(RuntimeContext.phantom));
+    const load = yield* cachedRuntimeBuilds(origin, (build) =>
+      loadCloudBuild(build).pipe(Effect.provide(RuntimeContext.phantom)),
+    );
     const data = (
       command: Extract<
         HostRequest,
@@ -209,23 +218,27 @@ export const cloudRuntime = Effect.fn(function* (
             | "webhook-unregister";
         }
       >,
-      input: { readonly app: string; readonly build: BuildId } & HostContext,
+      input: {
+        readonly app: string;
+        readonly build: BuildId;
+        readonly database: boolean;
+        readonly observeRevision?: (revision: number) => void;
+      } & HostContext,
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
           if (input.storage !== undefined) return yield* new RuntimeProtocolFailed();
-          const { database, ...bundle } = yield* load(input.build);
           const identity = yield* facetIdentity(
             input.build,
             JSON.stringify(Redacted.value(input.accounts)),
           );
           yield* Effect.annotateCurrentSpan({
-            "executor.runtime.mode": database ? "facet" : "worker",
+            "executor.runtime.mode": input.database ? "facet" : "worker",
             "executor.worker.identity": `${input.app}:${identity}`,
           });
-          if (!database)
+          if (!input.database)
             return yield* dispatch(
-              bundle,
+              load(input.build),
               command,
               input,
               Json,
@@ -238,24 +251,17 @@ export const cloudRuntime = Effect.fn(function* (
             (controller) => Effect.sync(() => controller.abort()),
           );
           const target = databases.getByName(input.app);
+          const services = yield* Effect.context<BlobStore>();
           const id = crypto.randomUUID();
           const workflowControls =
             input.workflowControls === undefined
               ? null
               : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal);
-          const body = yield* target
+          const result = yield* target
             .invoke(
               {
                 id,
                 identity,
-                bundle: {
-                  ...bundle,
-                  mainModule: "__executor_facet.js",
-                  modules: {
-                    ...bundle.modules,
-                    "__executor_facet.js": appFacetBridge(bundle.mainModule),
-                  },
-                },
                 write:
                   ["mutate", "webhook-register", "webhook-handle", "webhook-unregister"].includes(
                     command.operation,
@@ -269,21 +275,40 @@ export const cloudRuntime = Effect.fn(function* (
                 }),
                 headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
               },
+              // Only the trusted supervisor receives this invocation-owned capability.
+              // Its WorkerLoader calls it on a cold runtime; warm calls transfer no code.
+              () =>
+                Effect.runPromiseWith(services)(
+                  load(input.build).pipe(
+                    Effect.map((bundle) => ({
+                      mainModule: "__executor_facet.js",
+                      modules: {
+                        ...bundle.modules,
+                        "__executor_facet.js": appFacetBridge(bundle.mainModule),
+                      },
+                    })),
+                  ),
+                  { signal: lifetime.signal },
+                ),
               input.elicitation === undefined
                 ? null
                 : invocationElicitation(input.elicitation, lifetime.signal),
               workflowControls,
             )
             .pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(FacetResult)),
               Effect.onInterrupt(() => target.cancel(id).pipe(Effect.catch(() => Effect.void))),
             );
+          const body = result.value;
           yield* collect(body, input.build);
           const envelope = yield* Schema.decodeUnknownEffect(HostResponse)(body);
           if (!envelope.ok)
             return yield* Schema.decodeUnknownEffect(HostCallError)(envelope.error).pipe(
               Effect.flatMap(Effect.fail),
             );
-          return yield* Schema.decodeUnknownEffect(Json)(envelope.value);
+          const value = yield* Schema.decodeUnknownEffect(Json)(envelope.value);
+          if (command.operation === "query") input.observeRevision?.(result.revision);
+          return value;
         }),
       ).pipe(
         Effect.provide(RuntimeContext.phantom),
@@ -305,7 +330,7 @@ export const cloudRuntime = Effect.fn(function* (
           );
           const build = BuildId.make(`bld_${crypto.randomUUID()}`);
           const requirements = yield* dispatch(
-            bundle,
+            Effect.succeed(bundle),
             { operation: "requirements" },
             { accounts: Redacted.make({}) },
             DeclaredRequirements,
@@ -337,14 +362,13 @@ export const cloudRuntime = Effect.fn(function* (
         ),
       inspect: ({ app, build, ...context }) =>
         Effect.gen(function* () {
-          const { database: _database, ...bundle } = yield* load(build);
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
           yield* Effect.annotateCurrentSpan({
             "executor.runtime.mode": "worker",
             "executor.worker.identity": identity,
           });
           return yield* dispatch(
-            bundle,
+            load(build),
             { operation: "inspect" },
             context,
             Schema.Array(HostedTool),
@@ -355,9 +379,16 @@ export const cloudRuntime = Effect.fn(function* (
         }).pipe(Effect.withSpan("runtime.cloud.inspect")),
       workflow: ({ app, build, command, ...context }) =>
         Effect.gen(function* () {
-          const { database: _database, ...bundle } = yield* load(build);
           const identity = `${app}:workflow:${context.workflow?.runId ?? "inspect"}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
-          return yield* dispatch(bundle, command, context, Json, HostCallError, build, identity);
+          return yield* dispatch(
+            load(build),
+            command,
+            context,
+            Json,
+            HostCallError,
+            build,
+            identity,
+          );
         }),
       webhook: (input) => data(input.command, input),
       call: (input) =>

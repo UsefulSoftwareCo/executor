@@ -158,6 +158,7 @@ test(
                 .call({
                   app: "synthetic-app",
                   build: deployment.build,
+                  database: false,
                   accounts: Redacted.make({}),
                   tool: "mutations.read",
                   input: {},

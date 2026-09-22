@@ -158,11 +158,9 @@ export const hostedAppUi = (
     );
     if (Option.isNone(token)) return yield* new UiUnauthorized();
     const sessions = yield* HostedAppSessions;
-    const access = yield* sessions.current(resolved.target, token.value);
+    const identity = yield* sessions.current(resolved.target, token.value);
     const app = resolved.app;
-    yield* requireAppUse(app).pipe(
-      Effect.provideService(CurrentOrganization, access),
-      Effect.provideService(CurrentUserId, access.userId),
+    const access = yield* requireAppUse(app, resolved.target.organization, identity.userId).pipe(
       Effect.mapError((error) =>
         Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
       ),

@@ -1,12 +1,12 @@
 /** Internal notification transport. Sockets carry only app revisions; product routes authorize every delivered result. */
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
-import { Cause, Effect, Queue, Stream } from "effect";
+import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-types";
+import { Cause, Effect, Queue, Schema, Stream } from "effect";
 import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
 import { traceHeaders } from "@executor-js/telemetry";
 
 /** Notify after registration, conflate bursts, and close with the subscriber's scope. */
 export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
-  Stream.callback<void, RuntimeProtocolFailed>(
+  Stream.callback<number, RuntimeProtocolFailed>(
     (queue) =>
       Effect.gen(function* () {
         const socket = yield* Effect.acquireRelease(
@@ -28,8 +28,15 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
           }).pipe(Effect.withSpan("runtime.cloud.changes.connect", { kind: "client" })),
           (socket) => Effect.sync(() => socket.close(1000, "Subscription ended")),
         );
-        const changed = () => {
-          Queue.offerUnsafe(queue, undefined);
+        const changed = (event: MessageEvent) => {
+          try {
+            const { revision } = Schema.decodeUnknownSync(
+              Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+            )(event.data);
+            Queue.offerUnsafe(queue, revision);
+          } catch {
+            Queue.failCauseUnsafe(queue, Cause.fail(new RuntimeProtocolFailed()));
+          }
         };
         const closed = () => {
           Queue.failCauseUnsafe(queue, Cause.fail(new RuntimeProtocolFailed()));

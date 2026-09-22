@@ -81,6 +81,7 @@ export async function runtimeWalkthrough(directory: string) {
         const firstResult = await runtime.call({
           app: "synthetic-app",
           build: built.build,
+          database: built.requirements.database !== undefined,
           accounts: first,
           tool: "queries.alpha1",
           input: {},
@@ -88,6 +89,7 @@ export async function runtimeWalkthrough(directory: string) {
         const secondResult = await runtime.call({
           app: "synthetic-app",
           build: built.build,
+          database: built.requirements.database !== undefined,
           accounts: second,
           tool: "queries.beta",
           input: { count: 3 },
@@ -105,6 +107,7 @@ export async function runtimeWalkthrough(directory: string) {
         const reloadedResult = await reloaded.call({
           app: "synthetic-app",
           build: built.build,
+          database: built.requirements.database !== undefined,
           accounts: first,
           tool: "queries.alpha2",
           input: {},
@@ -112,6 +115,7 @@ export async function runtimeWalkthrough(directory: string) {
         const nodeResult = await reloaded.call({
           app: "synthetic-app",
           build: built.build,
+          database: built.requirements.database !== undefined,
           accounts: first,
           tool: "queries.node",
           input: {},

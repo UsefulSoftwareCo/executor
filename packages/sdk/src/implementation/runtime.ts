@@ -35,6 +35,7 @@ export interface ResolvedAppRuntime {
   readonly query: (input: {
     readonly app: string;
     readonly build: BuildId;
+    readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
     readonly storage?: AppStorage;
     readonly name: string;
@@ -43,6 +44,7 @@ export interface ResolvedAppRuntime {
   readonly mutate: (input: {
     readonly app: string;
     readonly build: BuildId;
+    readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
     readonly storage?: AppStorage;
     readonly name: string;
@@ -51,6 +53,7 @@ export interface ResolvedAppRuntime {
   readonly webhook: (input: {
     readonly app: string;
     readonly build: BuildId;
+    readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
     readonly command: import("apps/contracts").WebhookCommand;
   }) => Promise<Json>;
@@ -60,6 +63,7 @@ export interface ResolvedAppRuntime {
     readonly approval?: NonNullable<HostContext["approval"]>;
     readonly elicitation?: NonNullable<HostContext["elicitation"]>;
     readonly build: BuildId;
+    readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
     readonly tool: string;
     readonly input: Json;

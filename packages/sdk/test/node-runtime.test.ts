@@ -86,6 +86,7 @@ test("the Node SDK retains the app's selected npm framework and UI", { timeout: 
           yield* restored.call({
             app: "package-fixture",
             build: built.build,
+            database: built.requirements.database !== undefined,
             accounts: Redacted.make({}),
             tool: "mutations.info",
             input: {},
@@ -152,7 +153,12 @@ export default defineApp({ accounts: {} }, async () => ({
           nodeRuntime({ workDirectory: path.join(directory, "restored") }),
           blobs,
         );
-        const context = { app: "stdio-fixture", build: built.build, accounts: Redacted.make({}) };
+        const context = {
+          app: "stdio-fixture",
+          build: built.build,
+          database: built.requirements.database !== undefined,
+          accounts: Redacted.make({}),
+        };
         assert.deepEqual(
           (yield* restored.inspect(context)).map((tool) => tool.name),
           ["queries.echo"],
@@ -235,6 +241,7 @@ export const result = {
             yield* restored.call({
               app: "data-fixture",
               build: built.build,
+              database: built.requirements.database !== undefined,
               accounts: Redacted.make({}),
               tool: "mutations.info",
               input: {},
@@ -311,6 +318,7 @@ test(
               yield* restored.call({
                 app: "lock-fixture",
                 build: built.build,
+                database: built.requirements.database !== undefined,
                 accounts: Redacted.make({}),
                 tool: "mutations.info",
                 input: {},
@@ -393,6 +401,7 @@ for (const fixture of [
             const result = yield* runtime.call({
               app: "synthetic-app",
               build: built.build,
+              database: built.requirements.database !== undefined,
               accounts: Redacted.make({}),
               tool: "mutations.info",
               input: {},
@@ -475,6 +484,7 @@ test(
           const result = yield* runtime.call({
             app: "synthetic-app",
             build: built.build,
+            database: built.requirements.database !== undefined,
             accounts: Redacted.make({}),
             tool: "mutations.info",
             input: {},
@@ -559,7 +569,11 @@ test("runtime operations preserve their own lookup failures", async () => {
           memoryBlobStore(),
         );
         const built = yield* runtime.build({ files: files(appSource("", '"Fixture"')) });
-        const context = { build: built.build, accounts: Redacted.make({}) };
+        const context = {
+          build: built.build,
+          database: built.requirements.database !== undefined,
+          accounts: Redacted.make({}),
+        };
         assert.equal((yield* runtime.inspect({ ...context, app: "synthetic-app" })).length, 1);
         const missingTool = yield* runtime
           .call({ app: "synthetic-app", ...context, tool: "mutations.missing", input: {} })

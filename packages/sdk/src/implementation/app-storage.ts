@@ -1,5 +1,5 @@
 /** Configured-app data dispatch. Platform storage never holds authored rows. */
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Result, Schema, Stream } from "effect";
 import type { WorkflowHostControls } from "apps/contracts";
 import type { AppDatabases } from "@executor-js/app-data";
 import { bindAppStorage } from "./app-database.ts";
@@ -21,18 +21,24 @@ export const makeAppData = (
   workflows?: (app: import("../contracts/shared.ts").AppId) => WorkflowHostControls,
 ) => {
   const db = database(storage);
-  const execute = (kind: "query" | "mutate", input: AppDataInput) =>
+  const execute = (
+    kind: "query" | "mutate",
+    input: AppDataInput,
+    observeRevision?: (revision: number) => void,
+  ) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input);
       const accounts = yield* resolve(state, resolveAccount);
       return yield* runtime[kind]({
         build: state.deployment.build,
+        database: state.deployment.requirements.database !== undefined,
         ...accounts,
         app: state.app.id,
         ...(yield* bindAppStorage(appStorage, state.app.id)),
         ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id) }),
         name: input.name,
         input: input.input,
+        ...(observeRevision === undefined ? {} : { observeRevision }),
       }).pipe(
         Effect.mapError((error) =>
           Schema.is(HostOperationNotFound)(error)
@@ -47,28 +53,41 @@ export const makeAppData = (
       Effect.succeed(
         changes === undefined
           ? storage.reactivity.subscribe(execute("query", input))
-          : Stream.tick("15 seconds").pipe(
-              Stream.mapEffect(() => snapshot(db, input)),
-              Stream.changesWith((a, b) => a.deployment.id === b.deployment.id),
-              Stream.switchMap((state) =>
-                Stream.merge(
-                  // First data does not wait for the notification connection.
-                  // Its initial ready event reads again after registration, so
-                  // a write during setup cannot be missed.
-                  Stream.succeed(undefined),
-                  state.deployment.requirements.database === undefined
-                    ? Stream.empty
-                    : changes(input.app).pipe(
-                        Stream.mapError(
-                          () => new AppDataFailed({ app: input.app, name: input.name }),
-                        ),
-                      ),
-                ).pipe(Stream.merge(Stream.tick("15 seconds").pipe(Stream.drop(1)))),
-              ),
-              Stream.mapEffect(() => execute("query", input)),
-              Stream.changesWith(Schema.toEquivalence(Json)),
-              Stream.zipWithIndex,
-              Stream.map(([value, revision]) => ({ value, revision })),
+          : Stream.unwrap(
+              Effect.sync(() => {
+                let observedRevision: number | undefined;
+                return Stream.tick("15 seconds").pipe(
+                  Stream.mapEffect(() => snapshot(db, input)),
+                  Stream.changesWith((a, b) => a.deployment.id === b.deployment.id),
+                  Stream.switchMap((state) =>
+                    Stream.merge(
+                      // First data does not wait for the notification connection.
+                      // The initial notification is skipped only if its writes were
+                      // already observed by a successful query. Setup races still reread.
+                      Stream.succeed(undefined),
+                      state.deployment.requirements.database === undefined
+                        ? Stream.empty
+                        : changes(input.app).pipe(
+                            Stream.mapError(
+                              () => new AppDataFailed({ app: input.app, name: input.name }),
+                            ),
+                          ),
+                    ).pipe(Stream.merge(Stream.tick("15 seconds").pipe(Stream.drop(1)))),
+                  ),
+                  Stream.filterMapEffect((revision) =>
+                    typeof revision === "number" &&
+                    observedRevision !== undefined &&
+                    revision <= observedRevision
+                      ? Effect.succeed(Result.fail(undefined))
+                      : execute("query", input, (revision) => {
+                          observedRevision = revision;
+                        }).pipe(Effect.map(Result.succeed)),
+                  ),
+                  Stream.changesWith(Schema.toEquivalence(Json)),
+                  Stream.zipWithIndex,
+                  Stream.map(([value, revision]) => ({ value, revision })),
+                );
+              }),
             ),
       ).pipe(Effect.withSpan("sdk.data.subscribe")),
     query: (input: AppDataInput) => execute("query", input).pipe(Effect.withSpan("sdk.data.query")),

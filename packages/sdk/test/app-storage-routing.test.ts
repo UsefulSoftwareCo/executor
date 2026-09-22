@@ -65,65 +65,74 @@ for (const database of [undefined, {}]) {
     ));
 }
 
-test("first data does not wait for notifications and setup-time writes are reconciled", () =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-        yield* storage.migrate;
-        const ready = yield* Deferred.make<void>();
-        const first = yield* Deferred.make<void>();
-        let value = "initial";
-        const executor = yield* createExecutor({
-          storage,
-          sources: memorySourceStorage(),
-          blobs: memoryBlobStore(),
-          credentials: yield* aesGcmCredentials(Redacted.make("ab".repeat(32)), crypto),
-          runtime: runtimeAdapter({
-            build: () =>
-              Effect.succeed({
-                build: BuildId.make("bld_watch_setup"),
-                requirements: { accounts: {}, database: {} },
-              }),
-            workflow: () => Effect.die("Unexpected workflow invocation"),
-            webhook: () => Effect.die("Unexpected webhook invocation"),
-            inspect: () => Effect.succeed([]),
-            call: () => Effect.succeed(null),
-            query: () => Effect.sync(() => value),
-            mutate: () =>
-              Effect.sync(() => {
-                value = "written during setup";
-                return value;
-              }),
-            changes: () =>
-              Stream.callback<void>((queue) =>
-                Deferred.await(ready).pipe(Effect.andThen(Queue.offer(queue, undefined))),
-              ),
-          }),
-        });
-        const { app } = yield* executor.apps.deploy({
-          owner: OwnerId.make("fixture"),
-          name: "Delayed notifications",
-          files: [{ path: "index.ts", content: "Synthetic runtime" }],
-        });
-        const input = { app: app.id, name: "value", input: {} };
-        const stream = yield* executor.appData.subscribe(input);
-        const reading = yield* stream.pipe(
-          Stream.tap((snapshot) =>
-            snapshot.value === "initial" ? Deferred.succeed(first, undefined) : Effect.void,
-          ),
-          Stream.take(2),
-          Stream.runCollect,
-          Effect.forkScoped,
-        );
-        yield* Deferred.await(first).pipe(Effect.timeout("2 seconds"));
-        yield* executor.appData.mutate(input);
-        yield* Deferred.succeed(ready, undefined);
-        const values = yield* Fiber.join(reading).pipe(Effect.timeout("2 seconds"));
-        assert.deepEqual(
-          values.map((snapshot) => snapshot.value),
-          ["initial", "written during setup"],
-        );
-      }),
-    ).pipe(Effect.provide(Layer.mergeAll(BrowserCrypto.layer, pgliteLayer()))),
-  ));
+for (const versioned of [false, true])
+  test(`first data does not wait for notifications and setup-time writes are reconciled (${versioned})`, () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+          yield* storage.migrate;
+          const ready = yield* Deferred.make<void>();
+          const first = yield* Deferred.make<void>();
+          let value = "initial";
+          let revision = 0;
+          const executor = yield* createExecutor({
+            storage,
+            sources: memorySourceStorage(),
+            blobs: memoryBlobStore(),
+            credentials: yield* aesGcmCredentials(Redacted.make("ab".repeat(32)), crypto),
+            runtime: runtimeAdapter({
+              build: () =>
+                Effect.succeed({
+                  build: BuildId.make("bld_watch_setup"),
+                  requirements: { accounts: {}, database: {} },
+                }),
+              workflow: () => Effect.die("Unexpected workflow invocation"),
+              webhook: () => Effect.die("Unexpected webhook invocation"),
+              inspect: () => Effect.succeed([]),
+              call: () => Effect.succeed(null),
+              query: ({ observeRevision }) =>
+                Effect.sync(() => {
+                  if (versioned) observeRevision?.(revision);
+                  return value;
+                }),
+              mutate: () =>
+                Effect.sync(() => {
+                  value = "written during setup";
+                  revision++;
+                  return value;
+                }),
+              changes: () =>
+                Stream.callback<number | void>((queue) =>
+                  Deferred.await(ready).pipe(
+                    Effect.andThen(() => Queue.offer(queue, versioned ? revision : undefined)),
+                  ),
+                ),
+            }),
+          });
+          const { app } = yield* executor.apps.deploy({
+            owner: OwnerId.make("fixture"),
+            name: "Delayed notifications",
+            files: [{ path: "index.ts", content: "Synthetic runtime" }],
+          });
+          const input = { app: app.id, name: "value", input: {} };
+          const stream = yield* executor.appData.subscribe(input);
+          const reading = yield* stream.pipe(
+            Stream.tap((snapshot) =>
+              snapshot.value === "initial" ? Deferred.succeed(first, undefined) : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(first).pipe(Effect.timeout("2 seconds"));
+          yield* executor.appData.mutate(input);
+          yield* Deferred.succeed(ready, undefined);
+          const values = yield* Fiber.join(reading).pipe(Effect.timeout("2 seconds"));
+          assert.deepEqual(
+            values.map((snapshot) => snapshot.value),
+            ["initial", "written during setup"],
+          );
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(BrowserCrypto.layer, pgliteLayer()))),
+    ));

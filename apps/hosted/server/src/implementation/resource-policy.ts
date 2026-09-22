@@ -8,6 +8,7 @@ import {
   OrganizationForbidden,
   OrganizationId,
   OrganizationRole,
+  organizationOwner,
 } from "../contracts/organization.ts";
 import {
   AccessRevision,
@@ -150,12 +151,9 @@ export const requireAppAccess = (app: AppId, action: "read" | "manage" | "use") 
 /** Check current membership, app use and every selected account in one database snapshot.
  * The app was resolved with its owner before this call. Management never grants use.
  */
-export const requireAppUse = (app: App) =>
+export const requireAppUse = (app: App, organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
-    const organization = (yield* CurrentOrganization).organization;
-    const user = yield* CurrentUserId;
-    if (user === undefined || app.owner !== `organization:${organization}`)
-      return yield* new OrganizationForbidden();
+    if (app.owner !== organizationOwner(organization)) return yield* new OrganizationForbidden();
     const selected = [
       ...new Set(
         Object.values(app.accounts).flatMap((value) =>
@@ -164,8 +162,7 @@ export const requireAppUse = (app: App) =>
       ),
     ];
     const sql = yield* policyDatabase;
-    const rows = yield* sql`select exists (
-      select 1 from member m
+    const rows = yield* sql`select m.role from member m
       join hosted_app_access p on p.organization_id = m."organizationId"
       join executor_apps a on a.id = p.id
       where m."organizationId" = ${organization} and m."userId" = ${user}
@@ -186,12 +183,18 @@ export const requireAppUse = (app: App) =>
                   select 1 from hosted_account_groups ag
                   join hosted_group_members gm on gm.group_id = ag.group_id
                   where ag.account_id = ap.account_id and gm.member_id = m.id)))))) = ${selected.length}
-      ) as allowed`;
+      `;
     const result = yield* Schema.decodeUnknownEffect(
-      Schema.Array(Schema.Struct({ allowed: Schema.Boolean })),
+      Schema.Array(Schema.Struct({ role: OrganizationRole })),
     )(rows);
-    if (result.length !== 1 || result[0]?.allowed !== true)
-      return yield* new OrganizationForbidden();
+    const member = result[0];
+    if (result.length !== 1 || member === undefined) return yield* new OrganizationForbidden();
+    return {
+      organization,
+      owner: organizationOwner(organization),
+      role: member.role,
+      userId: user,
+    };
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
     Effect.withSpan("app.ui.authorize.resources"),

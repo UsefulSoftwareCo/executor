@@ -332,7 +332,11 @@ export const workerdApps = (options: {
         }),
       );
     const dispatch = <A, E>(
-      input: { readonly app: string; readonly build: BuildId } & HostContext,
+      input: {
+        readonly app: string;
+        readonly build: BuildId;
+        readonly observeRevision?: (revision: number) => void;
+      } & HostContext,
       command: HostRequest,
       output: Schema.Decoder<A>,
       errors: Schema.Decoder<E>,
@@ -389,7 +393,10 @@ export const workerdApps = (options: {
           }),
         );
         const telemetry = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ telemetry: Schema.optional(TelemetryBatch) }),
+          Schema.Struct({
+            telemetry: Schema.optional(TelemetryBatch),
+            executorRevision: Schema.optional(Schema.Int),
+          }),
         )(body);
         if (telemetry.telemetry !== undefined) {
           const span = yield* Effect.currentSpan.pipe(Effect.option);
@@ -404,9 +411,12 @@ export const workerdApps = (options: {
             Effect.mapError(protocolFailure),
             Effect.flatMap(Effect.fail),
           );
-        return yield* Schema.decodeUnknownEffect(output)(reply.value).pipe(
+        const value = yield* Schema.decodeUnknownEffect(output)(reply.value).pipe(
           Effect.mapError(protocolFailure),
         );
+        if (command.operation === "query" && telemetry.executorRevision !== undefined)
+          input.observeRevision?.(telemetry.executorRevision);
+        return value;
       }).pipe(Effect.catchTag("SchemaError", () => Effect.fail(protocolFailure())));
     const runtime: Runtime = {
       build: ({ files }) =>
@@ -457,15 +467,22 @@ export const workerdApps = (options: {
       webhook: (input) => dispatch(input, input.command, Json, HostCallError),
       workflow: (input) => dispatch(input, input.command, Json, HostCallError),
       changes: (app) =>
-        Stream.callback<void, RuntimeProtocolFailed>(
+        Stream.callback<number, RuntimeProtocolFailed>(
           (queue) =>
             Effect.gen(function* () {
               const socket = yield* Effect.acquireRelease(
                 Effect.sync(() => connect(`/changes?app=${encodeURIComponent(app)}`)),
                 (socket) => Effect.sync(() => socket.close()),
               );
-              const changed = () => {
-                Queue.offerUnsafe(queue, undefined);
+              const changed = (data: import("ws").RawData) => {
+                try {
+                  const { revision } = Schema.decodeUnknownSync(
+                    Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+                  )(data.toString());
+                  Queue.offerUnsafe(queue, revision);
+                } catch {
+                  Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
+                }
               };
               const failed = () => {
                 Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));

@@ -162,6 +162,7 @@ export const makeWorkflowRuns = (
         );
         return {
           ...(yield* resolve(state, resolveAccount)),
+          database: state.deployment.requirements.database !== undefined,
           ...(yield* bindAppStorage(appStorage, row.app)),
           workflowControls: controls(row.app),
         };

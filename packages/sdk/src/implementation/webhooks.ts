@@ -85,6 +85,7 @@ export const makeWebhooks = (
         .webhook({
           app: row.app,
           build: state.deployment.build,
+          database: state.deployment.requirements.database !== undefined,
           ...context,
           ...(yield* bindAppStorage(appStorage, row.app)),
           ...(workflows === undefined ? {} : { workflowControls: workflows(row.app) }),
@@ -107,6 +108,7 @@ export const makeWebhooks = (
         .webhook({
           app: input.app,
           build: state.deployment.build,
+          database: state.deployment.requirements.database !== undefined,
           ...context,
           command: { operation: "webhooks" },
         })
@@ -266,6 +268,7 @@ export const makeWebhooks = (
           .webhook({
             app: parsed.app,
             build: state.deployment.build,
+            database: state.deployment.requirements.database !== undefined,
             ...context,
             command: { operation: "webhooks" },
           })
@@ -292,6 +295,7 @@ export const makeWebhooks = (
           .webhook({
             app: parsed.app,
             build: state.deployment.build,
+            database: state.deployment.requirements.database !== undefined,
             ...context,
             command: {
               operation: "webhook-validate",

@@ -239,7 +239,9 @@ export const hostedAppSessions = (
         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
           return yield* new UiUnauthorized();
         yield* parent(session.parent, session.user);
-        return { ...(yield* membership(session.user, target)), userId: session.user };
+        // The serving host checks current membership together with app/account
+        // permissions. A second lookup here adds no authority to that decision.
+        return { userId: session.user };
       }),
   });
 };

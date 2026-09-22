@@ -30,6 +30,8 @@ import {
   facetIdentity,
   makeFacetSupervisor,
   FacetInvocation,
+  FacetResult,
+  type FacetBundle,
 } from "@executor-js/app-data/cloudflare";
 import {
   appRpcBridge,
@@ -57,6 +59,7 @@ type Callback = (input: unknown) => Promise<unknown>;
 interface DataEntrypoint {
   invoke(
     input: typeof FacetInvocation.Type,
+    load: () => Promise<typeof FacetBundle.Type>,
     elicit: Callback | null,
     controls: Callback | null,
   ): Promise<unknown>;
@@ -156,14 +159,6 @@ const invoke = (
               {
                 id,
                 identity,
-                bundle: {
-                  ...input.bundle,
-                  mainModule: "__executor_facet.js",
-                  modules: {
-                    ...input.bundle.modules,
-                    "__executor_facet.js": appFacetBridge(input.bundle.mainModule),
-                  },
-                },
                 body,
                 headers: input.headers,
                 write:
@@ -173,11 +168,24 @@ const invoke = (
                   (input.command.operation === "call" &&
                     input.command.tool.startsWith("mutations.")),
               },
+              async () => ({
+                mainModule: "__executor_facet.js",
+                modules: {
+                  ...input.bundle.modules,
+                  "__executor_facet.js": appFacetBridge(input.bundle.mainModule),
+                },
+              }),
               elicit,
               controls,
             ),
           catch: failure,
         }).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(FacetResult)),
+          Effect.flatMap((result) =>
+            Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json))(
+              result.value,
+            ).pipe(Effect.map((body) => ({ ...body, executorRevision: result.revision }))),
+          ),
           Effect.onInterrupt(() =>
             Effect.promise(() => target.cancel(id)).pipe(Effect.catchCause(() => Effect.void)),
           ),
@@ -327,10 +335,13 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   }
   async invoke(
     input: typeof FacetInvocation.Type,
+    load: () => Promise<typeof FacetBundle.Type>,
     elicit: Callback | null,
     controls: Callback | null,
   ) {
-    const result = Effect.runPromise((await this.#supervisor).invoke(input, elicit, controls));
+    const result = Effect.runPromise(
+      (await this.#supervisor).invoke(input, load, elicit, controls),
+    );
     // The supervisor owns rollback even if the original RPC caller disconnects.
     this.ctx.waitUntil(
       result.then(

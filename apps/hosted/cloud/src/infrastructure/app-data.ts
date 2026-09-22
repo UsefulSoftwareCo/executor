@@ -2,7 +2,11 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { WorkerLoader } from "@cloudflare/workers-types";
 import { Effect, Schema } from "effect";
-import { makeFacetSupervisor, FacetInvocation } from "@executor-js/app-data/cloudflare";
+import {
+  makeFacetSupervisor,
+  FacetInvocation,
+  type FacetBundle,
+} from "@executor-js/app-data/cloudflare";
 
 const NativeLoader = Schema.declare(
   (value): value is Pick<WorkerLoader, "get"> =>
@@ -32,9 +36,10 @@ export const AppDataSupervisorLive = AppDataSupervisor.make(
       return {
         invoke: (
           input: typeof FacetInvocation.Type,
+          load: () => Promise<typeof FacetBundle.Type>,
           elicitation: ((input: unknown) => Promise<unknown>) | null = null,
           workflows: ((input: unknown) => Promise<unknown>) | null = null,
-        ) => supervisor.invoke(input, elicitation, workflows),
+        ) => supervisor.invoke(input, load, elicitation, workflows),
         cancel: (id: string) => supervisor.cancel(id),
         fetch: Effect.gen(function* () {
           const [response, socket] = yield* Cloudflare.upgrade();

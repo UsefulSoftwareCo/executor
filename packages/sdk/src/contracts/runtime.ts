@@ -55,8 +55,10 @@ export type RuntimeLoadError = RuntimeBuildUnavailable | RuntimeProtocolFailed;
 
 /** Framework-facing operations, independent of Node or Cloudflare bindings. */
 export interface Runtime<Requirements = never> {
-  /** Optional cross-process invalidation feed. Emits an initial event after registering. */
-  readonly changes?: (app: string) => Stream.Stream<void, RuntimeLoadError>;
+  /** Optional cross-process invalidation feed. The initial event follows registration.
+   * A revision identifies all writes before that event; unversioned hosts emit void.
+   */
+  readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
   readonly build: (input: {
     readonly files: SourceFiles;
   }) => Effect.Effect<BuiltApp, RuntimeBuildFailed, Requirements>;
@@ -75,6 +77,9 @@ export interface Runtime<Requirements = never> {
     input: {
       readonly app: string;
       readonly build: BuildId;
+      readonly database: boolean;
+      /** Report the storage revision read by this successful query, never an authored result. */
+      readonly observeRevision?: (revision: number) => void;
       readonly name: string;
       readonly input: Json;
     } & HostContext,
@@ -83,6 +88,7 @@ export interface Runtime<Requirements = never> {
     input: {
       readonly app: string;
       readonly build: BuildId;
+      readonly database: boolean;
       readonly name: string;
       readonly input: Json;
     } & HostContext,
@@ -92,6 +98,7 @@ export interface Runtime<Requirements = never> {
     input: {
       readonly app: string;
       readonly build: BuildId;
+      readonly database: boolean;
       readonly command: WebhookCommand;
     } & HostContext,
   ) => Effect.Effect<Json, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
@@ -107,6 +114,7 @@ export interface Runtime<Requirements = never> {
     input: {
       readonly app: string;
       readonly build: BuildId;
+      readonly database: boolean;
       readonly tool: string;
       readonly input: Json;
     } & HostContext,

@@ -50,7 +50,9 @@ export interface WorkflowHost {
   /** Read retained state without reopening accounts or consulting the backend. */
   readonly get: (run: WorkflowRunId) => Effect.Effect<WorkflowRun, WorkflowFailure>;
   readonly seed: (run: WorkflowRunId) => Effect.Effect<WorkflowSeed, WorkflowFailure>;
-  readonly context: (run: WorkflowRunId) => Effect.Effect<HostContext, WorkflowFailure>;
+  readonly context: (
+    run: WorkflowRunId,
+  ) => Effect.Effect<HostContext & { readonly database: boolean }, WorkflowFailure>;
   readonly invoke: (
     run: WorkflowRunId,
     input: {
