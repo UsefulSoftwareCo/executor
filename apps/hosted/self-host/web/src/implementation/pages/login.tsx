@@ -93,7 +93,7 @@ export function SelfHostLoginPage({
         </h1>
         {setup && <p>Create your administrator account and organization.</p>}
         <form
-          className="settings-form [&_h2]:text-[15px] [&_h2]:font-medium flex flex-col gap-4 w-full max-w-100 mt-7 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.5 [&_label]:text-[13px] [&_>_button]:self-start max-[480px]:[&_>_button]:self-stretch"
+          className="settings-form [&_h2]:text-[15px] [&_h2]:font-medium flex flex-col gap-4 w-full max-w-100 mt-7 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.5 [&_label]:text-[13px]"
           onSubmit={async (event) => {
             event.preventDefault();
             const data = new FormData(event.currentTarget);
