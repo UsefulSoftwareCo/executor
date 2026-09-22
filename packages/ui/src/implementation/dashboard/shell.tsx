@@ -25,7 +25,7 @@ const resources = (docsUrl: string) =>
     },
   ] as const;
 
-/** Between the phone layout and a wide screen the rail starts collapsed; the toggle still wins. */
+/** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
 const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
 
 /** Sidebar nav link styles, shared by the desktop rail and the phone menu sheet. */
@@ -54,7 +54,7 @@ function ResourceLinks({ docsUrl }: { readonly docsUrl: string }) {
 
 /**
  * The dashboard layout: a sidebar rail on wide screens, which collapses to an
- * icon rail on medium ones and can be toggled either way. On phones the rail
+ * icon rail on medium ones, where it can be toggled either way. On phones the rail
  * becomes a compact top bar (`identity`, or the brand) and a floating Menu pill
  * that opens the same navigation, resource links and footer in a bottom sheet.
  */
@@ -77,13 +77,8 @@ export function DashboardShell({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const medium = useMediaQuery(mediumViewport);
-  // A choice belongs to the width it was made at, so crossing the breakpoint
-  // returns the rail to the width that size expects.
-  const [preference, setPreference] = useState<{
-    readonly medium: boolean;
-    readonly collapsed: boolean;
-  } | null>(null);
-  const collapsed = preference?.medium === medium ? preference.collapsed : medium;
+  const [mediumCollapsed, setMediumCollapsed] = useState(true);
+  const collapsed = medium && mediumCollapsed;
   return (
     <div
       className={`shell grid h-dvh max-[740px]:grid-cols-1 max-[740px]:grid-rows-[auto_minmax(0,_1fr)] ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
@@ -98,22 +93,28 @@ export function DashboardShell({
         className={`sidebar flex flex-col border-r border-r-border py-0 px-[8px] min-h-0 overflow-y-auto overflow-x-hidden max-[740px]:hidden ${navigationClass} ${collapsed ? collapsedClass : ""}`}
       >
         <div className="sidebar-header flex items-center gap-1 min-h-12 shrink-0">
-          <button
-            type="button"
-            className="sidebar-collapse-toggle flex items-center justify-center shrink-0 w-8.5 h-8.5 rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            onClick={() => setPreference({ medium, collapsed: !collapsed })}
-          >
-            <HugeiconsIcon
-              icon={SidebarLeft01Icon}
-              strokeWidth={2}
-              size={17}
-              aria-hidden
-              className={collapsed ? "rotate-180" : undefined}
-            />
-          </button>
+          {medium ? (
+            <button
+              type="button"
+              className="sidebar-collapse-toggle flex items-center justify-center shrink-0 w-8.5 h-8.5 rounded-[6px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={() => setMediumCollapsed((value) => !value)}
+            >
+              <HugeiconsIcon
+                icon={SidebarLeft01Icon}
+                strokeWidth={2}
+                size={17}
+                aria-hidden
+                className={collapsed ? "rotate-180" : undefined}
+              />
+            </button>
+          ) : (
+            <span className="flex items-center justify-center shrink-0 size-8.5">
+              <img src="/favicon.png" alt="" className="size-6" />
+            </span>
+          )}
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
