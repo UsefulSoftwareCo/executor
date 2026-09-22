@@ -1,3 +1,8 @@
+import {
+  drainProvisioning,
+  selfHostProvisioningServices,
+} from "@executor-js/hosted-server/provisioning";
+import { Schedule } from "effect";
 import { executorSelfHostApiDocument } from "./contracts/api.ts";
 import {
   startScheduleWorker,
@@ -73,6 +78,12 @@ export const selfHostRoutes = Effect.gen(function* () {
   const egress: HostEgress = { policy, client: yield* safeHttpClient(policy) };
   const executorServices = Layer.succeedContext(
     yield* Layer.build(selfHostExecutor(skills, egress)),
+  );
+  yield* drainProvisioning(selfHostProvisioningServices).pipe(
+    Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
+    Effect.repeat(Schedule.spaced("1 second")),
+    Effect.provide(executorServices),
+    Effect.forkScoped,
   );
   yield* Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);

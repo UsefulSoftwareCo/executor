@@ -77,5 +77,3 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
 
 export * from "./contracts/schedules.ts";
 export { makeScheduledAuthority } from "./implementation/schedules.ts";
-
-export { accountApiKey, pinnedKeyMetadata } from "./implementation/api-keys.ts";

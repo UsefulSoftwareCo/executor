@@ -14,6 +14,7 @@
     "./database": "./src/implementation/database.ts",
     "./app-ui": "./src/app-ui.ts",
     "./app-ui/contracts": "./src/contracts/app-ui.ts",
+    "./provisioning": "./src/implementation/provisioning.ts",
     "./migrations": "./src/implementation/migrations.ts",
     "./organization-icon": "./src/contracts/organization-icon.ts",
     "./browser": "./src/browser.ts",

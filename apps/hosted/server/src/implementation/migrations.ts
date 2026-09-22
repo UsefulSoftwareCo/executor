@@ -4,6 +4,8 @@ import { getMigrations } from "better-auth/db/migration";
 import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
+import { migrateLifecycleProvisioning } from "./provisioning-lifecycle-schema.ts";
+import { migrateProvisioning } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
 import { migrateResourceAccess } from "./resource-schema.ts";
 
@@ -52,6 +54,8 @@ export const migrateHostedSchemas = (options: BetterAuthOptions) =>
     );
     yield* migrateGroups.pipe(
       Effect.andThen(migrateResourceAccess),
+      Effect.andThen(migrateProvisioning),
+      Effect.andThen(migrateLifecycleProvisioning),
       Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
     );
   });

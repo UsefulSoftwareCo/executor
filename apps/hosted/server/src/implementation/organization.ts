@@ -14,13 +14,12 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { Cookies, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   ApiAuthentication,
@@ -191,30 +190,6 @@ export const inventory = (owner: OwnerId) =>
     );
     return { apps, accounts: accounts.filter((account) => selected.has(account.id)) };
   });
-/** Initialize explicit system defaults before either inventory representation is returned. */
-export const initializeOrganizationInventory = (authentication: typeof Authentication.Service) =>
-  Effect.gen(function* () {
-    const organization = yield* CurrentOrganization;
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const headers = new Headers(request.headers);
-    const principal =
-      organization.role === "member" || headers.has("authorization") || !headers.has("cookie")
-        ? null
-        : Option.getOrUndefined(yield* Effect.serviceOption(CurrentPrincipal));
-    if ((yield* CurrentAuthorization).tools.kind === "all")
-      yield* (yield* OrganizationDefaults)(
-        organization.organization,
-        principal == null
-          ? undefined
-          : {
-              userId: principal.userId,
-              name: principal.name,
-              key: authentication
-                .apiKey(headers, organization.organization)
-                .pipe(Effect.catchTag("OrganizationForbidden", () => Effect.fail(new Forbidden()))),
-            },
-      );
-  });
 /** Organization routes do not own app/account operations. */
 export const hostedOrganizationHandlers = HttpApiBuilder.group(
   HostedApi,
@@ -246,17 +221,13 @@ export const hostedOrganizationHandlers = HttpApiBuilder.group(
         .handle("catalog", () => Effect.flatMap(HostedCatalog, (catalog) => catalog.list))
         .handle("access", () => CurrentOrganization)
         .handle("inventory", () =>
-          initializeOrganizationInventory(authentication).pipe(
-            Effect.andThen(
-              Effect.gen(function* () {
-                const organization = yield* CurrentOrganization;
-                return {
-                  ...(yield* inventory(organization.owner)),
-                  accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
-                };
-              }),
-            ),
-          ),
+          Effect.gen(function* () {
+            const organization = yield* CurrentOrganization;
+            return {
+              ...(yield* inventory(organization.owner)),
+              accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
+            };
+          }),
         );
     }),
 );

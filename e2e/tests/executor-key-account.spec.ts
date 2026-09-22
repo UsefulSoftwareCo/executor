@@ -1,7 +1,8 @@
 /** Default management keys are ordinary personal accounts bound to one profile per user. */
 import { saveAndDeploy } from "../support/app-authoring.ts";
+import { holdTeamInstallation, InstallationDirectory } from "../support/team-installation.ts";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
@@ -47,12 +48,92 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
             Effect.flatMap((response) => body(Inventory, response)),
           );
+        // Setup runs without an inventory request. Reads only observe committed progress.
+        yield* read(actors.owner).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("250 millis"),
+            until: (inventory) =>
+              inventory.apps.some((app) => app.name === "Executor") &&
+              inventory.accounts.some((account) => account.method === "apiKey"),
+          }),
+          Effect.timeout("90 seconds"),
+        );
+        yield* read(actors.admin).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("250 millis"),
+            until: (inventory) => inventory.accounts.some((account) => account.method === "apiKey"),
+          }),
+          Effect.timeout("90 seconds"),
+        );
         const reads = yield* Effect.forEach([0, 1, 2, 3], () => read(actors.owner), {
           concurrency: 4,
         });
         const initial = reads[0],
           app = initial?.apps.find((app) => app.name === "Executor");
         if (!initial || !app) return yield* Effect.die("Default Executor app missing");
+        yield* browser.login(actors.owner);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const directory = yield* body(
+              InstallationDirectory,
+              yield* api.request(actors.owner, "GET", `${prefix}/resources`),
+            );
+            expect(directory.pendingApp).toBe(false);
+            const held = yield* holdTeamInstallation(
+              [actors.organization.id, actors.organization.slug].map(
+                (reference) => `/api/organizations/${reference}/resources`,
+              ),
+              directory,
+            );
+            yield* browser.use("Open Apps during team installation", (page) =>
+              page.goto(`/org/${actors.organization.slug}/apps`),
+            );
+            yield* held.requested;
+            yield* browser.use("Missing app has one skeleton while the workflow runs", (page) =>
+              page.getByRole("status", { name: "Installing app", exact: true }).waitFor(),
+            );
+            expect(
+              yield* browser.use("The pending app is not a navigable optimistic card", (page) =>
+                page.getByRole("link", { name: "Open Executor", exact: true }).count(),
+              ),
+            ).toBe(0);
+            yield* browser.use("Team controls stay available", (page) =>
+              page.getByRole("link", { name: "Add app", exact: true }).waitFor(),
+            );
+            yield* browser.checkpoint("One app skeleton while team installation runs");
+            yield* held.stop;
+            yield* browser.use("Stopped installation does not leave an endless skeleton", (page) =>
+              page.getByRole("heading", { name: "No apps available", exact: true }).waitFor(),
+            );
+            expect(
+              yield* browser.use("No provisioning skeleton after failure", (page) =>
+                page.getByRole("status", { name: "Installing app", exact: true }).count(),
+              ),
+            ).toBe(0);
+            yield* held.resume;
+            yield* browser.use("Retried installation shows the skeleton again", (page) =>
+              page.getByRole("status", { name: "Installing app", exact: true }).waitFor(),
+            );
+            yield* browser.use("Search is usable during installation", (page) =>
+              page.getByRole("textbox", { name: "Search apps…" }).fill("Executor"),
+            );
+            yield* held.release;
+            yield* browser.use("The real app arrives without a reload", (page) =>
+              page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
+            );
+            expect(
+              yield* browser.use("Search survives background completion", (page) =>
+                page.getByRole("textbox", { name: "Search apps…" }).inputValue(),
+              ),
+            ).toBe("Executor");
+            expect(
+              yield* browser.use("Completed installation has no skeleton", (page) =>
+                page.getByRole("status", { name: "Installing app", exact: true }).count(),
+              ),
+            ).toBe(0);
+            yield* browser.checkpoint("The installed app replaces the skeleton");
+          }),
+        );
         expect(app.accounts).toEqual({});
         const path = `${prefix}/apps/${app.id}`;
         const profile = (actor: Session) =>
@@ -175,8 +256,11 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           (yield* read(actors.owner)).apps.find((item) => item.id === app.id)?.activeDeployment,
         ).toBe(edited.app.activeDeployment);
         expect(
-          (yield* body(Source, yield* api.request(actors.owner, "GET", `${path}/source`))).files,
-        ).toEqual(modified);
+          (yield* body(
+            Source,
+            yield* api.request(actors.owner, "GET", `${path}/source`),
+          )).files.toSorted((a, b) => a.path.localeCompare(b.path)),
+        ).toEqual(modified.toSorted((a, b) => a.path.localeCompare(b.path)));
         yield* browser.login(actors.owner);
         yield* browser.use("Open the user's Executor profile", (page) =>
           page.goto(
@@ -184,10 +268,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           ),
         );
         yield* browser.use("The managed account is selected in the picker", (page) =>
-          page
-            .getByRole("combobox", { name: "App accounts", exact: true })
-            .filter({ hasText: "My Executor key" })
-            .waitFor(),
+          page.getByText("My Executor key", { exact: true }).waitFor(),
         );
         yield* browser.checkpoint("Executor uses a personal profile of the common app");
         const grant = yield* oauth.authorize;

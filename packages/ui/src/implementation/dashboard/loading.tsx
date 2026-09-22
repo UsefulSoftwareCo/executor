@@ -2,6 +2,19 @@ import { Skeleton } from "../components/skeleton.tsx";
 import type { ReactNode } from "react";
 import { PageFrame, PageHeader } from "./page.tsx";
 
+/** One placeholder shares the footprint of an installed app card. */
+export function AppCardSkeleton() {
+  return (
+    <div aria-hidden className="flex min-h-[137px] flex-col rounded-lg border p-4">
+      <div className="flex items-center gap-3">
+        <Skeleton className="size-8.5 shrink-0 rounded-md" />
+        <Skeleton className="h-3.5 w-28 max-w-[60%]" />
+      </div>
+      <Skeleton className="mt-auto h-3 w-36 max-w-[80%]" />
+    </div>
+  );
+}
+
 /** Card-shaped placeholders use the same grid and footprint as installed apps. */
 export function AppCardsSkeleton() {
   return (
@@ -11,13 +24,7 @@ export function AppCardsSkeleton() {
       className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1"
     >
       {Array.from({ length: 6 }, (_, index) => (
-        <div key={index} aria-hidden className="flex min-h-[137px] flex-col rounded-lg border p-4">
-          <div className="flex items-center gap-3">
-            <Skeleton className="size-8.5 shrink-0 rounded-md" />
-            <Skeleton className="h-3.5 w-28 max-w-[60%]" />
-          </div>
-          <Skeleton className="mt-auto h-3 w-36 max-w-[80%]" />
-        </div>
+        <AppCardSkeleton key={index} />
       ))}
       <span className="sr-only">Loading apps…</span>
     </div>

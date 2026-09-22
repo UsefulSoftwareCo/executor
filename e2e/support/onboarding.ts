@@ -249,11 +249,23 @@ const make = Effect.gen(function* () {
           return yield* new OnboardingFailed({
             operation: "Confirmation must create exactly the chosen team",
           });
-        yield* browser.use("Reload the confirmed team", (page) => page.reload());
         yield* browser.use("The confirmed team stays open", (page) =>
-          page.getByRole("link", { name: "Add app", exact: true }).waitFor({ state: "visible" }),
+          page
+            .getByRole("link", { name: "Add app", exact: true })
+            .first()
+            .waitFor({ state: "visible" }),
         );
-        yield* browser.checkpoint("Onboarding complete");
+        yield* browser.checkpoint("Team opens without a setup screen");
+        yield* browser.use("The background Executor app appears without a reload", (page) =>
+          page
+            .getByRole("link", { name: "Open Executor", exact: true })
+            .waitFor({ state: "visible", timeout: 90000 }),
+        );
+        yield* browser.checkpoint("Executor appears after background provisioning");
+        yield* browser.use("Reload the provisioned team", (page) => page.reload());
+        yield* browser.use("The installed app remains available", (page) =>
+          page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
+        );
         yield* evidence.json("created-team.json", teams[0]);
         return teams[0];
       }),

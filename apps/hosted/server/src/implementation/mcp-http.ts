@@ -24,7 +24,6 @@ import {
 } from "../contracts/mcp.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { hostedMcpBackend } from "./mcp.ts";
 
 // A native MCP server retains its tool handlers. Authority is supplied only while
@@ -122,9 +121,9 @@ export const dispatchHostedMcp = <E, R>(
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
     const backend = yield* scoped(access);
-    const services = yield* Effect.context<
-      HostedExecutor | OrganizationDefaults | GroupDatabase
-    >().pipe(Effect.map(Context.pick(HostedExecutor, OrganizationDefaults, GroupDatabase)));
+    const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
+      Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
+    );
     // Native elicitation can wait inside this HTTP request. Recheck the grant and
     // membership before each dispatch, including calls following the approved one.
     const current = authentication

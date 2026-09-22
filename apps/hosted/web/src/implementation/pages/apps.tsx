@@ -3,6 +3,7 @@ import { useAtom } from "@effect/atom-react";
 import { Option } from "effect";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { AppsPage as SharedPage } from "@executor-js/ui/dashboard/apps";
+import { AppCardSkeleton } from "@executor-js/ui/dashboard/loading";
 import { Button } from "@executor-js/ui/components/button";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Popover, PopoverContent, PopoverTrigger } from "@executor-js/ui/components/popover";
@@ -26,11 +27,19 @@ export function AppsPage() {
   const atoms = useMemo(() => createAppListAtoms(organization), [organization]);
   const [{ view, group }, setFilters] = useAtom(atoms.filters);
   const groups = useQuery(groupsAtom(organization));
+  const { data } = useQuery(atoms.query);
   const activeFilters = Number(group !== "all") + Number(view !== "available");
   return (
     <SharedPage
       query={atoms.query}
       Failure={HostedFailure}
+      pending={
+        Option.isSome(data) && data.value.pendingApp ? (
+          <div role="status" aria-label="Installing app">
+            <AppCardSkeleton />
+          </div>
+        ) : undefined
+      }
       empty={
         <EmptyState
           title={

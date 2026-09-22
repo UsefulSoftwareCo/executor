@@ -1,6 +1,5 @@
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
-import { OrganizationDefaultsError } from "./organization-defaults.ts";
 import { Context, Effect, Schema } from "effect";
 import {
   HttpApiEndpoint,
@@ -8,7 +7,7 @@ import {
   HttpApiMiddleware,
   HttpApiSchema,
 } from "effect/unstable/httpapi";
-import { Account, App, OwnerId, HttpUrl } from "@executor-js/sdk/core";
+import { Account, App, OwnerId, HttpUrl, StorageError } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
   OrganizationIconKey,
@@ -176,7 +175,7 @@ export const HostedOrganization = HttpApiGroup.make("organization")
     HttpApiEndpoint.get("inventory", "/api/organizations/:organization/inventory", {
       params: { organization: OrganizationReference },
       success: Inventory,
-      error: OrganizationDefaultsError.members,
+      error: [StorageError, OrganizationForbidden],
     }).annotate(RequiredAction, "discover"),
   )
   .middleware(RequireOrganization);

@@ -1,5 +1,4 @@
-import { Unauthorized, AuthenticationUnavailable, Forbidden, type AccountApiKey } from "./auth.ts";
-import { Context, Schema, type Effect, type Scope } from "effect";
+import { Context, Schema, type Effect } from "effect";
 import {
   ProfileNotFound,
   ProfileConflict,
@@ -23,11 +22,15 @@ import {
 import { TemplateError } from "@executor-js/app-templates";
 import type { OrganizationId } from "./organization.ts";
 
+/** A member job waits for the separate team installation to commit. */
+export class OrganizationDefaultsPending extends Schema.TaggedError<OrganizationDefaultsPending>()(
+  "OrganizationDefaultsPending",
+  {},
+) {}
+
 /** Setup preserves safe generation and deployment failures alongside storage failures. */
 export const OrganizationDefaultsError = Schema.Union([
-  Unauthorized,
-  AuthenticationUnavailable,
-  Forbidden,
+  OrganizationDefaultsPending,
   StorageError,
   SourceError,
   TemplateError.annotate({ httpApiStatus: 422 }),
@@ -48,15 +51,10 @@ export const OrganizationDefaultsError = Schema.Union([
   CredentialsError,
   AccountSelectionInvalid,
 ]);
-/** Verified dashboard identity and scoped creation of a key for a new saved account. */
+/** Trusted background identity; membership is rechecked before committing a managed key. */
 export interface ExecutorUserAccount {
   readonly userId: string;
   readonly name: string;
-  readonly key: Effect.Effect<
-    AccountApiKey,
-    Unauthorized | Forbidden | AuthenticationUnavailable,
-    Scope.Scope
-  >;
 }
 
 /** One-time product setup; installed apps retain their ordinary lifecycle afterward. */

@@ -1,4 +1,5 @@
 /** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
+import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import type { AccountId, AppId } from "@executor-js/sdk";
@@ -31,7 +32,7 @@ const directory = Atom.family((key: DirectoryKey) =>
   HostedClient.query("resourceAccess", "directory", {
     params: { organization: key.organization },
     query: { view: key.view },
-  }).pipe(Atom.refreshOnWindowFocus, protectedQuery),
+  }).pipe(Atom.refreshOnWindowFocus, pollingQuery, protectedQuery),
 );
 const appAccess = Atom.family((key: AppKey) =>
   HostedClient.query("resourceAccess", "app", { params: key }).pipe(
@@ -146,7 +147,7 @@ const inventory = Atom.family((key: ListKey) =>
         providerName: provider.definition.name,
         providerUrl: providerDisplayUrl(provider.definition),
       }));
-      return { apps, accounts };
+      return { apps, accounts, pendingApp: key.group !== "private" && data.pendingApp };
     }),
   ),
 );

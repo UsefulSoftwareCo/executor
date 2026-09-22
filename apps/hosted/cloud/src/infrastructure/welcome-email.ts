@@ -20,18 +20,23 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
         Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
       ),
     );
-    const deliver = Effect.scoped(
-      deliverWelcomeEmails(
-        send,
-        (id, email) =>
-          secrets.authSecret.pipe(
-            Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
-          ),
-        origin,
-      ).pipe(Effect.provide(database)),
-    ).pipe(Effect.catch(() => Effect.logError("Welcome email queue processing failed")));
+    const deliverUser = (user?: string) =>
+      Effect.scoped(
+        deliverWelcomeEmails(
+          send,
+          (id, email) =>
+            secrets.authSecret.pipe(
+              Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
+            ),
+          origin,
+          user,
+        ).pipe(Effect.provide(database)),
+      );
     return {
-      deliver,
+      deliver: deliverUser().pipe(
+        Effect.catch(() => Effect.logError("Welcome email queue processing failed")),
+      ),
+      deliverUser,
       unsubscribe: unsubscribeHandler(origin, secrets.authSecret).pipe(
         Effect.provide(database),
         Effect.scoped,

@@ -1,5 +1,6 @@
 import { organizationAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
 import type { HostedApiDocument } from "../contracts/api.ts";
+import { managedAccountKey } from "./api-keys.ts";
 import { sourceFilesEqual } from "@executor-js/sdk/core";
 import {
   AccountId,
@@ -12,7 +13,10 @@ import {
 } from "@executor-js/sdk/core";
 import { Effect, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
-import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
+import {
+  OrganizationDefaults,
+  OrganizationDefaultsPending,
+} from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
 import { defaultExecutorAppSource, executorAppSource } from "./executor-app.ts";
 
@@ -31,6 +35,7 @@ export const organizationDefaults = (
   storage: ExecutorDatabase,
   skills: readonly SourceFile[],
   document: HostedApiDocument,
+  requireVerifiedEmail = true,
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -44,11 +49,13 @@ export const organizationDefaults = (
           from "organization" where id = ${organization}`.pipe(
           Effect.mapError(() => new StorageError()),
         );
-        if (rows.length !== 1) return yield* new StorageError();
+        if (rows.length !== 1) return;
         const state = yield* Schema.decodeUnknownEffect(State)(rows[0]).pipe(
           Effect.mapError(() => new StorageError()),
         );
         if (state.initialized && user === undefined) return;
+        if (!state.initialized && user !== undefined)
+          return yield* new OrganizationDefaultsPending();
         const owner = organizationOwner(organization);
         if (!state.initialized) {
           const source = yield* defaultExecutorAppSource(origin, skills, document);
@@ -142,9 +149,6 @@ export const organizationDefaults = (
           existingProfile !== null
         )
           return;
-        // Better Auth reads through its own database adapter. Resolve the key
-        // before the SDK transaction, which otherwise blocks that read on PGlite.
-        const token = saved === undefined ? yield* user.key : undefined;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
         yield* storage
           .orm("3.0.0")
@@ -155,7 +159,7 @@ export const organizationDefaults = (
             from "organization" where id = ${organization} for update`.pipe(
                   Effect.mapError(() => new StorageError()),
                 );
-              if (rows.length !== 1) return yield* new StorageError();
+              if (rows.length !== 1) return;
               const state = yield* Schema.decodeUnknownEffect(Accounts)(rows[0]).pipe(
                 Effect.mapError(() => new StorageError()),
               );
@@ -173,6 +177,18 @@ export const organizationDefaults = (
                 (saved.provider !== requirement.provider || saved.method !== "apiKey")
               )
                 return yield* new StorageError();
+              const eligible =
+                yield* sql`select member.id from member join "user" on "user".id = member."userId"
+                where member."organizationId" = ${organization} and member."userId" = ${user.userId}
+                and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
+                for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
+              if (eligible.length === 0 || locked.accounts.service !== undefined) return;
+              const token =
+                saved === undefined
+                  ? yield* managedAccountKey(organization, user.userId).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql),
+                    )
+                  : undefined;
               const account =
                 saved !== undefined
                   ? saved
@@ -183,7 +199,7 @@ export const organizationDefaults = (
                           provider: requirement.provider,
                           method: "apiKey",
                           label: user.name,
-                          fields: Redacted.make({ token: Redacted.value(token.key), organization }),
+                          fields: Redacted.make({ token: Redacted.value(token), organization }),
                         })
                         .pipe(personalAccountCreation(user.userId))
                     : yield* new StorageError();
@@ -206,7 +222,6 @@ export const organizationDefaults = (
           )
           .pipe(
             Effect.catchTag("SqlError", () => Effect.fail(new StorageError())),
-            Effect.tap((created) => (created && token !== undefined ? token.retain : Effect.void)),
             Effect.uninterruptible,
           );
       }).pipe(Effect.scoped),

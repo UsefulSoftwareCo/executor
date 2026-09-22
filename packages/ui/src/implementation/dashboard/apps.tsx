@@ -21,12 +21,14 @@ export function AppsPage<E>({
   action,
   filters,
   empty,
+  pending,
   query,
   Failure,
 }: QueryProps<Inventory, E> & {
   readonly action?: ReactNode;
   readonly filters?: ReactNode;
   readonly empty?: ReactNode;
+  readonly pending?: ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
@@ -37,12 +39,12 @@ export function AppsPage<E>({
         description="Your installed apps and their selected accounts."
         {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
       >
-        {(!Option.isSome(data) || data.value.apps.length > 0) && action}
+        {(!Option.isSome(data) || data.value.apps.length > 0 || pending) && action}
       </PageHeader>
       {/* Controls above cards should use half-card or full-card widths. Search uses a full
           card and Filters uses half a card at each grid breakpoint. */}
       <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4">
-        {(!Option.isSome(data) || data.value.apps.length > 0 || search.length > 0) && (
+        {(!Option.isSome(data) || data.value.apps.length > 0 || pending || search.length > 0) && (
           <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-full">
             <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
           </div>
@@ -59,6 +61,7 @@ export function AppsPage<E>({
             data={data}
             search={search}
             clearSearch={() => setSearch("")}
+            pending={search.length === 0 ? pending : undefined}
             empty={
               empty ?? (
                 <Empty title="No apps yet" action={action}>
@@ -77,19 +80,21 @@ function AppsList({
   search,
   clearSearch,
   empty,
+  pending,
 }: {
   readonly data: Inventory;
   readonly search: string;
   readonly clearSearch: () => void;
   readonly empty: ReactNode;
+  readonly pending?: ReactNode;
 }) {
   const { AppLink } = useDashboard();
   const apps = data.apps.filter((app) => app.name.toLowerCase().includes(search.toLowerCase()));
   return (
     <>
-      {data.apps.length === 0 ? (
+      {data.apps.length === 0 && !pending ? (
         empty
-      ) : apps.length === 0 ? (
+      ) : apps.length === 0 && !pending ? (
         <Empty
           title="No matching apps"
           action={
@@ -102,6 +107,7 @@ function AppsList({
         </Empty>
       ) : (
         <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
+          {pending}
           {apps.map((app) => {
             const ids = selectedIds(app);
             const issues = accountSelectionIssues(app, data.accounts);

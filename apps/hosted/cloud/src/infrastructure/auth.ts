@@ -14,8 +14,6 @@ import {
   CurrentUserId,
   recordUsage,
   Authentication,
-  accountApiKey,
-  pinnedKeyMetadata,
   AuthenticationUnavailable,
   McpAuthentication,
   sessionPrincipal,
@@ -81,18 +79,6 @@ export const cloudAuth = (send: SendAuthEmail) =>
               Effect.scoped,
             ),
           ),
-        syncSeats: (id) =>
-          runCallback(
-            Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
-              Effect.flatMap(meter.syncSeats),
-              // Membership has already committed. Do not turn a provider outage into a failed membership write.
-              // The scheduled authoritative recount repairs this without replaying the user's action.
-              Effect.catch(() =>
-                Effect.logError("Billing seat sync failed; scheduled reconciliation will retry"),
-              ),
-              Effect.scoped,
-            ),
-          ),
       },
       (userId) => runCallback(recordCloudSignup(userId)),
       (userId) => runCallback(recordCloudLogin(userId)),
@@ -129,23 +115,6 @@ export const cloudAuth = (send: SendAuthEmail) =>
         // Built inside fetch: database work stays in the current invocation's scope.
         return Authentication.of({
           origin: settings.url,
-          apiKey: (headers, organization) => {
-            const internal = new Headers(headers);
-            internal.set("origin", settings.url);
-            return auth.auth.pipe(
-              Effect.provide(RuntimeContext.phantom),
-              Effect.flatMap((native) =>
-                accountApiKey(
-                  () =>
-                    native.api.createApiKey({
-                      headers: internal,
-                      body: { name: "Executor app", metadata: pinnedKeyMetadata(organization) },
-                    }),
-                  (keyId) => native.api.deleteApiKey({ headers: internal, body: { keyId } }),
-                ),
-              ),
-            );
-          },
           oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
           current: (headers) =>
             auth.api

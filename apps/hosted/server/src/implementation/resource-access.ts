@@ -1,10 +1,10 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { getAccount } from "./accounts.ts";
-import { Authentication } from "../contracts/auth.ts";
-import { initializeOrganizationInventory } from "./organization.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
+import { SqlClient } from "effect/unstable/sql";
+import { teamAppPending } from "./provisioning.ts";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   StorageError,
@@ -86,7 +86,13 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         Effect.catchTag("OrganizationForbidden", () => Effect.succeed([])),
       ),
     );
-    return { apps: appEntries.flat(), accounts: accountEntries.flat() };
+    const pendingApp =
+      policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
+        ? yield* teamAppPending(actor.organization).pipe(
+            Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+          )
+        : false;
+    return { apps: appEntries.flat(), accounts: accountEntries.flat(), pendingApp };
   });
 /** The compare-and-swap revision protects settings and all group grants as one update. */
 export const shareApp = (
@@ -155,13 +161,8 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
   "resourceAccess",
   (handlers) =>
     Effect.gen(function* () {
-      const authentication = yield* Authentication;
       return handlers
-        .handle("directory", ({ query }) =>
-          initializeOrganizationInventory(authentication).pipe(
-            Effect.andThen(resourceDirectory(query.view)),
-          ),
-        )
+        .handle("directory", ({ query }) => resourceDirectory(query.view))
         .handle("app", ({ params }) => requireAppAccess(params.app, "read"))
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),

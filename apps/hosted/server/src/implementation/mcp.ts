@@ -16,7 +16,6 @@ import { appTargets, type McpBackend } from "@executor-js/mcp";
 import { ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
 import { Context, Effect, Option } from "effect";
 import { currentOwner, selectedApp, ownProfile, checkInvocationAccounts } from "./access.ts";
-import { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import { listTools } from "./tools.ts";
@@ -33,7 +32,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const sdk = yield* HostedExecutor;
   const database = yield* GroupDatabase;
   const user = yield* CurrentUserId;
-  const initialize = yield* OrganizationDefaults;
   const context = Context.make(CurrentOrganization, organization).pipe(
     Context.add(HostedExecutor, sdk),
     Context.add(CurrentAuthorization, policy),
@@ -80,16 +78,11 @@ export const hostedMcpBackend = Effect.gen(function* () {
         }),
       ),
     listApps: (input = {}) =>
-      (policy.tools.kind === "all" ? initialize(organization.organization) : Effect.void).pipe(
-        Effect.andThen(
-          Effect.flatMap(sdk, (executor) =>
-            executor.apps
-              .list({ ids: permittedAppIds(policy, input.ids), owner: organization.owner })
-              .pipe(Effect.flatMap(visibleApps), Effect.provideContext(context)),
-          ),
-        ),
-        (work) => observe("listApps", work),
-      ),
+      Effect.flatMap(sdk, (executor) =>
+        executor.apps
+          .list({ ids: permittedAppIds(policy, input.ids), owner: organization.owner })
+          .pipe(Effect.flatMap(visibleApps), Effect.provideContext(context)),
+      ).pipe((work) => observe("listApps", work)),
     listTargets: (input) =>
       Effect.gen(function* () {
         yield* authorizeApp(input.app);

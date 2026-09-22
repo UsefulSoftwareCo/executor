@@ -112,7 +112,6 @@ test(
               name: "Fixture",
             });
             const auth = Layer.succeed(Authentication, {
-              apiKey: () => Effect.die("API key creation is outside this fixture"),
               origin,
               organization: (reference) => Effect.succeed(ReferenceOrganizationId.make(reference)),
               organizationSlug: () => Effect.succeed("synthetic"),

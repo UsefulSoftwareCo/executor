@@ -120,7 +120,6 @@ export const cloudAuthSettings = Effect.gen(function* () {
 /** Promise boundary used by Better Auth's organization lifecycle. */
 export interface CloudBillingHooks {
   readonly memberLimit: (organization: string) => Promise<number>;
-  readonly syncSeats: (organization: string) => Promise<void>;
 }
 
 /** Keep the passkey relying-party identity pinned to the configured public origin. */
@@ -251,12 +250,6 @@ export const cloudAuthOptions = (
           ? {}
           : {
               membershipLimit: (_user, organization) => billing.memberLimit(organization.id),
-              organizationHooks: {
-                afterCreateOrganization: ({ organization }) => billing.syncSeats(organization.id),
-                afterAddMember: ({ organization }) => billing.syncSeats(organization.id),
-                afterRemoveMember: ({ organization }) => billing.syncSeats(organization.id),
-                afterAcceptInvitation: ({ organization }) => billing.syncSeats(organization.id),
-              },
             }),
         disableOrganizationDeletion: true,
         requireEmailVerificationOnInvitation: true,

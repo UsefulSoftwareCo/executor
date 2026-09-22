@@ -1,10 +1,12 @@
-import { apiKey } from "@better-auth/api-key";
+import { apiKey, defaultKeyHasher } from "@better-auth/api-key";
+import { generateRandomString } from "better-auth/crypto";
+import { SqlClient } from "effect/unstable/sql";
+import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
 import { fullAuthority } from "@executor-js/authorization";
 import { authCall } from "@executor-js/mcp-auth/oauth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
-import { AuthenticationUnavailable } from "../contracts/auth.ts";
 import { ApiKeyId, CreateApiKey } from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 
@@ -102,31 +104,6 @@ export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redact
     return yield* identity(ctx, result.key);
   });
 
-/** Revoke unclaimed native keys after a failed or concurrent account setup. */
-export const accountApiKey = (
-  create: () => Promise<{ id: string; key: string }>,
-  revoke: (id: string) => Promise<unknown>,
-) =>
-  Effect.gen(function* () {
-    let retained = false;
-    const issued = yield* Effect.acquireRelease(
-      Effect.tryPromise({ try: create, catch: () => new AuthenticationUnavailable() }),
-      (issued) =>
-        retained
-          ? Effect.void
-          : Effect.tryPromise({
-              try: () => revoke(issued.id),
-              catch: () => new AuthenticationUnavailable(),
-            }).pipe(Effect.orDie),
-    );
-    return {
-      key: Redacted.make(issued.key),
-      retain: Effect.sync(() => {
-        retained = true;
-      }),
-    };
-  });
-
 /** The signed-in owner can review a live native key's pending MCP approval. */
 export const browserPersonalTokenAccess = (
   ctx: GenericEndpointContext,
@@ -150,3 +127,23 @@ export const browserPersonalTokenAccess = (
       return yield* Effect.fail(new APIError("UNAUTHORIZED"));
     return yield* identity(ctx, key);
   });
+
+/**
+ * Insert a native Better Auth key in the caller's account transaction. The only cleartext
+ * copy is returned redacted for encrypted SDK storage; rollback removes both records.
+ * Fields follow the pinned api-key plugin's public schema and native create endpoint.
+ */
+export const managedAccountKey = (organization: OrganizationId, user: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const token = Redacted.make(`exp_${generateRandomString(64)}`);
+    const hash = yield* Effect.tryPromise({
+      try: () => defaultKeyHasher(Redacted.value(token)),
+      catch: () => new StorageError(),
+    });
+    yield* sql`insert into apikey (id, "configId", name, prefix, start, key, "referenceId", enabled,
+      "rateLimitEnabled", "rateLimitTimeWindow", "rateLimitMax", "requestCount", "createdAt", "updatedAt", metadata)
+      values (${crypto.randomUUID()}, 'default', 'Executor app', 'exp_', ${Redacted.value(token).slice(0, 6)}, ${hash}, ${user}, true,
+        false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
+    return token;
+  }).pipe(Effect.mapError(() => new StorageError()));

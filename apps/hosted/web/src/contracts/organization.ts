@@ -1,3 +1,4 @@
+import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { observeBrowserUsage } from "./product-analytics.ts";
 import { protectedQuery } from "./protected-query.ts";
 import {
@@ -158,6 +159,7 @@ export const organizationPresentation = Atom.family((reference: OrganizationRefe
 export const inventoryAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("organization", "inventory", { params: { organization } }).pipe(
     Atom.refreshOnWindowFocus,
+    pollingQuery,
     protectedQuery,
   ),
 );

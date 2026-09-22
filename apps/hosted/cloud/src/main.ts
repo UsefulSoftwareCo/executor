@@ -1,3 +1,4 @@
+import { Provisioning, dispatchProvisioning } from "./infrastructure/provisioning.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -150,8 +151,14 @@ export default Api.make(
     const auth = yield* cloudAuth(email.send);
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
+    yield* Provisioning;
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
     const schedules = yield* cloudSchedules;
+    const dispatch = dispatchProvisioning.pipe(
+      Effect.provide(executor),
+      Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
+    );
+    yield* Cloudflare.Workers.cron("* * * * *", () => dispatch.pipe(lifetime.background));
     yield* Cloudflare.Workers.cron("* * * * *", () =>
       Effect.flatten(AppRepositoryRecovery).pipe(
         Effect.provide(executor),
@@ -274,7 +281,16 @@ export default Api.make(
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     return {
-      fetch: handle.pipe(
+      fetch: Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        // Alchemy closes this scope through waitUntil after returning the response.
+        // Cron recovers dispatch if the request ends before this finalizer runs.
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method))
+          yield* Effect.addFinalizer(() =>
+            dispatch.pipe(Effect.timeoutOption("10 seconds"), Effect.asVoid),
+          );
+        return yield* handle;
+      }).pipe(
         Effect.catchTag("AuthenticationUnavailable", () =>
           Effect.succeed(HttpServerResponse.empty({ status: 503 })),
         ),

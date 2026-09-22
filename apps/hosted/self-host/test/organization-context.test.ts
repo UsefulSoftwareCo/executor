@@ -203,7 +203,6 @@ test(
             // Exercise the shared multi-organization routes. Self-host registration now
             // deliberately admits one organization and has its own policy tests.
             const identity = Layer.succeed(Authentication, {
-              apiKey: () => Effect.die("API key creation is outside this fixture"),
               origin,
               current: (headers) =>
                 Effect.tryPromise({

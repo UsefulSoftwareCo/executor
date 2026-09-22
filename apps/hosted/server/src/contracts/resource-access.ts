@@ -1,6 +1,5 @@
 import { ProfileId } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
-import { OrganizationDefaultsError } from "./organization-defaults.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved bindings. */
 import {
   App,
@@ -9,6 +8,7 @@ import {
   AppId,
   AccountId,
   AccountConnectionId,
+  ProviderNotFound,
   StorageError,
   AccountSelectionInvalid,
   AccountNotFound,
@@ -103,15 +103,16 @@ const app = { ...organization, app: AppId };
 const account = { ...organization, account: AccountId };
 const errors = [
   OrganizationForbidden,
+  ProviderNotFound,
   StorageError,
   AccessConflict,
   AccountSelectionInvalid,
   AccountNotFound,
   AppNotFound,
-  ...OrganizationDefaultsError.members,
 ];
 /** Normal lists show use grants; management mode is explicit and never grants execution. */
 export const ResourceDirectory = Schema.Struct({
+  pendingApp: Schema.Boolean,
   apps: Schema.Array(Schema.Struct({ app: App, access: AppAccess })),
   accounts: Schema.Array(
     Schema.Struct({ account: Account, access: AccountAccess, provider: Provider }),

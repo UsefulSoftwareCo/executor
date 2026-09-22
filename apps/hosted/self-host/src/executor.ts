@@ -100,6 +100,8 @@ export const selfHostExecutor = (skills: readonly SourceFile[], egress: HostEgre
         storage,
         skills,
         executorSelfHostApiDocument(origin),
+        // Password registration is admitted locally; self-host does not send verification mail.
+        false,
       );
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
       const groupDatabase = yield* SqlClient.SqlClient;

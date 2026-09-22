@@ -25,6 +25,7 @@ export const deliverWelcomeEmails = (
   send: SendWelcomeEmail,
   links: (id: string, email: string) => Effect.Effect<UnsubscribeLinks, WelcomeEmailUnavailable>,
   origin: string,
+  user?: string,
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -44,6 +45,7 @@ export const deliverWelcomeEmails = (
           select delivery.user_id from cloud_welcome_email delivery
           join "user" recipient on recipient.id = delivery.user_id
           where delivery.status = 'pending' and recipient."emailVerified" = true
+            and (${user ?? null}::text is null or delivery.user_id = ${user ?? null})
             and not exists (select 1 from cloud_email_preferences preferences
               where preferences.user_id = delivery.user_id and preferences.optional_emails_unsubscribed_at is not null)
           order by delivery.created_at, delivery.user_id

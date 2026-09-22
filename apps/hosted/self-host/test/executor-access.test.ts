@@ -77,7 +77,6 @@ test("health and unavailable policy do not acquire the SDK; failures keep their 
           custom: () => Effect.die("This fixture does not import custom apps"),
         });
         const auth = Layer.succeed(Authentication, {
-          apiKey: () => Effect.die("API key creation is outside this fixture"),
           origin,
           organization: (reference) => Effect.succeed(ReferenceOrganizationId.make(reference)),
           organizationSlug: () => Effect.succeed("synthetic"),

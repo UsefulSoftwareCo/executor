@@ -68,9 +68,10 @@ export const emulatorRequest = (origin: string, path: string, payload?: unknown,
 /** Provision actual hosted instances and credentials through emulators.dev's control plane. */
 export const createEmulatorFixture = (origin: string) =>
   Effect.gen(function* () {
+    const instance = `executor-onboarding-${randomUUID()}`;
     const create = (service: string) =>
       emulatorRequest(`https://${service}.emulators.dev`, "/_emulate/instances", {
-        instance: "executor-onboarding",
+        instance,
       }).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ providerBaseUrl: BaseUrl }))),
       );
