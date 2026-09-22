@@ -53,10 +53,10 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
         yield* browser.use("Open the configured machine provider", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
         yield* browser.use("Open Connect", (page) =>
-          page.getByRole("button", { name: "Connect Reporting", exact: true }).click(),
+          page.getByRole("button", { name: "Add Reporting account", exact: true }).click(),
         );
         yield* browser.use("Machine credentials appear without protocol controls", (page) => {
           const dialog = page.getByRole("dialog");
@@ -146,8 +146,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             .waitFor({ state: "hidden" })
             .then(() =>
               page
-                .getByRole("region", { name: "App accounts", exact: true })
-                .getByText("Team reports", { exact: true })
+                .getByRole("link", { name: "Team reports", exact: true })
                 .waitFor({ state: "visible" }),
             )
             .then(() => {

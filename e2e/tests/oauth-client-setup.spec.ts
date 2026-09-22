@@ -109,7 +109,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         );
         yield* check.requested;
         yield* browser.use("Open the name form before setup resolves", (page) =>
-          page.getByRole("button", { name: "Connect Setup fixture", exact: true }).click(),
+          page.getByRole("button", { name: "Add Setup fixture account", exact: true }).click(),
         );
         yield* browser.use("A draft remains editable during the setup check", (page) =>
           page.getByRole("textbox", { name: "Account name", exact: true }).fill("Preserved name"),
@@ -119,9 +119,9 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             page
               .getByRole("dialog")
               .getByRole("button", { name: "Connect Setup fixture", exact: true })
-              .isDisabled(),
+              .count(),
           ),
-        ).toBe(true);
+        ).toBe(0);
         expect(
           yield* browser.use("Unknown setup does not guess client entry", (page) =>
             page.getByRole("textbox", { name: "Client ID", exact: true }).count(),
@@ -132,7 +132,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.use("Failed discovery offers retry", (page) =>
           page
             .getByRole("alert")
-            .getByText("Couldn’t check connection options.", { exact: true })
+            .getByText("Couldn’t prepare sign-in.", { exact: true })
             .waitFor({ state: "visible" }),
         );
         yield* browser.checkpoint("OAuth setup check failed without guessing");
@@ -145,7 +145,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         );
         yield* browser.use("Wait for the setup check to resolve", (page) =>
           page
-            .getByText("Checking connection options…", { exact: true })
+            .getByRole("status", { name: "Preparing connection", exact: true })
             .waitFor({ state: "hidden" }),
         );
         expect(
@@ -171,7 +171,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           page.getByRole("button", { name: "Close", exact: true }).click(),
         );
         yield* browser.use("Reopen with the cached setup result", (page) =>
-          page.getByRole("button", { name: "Connect Setup fixture", exact: true }).click(),
+          page.getByRole("button", { name: "Add Setup fixture account", exact: true }).click(),
         );
         yield* browser.use("The reopened form is ready", (page) =>
           page

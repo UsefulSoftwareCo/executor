@@ -1,4 +1,4 @@
-import { ProfileId } from "@executor-js/sdk";
+import { AccountConnectionId, ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
@@ -7,6 +7,21 @@ import { OrganizationId } from "@executor-js/hosted-server/organization";
 export const ConnectionSearch = Schema.Struct({
   client: Schema.optionalKey(Schema.Literal("change")),
 });
+
+/** Direct links and refreshes retain a connection dialog on its app or account page. */
+export function parseConnectionSearch(search: Record<string, unknown>): {
+  readonly connection?: AccountConnectionId | undefined;
+  readonly client?: "change" | undefined;
+} {
+  return {
+    connection: Option.getOrUndefined(
+      Schema.decodeUnknownOption(AccountConnectionId)(search.connection),
+    ),
+    client: Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.Literal("change"))(search.client),
+    ),
+  };
+}
 
 /** History marks only automatic root restoration; explicit links keep their own targets. */
 export const OrganizationResume = Schema.Struct({
@@ -22,12 +37,15 @@ declare module "@tanstack/history" {
   }
 }
 /** App tabs keep their selection on refresh in both hosted products. */
-export function parseAppSearch(search: Record<string, unknown>): {
+export function parseAppSearch(search: Record<string, unknown>): ReturnType<
+  typeof parseConnectionSearch
+> & {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
   readonly profile?: ProfileId | undefined;
 } {
   return {
+    ...parseConnectionSearch(search),
     profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),

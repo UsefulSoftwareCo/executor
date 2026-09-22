@@ -220,7 +220,7 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
             (page) =>
               Promise.resolve(
                 page.getByRole("dialog", {
-                  name: "Connect a new Account fixture account",
+                  name: "Connect Account fixture",
                   exact: true,
                 }),
               ),
@@ -229,8 +229,13 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
             dialog.waitFor(),
           );
           yield* browser.use("All saved accounts added opens a focused connection modal", () =>
-            dialog.getByRole("button", { name: "Connect Account fixture", exact: true }).waitFor(),
+            dialog.getByRole("button", { name: "Connect account", exact: true }).waitFor(),
           );
+          expect(
+            yield* browser.use("New accounts can be named in the first dialog", () =>
+              dialog.getByLabel("Account name", { exact: true }).inputValue(),
+            ),
+          ).toBe("Default");
           expect(
             yield* browser.use("All saved accounts added opens a focused connection modal", () =>
               dialog.getByRole("button", { name: "Use selected accounts", exact: true }).count(),
@@ -429,25 +434,14 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         );
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
-        const overview = `/org/${actors.organization.slug}/apps/${app.id}?view=overview`;
-        yield* browser.use("Open the app overview", (page) => page.goto(overview));
+        const appUrl = `/org/${actors.organization.slug}/apps/${app.id}`;
+        yield* browser.use("Open the app overview", (page) => page.goto(`${appUrl}?view=overview`));
         yield* browser.use("Wait for the overview account provider", (page) =>
           page
             .getByRole("region", { name: "App accounts", exact: true })
             .getByText("Browser fixture", { exact: true })
             .waitFor({ state: "visible" }),
         );
-        yield* Effect.gen(function* () {
-          yield* browser.use("Select accounts without creating a setup first", (page) =>
-            page
-              .getByRole("navigation", { name: "App navigation" })
-              .getByRole("link", { name: "Accounts", exact: true })
-              .click(),
-          );
-          yield* browser.use("Select accounts without creating a setup first", (page) =>
-            page.getByRole("button", { name: "Add Browser fixture account", exact: true }).click(),
-          );
-        });
         let created = 0;
         let connectionReads = 0;
         yield* browser.use("Observe connection creation and metadata reads", (page) =>
@@ -464,9 +458,17 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
             return route.continue();
           }),
         );
-        yield* browser.use("Open connection details before sign-in", (page) =>
-          page.getByRole("button", { name: "Connect Browser fixture", exact: true }).click(),
-        );
+        yield* Effect.gen(function* () {
+          yield* browser.use("Select accounts without creating a setup first", (page) =>
+            page
+              .getByRole("navigation", { name: "App navigation" })
+              .getByRole("link", { name: "Accounts", exact: true })
+              .click(),
+          );
+          yield* browser.use("Select accounts without creating a setup first", (page) =>
+            page.getByRole("button", { name: "Add Browser fixture account", exact: true }).click(),
+          );
+        });
         yield* browser.use("The account name is available before OAuth", (page) =>
           page
             .getByRole("dialog")
@@ -475,7 +477,7 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         );
         yield* browser.use("Wait for setup status to resolve", (page) =>
           page
-            .getByText("Checking connection options…", { exact: true })
+            .getByRole("status", { name: "Preparing connection", exact: true })
             .waitFor({ state: "hidden" }),
         );
         expect(
@@ -507,10 +509,10 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         expect(created).toBe(0);
         expect(connectionReads).toBe(0);
         expect(
-          yield* browser.use("Opening Connect keeps the overview selected", (page) =>
+          yield* browser.use("Opening Connect keeps the Accounts tab selected", (page) =>
             page.evaluate(() => location.pathname + location.search),
           ),
-        ).toBe(overview);
+        ).toBe(`${appUrl}?view=accounts`);
         yield* browser.use("Name the account before authorization", (page) =>
           page
             .getByRole("textbox", { name: "Account name", exact: true })
@@ -589,9 +591,7 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
           view: "accounts",
           profile: expect.any(String),
         });
-        yield* browser.use("Open another attempt with the cached provider", (page) =>
-          page.getByRole("button", { name: "Connect Browser fixture", exact: true }).click(),
-        );
+
         yield* browser.use("The next attempt retains its Connect action", (page) =>
           page
             .getByRole("dialog")

@@ -9,6 +9,7 @@ import type { ComponentType, ReactNode } from "react";
 import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
+import { Skeleton } from "../components/skeleton.tsx";
 import { CopyButton } from "./code.tsx";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useQuery } from "./context.tsx";
@@ -22,36 +23,45 @@ export function OAuthSetup<E>({
   readonly children: (state: {
     readonly setup: OAuthClientSetup | "unresolved";
     readonly blocked: boolean;
+    readonly action: ReactNode;
     readonly refresh: () => void;
   }) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
-  const failed = AsyncResult.isFailure(result);
+  const failed = AsyncResult.isFailure(result) && !result.waiting;
+  const loading = Option.isNone(data) || (AsyncResult.isFailure(result) && result.waiting);
+  const action = failed ? (
+    <div
+      role="alert"
+      className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 text-xs text-destructive max-[740px]:h-11"
+    >
+      <span>Couldn’t prepare sign-in.</span>
+      <Button
+        type="button"
+        size="sm"
+        variant="link"
+        className="h-full min-h-0 shrink-0 px-1 py-0 text-xs max-[740px]:min-h-0"
+        onClick={refresh}
+      >
+        Retry
+      </Button>
+    </div>
+  ) : loading ? (
+    <Skeleton
+      role="status"
+      aria-label="Preparing connection"
+      className="absolute inset-0 motion-reduce:animate-none"
+    />
+  ) : undefined;
   return (
-    <>
-      {failed ? (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-3 rounded-md border p-3 text-xs"
-        >
-          <span>Couldn’t check connection options.</span>
-          <Button size="sm" variant="outline" onClick={refresh}>
-            Retry
-          </Button>
-        </div>
-      ) : Option.isNone(data) ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          Checking connection options…
-        </p>
-      ) : null}
-      <div key="fields" className="flex flex-col gap-4">
-        {children({
-          setup: Option.isSome(data) ? data.value : "unresolved",
-          blocked: failed,
-          refresh,
-        })}
-      </div>
-    </>
+    <div className="flex flex-col gap-4">
+      {children({
+        setup: Option.isSome(data) ? data.value : "unresolved",
+        blocked: failed,
+        action,
+        refresh,
+      })}
+    </div>
   );
 }
 
@@ -67,6 +77,7 @@ export function OAuthFields<A, E>({
   onPendingChange,
   manualClient = false,
   setup,
+  setupAction,
   initialLabel = "Default",
   disabled = false,
 }: {
@@ -82,6 +93,8 @@ export function OAuthFields<A, E>({
   readonly manualClient?: boolean | undefined;
   /** Hosts with a preflight check supply its result; unresolved checks never guess a sign-in method. */
   readonly setup: OAuthClientSetup | "unresolved";
+  /** Setup progress covers the Connect action and collapsed Advanced options. */
+  readonly setupAction?: ReactNode;
   readonly initialLabel?: string | undefined;
 }) {
   const [label, setLabel] = useState(account?.label ?? initialLabel);
@@ -95,6 +108,7 @@ export function OAuthFields<A, E>({
   const [error, setError] = useState<Cause.Cause<E>>();
   const blocked =
     disabled ||
+    setupAction !== undefined ||
     setup === "unresolved" ||
     pending ||
     !label.trim() ||
@@ -215,78 +229,89 @@ export function OAuthFields<A, E>({
       )}
       {error && <Failure cause={error} />}
       <div className="form-actions pt-1">
-        <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
-          {pending
-            ? machine
-              ? "Connecting…"
-              : "Preparing sign-in…"
-            : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
-        </Button>
-      </div>
-      {setup !== "unresolved" && (setup.mode === "saved" || setup.scopes.length > 0) && (
-        <details className="group/advanced min-w-0 border-t pt-3">
-          <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-            <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              size={14}
-              className="shrink-0 -rotate-90 group-open/advanced:rotate-0"
-              aria-hidden
-            />
-            <span>Advanced</span>
-          </summary>
-          <div className="space-y-4 pt-4">
-            {setup.mode === "saved" && (
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <div className="min-w-0 space-y-1">
-                  <p className="font-medium">OAuth client</p>
-                  <p className="text-muted-foreground">
-                    {manual ? "Saved after a successful connection." : "Using a saved client"}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  aria-label={manual ? "Use saved client" : "Change OAuth client"}
-                  disabled={pending || disabled}
-                  onClick={() => {
-                    setManual(!manual);
-                    setError(undefined);
-                  }}
-                >
-                  {manual ? "Use saved client" : "Change"}
-                </Button>
-              </div>
-            )}
-            {setup.scopes.length > 0 && (
-              <section className="space-y-2">
-                <h3 className="flex items-center gap-2 text-xs font-medium">
-                  <span>Required permissions</span>
-                  <span className="font-normal tabular-nums text-muted-foreground">
-                    {setup.scopes.length}
-                  </span>
-                </h3>
-                <div
-                  role="region"
-                  aria-label="Required permissions"
-                  tabIndex={0}
-                  className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                >
-                  {setup.scopes.map((scope) => (
-                    <code
-                      key={scope}
-                      className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all"
-                    >
-                      {scope}
-                    </code>
-                  ))}
-                </div>
-              </section>
+        <div role="group" aria-label="Connection options" className="relative flex flex-col gap-4">
+          <div className="flex min-h-9 flex-col max-[740px]:min-h-11">
+            {setupAction ?? (
+              <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
+                {pending
+                  ? machine
+                    ? "Connecting…"
+                    : "Preparing sign-in…"
+                  : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
+              </Button>
             )}
           </div>
-        </details>
-      )}
+          {setup !== "unresolved" && (setup.mode === "saved" || setup.scopes.length > 0) ? (
+            <details className="group/advanced min-w-0 border-t pt-3">
+              <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  size={14}
+                  className="shrink-0 -rotate-90 group-open/advanced:rotate-0"
+                  aria-hidden
+                />
+                <span>Advanced</span>
+              </summary>
+              <div className="space-y-4 pt-4">
+                {setup.mode === "saved" && (
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-medium">OAuth client</p>
+                      <p className="text-muted-foreground">
+                        {manual ? "Saved after a successful connection." : "Using a saved client"}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 px-2 text-xs"
+                      aria-label={manual ? "Use saved client" : "Change OAuth client"}
+                      disabled={pending || disabled}
+                      onClick={() => {
+                        setManual(!manual);
+                        setError(undefined);
+                      }}
+                    >
+                      {manual ? "Use saved client" : "Change"}
+                    </Button>
+                  </div>
+                )}
+                {setup.scopes.length > 0 && (
+                  <section className="space-y-2">
+                    <h3 className="flex items-center gap-2 text-xs font-medium">
+                      <span>Required permissions</span>
+                      <span className="font-normal tabular-nums text-muted-foreground">
+                        {setup.scopes.length}
+                      </span>
+                    </h3>
+                    <div
+                      role="region"
+                      aria-label="Required permissions"
+                      tabIndex={0}
+                      className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    >
+                      {setup.scopes.map((scope) => (
+                        <code
+                          key={scope}
+                          className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all"
+                        >
+                          {scope}
+                        </code>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
+            </details>
+          ) : (
+            // Reserve the collapsed row even when setup has not resolved or has no advanced options.
+            <div aria-hidden="true" className="border-t border-transparent pt-3">
+              <div className="h-4" />
+            </div>
+          )}
+        </div>
+      </div>
     </>
   );
 }

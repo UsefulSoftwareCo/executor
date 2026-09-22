@@ -128,9 +128,6 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.use("Choose an account for the app", (page) =>
           page.getByRole("button", { name: "Add Recoverable OAuth account", exact: true }).click(),
         );
-        yield* browser.use("Connect again", (page) =>
-          page.getByRole("button", { name: "Connect Recoverable OAuth", exact: true }).click(),
-        );
         yield* browser.use("Enter a rejected secret", (page) =>
           page
             .getByLabel("Client secret", { exact: true })

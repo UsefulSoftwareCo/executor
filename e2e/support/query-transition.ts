@@ -5,7 +5,7 @@ import { driver } from "./platform.ts";
 
 /** Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests. */
 export const holdQuery = (
-  paths: readonly string[],
+  paths: readonly string[] | RegExp,
   outcome: "continue" | "fail",
   options: {
     readonly method?: "GET" | "POST" | "PATCH";
@@ -20,7 +20,7 @@ export const holdQuery = (
     const active = new Set<Promise<void>>();
     let claimed = false;
     const match = (url: URL) =>
-      paths.includes(url.pathname) &&
+      (paths instanceof RegExp ? paths.test(url.pathname) : paths.includes(url.pathname)) &&
       Object.entries(options.query ?? {}).every(
         ([key, value]) => url.searchParams.get(key) === value,
       );

@@ -1,12 +1,7 @@
 import { useState, type ReactNode, type ComponentType } from "react";
 import { Exit, type Cause } from "effect";
 import type { AccountId, AccountRequirement, App, SelectedAccounts } from "@executor-js/sdk";
-import {
-  providerDisplayUrl,
-  type AccountSummary,
-  type FailureProps,
-} from "../../contracts/dashboard.ts";
-import { ProviderIcon } from "./common.tsx";
+import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +29,7 @@ export function SavedAccountPicker<E, Saved>({
   prepare,
   Failure,
   connectAction,
+  connectForm,
   busy = false,
   trigger,
 }: {
@@ -44,10 +40,12 @@ export function SavedAccountPicker<E, Saved>({
   readonly prepare: () => Exit.Exit<SavedAccountEdit<Saved, E>, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly connectAction?: (close: () => void, appearance: "button" | "row") => ReactNode;
+  readonly connectForm?: ((close: () => void) => ReactNode) | undefined;
   readonly busy?: boolean;
   readonly trigger?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [connectOnOpen, setConnectOnOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<readonly AccountId[]>([]);
   const [pending, setPending] = useState(false);
@@ -64,7 +62,7 @@ export function SavedAccountPicker<E, Saved>({
   );
   const many = requirement.cardinality === "many";
   const choose = async (value: AccountId | readonly AccountId[] | undefined) => {
-    if (pending || edit === undefined) return;
+    if (pending || busy || edit === undefined) return;
     setPending(true);
     setError(undefined);
     const next = Object.fromEntries(Object.entries(edit.accounts).filter(([key]) => key !== slot));
@@ -84,11 +82,21 @@ export function SavedAccountPicker<E, Saved>({
           setSearch("");
           if (Exit.isFailure(snapshot)) {
             setEdit(undefined);
+            setConnectOnOpen(false);
             setError(snapshot.cause);
           } else {
             setEdit(snapshot.value);
             const current = snapshot.value.accounts[slot];
-            setDraft(typeof current === "string" ? [current] : (current ?? []));
+            const selected = typeof current === "string" ? [current] : (current ?? []);
+            setDraft(selected);
+            // A background account refresh must not replace an open connection draft.
+            setConnectOnOpen(
+              connectForm !== undefined &&
+                !accounts.some(
+                  (account) =>
+                    account.provider === requirement.provider && !selected.includes(account.id),
+                ),
+            );
             setError(undefined);
           }
         }
@@ -105,32 +113,22 @@ export function SavedAccountPicker<E, Saved>({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-h-[85dvh] overflow-x-hidden overflow-y-auto sm:max-w-[440px]">
-        {available.length === 0 && connectAction ? (
+      <DialogContent
+        className={
+          connectOnOpen
+            ? "max-h-[85dvh] gap-5 overflow-x-hidden overflow-y-auto sm:max-w-[560px]"
+            : "max-h-[85dvh] overflow-x-hidden overflow-y-auto sm:max-w-[440px]"
+        }
+      >
+        {connectOnOpen && connectForm ? (
           <>
-            <div className="flex items-start gap-3 pr-6">
-              <ProviderIcon
-                name={requirement.definition.name}
-                url={providerDisplayUrl(requirement.definition)}
-                large
-              />
-              <div className="min-w-0 space-y-1.5">
-                <DialogTitle>Connect a new {requirement.definition.name} account</DialogTitle>
-                <DialogDescription>
-                  {many || selected.length === 0
-                    ? `Add an account to use with ${app.name}.`
-                    : `Connect an account to replace the current ${requirement.definition.name} account in this profile.`}
-                </DialogDescription>
-              </div>
-            </div>
+            {connectForm(() => setOpen(false))}
             {error && <Failure cause={error} />}
-            <div className="mt-2 [&>button]:w-full [&>button]:min-h-10">
-              {connectAction(() => setOpen(false), "button")}
-            </div>
             {many && app.accounts[slot] === undefined && (
               <Button
                 variant="ghost"
                 loading={pending}
+                disabled={busy}
                 onClick={() => {
                   void choose([]);
                 }}

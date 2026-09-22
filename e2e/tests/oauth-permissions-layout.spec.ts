@@ -49,9 +49,6 @@ export default defineApp({accounts: {service}}, async () => ({queries: {}}));`,
             .getByRole("button", { name: "Add Permissions fixture account", exact: true })
             .click(),
         );
-        yield* browser.use("Open the connection dialog", (page) =>
-          page.getByRole("button", { name: "Connect Permissions fixture", exact: true }).click(),
-        );
         yield* browser.use("Wait for advanced connection options", (page) =>
           page.getByText("Advanced", { exact: true }).waitFor({ state: "visible" }),
         );

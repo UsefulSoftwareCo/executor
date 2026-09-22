@@ -47,6 +47,7 @@ import {
   AppOverviewSource,
 } from "@executor-js/ui/dashboard/app-overview";
 import { appManagement } from "../../contracts/app-management.ts";
+import type { parseAppSearch } from "../../contracts/navigation.ts";
 import { QueryView, QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
 import {
   toolsAtom,
@@ -121,7 +122,12 @@ export function AppDetailPage({
       void navigate({
         to: "/org/$organizationSlug/apps/$appId",
         params: { organizationSlug, appId },
-        search: { view: selectedView, tool, profile: selectedId },
+        search: (previous: ReturnType<typeof parseAppSearch>) => ({
+          ...previous,
+          view: selectedView,
+          tool,
+          profile: selectedId,
+        }),
         replace: true,
       });
     }
@@ -497,8 +503,8 @@ export function AppDetailPage({
                           empty
                         ) : (
                           <div className="max-w-3xl p-5 max-[740px]:p-4">
+                            {/* Editors capture their target on open. A newly created profile must not reset an active draft. */}
                             <AppAccounts
-                              key={context?.key ?? "default"}
                               app={current}
                               profile={context?.profile}
                               accounts={inventory.accounts}

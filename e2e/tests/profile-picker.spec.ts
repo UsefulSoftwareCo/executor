@@ -152,14 +152,10 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
               .getByRole("button", { name: "Add Inbox account", exact: true })
               .click(),
           );
-          yield* browser.use("Connect a new account for the scalar requirement", (page) =>
-            page
-              .getByRole("button", {
-                name: label === "Personal inbox" ? "Connect Inbox" : "Connect new account",
-                exact: true,
-              })
-              .click(),
-          );
+          if (label !== "Personal inbox")
+            yield* browser.use("Connect a new account instead of a saved one", (page) =>
+              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+            );
           yield* browser.use("Name this saved account", (page) =>
             page.getByRole("textbox", { name: "Account name", exact: true }).fill(label),
           );

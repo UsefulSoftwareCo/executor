@@ -481,6 +481,15 @@ export const scenarios = {
       local: na("Hosted callback routing and saved-client management."),
     },
   },
+  oauthConnectStoryboard: {
+    file: "oauth-connect-storyboard.spec.ts",
+    title: "OAuth connect storyboard captures loading, consent, success and recovery frames",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+      local: na("Hosted account dialogs and callback recovery."),
+    },
+  },
   localOAuth: {
     file: "local-oauth.spec.ts",
     title: "Local OAuth setup checks preserve grant boundaries and complete machine accounts",

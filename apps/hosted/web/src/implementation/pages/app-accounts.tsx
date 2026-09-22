@@ -22,15 +22,9 @@ import {
   SavedAccountPicker,
   type SavedAccountEdit,
 } from "@executor-js/ui/dashboard/saved-account-picker";
-import { providerDisplayUrl, type AccountSummary } from "@executor-js/ui/contracts/dashboard";
-import { ProviderIcon } from "@executor-js/ui/dashboard/common";
+import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
 import { Button } from "@executor-js/ui/components/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "@executor-js/ui/components/dialog";
+import { ConnectionDialogHeader, ConnectionModal } from "./connection-dialog.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
@@ -234,28 +228,13 @@ function ConnectAppAccount({
   readonly redirectUri: string;
 }) {
   const [pending, setPending] = useState(false);
-  const [dialog, setDialog] = useState<ConnectionDialog>();
+  const [connecting, setConnecting] = useState(false);
   const methods = Object.entries(requirement.definition.auth).sort(
     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
   );
   const preferred = methods[0];
   const selected = app.accounts[slot];
   const inUse = typeof selected === "string" || (selected !== undefined && selected.length > 0);
-  const begin = (method: string) => {
-    const labels = new Set(
-      accounts
-        .filter((account) => account.provider === requirement.provider)
-        .map((account) => account.label),
-    );
-    let label = "Default";
-    for (let number = 2; labels.has(label); number++) label = `Default ${number}`;
-    setDialog({
-      method,
-      label,
-      provider: { id: requirement.provider, definition: requirement.definition },
-      redirectUri,
-    });
-  };
   const buttons = (close?: () => void, appearance: "button" | "row" = "button") => (
     <Button
       size="sm"
@@ -272,7 +251,7 @@ function ConnectAppAccount({
       onClick={() => {
         if (!preferred) return;
         close?.();
-        begin(preferred[0]);
+        setConnecting(true);
       }}
     >
       {appearance === "row" ? (
@@ -285,6 +264,21 @@ function ConnectAppAccount({
       )}
     </Button>
   );
+  const form = (close: () => void) =>
+    preferred && (
+      <AppConnectionDialogContent
+        app={app}
+        slot={slot}
+        requirement={requirement}
+        accounts={accounts}
+        method={preferred[0]}
+        redirectUri={redirectUri}
+        profile={profile}
+        onSelected={onSelected}
+        onPendingChange={setPending}
+        onSaved={close}
+      />
+    );
   const picker = (
     <SavedAccountPicker<HostedError, Profile>
       app={app}
@@ -294,11 +288,11 @@ function ConnectAppAccount({
       prepare={prepare}
       Failure={HostedFailure}
       connectAction={buttons}
+      connectForm={preferred ? form : undefined}
+      busy={pending}
       trigger={trigger}
     />
   );
-  const currentAccount =
-    typeof selected === "string" ? accounts.find((account) => account.id === selected) : undefined;
   return (
     <>
       {trigger !== undefined || inUse || selected !== undefined ? (
@@ -311,43 +305,72 @@ function ConnectAppAccount({
             picker}
         </>
       )}
-      <Dialog
-        open={dialog !== undefined}
-        onOpenChange={(open) => {
-          if (!open && !pending) {
-            setDialog(undefined);
-          }
-        }}
-      >
-        <DialogContent className="max-h-[85dvh] gap-5 overflow-y-auto sm:max-w-[560px]">
-          <div className="flex items-center gap-3 pr-7">
-            <ProviderIcon
-              name={requirement.definition.name}
-              url={providerDisplayUrl(requirement.definition)}
-            />
-            <div className="min-w-0">
-              <DialogTitle className="text-base">Connect {requirement.definition.name}</DialogTitle>
-              <DialogDescription className={currentAccount ? "mt-1 text-xs" : "sr-only"}>
-                {currentAccount
-                  ? `Replaces ${currentAccount.label} in this profile.`
-                  : `Connect an account for this profile of ${app.name}.`}
-              </DialogDescription>
-            </div>
-          </div>
-          {dialog && (
-            <AppConnectionFields
-              app={app.id}
-              accounts={app.accounts}
-              profile={profile}
-              onSelected={onSelected}
-              slot={slot}
-              form={dialog}
-              onPendingChange={setPending}
-              onSaved={() => setDialog(undefined)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+      <ConnectionModal open={connecting} busy={pending} onClose={() => setConnecting(false)}>
+        {connecting && form(() => setConnecting(false))}
+      </ConnectionModal>
+    </>
+  );
+}
+
+/** Keep one provider snapshot and draft from the first dialog through submission. */
+function AppConnectionDialogContent({
+  app,
+  slot,
+  requirement,
+  accounts,
+  method,
+  redirectUri,
+  profile,
+  onSelected,
+  onPendingChange,
+  onSaved,
+}: {
+  readonly app: App;
+  readonly slot: string;
+  readonly requirement: AccountRequirement;
+  readonly accounts: readonly AccountSummary[];
+  readonly method: string;
+  readonly redirectUri: string;
+  readonly profile?: ProfileId | undefined;
+  readonly onSelected: (id: ProfileId) => void;
+  readonly onPendingChange: (pending: boolean) => void;
+  readonly onSaved: () => void;
+}) {
+  const [form] = useState<ConnectionDialog>(() => {
+    const labels = new Set(
+      accounts
+        .filter((account) => account.provider === requirement.provider)
+        .map((account) => account.label),
+    );
+    let label = "Default";
+    for (let number = 2; labels.has(label); number++) label = `Default ${number}`;
+    return {
+      method,
+      label,
+      provider: { id: requirement.provider, definition: requirement.definition },
+      redirectUri,
+    };
+  });
+  const selected = app.accounts[slot];
+  const currentAccount =
+    typeof selected === "string" ? accounts.find((account) => account.id === selected) : undefined;
+  return (
+    <>
+      <ConnectionDialogHeader
+        provider={form.provider}
+        action="Connect"
+        notice={currentAccount ? `Replaces ${currentAccount.label} in this profile.` : undefined}
+      />
+      <AppConnectionFields
+        app={app.id}
+        accounts={app.accounts}
+        profile={profile}
+        onSelected={onSelected}
+        slot={slot}
+        form={form}
+        onPendingChange={onPendingChange}
+        onSaved={onSaved}
+      />
     </>
   );
 }

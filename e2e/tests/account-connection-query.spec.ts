@@ -68,7 +68,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           }),
         );
         yield* browser.use("Connect directly from the app account card", (page) =>
-          page.getByRole("button", { name: "Connect Connection fixture", exact: true }).click(),
+          page.getByRole("button", { name: "Add Connection fixture account", exact: true }).click(),
         );
         yield* browser.use("Credentials open inside the app", (page) =>
           page.getByRole("dialog").waitFor({ state: "visible" }),
@@ -188,12 +188,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         ).toBe(0);
         yield* browser.checkpoint("Account connected in place");
         yield* browser.use("Manage the connected account", (page) =>
-          page.getByRole("button", { name: "Change account", exact: true }).click(),
+          page
+            .getByRole("button", { name: "Switch Connection fixture account", exact: true })
+            .click(),
         );
-        yield* browser.use("Start another connection from the picker", (page) =>
-          page.getByRole("button", { name: "Connect another account", exact: true }).click(),
-        );
-        yield* browser.use("The credential dialog replaces the picker", (page) =>
+        yield* browser.use("Another connection opens in the shared dialog", (page) =>
           page
             .getByRole("heading", { name: "Connect Connection fixture", exact: true })
             .waitFor({ state: "visible" }),

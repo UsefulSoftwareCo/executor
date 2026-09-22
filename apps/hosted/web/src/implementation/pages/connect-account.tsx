@@ -1,25 +1,19 @@
 import type { HostedError } from "../../contracts/errors.ts";
 import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
-import { QueryView } from "@executor-js/ui/dashboard/context";
-import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import { useAtomSet } from "@effect/atom-react";
-import { AccountConnectionId, type Account, type Provider } from "@executor-js/sdk";
+import type { Account, Provider } from "@executor-js/sdk";
 import type {
   HostedAccountConnection,
   HostedOAuthSignIn,
   HostedOAuthStartResult,
 } from "@executor-js/hosted-server";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { Cause, Match, Option, Exit, Schema } from "effect";
-import { useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { Cause, Match, Option, Exit } from "effect";
 import { Button } from "@executor-js/ui/components/button";
 import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
-import { ProviderIcon } from "@executor-js/ui/dashboard/common";
-import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
 import {
-  connectionAtom,
   oauthSetupAtom,
   startOAuthAtom,
   submitConnectionAtom,
@@ -33,99 +27,7 @@ export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizatio
   window.location.assign(authorizationUrl);
 }
 
-/** Standalone connection links remain available for agent handoffs and reconnects. */
-export function ConnectAccountPage({
-  connectionId,
-  client,
-}: {
-  readonly connectionId: string;
-  readonly client?: "change" | undefined;
-}) {
-  const { organization, slug: organizationSlug } = useOrganizationRoute();
-  const navigate = useNavigate();
-  const [pending] = useState(() =>
-    Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
-      sessionStorage.getItem("executor:hosted:oauth"),
-    ),
-  );
-  const label =
-    Option.isSome(pending) && pending.value.connection === connectionId
-      ? pending.value.label
-      : undefined;
-  return (
-    <section className="mx-auto w-full max-w-xl p-6 max-[740px]:p-4">
-      <QueryView
-        query={connectionAtom({ organization, connection: AccountConnectionId.make(connectionId) })}
-        Failure={HostedFailure}
-        pending={<DetailSkeleton label="Loading account setup" />}
-      >
-        {(connection) => (
-          <>
-            {connection.target ? (
-              <Link
-                className="mb-6 inline-flex text-sm text-muted-foreground"
-                to="/org/$organizationSlug/apps/$appId"
-                params={{ organizationSlug, appId: connection.target.app }}
-                search={{ view: "accounts", profile: connection.target.profile }}
-              >
-                ← {connection.target.name}
-              </Link>
-            ) : connection.reconnectAccount ? (
-              <Link
-                className="mb-6 inline-flex text-sm text-muted-foreground"
-                to="/org/$organizationSlug/accounts/$accountId"
-                params={{ organizationSlug, accountId: connection.reconnectAccount.id }}
-              >
-                ← Account
-              </Link>
-            ) : (
-              <Link
-                className="mb-6 inline-flex text-sm text-muted-foreground"
-                to="/org/$organizationSlug/accounts"
-                params={{ organizationSlug }}
-              >
-                ← Accounts
-              </Link>
-            )}
-            <div className="mb-4 flex items-center gap-3">
-              <ProviderIcon
-                name={connection.provider.definition.name}
-                url={providerDisplayUrl(connection.provider.definition)}
-                large
-              />
-              <h1 className="text-xl font-semibold">
-                {connection.reconnectAccount ? "Reconnect" : "Connect"}{" "}
-                {connection.provider.definition.name}
-              </h1>
-            </div>
-            <ConnectionFields
-              key={connectionId}
-              connection={connection}
-              manualClient={client === "change"}
-              initialLabel={label}
-              onSaved={(account) => {
-                void navigate(
-                  connection.target
-                    ? {
-                        to: "/org/$organizationSlug/apps/$appId",
-                        params: { organizationSlug, appId: connection.target.app },
-                        search: { view: "accounts", profile: connection.target.profile },
-                      }
-                    : {
-                        to: "/org/$organizationSlug/accounts/$accountId",
-                        params: { organizationSlug, accountId: account.id },
-                      },
-                );
-              }}
-            />
-          </>
-        )}
-      </QueryView>
-    </section>
-  );
-}
-
-/** The same credential fields serve an in-app dialog and a standalone connection link. */
+/** Resume the existing request in a connection dialog without creating a new attempt. */
 export function ConnectionFields({
   connection,
   onSaved,
@@ -243,11 +145,12 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       {...(onPendingChange ? { onPendingChange } : {})}
       oauth={({ method, disabled, onPendingChange }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
-          {({ setup, blocked, refresh }) => (
+          {({ setup, blocked, action, refresh }) => (
             <OAuthFields
               providerName={provider.definition.name}
               Failure={HostedFailure}
               setup={setup}
+              setupAction={action}
               disabled={disabled || blocked}
               manualClient={manualClient}
               initialLabel={initialLabel}

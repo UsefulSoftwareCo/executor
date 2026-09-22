@@ -5,16 +5,20 @@ import { Effect, Exit, Option, Redacted, Schema, Cause } from "effect";
 import { OAuthCompletionFailed } from "@executor-js/sdk";
 import { useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@executor-js/ui/components/button";
+import { ConnectionStatusPage } from "../components/connection-status.tsx";
 import { appError, completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
+
+type CallbackState =
+  | { readonly status: "connecting" }
+  | { readonly status: "cancelled"; readonly message: string }
+  | { readonly status: "failed"; readonly message: string; readonly recovery: "retry" | "client" };
 
 /** Complete provider OAuth in the same browser session that started it. */
 export function OAuthCallbackPage() {
   const navigate = useNavigate();
   const registry = useContext(RegistryContext);
   const started = useRef(false);
-  const [error, setError] = useState<string>();
-  const [cancelled, setCancelled] = useState(false);
-  const [clientRejected, setClientRejected] = useState(false);
+  const [state, setState] = useState<CallbackState>({ status: "connecting" });
   const [pending] = useState(() =>
     Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
       sessionStorage.getItem("executor:hosted:oauth"),
@@ -27,14 +31,19 @@ export function OAuthCallbackPage() {
     window.history.replaceState(null, "", "/oauth/callback");
     if (Option.isNone(pending)) {
       // oxlint-disable-next-line react/set-state-in-effect -- one-time callback handling on mount
-      setError(
-        "This sign-in has expired or was started in another tab. Open the app and connect again.",
-      );
+      setState({
+        status: "failed",
+        message:
+          "This sign-in has expired or was started in another tab. Open the app and connect again.",
+        recovery: "retry",
+      });
       return;
     }
     if (new URLSearchParams(callbackSearch).get("error") === "access_denied") {
-      setCancelled(true);
-      setError("No account was connected. You can return to the app and try again.");
+      setState({
+        status: "cancelled",
+        message: "No account was connected. You can return to the app and try again.",
+      });
       sessionStorage.removeItem("executor:hosted:oauth");
       return;
     }
@@ -48,13 +57,15 @@ export function OAuthCallbackPage() {
         AtomRegistry.getResult(registry, mutation, { suspendOnWaiting: true }),
       );
       if (Exit.isFailure(result)) {
-        setClientRejected(
-          Option.exists(
-            Cause.findErrorOption(result.cause),
-            (error) => Schema.is(OAuthCompletionFailed)(error) && error.reason === "invalid_client",
-          ),
+        const clientRejected = Option.exists(
+          Cause.findErrorOption(result.cause),
+          (error) => Schema.is(OAuthCompletionFailed)(error) && error.reason === "invalid_client",
         );
-        setError(appError(result.cause));
+        setState({
+          status: "failed",
+          message: appError(result.cause),
+          recovery: clientRejected ? "client" : "retry",
+        });
         return;
       }
       sessionStorage.removeItem("executor:hosted:oauth");
@@ -72,67 +83,82 @@ export function OAuthCallbackPage() {
     })();
   }, [registry, navigate, pending]);
   return (
-    <section className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-      <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
-        {error
-          ? cancelled
-            ? "Connection cancelled"
-            : "Account not connected"
-          : "Connecting account…"}
-      </h1>
-      {error && (
-        <>
-          <p className="auth-error mt-4 text-destructive text-[13px]" role="alert">
-            {error}
-          </p>
-          {Option.isSome(pending) && !cancelled && (
-            <Button className="mt-4 mr-3" asChild>
-              <Link
-                to="/org/$organizationSlug/connections/$connectionId"
-                params={{
-                  organizationSlug: pending.value.organizationSlug,
-                  connectionId: pending.value.connection,
-                }}
-                search={clientRejected || pending.value.manualClient ? { client: "change" } : {}}
-              >
-                {clientRejected || pending.value.manualClient
-                  ? "Update client details"
-                  : "Try again"}
-              </Link>
-            </Button>
-          )}
-          {!(Option.isSome(pending) && !cancelled && pending.value.app === null) && (
-            <Button className="mt-4 self-start" variant="outline" asChild>
-              {Option.isSome(pending) ? (
-                pending.value.app !== null ? (
-                  <Link
-                    to="/org/$organizationSlug/apps/$appId"
-                    params={{
-                      organizationSlug: pending.value.organizationSlug,
-                      appId: pending.value.app,
-                    }}
-                    search={{ view: "accounts", profile: pending.value.profile }}
-                  >
-                    Back to app
-                  </Link>
-                ) : (
-                  <Link
-                    to="/org/$organizationSlug/connections/$connectionId"
-                    params={{
-                      organizationSlug: pending.value.organizationSlug,
-                      connectionId: pending.value.connection,
-                    }}
-                  >
-                    Try again
-                  </Link>
-                )
-              ) : (
-                <Link to="/">Open Executor</Link>
-              )}
-            </Button>
-          )}
-        </>
+    <ConnectionStatusPage
+      status={state.status}
+      label={Option.isSome(pending) ? pending.value.label : undefined}
+      message={
+        state.status !== "connecting"
+          ? state.message
+          : Option.isSome(pending) && pending.value.app !== null
+            ? "Finishing sign-in. You’ll return to the app automatically."
+            : "Finishing sign-in. Your account will open automatically."
+      }
+    >
+      {state.status !== "connecting" && (
+        <OAuthRecoveryActions
+          pending={pending}
+          recovery={state.status === "cancelled" ? "cancelled" : state.recovery}
+        />
       )}
-    </section>
+    </ConnectionStatusPage>
+  );
+}
+
+/** Recovery links resume the original connection or return to its owning app. */
+function OAuthRecoveryActions({
+  pending,
+  recovery,
+}: {
+  readonly pending: Option.Option<typeof PendingOAuth.Type>;
+  readonly recovery: "retry" | "client" | "cancelled";
+}) {
+  if (Option.isNone(pending))
+    return (
+      <Button asChild>
+        <Link to="/">Open Executor</Link>
+      </Button>
+    );
+  const context = pending.value;
+  const changeClient = recovery === "client" || context.manualClient;
+  return (
+    <>
+      {recovery !== "cancelled" && (
+        <Button asChild>
+          <Link
+            to="/org/$organizationSlug/connections/$connectionId"
+            params={{
+              organizationSlug: context.organizationSlug,
+              connectionId: context.connection,
+            }}
+            search={changeClient ? { client: "change" } : {}}
+          >
+            {changeClient ? "Update client details" : "Try again"}
+          </Link>
+        </Button>
+      )}
+      {context.app !== null ? (
+        <Button variant={recovery === "cancelled" ? "default" : "outline"} asChild>
+          <Link
+            to="/org/$organizationSlug/apps/$appId"
+            params={{ organizationSlug: context.organizationSlug, appId: context.app }}
+            search={{ view: "accounts", profile: context.profile }}
+          >
+            Back to app
+          </Link>
+        </Button>
+      ) : recovery === "cancelled" ? (
+        <Button asChild>
+          <Link
+            to="/org/$organizationSlug/connections/$connectionId"
+            params={{
+              organizationSlug: context.organizationSlug,
+              connectionId: context.connection,
+            }}
+          >
+            Try again
+          </Link>
+        </Button>
+      ) : null}
+    </>
   );
 }
