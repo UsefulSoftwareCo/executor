@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Exit, Option, Redacted, type Cause } from "effect";
 import type { Account, OAuthClientSetup } from "@executor-js/sdk";
@@ -235,18 +235,6 @@ export function OAuthFields<A, E>({
           )}
         </>
       )}
-      {setup !== "unresolved" && setup.scopes.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-[13px] font-medium">Required permissions</span>
-          <div className="flex flex-wrap gap-1.5">
-            {setup.scopes.map((scope) => (
-              <code key={scope} className="rounded bg-muted px-2 py-1 text-xs break-all">
-                {scope}
-              </code>
-            ))}
-          </div>
-        </div>
-      )}
       {error && <Failure cause={error} />}
       <div className="form-actions pt-1">
         <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
@@ -257,6 +245,34 @@ export function OAuthFields<A, E>({
             : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
         </Button>
       </div>
+      {setup !== "unresolved" && setup.scopes.length > 0 && (
+        <details className="group min-w-0 rounded-md border">
+          <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-3 py-2.5 text-[13px] font-medium outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              size={16}
+              className="shrink-0 -rotate-90 text-muted-foreground group-open:rotate-0"
+              aria-hidden
+            />
+            <span>Required permissions</span>
+            <span className="ml-auto text-xs font-normal tabular-nums text-muted-foreground">
+              {setup.scopes.length}
+            </span>
+          </summary>
+          <div
+            role="region"
+            aria-label="Required permissions"
+            tabIndex={0}
+            className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain border-t p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            {setup.scopes.map((scope) => (
+              <code key={scope} className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all">
+                {scope}
+              </code>
+            ))}
+          </div>
+        </details>
+      )}
     </>
   );
 }

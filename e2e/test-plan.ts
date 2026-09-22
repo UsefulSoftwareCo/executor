@@ -463,6 +463,16 @@ export const scenarios = {
       local: scheduled,
     },
   },
+  oauthPermissionsLayout: {
+    file: "oauth-permissions-layout.spec.ts",
+    title:
+      "OAuth permissions collapse and scroll within the connection dialog on desktop and mobile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Checks the shared OAuth fields through the hosted connection dialog."),
+    },
+  },
   oauthClientForm: {
     file: "oauth-client-credentials.spec.ts",
     title:
