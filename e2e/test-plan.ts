@@ -26,6 +26,15 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  sourceHighlighting: {
+    file: "source-highlighting.spec.ts",
+    title: "Source browser highlights CSS, Markdown, and JSON files",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The shared source browser is exercised through hosted organization routes."),
+    },
+  },
   sdkQueryBudgets: {
     file: "sdk-query-budgets.spec.ts",
     title: "SDK batches invocation accounts and finished workflow history",

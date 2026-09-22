@@ -4,6 +4,8 @@ import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import typescript from "shiki/langs/typescript.mjs";
 import javascript from "shiki/langs/javascript.mjs";
+import css from "shiki/langs/css.mjs";
+import markdown from "shiki/langs/markdown.mjs";
 import json from "shiki/langs/json.mjs";
 import shellscript from "shiki/langs/shellscript.mjs";
 import light from "shiki/themes/github-light.mjs";
@@ -15,7 +17,7 @@ export const highlighter = Effect.acquireRelease(
     try: () =>
       createHighlighterCore({
         themes: [light, dark],
-        langs: [typescript, javascript, json, shellscript],
+        langs: [typescript, javascript, css, markdown, json, shellscript],
         engine: createJavaScriptRegexEngine(),
       }),
     catch: () => new HighlightUnavailable({}),
