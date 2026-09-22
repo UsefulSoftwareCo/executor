@@ -120,6 +120,8 @@ export const cloudRuntime = Effect.fn(function* (
                   compatibilityDate: "2026-07-30",
                   // Same-zone URLs must use their public Worker routes, not the underlying origin.
                   compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+                  // Declarations are static. Workflows cannot lend their implicit outbound binding.
+                  ...(command.operation === "requirements" ? { globalOutbound: null } : {}),
                 })),
               ),
             )
@@ -158,8 +160,11 @@ export const cloudRuntime = Effect.fn(function* (
                 ),
               catch: protocolFailed,
             }).pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(AppRpcInvocation)),
-              Effect.mapError(protocolFailed),
+              Effect.flatMap((value) =>
+                Schema.decodeUnknownEffect(AppRpcInvocation)(value).pipe(
+                  Effect.mapError(protocolFailed),
+                ),
+              ),
               Effect.withSpan("runtime.cloud.rpc.start"),
             ),
             (call) =>
