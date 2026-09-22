@@ -76,6 +76,13 @@ export const AutumnRequests = {
   openCustomerPortal: Schema.Struct({ ...customer, returnUrl: Schema.String }).pipe(
     Schema.encodeKeys({ ...customerKeys, returnUrl: "return_url" }),
   ),
+  // Autumn identifies a subscription by (customer, plan), so cancelling is an
+  // update carrying a cancel action rather than its own operation.
+  cancelSubscription: Schema.Struct({
+    ...customer,
+    planId: Schema.String,
+    cancelAction: Schema.Literal("cancel_immediately"),
+  }).pipe(Schema.encodeKeys({ ...customerKeys, planId: "plan_id", cancelAction: "cancel_action" })),
 };
 
 /** Decode provider responses into the fields billing reads; unrelated provider fields are ignored. */
@@ -106,6 +113,8 @@ export const AutumnResponses = {
     Schema.encodeKeys({ paymentUrl: "payment_url" }),
   ),
   openCustomerPortal: Schema.Struct({ url: Schema.String }),
+  // Only the outcome matters here; the invoice and proration detail is Autumn's.
+  cancelSubscription: Schema.Struct({}),
 };
 
 /** Safe diagnostics for transport, provider and contract failures. Cancellation remains interruption. */
@@ -119,6 +128,7 @@ export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>
       "updateBalance",
       "attach",
       "openCustomerPortal",
+      "cancelSubscription",
     ]),
     reason: Schema.Literals(["request", "transport", "status", "response", "timeout"]),
     status: Schema.optionalKey(Schema.Int),
@@ -132,7 +142,7 @@ export interface AutumnOptions {
   readonly serverUrl: Redacted.Redacted<string>;
 }
 
-/** Six typed HTTP operations. Product policy and customer identity belong to Billing/BillingMeter. */
+/** Seven typed HTTP operations. Product policy and customer identity belong to Billing/BillingMeter. */
 export class AutumnClient extends Context.Service<
   AutumnClient,
   {

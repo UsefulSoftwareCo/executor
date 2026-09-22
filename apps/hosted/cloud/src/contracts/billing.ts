@@ -59,6 +59,19 @@ export class Billing extends Context.Service<
       organization: OrganizationId,
       returnUrl: URL,
     ) => Effect.Effect<{ readonly url: string }, BillingUnavailable>;
+    /**
+     * Cancel every paid subscription this organization still holds, for use when
+     * the organization itself is being removed. Deletion also destroys the
+     * customer portal's own authorization, so nobody can cancel afterwards.
+     * Reports the customer identity so a caller can record an orphan it failed
+     * to cancel.
+     */
+    readonly cancel: (
+      organization: OrganizationId,
+    ) => Effect.Effect<
+      { readonly customerId: string; readonly cancelled: ReadonlyArray<string> },
+      BillingUnavailable
+    >;
   }
 >()("cloud/Billing") {}
 

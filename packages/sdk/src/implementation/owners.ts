@@ -4,11 +4,53 @@ import type { Executor } from "../contracts/executor.ts";
 import { OwnerWebhooksActive } from "../contracts/owner.ts";
 import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AccountWorkflowsActive } from "../contracts/account.ts";
-import { WebhookId } from "../contracts/shared.ts";
+import { AccountId, OwnerId, WebhookId } from "../contracts/shared.ts";
 import { query, transaction, type Query } from "./database.ts";
+
+/**
+ * The refusals a caller cannot clear by acting on providers: work is in flight
+ * and will finish on its own. Read-only, so `check` and `remove` share one
+ * definition and a caller can gate irreversible steps on the same verdict.
+ */
+const assertNoWorkInFlight = (tx: Query, owner: OwnerId, accountIds: ReadonlyArray<AccountId>) =>
+  Effect.gen(function* () {
+    const activeRun = yield* query(() =>
+      tx.findFirst("workflowRuns", {
+        where: (b) =>
+          b.and(
+            b("owner", "=", owner),
+            b.or(b("status", "=", "queued"), b("status", "=", "running")),
+          ),
+      }),
+    );
+    if (activeRun !== null) return yield* new AppWorkflowsActive({ app: activeRun.app });
+    if (accountIds.length > 0) {
+      const pinned = yield* query(() =>
+        tx.findFirst("workflowAccounts", {
+          where: (b) => b("account", "in", accountIds),
+        }),
+      );
+      if (pinned !== null) return yield* new AccountWorkflowsActive({ account: pinned.account });
+    }
+  });
 
 /** Owner-keyed rows and the app/account-keyed rows that hang off them, deleted in dependency order. */
 export const makeOwners = (db: Query): Executor["owners"] => ({
+  check: (input: Parameters<Executor["owners"]["check"]>[0]) =>
+    transaction(db, (tx) =>
+      Effect.gen(function* () {
+        const owner = input.owner;
+        const accounts = yield* query(() =>
+          tx.findMany("accounts", { select: ["id"], where: (b) => b("owner", "=", owner) }),
+        );
+        yield* assertNoWorkInFlight(
+          tx,
+          owner,
+          accounts.map((account) => account.id),
+        );
+        return { owner };
+      }),
+    ).pipe(Effect.withSpan("sdk.owners.check")),
   remove: (input: Parameters<Executor["owners"]["remove"]>[0]) =>
     transaction(db, (tx) =>
       Effect.gen(function* () {
@@ -42,25 +84,7 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
         const appIds = apps.map((app) => app.id);
         const accountIds = accounts.map((account) => account.id);
         const webhookIds = webhooks.map((webhook) => webhook.id);
-        const activeRun = yield* query(() =>
-          tx.findFirst("workflowRuns", {
-            where: (b) =>
-              b.and(
-                b("owner", "=", owner),
-                b.or(b("status", "=", "queued"), b("status", "=", "running")),
-              ),
-          }),
-        );
-        if (activeRun !== null) return yield* new AppWorkflowsActive({ app: activeRun.app });
-        if (accountIds.length > 0) {
-          const pinned = yield* query(() =>
-            tx.findFirst("workflowAccounts", {
-              where: (b) => b("account", "in", accountIds),
-            }),
-          );
-          if (pinned !== null)
-            return yield* new AccountWorkflowsActive({ account: pinned.account });
-        }
+        yield* assertNoWorkInFlight(tx, owner, accountIds);
         const runs = yield* query(() =>
           tx.findMany("workflowRuns", {
             select: ["id"],
@@ -90,6 +114,13 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
           );
           yield* query(() => tx.deleteMany("webhooks", { where: (b) => b("owner", "=", owner) }));
         }
+        // The due scan selects on schedule state alone, so a surviving schedule keeps
+        // claiming and failing forever. Delete by owner, not by app, so a schedule whose
+        // app row already went stays reachable. Same order as apps.remove.
+        yield* query(() =>
+          tx.deleteMany("scheduledRuns", { where: (b) => b("owner", "=", owner) }),
+        );
+        yield* query(() => tx.deleteMany("schedules", { where: (b) => b("owner", "=", owner) }));
         if (appIds.length > 0) {
           yield* query(() => tx.deleteMany("appRecords", { where: (b) => b("app", "in", appIds) }));
           yield* query(() => tx.deleteMany("profiles", { where: (b) => b("owner", "=", owner) }));

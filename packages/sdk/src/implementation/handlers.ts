@@ -109,7 +109,9 @@ export const executorHandlers = (executor: Executor) =>
         .handle("source", ({ params, query }) => executor.apps.source({ ...params, ...query })),
     ),
     HttpApiBuilder.group(ExecutorApi, "owners", (handlers) =>
-      handlers.handle("remove", ({ params }) => executor.owners.remove(params)),
+      handlers
+        .handle("check", ({ params }) => executor.owners.check(params))
+        .handle("remove", ({ params }) => executor.owners.remove(params)),
     ),
     HttpApiBuilder.group(ExecutorApi, "appWorkflows", (handlers) =>
       handlers.handle("list", ({ params, query }) =>

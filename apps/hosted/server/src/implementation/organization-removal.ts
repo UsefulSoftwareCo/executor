@@ -20,6 +20,12 @@ export const removeCurrentOrganization = Effect.gen(function* () {
   const icons = yield* OrganizationIcons;
   const executor = yield* Effect.flatten(HostedExecutor);
   const owner = organization.owner;
+  // Unregistering at a provider cannot be undone: a stopped subscription burns its
+  // stable key for good. Take the refusals a retry would hit -- a running workflow,
+  // a pinned account -- before that, so a transient refusal leaves the organization
+  // whole. Live webhook state is deliberately not part of this check: the sweep
+  // below is what clears it.
+  yield* executor.owners.check({ owner });
   const apps = yield* executor.apps.list({ owner });
   for (const app of apps) {
     const subscriptions = yield* executor.webhooks.list({ app: app.id });

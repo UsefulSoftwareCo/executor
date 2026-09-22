@@ -90,7 +90,7 @@ export function DeleteOrganization() {
           <DialogTitle>Delete {organization.name}?</DialogTitle>
           <DialogDescription>
             Its apps, accounts, saved credentials, deployments and MCP connections are deleted
-            permanently. Members lose access immediately.
+            permanently. Members lose access immediately. Any paid subscription is cancelled.
           </DialogDescription>
           <label className="flex flex-col gap-2 text-[13px]">
             <span>

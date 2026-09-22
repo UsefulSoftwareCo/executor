@@ -8,10 +8,11 @@ import {
   type OrganizationId,
 } from "@executor-js/hosted-server";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, Layer, Schema } from "effect";
+import { Cause, Effect, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/unstable/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive } from "./autumn-client.ts";
+import { reportCloudFailure } from "./error-reporting.ts";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   Billing,
@@ -22,6 +23,20 @@ import {
 import { freeMembers } from "../contracts/billing-catalog.ts";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 import { billingSettings } from "../infrastructure/billing.ts";
+
+/**
+ * A paid subscription that outlived its organization. Removal is already
+ * committed when this happens, so the request still succeeds and the identity
+ * goes to Sentry for an operator to cancel by hand.
+ */
+class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBillingOrphaned>()(
+  "OrganizationBillingOrphaned",
+  { organization: Schema.String, customerId: Schema.String },
+) {
+  override get message() {
+    return `Organization ${this.organization} was removed with billing customer ${this.customerId} left live`;
+  }
+}
 
 /** Resolve the selected Autumn environment once; each invocation owns its client. */
 export const billingLive = Effect.gen(function* () {
@@ -98,6 +113,49 @@ export const billingLive = Effect.gen(function* () {
           autumn.updateBalance({ customerId, featureId: catalog.members, usage: row.count }),
         );
     }).pipe(Effect.withSpan("billing.syncSeats"));
+  const cancel: typeof Billing.Service.cancel = (organization) =>
+    Effect.gen(function* () {
+      const { autumn, catalog } = yield* client;
+      const customerId = catalog
+        ? `${catalog.namespace}:${organizationOwner(organization)}`
+        : organizationOwner(organization);
+      return yield* Effect.gen(function* () {
+        const { value } = yield* customer(organization);
+        // The free plan carries no charge, and an expired subscription is already done.
+        const live = value.subscriptions.filter(
+          (subscription) =>
+            subscription.status !== "expired" &&
+            (catalog === null || subscription.planId !== catalog.free),
+        );
+        yield* Effect.forEach(
+          live,
+          (subscription) =>
+            use(
+              autumn.cancelSubscription({
+                customerId,
+                planId: subscription.planId,
+                cancelAction: "cancel_immediately",
+              }),
+            ),
+          { discard: true },
+        );
+        return { customerId, cancelled: live.map((subscription) => subscription.planId) };
+      }).pipe(
+        // Removing the organization also removes the portal's authorization, so a
+        // failure here leaves a paying customer nobody can reach. Report it, and
+        // keep the log for stages that run without Sentry.
+        Effect.tapError(() =>
+          Effect.logError("Organization removed with a billing subscription left live").pipe(
+            Effect.annotateLogs({ organization, billingCustomer: customerId }),
+            Effect.andThen(
+              reportCloudFailure(
+                Cause.fail(new OrganizationBillingOrphaned({ organization, customerId })),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.withSpan("billing.cancel"));
   const meter = BillingMeter.of({
     consume: (organization) =>
       Effect.gen(function* () {
@@ -190,6 +248,7 @@ export const billingLive = Effect.gen(function* () {
             );
             return { url: result.url };
           }),
+        cancel,
       }),
     ),
   );

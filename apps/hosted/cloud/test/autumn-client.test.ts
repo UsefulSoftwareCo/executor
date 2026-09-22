@@ -32,7 +32,7 @@ const input = {
   sendEvent: true,
 };
 
-test("six operations preserve wire fields, API version and emulator path without exposing credentials in traces", async () => {
+test("seven operations preserve wire fields, API version and emulator path without exposing credentials in traces", async () => {
   const requests: Array<{ path: string; body: unknown }> = [];
   const spans: Tracer.NativeSpan[] = [];
   const responses: Record<string, unknown> = {
@@ -57,6 +57,7 @@ test("six operations preserve wire fields, API version and emulator path without
     "balances.update": { success: true },
     "billing.attach": { payment_url: "https://checkout.example.test/fixture" },
     "billing.open_customer_portal": { url: "https://billing.example.test/fixture" },
+    "billing.update": { success: true },
   };
   const http = HttpClient.make((request, url) =>
     Effect.gen(function* () {
@@ -115,6 +116,16 @@ test("six operations preserve wire fields, API version and emulator path without
         }),
         { url: "https://billing.example.test/fixture" },
       );
+      // Cancelling is an update carrying a cancel action. The contract reads no
+      // field from the reply, so the invoice and proration detail passes through.
+      assert.deepEqual(
+        yield* client.cancelSubscription({
+          customerId: "fixture",
+          planId: "team",
+          cancelAction: "cancel_immediately",
+        }),
+        { success: true },
+      );
     }).pipe(
       Effect.provide(autumnLive(options)),
       Effect.provideService(HttpClient.HttpClient, http),
@@ -158,8 +169,12 @@ test("six operations preserve wire fields, API version and emulator path without
       path: "billing.open_customer_portal",
       body: { customer_id: "fixture", return_url: "https://executor.test/return" },
     },
+    {
+      path: "billing.update",
+      body: { customer_id: "fixture", plan_id: "team", cancel_action: "cancel_immediately" },
+    },
   ]);
-  assert.equal(spans.length, 6);
+  assert.equal(spans.length, 7);
   assert.ok(spans.every((span) => span.name.startsWith("autumn.")));
   const captured = JSON.stringify(
     spans.map((span) => ({ name: span.name, attributes: [...span.attributes] })),

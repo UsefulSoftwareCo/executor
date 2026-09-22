@@ -95,6 +95,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
         run(CompleteConnectionOAuth, input, executor.accountConnections.completeOAuth),
     },
     owners: {
+      check: (input) => run(OwnerInputs.check, input, executor.owners.check),
       remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
     },
     apps: {

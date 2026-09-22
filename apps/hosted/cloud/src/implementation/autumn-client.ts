@@ -100,6 +100,12 @@ export const autumnLive = (options: AutumnOptions) =>
           AutumnRequests.openCustomerPortal,
           AutumnResponses.openCustomerPortal,
         ),
+        cancelSubscription: post(
+          "cancelSubscription",
+          "billing.update",
+          AutumnRequests.cancelSubscription,
+          AutumnResponses.cancelSubscription,
+        ),
       });
     }),
   );

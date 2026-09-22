@@ -8,6 +8,7 @@ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import {
+  AppWorkflowsActive,
   BuildId,
   OwnerId,
   OwnerWebhooksActive,
@@ -19,6 +20,7 @@ import {
   type Runtime,
 } from "@executor-js/sdk/core";
 import { aesGcmCredentials as credentials } from "@executor-js/sdk/core";
+import { storageSchema } from "../src/implementation/storage.ts";
 
 const alice = OwnerId.make("organization:alice");
 const bob = OwnerId.make("organization:bob");
@@ -172,6 +174,201 @@ test(
           const failure = yield* Effect.flip(executor.owners.remove({ owner: alice }));
           assert.ok(Schema.is(OwnerWebhooksActive)(failure));
           assert.deepEqual(failure.subscriptions, ["whk_live"]);
+          assert.equal((yield* executor.apps.list({ owner: alice })).length, 1);
+          assert.equal((yield* executor.accounts.list({ owner: alice })).length, 1);
+        }).pipe(Effect.provide(services)),
+      ),
+    ),
+);
+
+/**
+ * Enumerated from the schema rather than written out, so a table added later with
+ * an `owner` column fails this test until both the purge and this fixture cover it.
+ */
+const ownerTables = Object.entries(storageSchema.tables)
+  .filter(([, definition]) => "owner" in definition.columns)
+  .map(([name]) => name)
+  .sort();
+
+/** The ORM is generic over its table names; these tests address tables by string. */
+type Comparison = (column: string, operator: string, value: string) => unknown;
+type AnyTable = {
+  readonly create: (
+    table: string,
+    values: Record<string, unknown>,
+  ) => Effect.Effect<unknown, unknown>;
+  readonly findMany: (
+    table: string,
+    options: {
+      readonly select: ReadonlyArray<string>;
+      readonly where: (b: Comparison) => unknown;
+    },
+  ) => Effect.Effect<ReadonlyArray<unknown>, unknown>;
+};
+
+/** Rows the app and account APIs cannot create, one per remaining owner-bearing table. */
+const seedRows = (
+  db: AnyTable,
+  owner: OwnerId,
+  context: { readonly app: string; readonly account: string; readonly deployment: string },
+) =>
+  Effect.gen(function* () {
+    const epoch = new Date(0);
+    yield* db.create("toolApprovals", {
+      id: `apr_${owner}`,
+      owner,
+      status: "pending",
+      revision: "1",
+      encrypted: new Uint8Array([1]),
+      expiresAt: epoch,
+    });
+    yield* db.create("webhooks", {
+      id: `whk_${owner}`,
+      app: context.app,
+      owner,
+      key: "synthetic",
+      deployment: context.deployment,
+      name: "Synthetic",
+      sourceAccount: context.account,
+      callbackUrl: "https://example.test/hook",
+      accounts: {},
+      // Stopped, so the purge is not refused; the row must still be deleted.
+      status: "stopped",
+      revision: "1",
+      leaseUntil: epoch,
+      failure: null,
+      encrypted: new Uint8Array([1]),
+      createdAt: epoch,
+    });
+    yield* db.create("workflowRuns", {
+      id: `wfr_${owner}`,
+      app: context.app,
+      owner,
+      key: "synthetic",
+      deployment: context.deployment,
+      name: "synthetic",
+      accounts: {},
+      status: "succeeded",
+      failure: null,
+      encrypted: new Uint8Array([1]),
+      createdAt: epoch,
+    });
+    yield* db.create("schedules", {
+      id: `sch_${owner}`,
+      app: context.app,
+      owner,
+      name: "nightly",
+      actor: "user:synthetic",
+      timing: { kind: "interval", every: "1 day" },
+      enabled: true,
+      approvalMode: "automatic",
+      nextAt: epoch,
+      activeRun: null,
+      revision: "1",
+    });
+    yield* db.create("scheduledRuns", {
+      id: `scr_${owner}`,
+      scheduleId: `sch_${owner}`,
+      app: context.app,
+      owner,
+      name: "nightly",
+      status: "failed",
+      scheduledAt: epoch,
+      startedAt: epoch,
+      finishedAt: epoch,
+      requestId: null,
+      expiresAt: null,
+      failure: "AppNotFound",
+      runner: "synthetic",
+      revision: "1",
+      answer: null,
+    });
+  });
+
+test(
+  "removing an owner empties every owner-bearing table in the current schema",
+  { timeout: 20_000 },
+  () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const options = yield* fixture;
+          const executor = yield* createExecutor(options);
+          const db = options.storage.orm("1.9.1") as unknown as AnyTable;
+          const owned = (table: string, owner: OwnerId) =>
+            db.findMany(table, {
+              select: ["id"],
+              where: (b) => b("owner", "=", owner),
+            });
+
+          const mine = yield* populate(executor, alice);
+          const theirs = yield* populate(executor, bob);
+          for (const [owner, populated] of [
+            [alice, mine],
+            [bob, theirs],
+          ] as const)
+            yield* seedRows(db, owner, {
+              app: populated.app.id,
+              account: populated.account.id,
+              deployment: populated.app.activeDeployment,
+            });
+
+          // The fixture must reach every owner-bearing table, or "empty afterwards"
+          // would pass for a table nothing ever wrote to.
+          for (const table of ownerTables)
+            assert.ok(
+              (yield* owned(table, alice)).length > 0,
+              `Nothing seeded ${table} for the owner under test`,
+            );
+
+          yield* executor.owners.remove({ owner: alice });
+
+          for (const table of ownerTables) {
+            assert.deepEqual(yield* owned(table, alice), [], `owners.remove left rows in ${table}`);
+            // The same purge must not reach another owner's copy of any of them.
+            assert.ok(
+              (yield* owned(table, bob)).length > 0,
+              `owners.remove deleted an unrelated owner's ${table}`,
+            );
+          }
+        }).pipe(Effect.provide(services)),
+      ),
+    ),
+);
+
+test(
+  "a running workflow refuses the pre-purge check before anything is removed",
+  { timeout: 20_000 },
+  () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const options = yield* fixture;
+          const executor = yield* createExecutor(options);
+          const db = options.storage.orm("1.9.1") as unknown as AnyTable;
+          const mine = yield* populate(executor, alice);
+
+          // With no work in flight the check passes and reports the owner it read.
+          assert.deepEqual(yield* executor.owners.check({ owner: alice }), { owner: alice });
+
+          yield* db.create("workflowRuns", {
+            id: "wfr_running",
+            app: mine.app.id,
+            owner: alice,
+            key: "synthetic",
+            deployment: mine.app.activeDeployment,
+            name: "synthetic",
+            accounts: {},
+            status: "running",
+            failure: null,
+            encrypted: new Uint8Array([1]),
+            createdAt: new Date(0),
+          });
+
+          const failure = yield* Effect.flip(executor.owners.check({ owner: alice }));
+          assert.ok(Schema.is(AppWorkflowsActive)(failure));
+          assert.equal(failure.app, mine.app.id);
+          // The check reads only, so a refusal costs the caller nothing.
           assert.equal((yield* executor.apps.list({ owner: alice })).length, 1);
           assert.equal((yield* executor.accounts.list({ owner: alice })).length, 1);
         }).pipe(Effect.provide(services)),
