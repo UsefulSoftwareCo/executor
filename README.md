@@ -26,10 +26,13 @@ Repository launch commands load secrets directly from 1Password through `op run`
 For the local/hosted split, start with the [code-sharing map](notes/code-sharing.md).
 The first extracted capability is [catalog/import preparation](packages/catalog/README.md).
 Local owns installation; cloud and Docker share a separate hosted product.
-The [hosted shell](apps/hosted/README.md) serves a TanStack Router dashboard and
+The hosted product serves a TanStack Router dashboard and
 a shared Effect HTTP API on Cloudflare and Docker. Both have organization access
 and persistent SDK inventory; cloud alone adds Autumn emulator billing. Alchemy
 ships the frontend and Worker in one deployment; Docker bundles the frontend and Node server.
+
+To run your own instance, follow the public [self-host guide](apps/hosted/self-host/README.md).
+It uses one Docker container with persistent storage and browser sign-in for MCP clients.
 
 Other references: [domain terms](CONTEXT.md),
 [provider authoring](notes/provider-authoring.md),
