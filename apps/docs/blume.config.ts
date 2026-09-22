@@ -74,6 +74,7 @@ export default defineConfig({
   title: "Executor docs",
   description: "Connect your accounts once, then use them from the dashboard or any MCP client.",
   content: { root: "content" },
+  seo: { og: { logo: "/executor-og-logo.svg" } },
   // Blume injects this in production builds only, so `blume dev` and any
   // build without the deployment's variables stay clean.
   ...(analyticsKey === undefined

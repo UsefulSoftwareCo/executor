@@ -78,6 +78,11 @@ the same image under the name the rail and the footer ask for, which the
 marketing build also serves. Both resolve against their own base, so the docs
 build serves its own copy at `/docs`.
 
+Blume 1.7.3 only reads SVG logos for generated Open Graph cards.
+`public/executor-og-logo.svg` embeds the same `favicon-192.png` image, and
+`seo.og.logo` selects it so cards show the Executor mark instead of Blume's
+default initial. If the mark changes, replace the embedded PNG as well.
+
 ## Building
 
 From the repository root:
