@@ -1,7 +1,15 @@
 import { Schema } from "effect";
 
+/**
+ * The Autumn environment a catalog belongs to. Sandbox subscriptions are never paid ones, so a
+ * stage's key must belong to the same environment as its catalog.
+ */
+export const BillingEnvironment = Schema.Literals(["sandbox", "live"]);
+export type BillingEnvironment = typeof BillingEnvironment.Type;
+
 /** The catalog stack exports identities, never management credentials or customer data. */
 export const BillingCatalog = Schema.Struct({
+  environment: BillingEnvironment,
   namespace: Schema.NonEmptyString,
   executions: Schema.NonEmptyString,
   members: Schema.NonEmptyString,
@@ -71,6 +79,7 @@ export interface BillingCatalogDeclaration {
  */
 export const billingCatalogDeclaration = (
   stage: string,
+  environment: BillingEnvironment,
   options: { readonly freeExecutions?: number } = {},
 ): BillingCatalogDeclaration => {
   const namespace = `executor-next-${stage}`;
@@ -78,6 +87,7 @@ export const billingCatalogDeclaration = (
   const members = `${namespace}-members`;
   return {
     catalog: {
+      environment,
       namespace,
       executions,
       members,

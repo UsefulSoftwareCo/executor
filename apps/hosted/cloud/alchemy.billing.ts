@@ -23,12 +23,12 @@ export default Alchemy.Stack(
       return yield* Effect.die("Billing stage must be a lowercase slug");
     const environment = yield* Config.Literals(["sandbox", "live"], "AUTUMN_ENVIRONMENT");
     // The same declaration a private Autumn instance is seeded with; only the transport differs.
-    const { catalog, features, plans } = billingCatalogDeclaration(stage);
+    const { catalog, features, plans } = billingCatalogDeclaration(stage, environment);
     // Features are created first so a plan never references an identity Autumn has not seen.
     yield* AutumnFeature("Executions", features.executions).pipe(retain());
     yield* AutumnFeature("Members", features.members).pipe(retain());
     yield* AutumnPlan("Free", { ...plans.free, items: [...plans.free.items] }).pipe(retain());
     yield* AutumnPlan("Team", { ...plans.team, items: [...plans.team.items] }).pipe(retain());
-    return { environment, ...catalog };
+    return catalog;
   }),
 );

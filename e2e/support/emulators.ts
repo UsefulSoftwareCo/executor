@@ -102,11 +102,12 @@ export const createEmulatorFixture = (origin: string) =>
       });
     const google = yield* oauth("google");
     const github = yield* oauth("github");
-    const keyed = (service: string) =>
+    const keyed = (service: string, token?: string) =>
       Effect.gen(function* () {
         const instance = yield* create(service);
         const issued = yield* emulatorRequest(instance.providerBaseUrl, "/_emulate/credentials", {
           type: "api-key",
+          ...(token === undefined ? {} : { token }),
         }).pipe(
           Effect.flatMap(
             Schema.decodeUnknownEffect(
@@ -125,7 +126,8 @@ export const createEmulatorFixture = (origin: string) =>
           github,
           mail: yield* keyed("resend"),
           company: yield* keyed("context"),
-          billing: yield* keyed("autumn"),
+          // Cloud accepts only Autumn-shaped keys; a private instance is keyed like the sandbox.
+          billing: yield* keyed("autumn", `am_sk_test_${randomUUID().replaceAll("-", "")}`),
         },
       }),
     );

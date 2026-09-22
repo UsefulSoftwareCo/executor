@@ -4,6 +4,9 @@ import { Config, Effect, Option, Schema } from "effect";
 
 export const testStagePrefix = "test-";
 
+/** The stage every push to `main` deploys. It serves real customers. */
+export const productionStage = "v2";
+
 /** Slugs map one-to-one to the stage's logical database name. */
 export const TestStageSlug = Schema.String.check(
   Schema.makeFilter((value) => /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(value), {

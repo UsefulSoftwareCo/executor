@@ -10,11 +10,12 @@ import { Stage } from "alchemy/Stage";
 import {
   BillingCatalog,
   billingCatalogDeclaration,
+  type BillingEnvironment,
   seededMonthlyExecutions,
 } from "../contracts/billing-catalog.ts";
 import { AutumnServerUrl } from "../contracts/autumn.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
-import { testStage } from "./stage.ts";
+import { productionStage, testStage } from "./stage.ts";
 import { cloudEmulators, testStageEmulatorHost } from "./emulators.ts";
 import { seedBillingCatalog } from "./billing-catalog-seed.ts";
 
@@ -44,6 +45,37 @@ const assertCredentialEndpoint = (key: Redacted.Redacted<string>, serverUrl: str
     ? Effect.die("A live Autumn key may only be sent to api.useautumn.com")
     : Effect.void;
 
+/**
+ * An Autumn key names its environment in its prefix. A private instance is keyed like Autumn's
+ * sandbox, so every endpoint is held to the same rule and any other credential shape is refused.
+ */
+export const keyEnvironment = (key: Redacted.Redacted<string>) => {
+  const value = Redacted.value(key);
+  if (value.startsWith("am_sk_live_")) return Effect.succeed<BillingEnvironment>("live");
+  if (value.startsWith("am_sk_test_")) return Effect.succeed<BillingEnvironment>("sandbox");
+  return Effect.die("AUTUMN_SECRET_KEY must be an am_sk_test_ or am_sk_live_ Autumn key");
+};
+
+/**
+ * A sandbox key against a live catalog, or the reverse, would bill real customers against an
+ * environment where their subscriptions do not exist. The catalog's environment is authoritative.
+ */
+export const assertKeyEnvironment = (
+  key: Redacted.Redacted<string>,
+  environment: BillingEnvironment,
+) =>
+  keyEnvironment(key).pipe(
+    Effect.flatMap((actual) =>
+      actual === environment
+        ? Effect.void
+        : Effect.die(`A ${actual} Autumn key cannot serve the ${environment} billing catalog`),
+    ),
+  );
+
+/** A private instance accepts any bearer; its generated key carries the sandbox prefix. */
+const instanceKey = (value: Redacted.Redacted<string>) =>
+  Redacted.make(`am_sk_test_${Redacted.value(value)}`);
+
 /** An unset or blank setting means Autumn itself, so an empty deployment variable is not a URL. */
 const configuredServerUrl = Config.NonEmptyString("AUTUMN_SERVER_URL").pipe(
   Config.option,
@@ -56,7 +88,7 @@ const configuredServerUrl = Config.NonEmptyString("AUTUMN_SERVER_URL").pipe(
 const instanceUrl = (host: string, slug: string, instance: Redacted.Redacted<string>) =>
   Redacted.make(`${host}/autumn/executor-next-${slug}-${Redacted.value(instance)}`);
 
-export const billingSettings = Effect.gen(function* () {
+const billingEndpoint = Effect.gen(function* () {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const context = yield* CurrentRuntimeContext;
   if (context === undefined)
@@ -90,11 +122,12 @@ export const billingSettings = Effect.gen(function* () {
       serverUrl: (yield* instance.text).pipe(
         Effect.flatMap((value) => decodeServerUrl(instanceUrl(host, slug, value))),
       ),
-      secretKey: yield* secret.text,
+      secretKey: (yield* secret.text).pipe(Effect.map(instanceKey)),
     } satisfies BillingSettings;
   }
   const serverUrl = yield* configuredServerUrl;
   const secretKey = yield* Config.Redacted("AUTUMN_SECRET_KEY");
+  yield* keyEnvironment(secretKey);
   yield* assertCredentialEndpoint(secretKey, Redacted.value(serverUrl));
   return {
     catalog,
@@ -102,6 +135,17 @@ export const billingSettings = Effect.gen(function* () {
     secretKey: Effect.succeed(secretKey),
   } satisfies BillingSettings;
 });
+
+/** The catalog is only ever read together with the key that will serve it. */
+export const billingSettings = billingEndpoint.pipe(
+  Effect.map((settings): BillingSettings => ({
+    ...settings,
+    catalog: Effect.all([settings.catalog, settings.secretKey]).pipe(
+      Effect.tap(([catalog, key]) => assertKeyEnvironment(key, catalog.environment)),
+      Effect.map(([catalog]) => catalog),
+    ),
+  })),
+);
 
 /**
  * Provision the catalog this stage will read back at runtime.
@@ -117,8 +161,9 @@ export const billingBindings = Effect.gen(function* () {
     secretKey: Output.Output<Redacted.Redacted<string>>,
   ) => {
     // A throwaway instance belongs to one stage, so its free plan carries an allowance a test
-    // run cannot exhaust. The difference lives in the seed data, never in the product.
-    const declaration = billingCatalogDeclaration(stage, {
+    // run cannot exhaust. The difference lives in the seed data, never in the product. A seeded
+    // instance never holds paid subscriptions, so its catalog declares the sandbox environment.
+    const declaration = billingCatalogDeclaration(stage, "sandbox", {
       freeExecutions: seededMonthlyExecutions,
     });
     return {
@@ -148,25 +193,28 @@ export const billingBindings = Effect.gen(function* () {
     const secret = yield* Random("BillingSecret");
     return provision(
       instance.text.pipe(Output.map((value) => instanceUrl(host, slug, value))),
-      secret.text,
+      secret.text.pipe(Output.map(instanceKey)),
     );
   }
   const serverUrl = yield* configuredServerUrl;
   const secretKey = yield* Config.Redacted("AUTUMN_SECRET_KEY");
+  const environment = yield* keyEnvironment(secretKey);
+  // Production bills real customers. Stop before anything is written rather than bind a sandbox.
+  if (stage === productionStage && environment !== "live")
+    return yield* Effect.die(`The ${productionStage} stage requires a live Autumn key`);
   yield* assertCredentialEndpoint(secretKey, Redacted.value(serverUrl));
   if (Redacted.value(serverUrl) !== autumnServer)
     return provision(Output.asOutput(serverUrl), Output.asOutput(secretKey));
-  const live = Redacted.value(secretKey).startsWith("am_sk_live_");
-  const catalog = yield* Output.stackRef<BillingCatalog & { environment: "sandbox" | "live" }>(
-    "executor-next-billing",
-    { stage: live ? `${stage}-live` : stage },
-  );
+  const catalog = yield* Output.stackRef<BillingCatalog>("executor-next-billing", {
+    stage: environment === "live" ? `${stage}-live` : stage,
+  });
   return {
     EXECUTOR_BILLING_CATALOG: catalog.pipe(
       Output.map((value) => {
-        if (value.environment !== (live ? "live" : "sandbox"))
+        if (value.environment !== environment)
           throw new Error("Deploy the billing catalog for the selected Autumn account first");
         return JSON.stringify({
+          environment: value.environment,
           namespace: value.namespace,
           executions: value.executions,
           members: value.members,
