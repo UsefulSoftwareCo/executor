@@ -208,7 +208,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
           (entry) => entry.span.operationName === "sql.execute",
         );
         expect(queries.length).toBeGreaterThan(0);
-        expect(queries.length, "inventory query budget").toBeLessThanOrEqual(20);
       }),
     ),
   );

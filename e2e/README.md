@@ -250,7 +250,7 @@ modified. Raw video and trace artifacts remain in the case directory.
 
 The server log and complete Motel database remain under each target's run folder.
 Saved trace samples are not a full trace archive. The telemetry test checks actual
-server spans, status and SQL query count; client spans cannot satisfy it. While
+server spans, status and the presence of SQL spans; client spans cannot satisfy it. While
 running, `data/diagnostics/collector.json` identifies the collector query URL.
 
 All runs use synthetic identities. Private run directories and session files are
