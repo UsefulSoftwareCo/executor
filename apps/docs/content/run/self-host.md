@@ -48,23 +48,24 @@ Tracing is configured separately and is off until you set an endpoint. See
 
 ## Run it
 
-During the beta the image is built from the repository rather than pulled from a
-registry.
+Use `ghcr.io/usefulsoftwareco/executor-selfhost:beta` for Executor v2 on Linux
+amd64 or arm64. The `latest` tag still serves v1. Start with a new volume;
+this image does not migrate an existing v1 database.
+
+Supply the three required variables through your secret manager, then run:
 
 ```bash
-git clone https://github.com/UsefulSoftwareCo/executor-next
-cd executor-next
-docker compose -f apps/hosted/self-host/compose.yaml up --build -d
+docker pull ghcr.io/usefulsoftwareco/executor-selfhost:beta
+docker run --detach --name executor-v2 --init --restart unless-stopped \
+  --publish 127.0.0.1:4400:4400 \
+  --volume executor-v2-data:/app/data \
+  --env BETTER_AUTH_URL --env BETTER_AUTH_SECRET --env EXECUTOR_ENCRYPTION_KEY \
+  ghcr.io/usefulsoftwareco/executor-selfhost:beta
 ```
 
-Supply the three required variables in the environment of that command, or in a
-`.env` file beside it.
-
-```bash
-BETTER_AUTH_URL=https://executor.example.com
-BETTER_AUTH_SECRET=<stable random secret of at least 32 characters>
-EXECUTOR_ENCRYPTION_KEY=<stable 64-character hexadecimal key>
-```
+Use `BETTER_AUTH_URL=http://localhost:4400` for a local instance, or your exact
+HTTPS origin for a server. Add `--env NAME` for any optional settings above.
+To pin a release, replace `beta` with `beta-<full Git commit SHA>`.
 
 The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
@@ -74,7 +75,7 @@ first boot takes a moment.
 Stop it with:
 
 ```bash
-docker compose -f apps/hosted/self-host/compose.yaml down
+docker stop executor-v2
 ```
 
 The first person to finish setup becomes the owner, and one organization is
@@ -83,11 +84,27 @@ have configured it.
 
 ## Storage
 
-Everything that must survive a restart lives in the named volume `pglite-data`,
+Everything that must survive a restart lives in the named volume `executor-v2-data`,
 mounted at `/app/data`. That is the database, the encrypted credentials and the
 diagnostics.
 
 Back up by snapshotting that volume. Do not remove it when you update the image.
+Before updating, stop the container and back up the volume. Pull the new image,
+remove only the stopped container with `docker rm executor-v2`, and repeat the
+run command with the same volume and secrets.
+
+## Build from source
+
+The public repository also includes a Compose setup that builds locally:
+
+```bash
+git clone --depth 1 --branch v2 https://github.com/UsefulSoftwareCo/executor.git executor-v2
+cd executor-v2
+docker compose -f apps/hosted/self-host/compose.yaml up --build -d
+```
+
+Supply the same required variables. This Compose setup uses a separate named
+volume, `pglite-data`; do not confuse it with the published-image example above.
 
 ## Serving app web pages
 
@@ -117,8 +134,3 @@ command.
 
 The MCP endpoint is `<your origin>/mcp`. Sign-in happens in the browser, the
 same way as hosted. See [Add an MCP client](/mcp-clients).
-
-## What is coming later
-
-- A published container image, so self-hosting does not need a clone and a
-  build.
