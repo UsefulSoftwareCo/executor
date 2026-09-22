@@ -1,7 +1,7 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
-import { requireAppAccess } from "./resource-policy.ts";
+import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
 /** Hosted policy around the shared app browser protocol and retained asset renderer. */
 import {
   AccountRequired,
@@ -44,7 +44,6 @@ import {
   organizationOwner,
   type OrganizationAccess,
 } from "../contracts/organization.ts";
-import { checkAccounts } from "./access.ts";
 import type { appAddresses } from "./app-addresses.ts";
 
 /** Authorization belongs to one HTTP request, never a shared or timed cache. */
@@ -161,9 +160,7 @@ export const hostedAppUi = (
     const sessions = yield* HostedAppSessions;
     const access = yield* sessions.current(resolved.target, token.value);
     const app = resolved.app;
-    const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-    yield* requireAppAccess(app.id, "use").pipe(
-      Effect.andThen(checkAccounts(executor, access.owner, app.accounts)),
+    yield* requireAppUse(app).pipe(
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(CurrentUserId, access.userId),
       Effect.mapError((error) =>
@@ -431,7 +428,7 @@ export const hostedAppUi = (
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(unavailable));
     const version = yield* deployment(current.app, params.deployment);
-    return appAsset(yield* assets(version, params["*"]));
+    return yield* appAsset(yield* assets(version, params["*"]), version.build, params["*"]);
   }).pipe(htmlFailure);
   const originAccess = HttpRouter.middleware((response) =>
     requestOrigin.pipe(

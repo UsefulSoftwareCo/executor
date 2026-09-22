@@ -164,6 +164,8 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               response.text().then((script) => ({
                 script,
                 timing: response.headers()["server-timing"],
+                etag: response.headers()["etag"],
+                cacheControl: response.headers()["cache-control"],
               })),
             ),
         );
@@ -172,6 +174,38 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         if (assetTraceId === undefined) return yield* Effect.die("The asset has no request trace");
         if (mapName === undefined)
           return yield* Effect.die("The deployed browser entry has no source map");
+        expect(entry.cacheControl).toBe("private, no-cache, must-revalidate");
+        const etag = entry.etag;
+        if (etag === undefined) return yield* Effect.die("The immutable asset has no ETag");
+        const revalidated = yield* browser.use(
+          "Revalidate bytes without downloading the bundle",
+          (page) =>
+            page
+              .context()
+              .request.get(scriptUrl, {
+                headers: { "if-none-match": etag },
+              })
+              .then((response) =>
+                response
+                  .body()
+                  .then((body) => ({ status: response.status(), bytes: body.byteLength })),
+              ),
+        );
+        expect(revalidated).toEqual({ status: 304, bytes: 0 });
+        expect(
+          (yield* browser.use("An ETag never substitutes for an app session", (page) =>
+            page.context().request.get(scriptUrl, {
+              headers: { cookie: "", "if-none-match": etag },
+            }),
+          )).status(),
+        ).toBe(401);
+        expect(
+          (yield* browser.use("A validator cannot make a missing file exist", (page) =>
+            page.context().request.get(new URL("missing-fixture.js", scriptUrl).href, {
+              headers: { "if-none-match": "*" },
+            }),
+          )).status(),
+        ).toBe(404);
         const sourceMap = yield* browser.use("Read the authenticated source map", (page) =>
           page
             .context()
@@ -256,6 +290,17 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         yield* evidence.json("app-asset-trace.json", assetTrace);
         if (target.metadata.target === "cloud") {
+          expect(
+            assetTrace.data.some((row) => row.span.tags["executor.asset.cache"] === "hit"),
+          ).toBe(true);
+          expect(
+            assetTrace.data.some((row) => row.span.operationName === "runtime.cloud.asset.object"),
+          ).toBe(false);
+          expect(
+            assetTrace.data.some(
+              (row) => row.span.operationName === "runtime.cloud.asset.manifest",
+            ),
+          ).toBe(false);
           expect(
             assetTrace.data.filter((row) => row.span.operationName === "sql.connect"),
             "An authenticated asset shares one SQL connection between app and permission reads",
@@ -460,6 +505,11 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         expect(
           (yield* browser.use("Retained assets also require current access", (page) =>
             page.context().request.get(scriptUrl),
+          )).status(),
+        ).toBe(403);
+        expect(
+          (yield* browser.use("A matching validator cannot bypass revoked access", (page) =>
+            page.context().request.get(scriptUrl, { headers: { "if-none-match": etag } }),
           )).status(),
         ).toBe(403);
         yield* browser.checkpoint("Revocation stops the open stream and protects retained assets");

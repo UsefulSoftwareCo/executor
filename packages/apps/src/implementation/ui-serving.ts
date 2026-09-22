@@ -47,11 +47,29 @@ export const appDocument = <E, R>(options: {
     );
   });
 
-/** Versioned asset endpoints never expose HTML as a second application entry point. */
-export const appAsset = (asset: AppUiAsset | undefined) =>
-  asset === undefined || asset.contentType === "text/html"
-    ? HttpServerResponse.empty({ status: 404 })
-    : HttpServerResponse.uint8Array(asset.body, {
-        contentType: asset.contentType,
-        headers: appPrivateHeaders,
-      });
+/** Revalidate immutable assets only after the host has checked current access and file existence.
+ * Browsers may retain bytes, but neither browsers nor shared proxies may reuse them without authorization.
+ * HTML remains an uncached host-rendered entry point.
+ */
+export const appAsset = (asset: AppUiAsset | undefined, build: string, path: string) =>
+  Effect.gen(function* () {
+    if (asset === undefined || asset.contentType === "text/html")
+      return HttpServerResponse.empty({ status: 404, headers: appPrivateHeaders });
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const etag = `W/"${encodeURIComponent(build)}/${encodeURIComponent(path)}"`;
+    const headers = {
+      ...appPrivateHeaders,
+      "cache-control": "private, no-cache, must-revalidate",
+      vary: "Cookie",
+      etag,
+    };
+    const matches = request.headers["if-none-match"]
+      ?.split(",")
+      .some(
+        (candidate) =>
+          candidate.trim() === "*" || candidate.trim().replace(/^W\//, "") === etag.slice(2),
+      );
+    return matches
+      ? HttpServerResponse.empty({ status: 304, headers })
+      : HttpServerResponse.uint8Array(asset.body, { contentType: asset.contentType, headers });
+  });

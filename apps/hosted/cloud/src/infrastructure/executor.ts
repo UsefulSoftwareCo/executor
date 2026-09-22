@@ -24,6 +24,7 @@ import { Config, Context, Effect, Layer, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { SqlClient } from "effect/unstable/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
+import { cachedBuildAssets } from "../implementation/asset-cache.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
 import { cloudBlobs } from "./blobs.ts";
@@ -66,6 +67,11 @@ export const cloudExecutor = Effect.fn(function* (
   const makeRuntime = yield* cloudRuntime(databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
+  const assets = yield* makeExecutionMemo(
+    cachedBuildAssets(origin, (build, path) =>
+      cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+    ),
+  );
   const { sources, repositories } = yield* cloudAppSources;
   // App storage and hosted permission checks use the same database. Share its
   // client only inside this execution; the event scope owns all connections.
@@ -155,7 +161,10 @@ export const cloudExecutor = Effect.fn(function* (
     Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
     Layer.succeed(HostedAppRuntime, {
       asset: ({ build, path }) =>
-        cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+        assets.pipe(
+          Effect.flatMap((read) => read(build, path)),
+          Effect.provide(RuntimeContext.phantom),
+        ),
     }),
     Layer.succeed(
       AppManagementHost,

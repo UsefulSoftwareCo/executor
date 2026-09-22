@@ -7,6 +7,8 @@ import { Actors } from "../support/actors.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
+import { Browser } from "../support/browser.ts";
+import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 
 const Access = Schema.Struct({
   revision: Schema.String,
@@ -188,7 +190,18 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           App,
           yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Array ${suffix}`,
-            files: [{ path: "index.ts", content: arraySource }],
+            files: [
+              { path: "index.ts", content: arraySource },
+              {
+                path: "ui/index.html",
+                content:
+                  "<!doctype html><html><head><title>Account protected UI</title></head><body><h1>Account protected UI</h1></body></html>",
+              },
+              {
+                path: "ui/public/probe.svg",
+                content: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>',
+              },
+            ],
           }),
         );
         created.apps.push(array.id);
@@ -268,6 +281,63 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         );
         expect(allowed.status).toBe(200);
         expect(allowed.body).toEqual(["personal", "team"]);
+        const browser = yield* Browser;
+        const appUrl = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`);
+        yield* browser.login(actors.owner);
+        yield* openPrivateApp(appUrl);
+        yield* browser.use("All selected accounts permit the UI", (page) =>
+          page.getByRole("heading", { name: "Account protected UI" }).waitFor(),
+        );
+        const assetUrl = yield* browser.use("Locate the account-protected asset", (page) =>
+          page.evaluate(() => new URL("probe.svg", document.baseURI).href),
+        );
+        const validator = yield* browser.use("Warm the account-protected asset", (page) =>
+          page
+            .context()
+            .request.get(assetUrl)
+            .then((response) => {
+              expect(response.status()).toBe(200);
+              return response.headers()["etag"];
+            }),
+        );
+        if (validator === undefined)
+          return yield* Effect.die("Account-protected asset has no ETag");
+        const currentTeamAccess = yield* body(
+          Access,
+          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${team.id}/access`),
+        );
+        const restrictedTeam = yield* body(
+          Access,
+          yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
+            revision: currentTeamAccess.revision,
+            audience: { kind: "groups", groups: [sales.id] },
+          }),
+        );
+        expect(
+          (yield* browser.use("Revoking one array account denies cached UI bytes", (page) =>
+            page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+          )).status(),
+        ).toBe(403);
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
+            revision: restrictedTeam.revision,
+            audience: { kind: "everyone" },
+          })).status,
+        ).toBe(200);
+        expect(
+          (yield* browser.use("Restored account permission revalidates the same asset", (page) =>
+            page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+          )).status(),
+        ).toBe(304);
+        yield* browser.login(actors.admin);
+        yield* openPrivateApp(appUrl);
+        expect(
+          (yield* browser.use(
+            "An administrator cannot use another person's account in the UI",
+            (page) =>
+              page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+          )).status(),
+        ).toBe(403);
         expect(
           (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
             .status,
@@ -315,6 +385,18 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${personal.id}`)).status,
         ).toBe(200);
         created.accounts.splice(created.accounts.indexOf(personal.id), 1);
+        // Renaming above changed the app origin; its old session cannot transfer.
+        const renamedUrl = yield* waitForAppUrl(actors.admin, `${prefix}/apps/${array.id}/ui`);
+        yield* openPrivateApp(renamedUrl);
+        const remainingAsset = yield* browser.use(
+          "Locate the renamed app's retained asset",
+          (page) => page.evaluate(() => new URL("probe.svg", document.baseURI).href),
+        );
+        expect(
+          (yield* browser.use("The UI allows the remaining shared array account", (page) =>
+            page.context().request.get(remainingAsset),
+          )).status(),
+        ).toBe(200);
         const bindings = Schema.Struct({
           accounts: Schema.Record(
             Schema.String,

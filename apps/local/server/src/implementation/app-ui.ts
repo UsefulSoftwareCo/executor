@@ -175,7 +175,7 @@ export const appUi = (
     ).pipe(Effect.mapError(() => failed()));
     const version = yield* deployment(app, params.deployment);
     const content = yield* readAsset(version.build, params["*"]);
-    return appAsset(content);
+    return yield* appAsset(content, version.build, params["*"]);
   }).pipe(htmlResponse);
   const page = Effect.gen(function* () {
     const app = yield* authorize;

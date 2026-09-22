@@ -146,6 +146,56 @@ export const requireAppAccess = (app: AppId, action: "read" | "manage" | "use") 
     if (!allowed) return yield* new OrganizationForbidden();
     return access;
   });
+
+/** Check current membership, app use and every selected account in one database snapshot.
+ * The app was resolved with its owner before this call. Management never grants use.
+ */
+export const requireAppUse = (app: App) =>
+  Effect.gen(function* () {
+    const organization = (yield* CurrentOrganization).organization;
+    const user = yield* CurrentUserId;
+    if (user === undefined || app.owner !== `organization:${organization}`)
+      return yield* new OrganizationForbidden();
+    const selected = [
+      ...new Set(
+        Object.values(app.accounts).flatMap((value) =>
+          typeof value === "string" ? [value] : value,
+        ),
+      ),
+    ];
+    const sql = yield* policyDatabase;
+    const rows = yield* sql`select exists (
+      select 1 from member m
+      join hosted_app_access p on p.organization_id = m."organizationId"
+      join executor_apps a on a.id = p.id
+      where m."organizationId" = ${organization} and m."userId" = ${user}
+        and a.id = ${app.id} and a.owner = ${app.owner}
+        and (p.audience = 'everyone'
+          or (p.audience = 'private' and p.creator_id = ${user})
+          or (p.audience = 'groups' and exists (
+            select 1 from hosted_app_groups g
+            join hosted_group_members gm on gm.group_id = g.group_id
+            where g.app_id = p.id and gm.member_id = m.id)))
+        and (select count(*) from hosted_account_access ap
+          join executor_accounts ac on ac.id = ap.account_id
+          where ${sql.in("ac.id", selected)} and ac.owner = ${app.owner}
+            and ap.organization_id = ${organization}
+            and ((ap.kind = 'personal' and ap.personal_user_id = ${user})
+              or (ap.kind = 'shared' and (ap.audience = 'everyone'
+                or (ap.audience = 'groups' and exists (
+                  select 1 from hosted_account_groups ag
+                  join hosted_group_members gm on gm.group_id = ag.group_id
+                  where ag.account_id = ap.account_id and gm.member_id = m.id)))))) = ${selected.length}
+      ) as allowed`;
+    const result = yield* Schema.decodeUnknownEffect(
+      Schema.Array(Schema.Struct({ allowed: Schema.Boolean })),
+    )(rows);
+    if (result.length !== 1 || result[0]?.allowed !== true)
+      return yield* new OrganizationForbidden();
+  }).pipe(
+    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+    Effect.withSpan("app.ui.authorize.resources"),
+  );
 /** Account metadata allows shared-account managers; personal metadata has no admin bypass. */
 export const requireAccountAccess = (account: AccountId, action: "read" | "manage" | "use") =>
   Effect.gen(function* () {
