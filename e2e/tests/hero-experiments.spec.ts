@@ -33,6 +33,9 @@ layer(TestLive, { excludeTestServices: true })("Hero experiments", (it) => {
           page.goto("/"),
         );
         if (response === null) return yield* Effect.die("Missing document response");
+        yield* browser.use("Dismiss the early preview notice", (page) =>
+          page.getByRole("button", { name: "Got it", exact: true }).click(),
+        );
         const html = yield* browser.use("Read the original HTML", () => response.text());
         const initial = yield* readHero;
         expect(initial.variant).toMatch(/^(category|outcome)-(intent|build)$/);
