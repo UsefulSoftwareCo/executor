@@ -170,7 +170,6 @@ layer(HostedLive, { excludeTestServices: true })("App Tailwind styles", (it) => 
           '@import "tailwindcss"; @plugin "./custom-plugin.js";',
         ]) {
           const rejected = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
-            expectedDeployment: app.activeDeployment,
             files: files.map((file) =>
               file.path === "ui/style.css" ? { ...file, content: invalid } : file,
             ),

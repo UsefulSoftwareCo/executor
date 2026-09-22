@@ -115,6 +115,14 @@ test(
               executor,
               sources,
               repositories,
+              // Hosted members must not inherit local pairing's default management authority.
+              access: (app: typeof App.Type, caller: { readonly canWrite: boolean }) =>
+                Effect.succeed({
+                  visible: true,
+                  manage: caller.canWrite,
+                  edit: caller.canWrite,
+                  accounts: app.accounts,
+                }),
               registry,
               blobs,
               publisher: createAppRegistry({ storage: packageStorage, executor, sources }),
@@ -237,8 +245,7 @@ test(
           const history: unknown = yield* json(`/api/apps/${app.id}/history`);
           assert.ok(Array.isArray(history) && history.length === 2);
           yield* json(`/api/apps/${app.id}/deploy`, {
-            expectedSource: edited.revision.commit,
-            expectedDeployment: null,
+            commit: edited.revision.commit,
           });
           assert.ok((yield* executor.apps.get({ owner, app: app.id })).activeDeployment);
           yield* json(`/api/apps/${app.id}/publication`, { commit: edited.revision.commit });

@@ -1,5 +1,5 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
-import type { App, AppId, DeploymentId } from "@executor-js/sdk";
+import type { App, AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Data, Effect, type Cause } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
@@ -12,9 +12,10 @@ class PublicCopy extends Data.Class<{ readonly package: string; readonly commit:
 const api = appManagementApi("/api", AppAccess);
 type WireClient = HttpApiClient.ForApi<typeof api>["appManagement"];
 type Endpoints = typeof api.groups.appManagement.endpoints;
+type WithoutResponseMode<Request> = Request extends unknown ? Omit<Request, "responseMode"> : never;
 type Client<E> = {
   readonly [K in keyof WireClient]: (
-    request: Omit<Parameters<WireClient[K]>[0], "responseMode">,
+    request: WithoutResponseMode<Parameters<WireClient[K]>[0]>,
   ) => Effect.Effect<Endpoints[K]["~Success"]["Type"], E>;
 };
 /** Each host patches confirmed app metadata using its existing mutation conventions. */
@@ -46,8 +47,7 @@ export const makeAppManagementAtoms = <R, E>(
     runtime.fn(
       (
         input: {
-          expectedSource: string;
-          expectedDeployment: DeploymentId | null;
+          commit: string;
           onApp: AppAcknowledgement;
         },
         get,
@@ -56,16 +56,13 @@ export const makeAppManagementAtoms = <R, E>(
           api.deploy({
             params: { ...params, app },
             payload: {
-              expectedSource: input.expectedSource,
-              expectedDeployment: input.expectedDeployment,
+              commit: input.commit,
             },
           }),
         ).pipe(
           Effect.tap((saved) =>
             Effect.sync(() => {
               input.onApp(get, saved.app);
-              acknowledge(get, source(app), (view) => ({ ...view, ...saved.source }));
-              get.refresh(history(app));
             }),
           ),
         ),

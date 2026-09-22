@@ -16,11 +16,11 @@ export const DeploymentMetadata = Schema.Struct({
   id: DeploymentId,
   code: AppCodeId,
   owner: OwnerId,
-  sourceCommit: SourceCommit,
+  sourceCommit: Schema.NullOr(SourceCommit),
   build: BuildId,
   createdAt: Schema.Date,
 });
-/** A retained build reference without loading its Git source. */
+/** A retained build reference without loading its source files. */
 export type DeploymentMetadata = typeof DeploymentMetadata.Type;
 
 /** Source inspection explicitly hydrates files; serving and execution use metadata. */

@@ -78,12 +78,10 @@ test("drafts deploy in place, edits stay inactive, and copies use running source
         const deployed = yield* executor.apps.deploy({
           owner,
           app: draft.id,
-          expectedDeployment: null,
-          expectedSource: edited.revision.commit,
-          files: edited.files,
+          commit: edited.revision.commit,
         });
         assert.equal(deployed.app.id, draft.id);
-        assert.equal(deployed.source.revision.commit, edited.revision.commit);
+        assert.equal(deployed.deployment.sourceCommit, edited.revision.commit);
         const head = yield* executor.apps.workspace({ owner, app: draft.id });
         yield* executor.apps.commit({
           owner,
@@ -92,17 +90,16 @@ test("drafts deploy in place, edits stay inactive, and copies use running source
           files: source("Draft changes"),
           message: "Edit without deploying",
         });
-        const staleDeploy = yield* executor.apps
-          .deploy({
-            owner,
-            app: draft.id,
-            expectedDeployment: deployed.deployment.id,
-            expectedSource: head.revision.commit,
-            files: head.files,
-          })
-          .pipe(Effect.flip);
-        assert.ok(Schema.is(SourceError)(staleDeploy));
-        assert.equal(staleDeploy.reason, "conflict");
+        const pinned = yield* executor.apps.deploy({
+          owner,
+          app: draft.id,
+          commit: head.revision.commit,
+        });
+        assert.equal(pinned.deployment.sourceCommit, head.revision.commit);
+        assert.deepEqual(
+          (yield* executor.apps.workspace({ app: draft.id })).files,
+          source("Draft changes"),
+        );
         const tools = yield* executor.tools.list({ app: draft.id });
         const hello = tools.items[0];
         assert.ok(hello);

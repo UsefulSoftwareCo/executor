@@ -17,7 +17,11 @@ const App = Schema.Struct({
   activeDeployment: Schema.NullOr(Schema.String),
   accounts: Schema.Record(Schema.String, Schema.Unknown),
   copiedFrom: Schema.NullOr(
-    Schema.Struct({ reference: Schema.String, name: Schema.String, commit: Schema.String }),
+    Schema.Struct({
+      reference: Schema.String,
+      name: Schema.String,
+      commit: Schema.NullOr(Schema.String),
+    }),
   ),
 });
 const files = (message: string) => [
@@ -89,11 +93,10 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
         );
         expect(history).toHaveLength(1);
         expect(history.map((entry) => entry.commit)).not.toContain(ahead.revision.commit);
-        const stale = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
-          expectedSource: working.revision.commit,
-          expectedDeployment: original.activeDeployment,
+        const pinned = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
+          commit: working.revision.commit,
         });
-        expect(stale.status).toBe(409);
+        expect(pinned.status).toBe(200);
         expect(
           (yield* body(Workspace, yield* api.request(actors.owner, "GET", `${path}/workspace`)))
             .revision.commit,
@@ -106,7 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
         );
         expect(renamed.copiedFrom).toEqual(copy.copiedFrom);
         const deployed = yield* saveAndDeploy(actors.owner, copyPath, {
-          expectedDeployment: copy.activeDeployment,
           files: files("my edit"),
         });
         expect(deployed.status).toBe(200);

@@ -10,6 +10,7 @@ import { localAppManagement } from "./app-management.ts";
 import {
   ExecutorApi,
   WorkflowHost,
+  recoverAppRepositories,
   type Executor,
   AccountNotFound,
   AppNotFound,
@@ -108,6 +109,12 @@ export const localApi = (
         },
       });
       yield* Deferred.succeed(ready, executor);
+      yield* Effect.forkScoped(
+        recoverAppRepositories({ database: storage, sources, blobs }).pipe(
+          Effect.catch(() => Effect.logWarning("App repository recovery failed")),
+          Effect.repeat(Schedule.spaced("10 seconds")),
+        ),
+      );
       yield* Effect.forkScoped(
         executor[WorkflowHost].reconcile.pipe(
           Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),

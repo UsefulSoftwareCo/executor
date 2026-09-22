@@ -341,8 +341,6 @@ test("app names determine slugs; normalized collisions fail without allocating s
         const deployed = yield* executor.apps.deploy({
           owner,
           app: first.id,
-          expectedDeployment: renamed.activeDeployment,
-          expectedSource: (yield* executor.apps.workspace({ app: first.id })).revision.commit,
           files,
         });
         assert.equal(deployed.app.slug, renamed.slug);

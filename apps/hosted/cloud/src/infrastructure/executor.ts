@@ -16,7 +16,13 @@ import {
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
-import { StorageError, BlobStore, makeExecutorStorage } from "@executor-js/sdk/core";
+import {
+  AppRepositoryRecovery,
+  recoverAppRepositories,
+  StorageError,
+  BlobStore,
+  makeExecutorStorage,
+} from "@executor-js/sdk/core";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -144,6 +150,15 @@ export const cloudExecutor = Effect.fn(function* (
   // Alchemy's runtime requirement marks event-only operations; it is not a
   // service supplied to request fibers. Keep the live caller scope and tracer.
   return Layer.mergeAll(
+    Layer.succeed(
+      AppRepositoryRecovery,
+      executor.pipe(
+        Effect.flatMap((resources) =>
+          recoverAppRepositories({ database: resources.storage, sources, blobs }),
+        ),
+        Effect.provide(RuntimeContext.phantom),
+      ),
+    ),
     Layer.succeed(
       GroupDatabase,
       database.pipe(

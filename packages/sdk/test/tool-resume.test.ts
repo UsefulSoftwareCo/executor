@@ -130,8 +130,6 @@ test(
           yield* f.executor.apps.deploy({
             owner,
             app: f.app.id,
-            expectedDeployment: f.app.activeDeployment,
-            expectedSource: (yield* f.executor.apps.workspace({ app: f.app.id })).revision.commit,
             files: [{ path: "index.ts", content: source("second") }],
           });
           yield* f.executor.accounts.replaceCredentials({

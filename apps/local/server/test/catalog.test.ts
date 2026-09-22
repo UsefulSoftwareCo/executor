@@ -1292,9 +1292,6 @@ test(
                   const deployed = yield* executor.apps.deploy({
                     owner: first.owner,
                     app: first.id,
-                    expectedDeployment: first.activeDeployment,
-                    expectedSource: (yield* executor.apps.workspace({ app: first.id })).revision
-                      .commit,
                     files: retained.files,
                   });
                   assert.equal(

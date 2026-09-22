@@ -160,7 +160,6 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           { path: "skills/Bad-Name/SKILL.md", content: document("v1") },
         ]) {
           const rejected = yield* saveAndDeploy(actors.owner, path, {
-            expectedDeployment: app.activeDeployment,
             files: [{ path: "index.ts", content: "!invalid javascript" }, invalid],
           });
           expect(rejected.status).toBe(400);
@@ -170,7 +169,6 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           ).toBe(app.activeDeployment);
         }
         const changed = yield* saveAndDeploy(actors.owner, path, {
-          expectedDeployment: app.activeDeployment,
           files: files("v2"),
         });
         expect(changed.status).toBe(200);

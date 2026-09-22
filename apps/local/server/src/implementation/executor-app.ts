@@ -41,9 +41,6 @@ export const installExecutorApp = (
           : (yield* executor.apps.deploy({
               owner,
               app: existing.id,
-              expectedDeployment: existing.activeDeployment,
-              expectedSource: (yield* executor.apps.workspace({ owner, app: existing.id })).revision
-                .commit,
               files,
             })).app;
     const requirement = app.requirements.accounts.executor;

@@ -200,17 +200,15 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const identity = yield* editIdentity(params.app);
           const host = yield* Effect.flatten(AppManagementHost);
           const { app } = yield* ownedSource(host, identity, params.app, true);
-          const files = yield* host.sources.read({
-            code: app.code,
-            commit: payload.expectedSource,
-          });
           const deployed = yield* host.executor.apps.deploy({
-            ...payload,
             owner: app.owner,
             app: app.id,
-            files,
+            ...payload,
           });
-          return { app: yield* projectApp(host, deployed.app, identity), source: deployed.source };
+          return {
+            app: yield* projectApp(host, deployed.app, identity),
+            deployment: deployed.deployment,
+          };
         }),
       )
       .handle("copy", ({ payload }) =>
@@ -243,6 +241,8 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
           const { app } = yield* ownedSource(host, identity, params.app);
+          if (app.repository === null)
+            yield* host.executor.apps.workspace({ app: app.id, owner: app.owner });
           return yield* host.repositories.history(app.code);
         }),
       )
@@ -257,7 +257,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             owner: identity.owner,
             namespace: identity.namespace,
             app: params.app,
-            commit: payload.commit,
+            ...payload,
           });
         }),
       )
@@ -355,6 +355,8 @@ export const gitRoutes = (() => {
       url.searchParams.get("service") === "git-receive-pack";
     if (write && (!identity.canWrite || !access.edit || identity.protectedApps.includes(app.id)))
       return yield* new AppAccessDenied({ reason: "forbidden" });
+    if (app.repository === null)
+      yield* host.executor.apps.workspace({ app: app.id, owner: app.owner });
     return HttpServerResponse.fromWeb(
       yield* host.repositories.request(app.code, yield* HttpServerRequest.toWeb(request)),
     ).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));

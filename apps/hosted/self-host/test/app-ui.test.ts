@@ -721,8 +721,7 @@ test(
                   origin,
                   `${appPath}/deploy`,
                   {
-                    expectedSource: committed.revision.commit,
-                    expectedDeployment: saved.deployment,
+                    commit: committed.revision.commit,
                   },
                   saved.parent,
                 ),

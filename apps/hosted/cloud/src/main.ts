@@ -3,7 +3,7 @@ import { executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainCoordinatorLive, cloudAppDomains } from "./infrastructure/app-domains.ts";
-import { WorkflowHost } from "@executor-js/sdk/core";
+import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
@@ -152,6 +152,13 @@ export default Api.make(
     yield* AppWorkflows;
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
     const schedules = yield* cloudSchedules;
+    yield* Cloudflare.Workers.cron("* * * * *", () =>
+      Effect.flatten(AppRepositoryRecovery).pipe(
+        Effect.provide(executor),
+        Effect.catch(() => Effect.logWarning("App repository recovery failed")),
+        lifetime.background,
+      ),
+    );
     const appDomains = yield* cloudAppDomains;
     const appUi = hostedAppUi(
       appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),

@@ -45,7 +45,11 @@ export type StoredDeployment = typeof StoredDeployment.Type;
  * A configured app stores its own account selections and active deployment.
  * Public App.requirements is read from that deployment rather than duplicated.
  */
-export const StoredApp = App.mapFields(Struct.omit(["requirements"])).check(
+export const StoredApp = Schema.Struct({
+  ...App.mapFields(Struct.omit(["requirements"])).fields,
+  deploySequence: Schema.Int,
+  activatedSequence: Schema.Int,
+}).check(
   Schema.makeFilter((app) => app.slug === appSlug(app.name), {
     message: "The app address must match its current name",
   }),

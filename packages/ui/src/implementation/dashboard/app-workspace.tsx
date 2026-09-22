@@ -88,8 +88,7 @@ function WorkspaceSource<E>({
               disabled={!source.canEdit || pending}
               onClick={() => {
                 void deploy({
-                  expectedSource: source.revision.commit,
-                  expectedDeployment: app.activeDeployment,
+                  commit: source.revision.commit,
                   onApp,
                 }).catch(() => {});
               }}

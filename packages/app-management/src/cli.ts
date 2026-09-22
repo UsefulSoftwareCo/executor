@@ -207,13 +207,11 @@ export const appsCommand = (platform: string) =>
       Command.make("deploy", {
         ...connection,
         app,
-        source: Flag.String("source"),
-        expected: Flag.String("expected-deployment").pipe(Flag.optional),
+        commit: Flag.String("commit"),
       }).pipe(
         Command.withHandler((args) =>
           send(args.host, args.organization, `/apps/${encodeURIComponent(args.app)}/deploy`, {
-            expectedSource: args.source,
-            expectedDeployment: Option.getOrNull(args.expected),
+            commit: args.commit,
           }),
         ),
       ),

@@ -114,12 +114,15 @@ export const storageSchema = schema({
       build: column("build", BuildId, { type: "varchar(255)" }),
       requirements: column("requirements", Schema.Json),
       createdAt: column("created_at", Schema.Date),
-      sourceCommit: column("source_commit", SourceCommit, { type: "varchar(40)" }),
+      sourceCommit: column("source_commit", Schema.NullOr(SourceCommit), { type: "varchar(40)" }),
       fileCount: column("file_count", Schema.Int),
     }).unique("executor_deployments_id_code", ["id", "code"]),
     apps: table("executor_apps", {
+      deploySequence: column("deploy_sequence", Schema.Int).default(0),
+      activatedSequence: column("activated_sequence", Schema.Int).default(0),
       id: idColumn("id", AppId, { type: "varchar(255)" }),
       code: column("code", AppCodeId, { type: "varchar(255)" }),
+      repository: column("repository", Schema.NullOr(AppCodeId), { type: "varchar(255)" }),
       owner: column("owner", OwnerId, { type: "varchar(255)" }),
       name: column("name", Schema.String, { type: "varchar(255)" }),
       activeDeployment: column("active_deployment", Schema.NullOr(DeploymentId), {

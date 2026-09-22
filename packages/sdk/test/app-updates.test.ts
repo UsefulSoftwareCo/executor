@@ -87,8 +87,6 @@ test(
           const second = yield* executor.apps.deploy({
             owner,
             app: first.app.id,
-            expectedDeployment: first.deployment.id,
-            expectedSource: first.source.revision.commit,
             files: files("two"),
           });
           assert.equal(second.app.id, first.app.id);
@@ -147,8 +145,6 @@ test(
             executor.apps.deploy({
               owner,
               app: initial.app.id,
-              expectedDeployment: initial.deployment.id,
-              expectedSource: initial.source.revision.commit,
               files: files("fail"),
             }),
           );
@@ -189,8 +185,6 @@ test(
             incompatibleExecutor.apps.deploy({
               owner,
               app: app.app.id,
-              expectedDeployment: app.deployment.id,
-              expectedSource: app.source.revision.commit,
               files: files("next"),
             }),
           );
@@ -209,7 +203,7 @@ test(
 );
 
 test(
-  "stale expected deployments and foreign lineage or owner lookups are rejected",
+  "stale activations and foreign lineage or owner lookups are rejected",
   { timeout: 10_000 },
   () =>
     Effect.runPromise(
@@ -224,17 +218,14 @@ test(
           const second = yield* executor.apps.deploy({
             owner,
             app: first.app.id,
-            expectedDeployment: first.deployment.id,
-            expectedSource: first.source.revision.commit,
             files: files("two"),
           });
           const stale = yield* Effect.flip(
-            executor.apps.deploy({
+            executor.apps.activate({
               owner,
               app: first.app.id,
+              deployment: first.deployment.id,
               expectedDeployment: first.deployment.id,
-              expectedSource: first.source.revision.commit,
-              files: files("three"),
             }),
           );
           assert.ok(Schema.is(AppDeploymentChanged)(stale));
@@ -331,8 +322,6 @@ test(
             .deploy({
               owner,
               app: initial.app.id,
-              expectedDeployment: initial.deployment.id,
-              expectedSource: initial.source.revision.commit,
               files: files("two"),
             })
             .pipe(Effect.forkChild);
@@ -369,7 +358,7 @@ test("deploy by name creates a fresh app and rejects a duplicate", { timeout: 10
 );
 
 test(
-  "a deployment committed during a slow build rejects the stale build without retaining a deployment row",
+  "a late older build is retained without replacing the newer successful deployment",
   { timeout: 10_000 },
   () =>
     Effect.runPromise(
@@ -401,8 +390,6 @@ test(
             .deploy({
               owner,
               app: first.app.id,
-              expectedDeployment: first.deployment.id,
-              expectedSource: first.source.revision.commit,
               files: files("slow"),
             })
             .pipe(Effect.result, Effect.forkChild);
@@ -410,19 +397,18 @@ test(
           const latest = yield* executor.apps.deploy({
             owner,
             app: first.app.id,
-            expectedDeployment: first.deployment.id,
-            expectedSource: first.source.revision.commit,
             files: files("fast"),
           });
           yield* Deferred.succeed(release, undefined);
           const result = yield* Fiber.join(slow);
-          assert.ok(Result.isFailure(result));
-          assert.ok(Schema.is(AppDeploymentChanged)(result.failure));
+          assert.ok(Result.isSuccess(result));
+          assert.equal(result.success.deployment.build, BuildId.make("bld_slow"));
+          assert.equal(result.success.app.activeDeployment, latest.deployment.id);
           assert.equal(
             (yield* executor.apps.get({ app: first.app.id })).activeDeployment,
             latest.deployment.id,
           );
-          assert.equal((yield* executor.apps.deployments({ app: first.app.id })).length, 2);
+          assert.equal((yield* executor.apps.deployments({ app: first.app.id })).length, 3);
         }).pipe(Effect.provide(services)),
       ),
     ),
@@ -444,8 +430,6 @@ test(
             executor.apps.deploy({
               owner,
               app: first.app.id,
-              expectedDeployment: first.deployment.id,
-              expectedSource: first.source.revision.commit,
               files: files("two"),
             }),
           );
@@ -471,3 +455,112 @@ test(
       ),
     ),
 );
+
+// A failing Git adapter makes any accidental read, commit, or retention observable.
+test("file deployments and copies run with Git unavailable and preserve exact inputs", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = yield* fixture();
+        const unavailable = () => Effect.die("File deployment must not access Git");
+        const executor = yield* createExecutor({
+          ...options,
+          sources: {
+            workspace: unavailable,
+            commit: unavailable,
+            read: unavailable,
+            retain: unavailable,
+          },
+        });
+        const first = yield* executor.apps.deploy({ owner, name: "No Git", files: files("first") });
+        assert.equal(first.app.repository, null);
+        assert.equal(first.deployment.sourceCommit, null);
+        assert.equal("source" in first, false);
+        const next = yield* executor.apps.deploy({
+          owner,
+          app: first.app.id,
+          files: files("next"),
+        });
+        assert.deepEqual(
+          (yield* executor.apps.source({ app: first.app.id, deployment: first.deployment.id }))
+            .files,
+          files("first"),
+        );
+        assert.deepEqual((yield* executor.apps.source({ app: first.app.id })).files, files("next"));
+        const copied = yield* executor.apps.copy({
+          owner,
+          from: first.app.id,
+          name: "No Git copy",
+        });
+        assert.equal(copied.repository, null);
+        assert.deepEqual(
+          (yield* executor.apps.source({ app: copied.id })).files,
+          next.deployment.files,
+        );
+        const draft = yield* executor.apps.create({
+          owner,
+          name: "No Git draft",
+          files: files("draft"),
+        });
+        const draftCopy = yield* executor.apps.copy({
+          owner,
+          from: draft.id,
+          name: "No Git draft copy",
+        });
+        assert.equal(draftCopy.activeDeployment, null);
+        assert.equal(draftCopy.repository, null);
+      }).pipe(Effect.provide(services)),
+    ),
+  ));
+
+test("a newer slow success promotes after an older success; a failed newer build does not fence success", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const newerFails of [false, true]) {
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const runtime = runtimeFor((input) =>
+            input.files[0].content === "slow"
+              ? Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.as({
+                    build: BuildId.make("bld_slow"),
+                    requirements: requirements("Synthetic"),
+                  }),
+                )
+              : input.files[0].content === "fail"
+                ? Effect.fail(new RuntimeBuildFailed({ stage: "compile" }))
+                : Effect.succeed({
+                    build: BuildId.make("bld_fast"),
+                    requirements: requirements("Synthetic"),
+                  }),
+          );
+          const executor = yield* createExecutor(yield* fixture(runtime));
+          const first = yield* executor.apps.deploy({
+            owner,
+            name: `Ordering ${newerFails}`,
+            files: files("initial"),
+          });
+          if (!newerFails)
+            yield* executor.apps.deploy({ owner, app: first.app.id, files: files("older") });
+          const slow = yield* executor.apps
+            .deploy({ owner, app: first.app.id, files: files("slow") })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          if (newerFails) {
+            const failure = yield* executor.apps
+              .deploy({ owner, app: first.app.id, files: files("fail") })
+              .pipe(Effect.flip);
+            assert.ok(Schema.is(DeploymentBuildFailed)(failure));
+          }
+          yield* Deferred.succeed(release, undefined);
+          const successful = yield* Fiber.join(slow);
+          assert.equal(
+            (yield* executor.apps.get({ app: first.app.id })).activeDeployment,
+            successful.deployment.id,
+          );
+        }
+      }).pipe(Effect.provide(services)),
+    ),
+  ));

@@ -59,7 +59,7 @@ export const AppName = Schema.String.check(
 export const AppCopyOrigin = Schema.Struct({
   reference: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
-  commit: SourceCommit,
+  commit: Schema.NullOr(SourceCommit),
 });
 export type AppCopyOrigin = typeof AppCopyOrigin.Type;
 /** A host-resolved snapshot. Hosts authorize its origin before invoking the SDK. */
@@ -74,6 +74,7 @@ export const App = Schema.Struct({
   id: AppId,
   slug: AppSlug,
   code: AppCodeId,
+  repository: Schema.NullOr(AppCodeId),
   owner: OwnerId,
   name: Schema.NonEmptyString,
   activeDeployment: Schema.NullOr(DeploymentId),
@@ -92,22 +93,27 @@ export const DeployedApp = App.mapFields((fields) => ({
 }));
 export type DeployedApp = typeof DeployedApp.Type;
 
-/** Public deploy input, keyed either by the owner's app name or stable app id. */
+/** Deploy complete files or read an existing commit; deployment never edits Git. */
 export const DeployAppInput = Schema.Union([
   Schema.Struct({
     owner: OwnerId,
-    name: Schema.NonEmptyString,
+    name: AppName,
     files: SourceFiles,
     app: Schema.optional(Schema.Never),
-    expectedDeployment: Schema.optional(Schema.Never),
-    expectedSource: Schema.optional(Schema.Never),
+    commit: Schema.optional(Schema.Never),
   }),
   Schema.Struct({
     owner: OwnerId,
     app: AppId,
-    expectedDeployment: Schema.NullOr(DeploymentId),
-    expectedSource: SourceCommit,
     files: SourceFiles,
+    commit: Schema.optional(Schema.Never),
+    name: Schema.optional(Schema.Never),
+  }),
+  Schema.Struct({
+    owner: OwnerId,
+    app: AppId,
+    commit: SourceCommit,
+    files: Schema.optional(Schema.Never),
     name: Schema.optional(Schema.Never),
   }),
 ]);
@@ -246,7 +252,7 @@ export const AppInputs = {
 const appParams = { app: AppInputs.get.fields.app };
 const ownerQuery = { owner: AppInputs.get.fields.owner };
 
-/** Creation and checked updates share the same build pipeline; copies always own independent source. */
+/** Creation and deployment share a build pipeline; copies own independent source. */
 export const AppsGroup = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.post("create", "/v1/apps/drafts", {
@@ -284,14 +290,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNotDeployed,
         DeploymentBuildFailed,
         SkillDefinitionInvalid,
-        AppDeploymentChanged,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }),
     HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
       payload: AppInputs.deploy,
-      success: Schema.Struct({ app: DeployedApp, deployment: Deployment, source: SourceSnapshot }),
+      success: Schema.Struct({ app: DeployedApp, deployment: Deployment }),
       error: [
         ...sourceErrors,
         StorageError,
@@ -300,13 +305,12 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,
-        AppDeploymentChanged,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or updates by app ID with the source revision and deployment the caller read. Activates only after a successful build. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Discover tools in the next execute call.",
     ),
   )
   .add(

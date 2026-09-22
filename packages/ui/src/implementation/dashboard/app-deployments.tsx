@@ -74,7 +74,11 @@ export function AppDeployments<E>({
                   <div className="flex items-center gap-2">
                     <dt className="text-muted-foreground">Source</dt>
                     <dd>
-                      <code title={source.sourceCommit}>{source.sourceCommit.slice(0, 7)}</code>
+                      {source.sourceCommit === null ? (
+                        "Files"
+                      ) : (
+                        <code title={source.sourceCommit}>{source.sourceCommit.slice(0, 7)}</code>
+                      )}
                     </dd>
                   </div>
                 </dl>

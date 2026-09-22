@@ -12,7 +12,6 @@ export const saveAndDeploy = (
   actor: Session,
   path: string,
   input: {
-    readonly expectedDeployment: string | null;
     readonly files: readonly { readonly path: string; readonly content: string }[];
   },
 ) =>
@@ -29,7 +28,6 @@ export const saveAndDeploy = (
     if (saved.status !== 200) return saved;
     const source = yield* body(Workspace, saved);
     return yield* api.request(actor, "POST", `${path}/deploy`, {
-      expectedSource: source.revision.commit,
-      expectedDeployment: input.expectedDeployment,
+      commit: source.revision.commit,
     });
   });

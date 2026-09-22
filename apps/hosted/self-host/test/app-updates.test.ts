@@ -203,7 +203,6 @@ test(
           const updateSource = (
             path: string,
             input: {
-              expectedDeployment: typeof App.Type.activeDeployment;
               files: typeof SourceFiles.Type;
             },
           ) =>
@@ -219,8 +218,7 @@ test(
               if (!saved.ok) return saved;
               const commit = yield* read(saved, SourceSnapshot);
               return yield* request(`${path}/deploy`, {
-                expectedSource: commit.revision.commit,
-                expectedDeployment: input.expectedDeployment,
+                commit: commit.revision.commit,
               });
             });
           const first = yield* read(
@@ -297,9 +295,8 @@ test(
             Schema.toCodecJson(Deployment),
           );
           assert.deepEqual(before.files, source("one"));
-          const updated = (yield* read(
+          let updated = (yield* read(
             yield* updateSource(appPath, {
-              expectedDeployment: before.id,
               files: source("two"),
             }),
             Schema.toCodecJson(Schema.Struct({ app: App })),
@@ -328,17 +325,16 @@ test(
             ),
             { version: "two", account: account.id },
           );
-          yield* rejected(
-            yield* updateSource(appPath, {
-              expectedDeployment: before.id,
-              files: source("stale"),
-            }),
-            AppDeploymentChanged,
-            409,
+          updated = (yield* read(
+            yield* request(`${appPath}/deploy`, { files: source("raw files") }),
+            Schema.toCodecJson(Schema.Struct({ app: App })),
+          )).app;
+          assert.deepEqual(
+            (yield* executor.apps.workspace({ app: first.id })).files,
+            source("two"),
           );
           yield* rejected(
             yield* updateSource(appPath, {
-              expectedDeployment: updated.activeDeployment,
               files: [{ path: "index.ts", content: "export default !!!" }],
             }),
             DeploymentBuildFailed,
@@ -348,7 +344,7 @@ test(
             (yield* executor.apps.get({ app: first.id })).activeDeployment,
             updated.activeDeployment,
           );
-          assert.equal((yield* executor.apps.deployments({ app: first.id })).length, 2);
+          assert.equal((yield* executor.apps.deployments({ app: first.id })).length, 3);
           yield* rejected(
             yield* request(`${appPath}/activate`, {
               expectedDeployment: before.id,
@@ -382,8 +378,6 @@ test(
           const foreign = yield* executor.apps.deploy({
             owner: copy.owner,
             app: copy.id,
-            expectedDeployment: copy.activeDeployment,
-            expectedSource: (yield* executor.apps.workspace({ app: copy.id })).revision.commit,
             files: source("foreign"),
           });
           yield* rejected(
@@ -467,7 +461,6 @@ test(
             assert.equal((yield* request(appPath + path)).status, 403);
           assert.equal(
             (yield* updateSource(appPath, {
-              expectedDeployment: rolled.activeDeployment,
               files: source("denied"),
             })).status,
             403,

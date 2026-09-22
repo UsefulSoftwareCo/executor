@@ -226,8 +226,6 @@ test(
           const deployed = yield* executor.apps.deploy({
             owner: recipient,
             app: installed.id,
-            expectedDeployment: installed.activeDeployment,
-            expectedSource: edited.revision.commit,
             files: edited.files,
           });
           assert.deepEqual(

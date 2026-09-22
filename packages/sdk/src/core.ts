@@ -29,3 +29,5 @@ export {
   type WorkflowRuntime,
   type WorkflowDriver,
 } from "./contracts/workflow-runtime.ts";
+
+export { recoverAppRepositories, AppRepositoryRecovery } from "./implementation/initial-source.ts";

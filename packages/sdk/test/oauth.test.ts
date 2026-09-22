@@ -466,8 +466,6 @@ test("remote HTTP discovery and token endpoints are rejected before OAuth networ
       const { app } = await f.executor.apps.deploy({
         owner: f.app.owner,
         app: f.app.id,
-        expectedDeployment: (await f.executor.apps.get({ app: f.app.id })).activeDeployment,
-        expectedSource: (await f.executor.apps.workspace({ app: f.app.id })).revision.commit,
         files: [{ path: "index.ts", content: "// Invalid OAuth endpoint fixture" }],
       });
       const provider = app.requirements.accounts.service?.provider;
@@ -1050,8 +1048,6 @@ test("targeted secrets replace an unchanged deleted selection, preserve other sl
     await f.executor.apps.deploy({
       owner: f.app.owner,
       app: f.app.id,
-      expectedDeployment: (await f.executor.apps.get({ app: f.app.id })).activeDeployment,
-      expectedSource: (await f.executor.apps.workspace({ app: f.app.id })).revision.commit,
       files: [{ path: "index.ts", content: "// Two slots" }],
     });
     const previous = await f.executor.accounts.add({
@@ -1163,8 +1159,6 @@ test("many targets append to current selections across concurrent requests witho
     await f.executor.apps.deploy({
       owner: f.app.owner,
       app: f.app.id,
-      expectedDeployment: (await f.executor.apps.get({ app: f.app.id })).activeDeployment,
-      expectedSource: (await f.executor.apps.workspace({ app: f.app.id })).revision.commit,
       files: [{ path: "index.ts", content: "// Many accounts" }],
     });
     const existing = await f.executor.accounts.add({
@@ -1251,8 +1245,6 @@ for (const change of ["removed", "slot", "provider", "cardinality"] as const)
         await f.executor.apps.deploy({
           owner: f.app.owner,
           app: f.app.id,
-          expectedDeployment: (await f.executor.apps.get({ app: f.app.id })).activeDeployment,
-          expectedSource: (await f.executor.apps.workspace({ app: f.app.id })).revision.commit,
           files: [{ path: "index.ts", content: "// Changed requirement" }],
         });
       }

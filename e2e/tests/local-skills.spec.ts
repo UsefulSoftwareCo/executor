@@ -129,11 +129,6 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             {
               owner: "local",
               app: app.id,
-              expectedDeployment: app.activeDeployment,
-              expectedSource: (yield* body(
-                Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) }),
-                yield* session.send("GET", `/v1/apps/${app.id}/workspace`, undefined, headers),
-              )).revision.commit,
               files: files("two"),
             },
             headers,

@@ -98,8 +98,6 @@ export const organizationDefaults = (
             current = (yield* executor.apps.deploy({
               owner,
               app: app.id,
-              expectedDeployment: app.activeDeployment,
-              expectedSource: workspace.revision.commit,
               files: source.files,
             })).app;
           }

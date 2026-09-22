@@ -286,7 +286,6 @@ signatures first. Hosted paths include `organization`; Local paths contain only
 ```js
 const api = tools.executor;
 const path = { organization: "<approved-organization-id>", app: "<app-id>" };
-const app = await api.queries.apps_get({ path });
 const source = await api.queries.appManagement_source({ path });
 const saved = await api.mutations.appManagement_commit({
   path,
@@ -298,7 +297,7 @@ const saved = await api.mutations.appManagement_commit({
 });
 return await api.mutations.appManagement_deploy({
   path,
-  body: { expectedSource: saved.revision.commit, expectedDeployment: app.activeDeployment },
+  body: { commit: saved.revision.commit },
 });
 ```
 
@@ -309,16 +308,16 @@ Discovery is not cached across a change, so run `tools.search` again after you
 deploy.
 
 The CLI also provides `executor apps source`, `executor apps commit`, and
-`executor apps deploy`. Deploy the chosen commit with its expected running
-version. Ordinary Git pushes save source without deploying it.
+`executor apps deploy --commit <sha>`. Deployment reads the chosen commit and
+leaves the Git branch unchanged. Ordinary Git pushes save source without deploying it.
 
 ## Update a hosted app
 
-Read the current source with `apps_source`. Submit the complete edited file set
-through `apps_update`, with `expectedDeployment` set to the source response's
-`id`. The app keeps its ID and stored data. If another deployment won the race,
-read the source again before retrying. Use `apps_activate` to select a retained
-deployment; activation does not roll back stored data.
+Use `appManagement_deploy` with `{ files: [...] }` to deploy a complete file set,
+or `{ commit: "<sha>" }` to deploy an existing Git commit. File deployments do not
+save changes to Git. The app keeps its ID and stored data. The newest successful
+deployment becomes active. Use `apps_activate` to select a retained deployment;
+activation does not roll back stored data.
 
 ## Open an app UI
 

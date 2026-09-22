@@ -36,7 +36,8 @@ app data or external actions.
 
 Source edits and Git pushes do not deploy automatically. An agent reads working
 source, commits changes against that revision, then deploys the saved commit.
-The deployment checks both the source revision and current running version.
+Deployment accepts complete files or an existing Git commit. It does not edit Git.
+The newest successful deployment becomes active.
 
 ## Public apps
 

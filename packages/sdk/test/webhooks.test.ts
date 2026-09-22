@@ -327,8 +327,6 @@ test(
             yield* executor.apps.deploy({
               owner,
               app: app.id,
-              expectedDeployment: app.activeDeployment,
-              expectedSource: (yield* executor.apps.workspace({ app: app.id })).revision.commit,
               files: source(remote.url, 2),
             });
             const response = yield* deliver();

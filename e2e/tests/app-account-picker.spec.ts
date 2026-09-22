@@ -412,16 +412,11 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
             .fill("Draft before provider change"),
         );
         const appPath = `${prefix}/apps/${app.id}`;
-        const metadata = yield* body(
-          Schema.Struct({ activeDeployment: Schema.String }),
-          yield* api.request(actors.owner, "GET", appPath),
-        );
         const workspace = yield* body(
           Workspace,
           yield* api.request(actors.owner, "GET", `${appPath}/workspace`),
         );
         const changed = yield* saveAndDeploy(actors.owner, appPath, {
-          expectedDeployment: metadata.activeDeployment,
           files: workspace.files.map((file) => ({
             ...file,
             content: file.content.replace("Browser fixture", "Changed browser fixture"),

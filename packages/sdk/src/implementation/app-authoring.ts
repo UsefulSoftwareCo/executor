@@ -1,5 +1,7 @@
 /** Drafts and source edits belong to the same app identities as running deployments. */
 import { Clock, Crypto, Effect } from "effect";
+import type { BlobStorage } from "../contracts/blobs.ts";
+import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
 import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
@@ -12,6 +14,7 @@ import { storedApp, createApp as storeApp } from "./apps.ts";
 export const makeAppAuthoring = (
   db: Query,
   sources: AppSourceStorage,
+  blobs: BlobStorage,
   crypto: Crypto.Crypto,
   lifecycle?: ResourceLifecycle,
 ) => {
@@ -26,15 +29,11 @@ export const makeAppAuthoring = (
       const id = AppId.make(
         `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
       );
-      yield* sources.commit({
-        code,
-        files: input.files,
-        expected: null,
-        message: copiedFrom === null ? "Create app" : "Copy app source",
-      });
+      yield* writeInitialSource(blobs, code, input.files);
       const app = {
         id,
         code,
+        repository: null,
         owner: input.owner,
         name: input.name,
         slug: appSlug(input.name),
@@ -52,7 +51,8 @@ export const makeAppAuthoring = (
           );
           if (existing !== null)
             return yield* new AppNameTaken({ owner: input.owner, name: input.name });
-          yield* storeApp(tx, app);
+          const stored = { ...app, deploySequence: 0, activatedSequence: 0 };
+          yield* storeApp(tx, stored);
           if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements: { accounts: {} } });
         }),
       );
@@ -63,6 +63,7 @@ export const makeAppAuthoring = (
     workspace: (input: Parameters<Executor["apps"]["workspace"]>[0]) =>
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
         const source = yield* sources.workspace(app.code);
         if (source === null) return yield* new SourceError({ reason: "not-found" });
         return source;
@@ -70,6 +71,7 @@ export const makeAppAuthoring = (
     commit: (input: Parameters<Executor["apps"]["commit"]>[0]) =>
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
         return yield* sources.commit({
           code: app.code,
           expected: input.expected,

@@ -88,13 +88,8 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         expect(downloaded["/direct-fixture.tgz"]).toBe(1);
         expect(downloaded["/transitive-fixture.tgz"]).toBe(1);
         expect(downloaded).not.toHaveProperty("/unused.tgz");
-        const source = yield* body(
-          Schema.Struct({ id: Schema.String }),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
-        );
         const rebuilt = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
           files: files(packages.older, packages.direct, packages.unused),
-          expectedDeployment: source.id,
         });
         expect(rebuilt.status, JSON.stringify(rebuilt.body)).toBe(200);
         expect(yield* body(Schema.String, yield* call("queries.version"))).toBe("older-package");
@@ -107,7 +102,6 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         );
         const rejected = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
           files: files(packages.unsupported, packages.direct, packages.unused),
-          expectedDeployment: current.id,
         });
         expect(rejected.status).toBeGreaterThanOrEqual(400);
         expect(yield* body(Schema.String, yield* call("queries.version"))).toBe("older-package");

@@ -46,7 +46,7 @@ export const createExecutor = (
       workflows.controls,
     );
     const apps = {
-      ...makeApps(db, runtime, crypto, options.sources, options.lifecycle),
+      ...makeApps(db, runtime, crypto, options.sources, options.blobs, options.lifecycle),
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };

@@ -39,7 +39,14 @@ export function AppSettings({
               {app.copiedFrom.name}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Source <code title={app.copiedFrom.commit}>{app.copiedFrom.commit.slice(0, 7)}</code>
+              {app.copiedFrom.commit === null ? (
+                "Copied files"
+              ) : (
+                <>
+                  Source{" "}
+                  <code title={app.copiedFrom.commit}>{app.copiedFrom.commit.slice(0, 7)}</code>
+                </>
+              )}
             </p>
             <p className="mt-3 text-xs text-muted-foreground">
               This app is an independent copy. Changes to the original do not update it.

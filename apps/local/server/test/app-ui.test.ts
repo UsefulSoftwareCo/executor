@@ -445,12 +445,6 @@ test(
                 payload: {
                   owner: first.app.owner,
                   app: first.app.id,
-                  expectedDeployment: first.app.activeDeployment,
-                  expectedSource: (
-                    await Effect.runPromise(
-                      client.apps.workspace({ params: { app: first.app.id }, query: {} }),
-                    )
-                  ).revision.commit,
                   files: Schema.decodeUnknownSync(SourceFiles)(
                     files.map((file) =>
                       file.path === "ui/index.html"

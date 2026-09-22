@@ -166,7 +166,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         expect(second).not.toBe(account);
         const updated = yield* saveAndDeploy(actors.owner, path, {
           files: files("v2"),
-          expectedDeployment: app.activeDeployment,
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
         const completed = yield* wait(run.id, "complete");

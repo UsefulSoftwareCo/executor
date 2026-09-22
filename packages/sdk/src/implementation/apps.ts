@@ -3,10 +3,11 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable deployments, sharing one execution path. */
-import { Clock, type Crypto, Effect, Schema } from "effect";
+import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
 import { SqlError } from "effect/unstable/sql";
 import {
   App,
+  DeployedApp,
   AppNameTaken,
   AppNotFound,
   AppNotDeployed,
@@ -40,7 +41,11 @@ import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
 import { validateSelection } from "./selection.ts";
 import { prepareAppSkills } from "./skill-source.ts";
-import { SourceError, sourceFilesEqual, type AppSourceStorage } from "../contracts/source.ts";
+import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
+
+import type { BlobStorage } from "../contracts/blobs.ts";
+import { readDeploymentSource, writeDeploymentSource } from "./deployment-source.ts";
+import { readInitialSource, writeInitialSource } from "./initial-source.ts";
 
 type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
 
@@ -113,7 +118,7 @@ const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown
       if (app.activeDeployment !== null && deployment === null)
         return Effect.fail(new StorageError());
       return Effect.succeed({
-        ...app,
+        ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
         requirements: deployment === null ? { accounts: {} } : deployment.requirements,
       });
     }),
@@ -122,7 +127,10 @@ const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
   if (app.activeDeployment === null)
-    return Effect.succeed({ ...app, requirements: { accounts: {} } });
+    return Effect.succeed({
+      ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
+      requirements: { accounts: {} },
+    });
   return query(() =>
     db.findFirst("deployments", {
       select: ["requirements"],
@@ -137,7 +145,10 @@ function project(db: Query, app: StoredApp) {
           ),
     ),
 
-    Effect.map((deployment): App => ({ ...app, requirements: deployment.requirements })),
+    Effect.map((deployment): App => ({
+      ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
+      requirements: deployment.requirements,
+    })),
   );
 }
 
@@ -161,24 +172,52 @@ export const makeApps = (
   runtime: Runtime,
   crypto: Crypto.Crypto,
   sources: AppSourceStorage,
+  blobs: BlobStorage,
   lifecycle?: ResourceLifecycle,
 ) => {
-  const authoring = makeAppAuthoring(db, sources, crypto, lifecycle);
+  const authoring = makeAppAuthoring(db, sources, blobs, crypto, lifecycle);
   const deploy = (input: DeployInput, copiedFrom: AppCopyOrigin | null = null) =>
     Effect.gen(function* () {
-      const deployName = yield* Effect.gen(function* () {
-        if (input.app === undefined) return input.name;
-        const current = yield* storedApp(db, { app: input.app, owner: input.owner });
-        if (current.activeDeployment !== input.expectedDeployment) {
-          return yield* new AppDeploymentChanged({
-            app: input.app,
-            expected: input.expectedDeployment,
-            current: current.activeDeployment,
-          });
-        }
-        return current.name;
-      });
-      const files = yield* Schema.decodeUnknownEffect(SourceFiles)(input.files).pipe(
+      // Reserve an order before building. Only successful promotions advance the other counter.
+      const before =
+        input.app === undefined
+          ? null
+          : yield* transaction(db, (tx) =>
+              Effect.gen(function* () {
+                const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
+                const deploySequence = current.deploySequence + 1;
+                yield* query(() =>
+                  tx.updateMany("apps", {
+                    where: (b) => b("id", "=", current.id),
+                    set: { deploySequence },
+                  }),
+                );
+                return { ...current, deploySequence };
+              }),
+            );
+      const deployName = before === null ? input.name : before.name;
+      if (deployName === undefined) return yield* new StorageError();
+      if (before === null) {
+        const taken = yield* query(() =>
+          db.findFirst("apps", {
+            where: (b) => b.and(b("owner", "=", input.owner), b("name", "=", deployName)),
+          }),
+        );
+        if (taken !== null)
+          return yield* new AppNameTaken({ owner: input.owner, name: deployName });
+      }
+      const code =
+        before === null
+          ? AppCodeId.make(
+              `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+            )
+          : before.code;
+      const sequence = before === null ? 1 : before.deploySequence;
+      const suppliedFiles =
+        input.commit === undefined
+          ? input.files
+          : yield* sources.read({ code, commit: input.commit });
+      const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
         Effect.mapError(
           () =>
             new DeploymentBuildFailed({
@@ -189,27 +228,6 @@ export const makeApps = (
         ),
       );
       yield* prepareAppSkills(files);
-      const before = yield* query(() =>
-        db.findFirst("apps", {
-          where: (b) =>
-            input.app === undefined
-              ? b.and(b("owner", "=", input.owner), b("name", "=", deployName))
-              : b.and(b("owner", "=", input.owner), b("id", "=", input.app)),
-        }),
-      );
-      if (before !== null && input.app === undefined)
-        return yield* new AppNameTaken({ owner: input.owner, name: deployName });
-      const code =
-        before?.code ??
-        AppCodeId.make(
-          `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
-      const workspace =
-        before === null
-          ? null
-          : yield* sources.workspace(code).pipe(Effect.mapError(() => new StorageError()));
-      if (input.app !== undefined && workspace?.revision.commit !== input.expectedSource)
-        return yield* new SourceError({ reason: "conflict" });
       const built = yield* runtime.build({ files }).pipe(
         Effect.mapError(
           (error) =>
@@ -242,27 +260,19 @@ export const makeApps = (
         ),
       };
 
-      if (input.app !== undefined) {
-        const current = yield* storedApp(db, { app: input.app, owner: input.owner });
-        if (current.activeDeployment !== input.expectedDeployment)
-          return yield* new AppDeploymentChanged({
-            app: current.id,
-            expected: input.expectedDeployment,
-            current: current.activeDeployment,
-          });
-      }
-      const source =
-        workspace !== null && sourceFilesEqual(workspace.files, files)
-          ? workspace
-          : yield* sources.commit({
-              code,
-              expected: workspace?.revision.commit ?? null,
-              files,
-              message: "Deploy app source",
-            });
-      const revision = yield* sources
-        .retain(code, files)
-        .pipe(Effect.mapError(() => new StorageError()));
+      const deployment = {
+        id: DeploymentId.make(
+          `dpl_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+        ),
+        code,
+        owner: input.owner,
+        sourceCommit: input.commit ?? null,
+        build: built.build,
+        createdAt: new Date(yield* Clock.currentTimeMillis),
+      };
+      yield* writeDeploymentSource(blobs, deployment.id, files);
+      // A new app owns an initial workspace independently of this immutable deployment.
+      if (before === null) yield* writeInitialSource(blobs, code, files);
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
           const row = yield* query(() =>
@@ -283,19 +293,6 @@ export const makeApps = (
             return yield* Effect.fail(new AppNotFound({ app: input.app }));
           if (existing !== undefined && input.app === undefined)
             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
-          if (
-            input.app !== undefined &&
-            existing !== undefined &&
-            existing.activeDeployment !== input.expectedDeployment
-          ) {
-            return yield* Effect.fail(
-              new AppDeploymentChanged({
-                app: existing.id,
-                expected: input.expectedDeployment,
-                current: existing.activeDeployment,
-              }),
-            );
-          }
           const appId =
             existing?.id ??
             AppId.make(
@@ -303,7 +300,8 @@ export const makeApps = (
             );
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const accounts = existing === undefined ? {} : existing.accounts;
-          yield* validateSelection(tx, appId, requirements, accounts);
+          const promote = existing === undefined || sequence > existing.activatedSequence;
+          if (promote) yield* validateSelection(tx, appId, requirements, accounts);
           for (const { provider } of entries) {
             const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
               provider.definition,
@@ -316,16 +314,6 @@ export const makeApps = (
               }),
             );
           }
-          const deployment = {
-            id: DeploymentId.make(
-              `dpl_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            ),
-            code,
-            owner: input.owner,
-            sourceCommit: revision.commit,
-            build: built.build,
-            createdAt,
-          };
           const encodedRequirements = yield* Schema.encodeEffect(
             Schema.toCodecJson(AppRequirements),
           )(requirements).pipe(Effect.mapError(() => new StorageError()));
@@ -339,25 +327,37 @@ export const makeApps = (
           const app = {
             id: appId,
             code,
+            repository: existing === undefined ? null : existing.repository,
             owner: input.owner,
             name: existing?.name ?? deployName,
             slug: appSlug(existing?.name ?? deployName),
             accounts,
-            activeDeployment: deployment.id,
+            activeDeployment: promote ? deployment.id : existing.activeDeployment,
             copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
             createdAt: existing === undefined ? createdAt : existing.createdAt,
           };
           if (existing === undefined) {
-            yield* createApp(tx, { ...app, name: deployName });
+            yield* createApp(tx, {
+              ...app,
+              name: deployName,
+              deploySequence: sequence,
+              activatedSequence: sequence,
+            });
             if (lifecycle) yield* lifecycle.appCreated({ ...app, requirements });
-          } else
+          } else if (promote)
             yield* query(() =>
               tx.updateMany("apps", {
                 where: (b) => b("id", "=", app.id),
-                set: { activeDeployment: deployment.id },
+                set: { activeDeployment: deployment.id, activatedSequence: sequence },
               }),
             );
-          return { app: { ...app, requirements }, deployment: { ...deployment, files }, source };
+          const projected = promote
+            ? { ...app, requirements }
+            : yield* project(tx, { ...existing, ...app });
+          const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          return { app: deployedApp, deployment: { ...deployment, files } };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
@@ -372,10 +372,7 @@ export const makeApps = (
               if (parent.activeDeployment !== null) {
                 const deployment = yield* storedDeployment(db, parent, parent.activeDeployment);
                 return {
-                  files: yield* sources.read({
-                    code: parent.code,
-                    commit: deployment.sourceCommit,
-                  }),
+                  files: yield* readDeploymentSource(blobs, deployment.id),
                   origin: {
                     reference: `app:${parent.id}`,
                     name: parent.name,
@@ -384,7 +381,13 @@ export const makeApps = (
                   activation: "deploy" as const,
                 };
               }
-              const workspace = yield* sources.workspace(parent.code);
+              const workspace =
+                parent.repository === null
+                  ? {
+                      files: yield* readInitialSource(blobs, parent.code),
+                      revision: { commit: null },
+                    }
+                  : yield* sources.workspace(parent.code);
               if (workspace === null) return yield* new SourceError({ reason: "not-found" });
               return {
                 files: workspace.files,
@@ -552,10 +555,18 @@ export const makeApps = (
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),
-              set: { activeDeployment: deployment.id },
+              set: {
+                activeDeployment: deployment.id,
+                deploySequence: app.deploySequence + 1,
+                activatedSequence: app.deploySequence + 1,
+              },
             }),
           );
-          return { ...app, activeDeployment: deployment.id, requirements: deployment.requirements };
+          return {
+            ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
+            activeDeployment: deployment.id,
+            requirements: deployment.requirements,
+          };
         }),
       ).pipe(Effect.withSpan("sdk.apps.activate")),
     deployments: (input: Parameters<Executor["apps"]["deployments"]>[0]) =>
@@ -609,7 +620,7 @@ export const makeApps = (
         }),
       ).pipe(
         Effect.flatMap((deployment) =>
-          sources.read({ code: deployment.code, commit: deployment.sourceCommit }).pipe(
+          readDeploymentSource(blobs, deployment.id).pipe(
             Effect.map((files) => Deployment.make({ ...deployment, files })),
             Effect.mapError(() => new StorageError()),
           ),

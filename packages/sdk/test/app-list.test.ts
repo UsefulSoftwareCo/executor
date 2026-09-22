@@ -58,6 +58,7 @@ const fixture = (count: number) =>
     const apps = deployments.map((deployment, index) => ({
       id: AppId.make(`app_list_${String(index).padStart(3, "0")}`),
       code: deployment.code,
+      repository: null,
       copiedFrom: null,
       owner: index === count ? otherOwner : owner,
       name: `app-${index}`,

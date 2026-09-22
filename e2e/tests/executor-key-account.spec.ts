@@ -190,14 +190,9 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
                 accounts: {},
               })).status,
             ).toBe(200);
-            const current = yield* body(
-              App,
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
-            );
             expect(
               (yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
                 files: source.files,
-                expectedDeployment: current.activeDeployment,
               })).status,
             ).toBe(200);
             expect(
@@ -213,10 +208,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
               Source,
               yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
             );
-            const current = yield* body(
-              App,
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
-            );
             const files = original.files.map((file) =>
               file.path === "index.ts"
                 ? { ...file, content: file.content + "\n// User customization\n" }
@@ -226,7 +217,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
               Schema.Struct({ app: App }),
               yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
                 files,
-                expectedDeployment: current.activeDeployment,
               }),
             );
             expect(
@@ -246,7 +236,6 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             expect(
               (yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
                 files: original.files,
-                expectedDeployment: edited.activeDeployment,
               })).status,
             ).toBe(200);
             yield* read(actors.owner);

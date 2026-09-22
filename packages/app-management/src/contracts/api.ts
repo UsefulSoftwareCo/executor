@@ -62,8 +62,8 @@ import {
   App,
   AppId,
   AppName,
-  DeploymentId,
   DeployedApp,
+  Deployment,
   OwnerId,
   SourceCommit,
   SourceFiles,
@@ -156,15 +156,15 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         ),
         HttpApiEndpoint.post("deploy", "/apps/:app/deploy", {
           params: app,
-          payload: Schema.Struct({
-            expectedSource: SourceCommit,
-            expectedDeployment: Schema.NullOr(DeploymentId),
-          }),
-          success: Schema.Struct({ app: DeployedApp, source: SourceSnapshot }),
+          payload: Schema.Union([
+            Schema.Struct({ files: SourceFiles, commit: Schema.optional(Schema.Never) }),
+            Schema.Struct({ commit: SourceCommit, files: Schema.optional(Schema.Never) }),
+          ]),
+          success: Schema.Struct({ app: DeployedApp, deployment: Deployment }),
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Deploy the committed working source. Check both expected source and active deployment; use null for the first deployment. App identity, data, and compatible account selections are retained.",
+          "Deploy complete files or an immutable Git commit without changing the working branch. App identity, data, and compatible account selections are retained.",
         ),
         HttpApiEndpoint.post("copy", "/apps/copies", {
           params: tenant,

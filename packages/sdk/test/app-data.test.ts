@@ -242,8 +242,6 @@ test(
             await writer.apps.deploy({
               owner: OwnerId.make("alice"),
               app: app.id,
-              expectedDeployment: app.activeDeployment,
-              expectedSource: (await writer.apps.workspace({ app: app.id })).revision.commit,
               files: [{ path: "index.ts", content: source }],
             });
             assert.deepEqual(await executor.appData.query(input), [message, resumed.value]);

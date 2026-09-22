@@ -133,12 +133,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
         yield* evidence.step(
           "Adding a tool never expands an exact selection",
           Effect.gen(function* () {
-            const source = yield* body(
-              Schema.Struct({ id: Schema.String }),
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
-            );
             const updated = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${app.id}`, {
-              expectedDeployment: source.id,
               files: [
                 {
                   path: "index.ts",

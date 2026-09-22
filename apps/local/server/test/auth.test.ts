@@ -295,8 +295,6 @@ test(
               payload: {
                 owner,
                 app: managed.id,
-                expectedDeployment: managed.activeDeployment,
-                expectedSource: source.revision.commit,
                 files: SourceFiles.make([
                   ...source.files,
                   { path: "old-bundled-guide.md", content: "Older bundled management source" },

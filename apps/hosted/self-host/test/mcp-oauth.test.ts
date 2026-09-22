@@ -788,7 +788,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
             const appPath = JSON.stringify({ organization: a.id, app: configured.id });
             const updatedSource = source + "\n// Updated through MCP\n";
             const edited = yield* execute(
-              `const path = ${appPath}; const api = tools[${JSON.stringify(executorA.slug)}]; const before = await api.queries.appManagement_source({path}); const saved = await api.mutations.appManagement_commit({path, body: {expected: before.revision.commit, message: "MCP edit", files: [{path: "index.ts", content: ${JSON.stringify(updatedSource)}}]}}); return (await api.mutations.appManagement_deploy({path, body: {expectedDeployment: ${JSON.stringify(configured.activeDeployment)}, expectedSource: saved.revision.commit}})).app`,
+              `const path = ${appPath}; const api = tools[${JSON.stringify(executorA.slug)}]; const before = await api.queries.appManagement_source({path}); const saved = await api.mutations.appManagement_commit({path, body: {expected: before.revision.commit, message: "MCP edit", files: [{path: "index.ts", content: ${JSON.stringify(updatedSource)}}]}}); return (await api.mutations.appManagement_deploy({path, body: {commit: saved.revision.commit}})).app`,
             );
             assert.equal(edited.execution.ok, true, JSON.stringify(edited));
             if (!edited.execution.ok) throw new Error("MCP update failed");

@@ -275,7 +275,7 @@ async function verify(directory: string, source: string) {
         server,
         call(`${executor}.mutations.appManagement_deploy`, {
           path: { app: draft.id },
-          body: { expectedSource: committedSource.revision.commit, expectedDeployment: null },
+          body: { commit: committedSource.revision.commit },
         }),
       ),
     );
