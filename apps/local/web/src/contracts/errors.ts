@@ -62,15 +62,21 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     AccountConnectionClosed: () =>
       message("This connection has ended", "Ask your agent for a new connection link."),
-    OAuthSetupFailed: () =>
+    OAuthSetupFailed: (error) =>
       message(
-        "Could not prepare sign-in",
-        "Check the provider's OAuth settings and client details, then try again.",
+        "Could not connect the account",
+        error.reason === "invalid_client"
+          ? "Check the OAuth client ID and secret, then try again."
+          : error.reason === "token_exchange"
+            ? "The service could not complete the connection. Try again."
+            : "Check the provider's OAuth configuration, then try again.",
       ),
-    OAuthCompletionFailed: () =>
+    OAuthCompletionFailed: (error) =>
       message(
         "Sign-in did not finish",
-        "Your saved credentials have not changed. Start a new sign-in to try again.",
+        error.reason === "invalid_client"
+          ? "The OAuth client was rejected. Update its details and try again."
+          : "Your saved credentials have not changed. Start a new sign-in to try again.",
       ),
     OAuthReconnectRequired: (error) => ({
       title: "This account needs a new sign-in",

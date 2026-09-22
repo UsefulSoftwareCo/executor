@@ -8,7 +8,7 @@ import {
   HttpApiMiddleware,
   HttpApiSchema,
 } from "effect/unstable/httpapi";
-import { Account, App, OwnerId } from "@executor-js/sdk/core";
+import { Account, App, OwnerId, HttpUrl } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
   OrganizationIconKey,
@@ -139,6 +139,7 @@ export class OrganizationIcons extends Context.Service<
 export const Inventory = Schema.Struct({
   apps: Schema.Array(App),
   accounts: Schema.Array(Account),
+  accountSetup: Schema.Struct({ redirectUri: HttpUrl }),
 });
 export type Inventory = typeof Inventory.Type;
 /** Membership and inventory for the explicitly requested organization. */

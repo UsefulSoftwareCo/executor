@@ -1,6 +1,6 @@
 import { OverviewCardLoading } from "./app-loading.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
-import type { App, ToolPage } from "@executor-js/sdk";
+import type { App, AccountRequirement, ToolPage } from "@executor-js/sdk";
 import type { AppSourceView } from "@executor-js/app-management/contracts";
 import type { ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -219,9 +219,11 @@ function ToolsPreviewFrame({
 export function AppOverviewAccounts({
   app,
   accounts,
+  accountActions,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
+  readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
 }) {
   const { AccountLink } = useDashboard();
   const requirements = Object.entries(app.requirements.accounts);
@@ -249,9 +251,14 @@ export function AppOverviewAccounts({
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                 <p className="text-[13px] font-medium">{requirement.definition.name}</p>
-                {issues.some((issue) => issue.slot === slot) && (
-                  <span className="text-[11px] text-sign-in-warning">Needs attention</span>
-                )}
+                {issues.some((issue) => issue.slot === slot) &&
+                  (accountActions ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {accountActions(slot, requirement)}
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-sign-in-warning">Needs attention</span>
+                  ))}
               </div>
               {requirements.length > 1 && (
                 <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{slot}</p>

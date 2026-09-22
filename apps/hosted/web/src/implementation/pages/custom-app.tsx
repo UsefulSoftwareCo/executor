@@ -49,9 +49,10 @@ export function CustomAppPage() {
         Failure={HostedFailure}
         onInstalled={(app) =>
           navigate({
-            to: Object.keys(app.requirements.accounts).length
-              ? "/org/$organizationSlug/apps/$appId/setup"
-              : "/org/$organizationSlug/apps/$appId",
+            to: "/org/$organizationSlug/apps/$appId",
+            search: {
+              view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview",
+            },
             params: { organizationSlug, appId: app.id },
           })
         }

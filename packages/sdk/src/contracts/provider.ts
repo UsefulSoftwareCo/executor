@@ -1,30 +1,13 @@
 /** Provider definitions are authored in apps, not registered through SDK CRUD. */
 import { Schema } from "effect";
-import { HttpUrl, JsonObject, ProviderId } from "./shared.ts";
+import { ProviderId } from "./shared.ts";
+import { DeclaredAuthMethod } from "apps/contracts";
 
 /** An author-chosen method name such as apiKey or oauth. */
 export const AuthMethodName = Schema.NonEmptyString;
 
-/** Serialized declarations; the future host projects schemas from app source. */
-export const ProviderAuthMethod = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("secrets"),
-    label: Schema.String,
-    fields: JsonObject,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("oauth2"),
-    discover: HttpUrl,
-    response: JsonObject,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("oauth2"),
-    authorizationUrl: HttpUrl,
-    tokenUrl: HttpUrl,
-    scopes: Schema.Array(Schema.String),
-    response: JsonObject,
-  }),
-]);
+/** Serializable auth configuration is owned by the app framework and interpreted by the host. */
+export const ProviderAuthMethod = DeclaredAuthMethod;
 
 export type ProviderAuthMethod = typeof ProviderAuthMethod.Type;
 

@@ -128,6 +128,7 @@ function ConnectionForm({
           <OAuthFields
             provider={connection.provider}
             connection={grant}
+            onSaved={(account) => setState({ status: "completed", account })}
             {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
             {...props}
           />

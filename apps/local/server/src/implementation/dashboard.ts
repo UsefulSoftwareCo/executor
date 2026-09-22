@@ -374,6 +374,18 @@ export const dashboard = (
           })).app;
         }),
       )
+      .handle("oauthSetup", ({ payload }) =>
+        Effect.gen(function* () {
+          const request = yield* localRequest(config.port, config.browserOrigin).pipe(
+            Effect.mapError(() => new DashboardForbidden()),
+          );
+          return yield* executor.accountConnections.oauthSetup({
+            ...payload,
+            owner,
+            redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
+          });
+        }),
+      )
       .handle("startOAuth", ({ payload }) =>
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin).pipe(

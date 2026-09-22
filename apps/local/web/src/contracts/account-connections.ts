@@ -1,7 +1,7 @@
 /** Typed browser handoff. Submitted credentials remain redacted in mutation state. */
 import { AccountConnectApi, ConnectionGrant } from "@executor-js/local-server/account-connections";
 import { HttpUrl } from "@executor-js/sdk";
-import { Effect, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
 
@@ -42,5 +42,15 @@ export const connectionDetailsAtom = ConnectionClient.runtime
 export const submitConnectionAtom = ConnectionClient.mutation("accountConnect", "submit");
 /** Cancellation closes the same request observed by the agent. */
 export const cancelConnectionAtom = ConnectionClient.mutation("accountConnect", "cancel");
+class ConnectionSetupKey extends Data.Class<ConnectionGrant & { readonly method: string }> {}
+const connectionSetup = Atom.family((key: ConnectionSetupKey) =>
+  ConnectionClient.query("accountConnect", "oauthSetup", { payload: key }).pipe(
+    Atom.setIdleTTL("5 minutes"),
+    Atom.refreshOnWindowFocus,
+  ),
+);
+/** Setup metadata is limited to the exact connection grant supplied by this page. */
+export const connectionOAuthSetupAtom = (key: ConnectionGrant & { readonly method: string }) =>
+  connectionSetup(new ConnectionSetupKey(key));
 /** Start provider consent with the host's fixed redirect URI. */
 export const startConnectionOAuthAtom = ConnectionClient.mutation("accountConnect", "startOAuth");

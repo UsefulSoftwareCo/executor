@@ -1,3 +1,4 @@
+import { CheckOAuthSetup } from "../contracts/oauth.ts";
 import {
   StartWorkflow,
   WorkflowTarget,
@@ -81,6 +82,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       remove: (input) => run(AccountInputs.get, input, executor.accounts.remove),
     },
     accountConnections: {
+      oauthSetup: (input) => run(CheckOAuthSetup, input, executor.accountConnections.oauthSetup),
       create: (input) => run(CreateAccountConnection, input, executor.accountConnections.create),
       get: (input) => run(GetAccountConnection, input, executor.accountConnections.get),
       cancel: (input) => run(GetAccountConnection, input, executor.accountConnections.cancel),

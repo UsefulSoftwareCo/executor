@@ -30,8 +30,11 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
     const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
       Effect.mapError(() => new StorageError()),
     );
+    const content = yield* Schema.decodeUnknownEffect(JsonObject)(parsed).pipe(
+      Effect.mapError(() => new StorageError()),
+    );
     const hash = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(canonical(parsed)))
+      .digest("SHA-256", new TextEncoder().encode(canonical(content)))
       .pipe(Effect.mapError(() => new StorageError()));
     return { id: ProviderId.make(`prv_${Encoding.encodeHex(hash)}`), definition: parsed };
   });

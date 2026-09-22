@@ -7,7 +7,7 @@ import { driver } from "./platform.ts";
 export const holdQuery = (
   paths: readonly string[],
   outcome: "continue" | "fail",
-  options: { readonly method?: "GET" | "POST"; readonly allRequests?: boolean } = {},
+  options: { readonly method?: "GET" | "POST" | "PATCH"; readonly allRequests?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const browser = yield* Browser;

@@ -268,11 +268,88 @@ export const scenarios = {
   },
   accountConnectionQuery: {
     file: "account-connection-query.spec.ts",
-    title: "Account connection loads app tools without a page refresh after leaving setup",
+    title: "Account connection stays in the app and loads its tools without a page refresh",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This journey checks hosted account connection and app query invalidation."),
+    },
+  },
+  appAccountPicker: {
+    file: "app-account-picker.spec.ts",
+    title:
+      "App account picker saves in place, retains failed choices and supports multiple accounts",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted app account controls and organization permissions."),
+    },
+  },
+  oauthClientRecovery: {
+    file: "oauth-client-recovery.spec.ts",
+    title:
+      "Rejected OAuth clients remain editable and replacements commit only after successful sign-in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted callback routing and saved-client management."),
+    },
+  },
+  localOAuth: {
+    file: "local-oauth.spec.ts",
+    title: "Local OAuth setup checks preserve grant boundaries and complete machine accounts",
+    targets: {
+      "self-host": na("Local dashboard and limited connection grants."),
+      cloud: na("Local dashboard and limited connection grants."),
+      local: scheduled,
+    },
+  },
+  oauthClientForm: {
+    file: "oauth-client-credentials.spec.ts",
+    title:
+      "OAuth forms use provider configuration and recover a completed machine connection after response loss",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback token service."),
+      local: na("Hosted modal and organization account reconciliation."),
+    },
+  },
+  oauthClientCredentials: {
+    file: "oauth-client-credentials.spec.ts",
+    title: "Client credentials connects without redirects and renews tokens with provider settings",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback token service."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthProviderConfig: {
+    file: "oauth-provider-config.spec.ts",
+    title: "OAuth provider code controls scopes, resources, and client authentication",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthClientSetup: {
+    file: "oauth-client-setup.spec.ts",
+    title:
+      "OAuth client setup is read-only, cached, and explicit about required clients and failures",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer to inspect registration side effects."),
+      local: na("Hosted organization policy and setup UI."),
+    },
+  },
+  appAccountOAuth: {
+    file: "app-account-picker.spec.ts",
+    title:
+      "App account sign-in names the account before OAuth and returns cancellation to the same app",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted browser sign-in and callback recovery."),
     },
   },
   queryRefresh: {

@@ -32,6 +32,8 @@ export function AccountForm<A, E>({
   oauth,
   Failure,
   onPendingChange,
+  initialMethod,
+  initialLabel = "Default",
   disabled = false,
 }: {
   readonly provider: Provider;
@@ -45,12 +47,14 @@ export function AccountForm<A, E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabled?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
+  readonly initialMethod?: string | undefined;
+  readonly initialLabel?: string | undefined;
 }) {
   const methods = Object.entries(provider.definition.auth).sort(
     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
   );
-  const [method, setMethod] = useState(account?.method ?? methods[0]?.[0] ?? "");
-  const [label, setLabel] = useState(account?.label ?? "Default");
+  const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
+  const [label, setLabel] = useState(account?.label ?? initialLabel);
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [submitting, setPending] = useState(false);
   const pending = submitting || disabled;
@@ -64,7 +68,7 @@ export function AccountForm<A, E>({
   };
   return (
     <form
-      className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25"
+      className="setup-form flex max-w-145 flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (!fields || pending || !label.trim() || !credentialsComplete(fields, values)) return;
@@ -103,7 +107,7 @@ export function AccountForm<A, E>({
             <SelectContent>
               {methods.map(([name, auth]) => (
                 <SelectItem key={name} value={name}>
-                  {auth.type === "oauth2" ? "OAuth" : auth.label}
+                  {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -116,28 +120,35 @@ export function AccountForm<A, E>({
         </div>
       ) : fields ? (
         <>
-          {!account && (
-            <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-              Account name
-              <Input
-                value={label}
-                onChange={(event) => setLabel(event.target.value)}
-                placeholder="Default"
-                required
-                maxLength={120}
-                disabled={pending}
-              />
-            </label>
-          )}
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Get these credentials from your {provider.definition.name} account settings.
+          </p>
           <CredentialFields
             fields={fields}
             values={values}
             onChange={setValues}
             pending={pending}
           />
+          {!account && (
+            <label className="flex flex-col gap-2 text-[13px] font-medium">
+              Account name
+              <Input
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+                required
+                maxLength={120}
+                disabled={pending}
+              />
+            </label>
+          )}
           {error && <Failure cause={error} />}
           <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
-            <Button type="submit" loading={pending} disabled={!label.trim()}>
+            <Button
+              type="submit"
+              className="w-full"
+              loading={pending}
+              disabled={!label.trim() || !credentialsComplete(fields, values)}
+            >
               {submitLabel}
             </Button>
             {actions}

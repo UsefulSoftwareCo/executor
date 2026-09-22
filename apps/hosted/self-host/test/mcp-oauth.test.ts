@@ -544,6 +544,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                       }),
                     ),
                   );
+                assert.ok(signIn.status === "redirect");
                 const authorization = yield* request(
                   new URL(signIn.authorizationUrl).pathname +
                     new URL(signIn.authorizationUrl).search,

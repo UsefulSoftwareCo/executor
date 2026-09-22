@@ -29,9 +29,8 @@ export function AddAppPage() {
   const onApp: AppAcknowledgement = (get, app) => acknowledgeApp(get, organization, app);
   const installed = (app: App) =>
     navigate({
-      to: Object.keys(app.requirements.accounts).length
-        ? "/org/$organizationSlug/apps/$appId/setup"
-        : "/org/$organizationSlug/apps/$appId",
+      to: "/org/$organizationSlug/apps/$appId",
+      search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
       params: { organizationSlug, appId: app.id },
     });
   const back = () => setSelection(undefined);

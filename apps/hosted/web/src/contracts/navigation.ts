@@ -2,6 +2,11 @@ import { AppView } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 
+/** A failed OAuth attempt can reopen its client fields without placing credentials in the URL. */
+export const ConnectionSearch = Schema.Struct({
+  client: Schema.optionalKey(Schema.Literal("change")),
+});
+
 /** History marks only automatic root restoration; explicit links keep their own targets. */
 export const OrganizationResume = Schema.Struct({
   organization: OrganizationId,

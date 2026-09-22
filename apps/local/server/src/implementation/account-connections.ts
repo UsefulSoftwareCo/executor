@@ -89,6 +89,18 @@ export const accountConnectHandlers = (
           .handle("submit", ({ payload }) =>
             authorize(payload).pipe(Effect.andThen(executor.accountConnections.submit(payload))),
           )
+          .handle("oauthSetup", ({ payload }) =>
+            Effect.gen(function* () {
+              const request = yield* authorize(payload);
+              const connection = yield* executor.accountConnections.get(payload);
+              return yield* executor.accountConnections.oauthSetup({
+                owner: connection.owner,
+                provider: connection.provider.id,
+                method: payload.method,
+                redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
+              });
+            }),
+          )
           .handle("startOAuth", ({ payload }) =>
             Effect.gen(function* () {
               const request = yield* authorize(payload);

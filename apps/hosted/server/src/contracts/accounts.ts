@@ -23,9 +23,13 @@ import {
   CredentialsError,
   OAuthClientInput,
   OAuthClientUnavailable,
+  OAuthClientSetup,
+  ProviderId,
+  AuthMethodName,
   OAuthCompletionFailed,
   OAuthSetupFailed,
   OAuthSignIn,
+  OAuthStartResult,
   HttpUrl,
   ProviderNotFound,
   StorageError,
@@ -69,7 +73,18 @@ export const HostedAccountConnection = Schema.Struct({
 });
 export type HostedAccountConnection = typeof HostedAccountConnection.Type;
 /** Browser return context preserves the callback URL bound into the OAuth attempt. */
-export const HostedOAuthSignIn = Schema.Struct({ ...OAuthSignIn.fields, redirectUri: HttpUrl });
+export const HostedOAuthSignIn = Schema.Struct({
+  status: Schema.Literal("redirect"),
+  ...OAuthSignIn.fields,
+  redirectUri: HttpUrl,
+});
+export type HostedOAuthSignIn = typeof HostedOAuthSignIn.Type;
+/** Immediate account completion needs no browser return context. */
+export const HostedOAuthStartResult = Schema.Union([
+  HostedOAuthSignIn,
+  OAuthStartResult.members[1],
+]);
+export type HostedOAuthStartResult = typeof HostedOAuthStartResult.Type;
 /** Safe metadata for the shared account detail view. */
 export const HostedAccountDetail = Schema.Struct({
   account: Account,
@@ -117,6 +132,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     }).annotate(RequiredAction, "manage"),
   )
   .add(
+    HttpApiEndpoint.get("oauthSetup", `${prefix}/providers/:provider/oauth/:method/setup`, {
+      params: { ...params, provider: ProviderId, method: AuthMethodName },
+      success: OAuthClientSetup,
+      error: [...connectionErrors, AuthMethodInvalid, CredentialsError, OAuthSetupFailed],
+    }).annotate(RequiredAction, "manage"),
+  )
+  .add(
     HttpApiEndpoint.post("connect", `${prefix}/apps/:app/connections`, {
       params: app,
       payload: Schema.Struct({
@@ -154,7 +176,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
         label: Schema.NonEmptyString,
         client: Schema.optional(OAuthClientInput),
       }),
-      success: HostedOAuthSignIn,
+      success: HostedOAuthStartResult,
       error: [...completionErrors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
     }).annotate(RequiredAction, "manage"),
   )

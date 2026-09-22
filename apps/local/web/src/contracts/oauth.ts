@@ -1,13 +1,52 @@
 /** Typed browser OAuth operations. Client secrets and callback URLs stay redacted in Atom state. */
-import { Effect, Schema, type Redacted } from "effect";
+import { Data, Effect, Schema, type Redacted } from "effect";
 import { Atom } from "effect/unstable/reactivity";
-import { AppId, AccountId, AccountConnectionId } from "@executor-js/sdk";
+import {
+  AppId,
+  AccountId,
+  AccountConnectionId,
+  type ProviderId,
+  type OAuthClientInput,
+} from "@executor-js/sdk";
 import { DashboardClient, appAtom, toolsAtom } from "./api.ts";
 import { accountCredentialsChanged } from "./accounts.ts";
 import { invalidate } from "@executor-js/ui/contracts/mutations";
 
+class OAuthSetupKey extends Data.Class<{
+  readonly provider: ProviderId;
+  readonly method: string;
+}> {}
+const setupQuery = Atom.family((key: OAuthSetupKey) =>
+  DashboardClient.query("dashboard", "oauthSetup", { payload: key }).pipe(
+    Atom.setIdleTTL("5 minutes"),
+    Atom.refreshOnWindowFocus,
+  ),
+);
+/** Share read-only client requirements across local forms without creating connection attempts. */
+export const oauthSetupAtom = (key: { readonly provider: ProviderId; readonly method: string }) =>
+  setupQuery(new OAuthSetupKey(key));
+
 /** Resolve automatic or supplied client configuration, then navigate to provider consent. */
-export const startOAuthAtom = DashboardClient.mutation("dashboard", "startOAuth");
+export const startOAuthAtom = DashboardClient.runtime.fn(
+  (
+    input: {
+      payload: {
+        provider: ProviderId;
+        method: string;
+        label: string;
+        client?: OAuthClientInput;
+      };
+    },
+    get,
+  ) =>
+    Effect.flatMap(DashboardClient, (client) => client.dashboard.startOAuth(input)).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          if (result.status === "completed") accountCredentialsChanged(get, result.account);
+        }),
+      ),
+    ),
+);
 /** Keep the entry callback alive while auth/inventory gates load. Never written to browser storage. */
 export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined>(undefined).pipe(
   Atom.keepAlive,

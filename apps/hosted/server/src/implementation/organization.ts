@@ -1,3 +1,4 @@
+import { accountOAuthRedirectUri } from "./auth.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   fullAuthority,
@@ -235,7 +236,13 @@ export const hostedOrganizationHandlers = HttpApiBuilder.group(
         .handle("inventory", () =>
           initializeOrganizationInventory(authentication).pipe(
             Effect.andThen(
-              Effect.flatMap(CurrentOrganization, (organization) => inventory(organization.owner)),
+              Effect.gen(function* () {
+                const organization = yield* CurrentOrganization;
+                return {
+                  ...(yield* inventory(organization.owner)),
+                  accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
+                };
+              }),
             ),
           ),
         );

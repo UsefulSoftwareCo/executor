@@ -53,20 +53,21 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
       client.apps.importCustom({ params: { organization }, payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
   ),
-  selectAccounts: HostedClient.runtime.fn(
-    (input: { readonly app: AppId; readonly accounts: SelectedAccounts }, get) =>
+  selectAccounts: Atom.family((app: AppId) =>
+    HostedClient.runtime.fn((accounts: SelectedAccounts, get) =>
       Effect.flatMap(HostedClient, (client) =>
         client.apps.selectAccounts({
-          params: { organization, app: input.app },
-          payload: { accounts: input.accounts },
+          params: { organization, app },
+          payload: { accounts },
         }),
       ).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
             acknowledgeApp(get, organization, saved);
-            get.refresh(toolsAtom({ organization, app: input.app }));
+            get.refresh(toolsAtom({ organization, app }));
           }),
         ),
       ),
+    ),
   ),
 }));

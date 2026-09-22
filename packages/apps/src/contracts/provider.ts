@@ -10,19 +10,61 @@ export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.
   readonly fields: Fields;
 }> {}
 
-/** OAuth endpoint configuration, independent of the host's approved OAuth client. */
+/** How an OAuth client authenticates at the token endpoint; raw Basic is an explicit provider compatibility option. */
+export const OAuthClientAuth = Schema.Literals([
+  "none",
+  "client_secret_post",
+  "client_secret_basic",
+  "client_secret_basic_raw",
+]);
+export type OAuthClientAuth = typeof OAuthClientAuth.Type;
+/** Machine clients always authenticate; public clients cannot use the client-credentials grant. */
+export const OAuthSecretClientAuth = Schema.Literals([
+  "client_secret_post",
+  "client_secret_basic",
+  "client_secret_basic_raw",
+]);
+
+const oauthOptions = {
+  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
+  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
+  /** Omitted uses discovery; null explicitly suppresses the resource parameter. */
+  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+};
+
+/** OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain host-owned. */
 export const OAuth2Config = Schema.Union([
   Schema.Struct({
+    ...oauthOptions,
     discover: HttpUrl,
-    authorizationUrl: Schema.optional(Schema.Never),
-    tokenUrl: Schema.optional(Schema.Never),
-    scopes: Schema.optional(Schema.Never),
+    authorizationUrl: Schema.optionalKey(Schema.Never),
+    tokenUrl: Schema.optionalKey(Schema.Never),
+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
   Schema.Struct({
+    ...oauthOptions,
     authorizationUrl: HttpUrl,
     tokenUrl: HttpUrl,
     scopes: Schema.Array(Schema.String),
-    discover: Schema.optional(Schema.Never),
+    discover: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    grant: Schema.Literal("client_credentials"),
+    discover: HttpUrl,
+    authorizationUrl: Schema.optionalKey(Schema.Never),
+    tokenUrl: Schema.optionalKey(Schema.Never),
+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+    tokenEndpointAuthMethod: OAuthSecretClientAuth,
+    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+  }),
+  Schema.Struct({
+    grant: Schema.Literal("client_credentials"),
+    tokenUrl: HttpUrl,
+    scopes: Schema.Array(Schema.String),
+    tokenEndpointAuthMethod: OAuthSecretClientAuth,
+    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+    authorizationUrl: Schema.optionalKey(Schema.Never),
+    discover: Schema.optionalKey(Schema.Never),
   }),
 ]);
 export type OAuth2Config = typeof OAuth2Config.Type;

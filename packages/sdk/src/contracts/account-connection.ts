@@ -16,8 +16,10 @@ import {
 } from "./shared.ts";
 import {
   OAuthClientUnavailable,
+  OAuthClientSetup,
+  CheckOAuthSetup,
   OAuthCompletionFailed,
-  OAuthSignIn,
+  OAuthStartResult,
   OAuthClientInput,
   OAuthSetupFailed,
 } from "./oauth.ts";
@@ -81,7 +83,7 @@ export const StartConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
   method: AuthMethodName,
   label: Schema.NonEmptyString,
-  redirectUri: HttpUrl,
+  redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientInput),
 });
 /** Both request identity and OAuth state must match before exchanging a code. */
@@ -176,9 +178,25 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
     }),
   )
   .add(
+    HttpApiEndpoint.post("oauthSetup", "/v1/account-connections/oauth/setup", {
+      payload: CheckOAuthSetup,
+      success: OAuthClientSetup,
+      error: [
+        StorageError,
+        ProviderNotFound,
+        AuthMethodInvalid,
+        CredentialsError,
+        OAuthSetupFailed,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "Inspect OAuth client availability without registering a client, creating a connection, or starting authorization. Hosts must authorize access to the owner and provider.",
+    ),
+  )
+  .add(
     HttpApiEndpoint.post("startOAuth", "/v1/account-connections/oauth/start", {
       payload: StartConnectionOAuth,
-      success: OAuthSignIn,
+      success: OAuthStartResult,
       error: [
         ...errors,
         AccountConnectionClosed,

@@ -1,19 +1,59 @@
 import { useState } from "react";
-import { Exit, Redacted, type Cause } from "effect";
-import type { Account } from "@executor-js/sdk";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Exit, Option, Redacted, type Cause } from "effect";
+import type { Account, OAuthClientSetup } from "@executor-js/sdk";
 import type { OAuthSubmission } from "../../contracts/credentials.ts";
-import type { FailureProps } from "../../contracts/dashboard.ts";
-import type { ComponentType } from "react";
+import type { FailureProps, Query } from "../../contracts/dashboard.ts";
+import type { ComponentType, ReactNode } from "react";
+import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/select.tsx";
 import { CopyButton } from "./code.tsx";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useQuery } from "./context.tsx";
+
+/** Keep forms mounted through cached setup reads, refresh failures, and retries. */
+export function OAuthSetup<E>({
+  query,
+  children,
+}: {
+  readonly query: Query<OAuthClientSetup, E>;
+  readonly children: (state: {
+    readonly setup: OAuthClientSetup | "unresolved";
+    readonly blocked: boolean;
+    readonly refresh: () => void;
+  }) => ReactNode;
+}) {
+  const { result, data, refresh } = useQuery(query);
+  const failed = AsyncResult.isFailure(result);
+  return (
+    <>
+      {failed ? (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-md border p-3 text-xs"
+        >
+          <span>Couldn’t check connection options.</span>
+          <Button size="sm" variant="outline" onClick={refresh}>
+            Retry
+          </Button>
+        </div>
+      ) : Option.isNone(data) ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Checking connection options…
+        </p>
+      ) : null}
+      <div key="fields" className="flex flex-col gap-4">
+        {children({
+          setup: Option.isSome(data) ? data.value : "unresolved",
+          blocked: failed,
+          refresh,
+        })}
+      </div>
+    </>
+  );
+}
 
 /** Automatic OAuth setup and manual client entry; each host owns the sign-in and return flow. */
 export function OAuthFields<A, E>({
@@ -25,6 +65,9 @@ export function OAuthFields<A, E>({
   requiresClient,
   Failure,
   onPendingChange,
+  manualClient = false,
+  setup,
+  initialLabel = "Default",
   disabled = false,
 }: {
   readonly providerName: string;
@@ -36,21 +79,26 @@ export function OAuthFields<A, E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabled?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
+  readonly manualClient?: boolean | undefined;
+  /** Hosts with a preflight check supply its result; unresolved checks never guess a sign-in method. */
+  readonly setup: OAuthClientSetup | "unresolved";
+  readonly initialLabel?: string | undefined;
 }) {
-  const [label, setLabel] = useState(account?.label ?? "Default");
-  const [manual, setManual] = useState(false);
+  const [label, setLabel] = useState(account?.label ?? initialLabel);
+  const [customClient, setManual] = useState(manualClient);
+  const manual = customClient || (setup !== "unresolved" && setup.mode === "client-required");
+  const machine = setup !== "unresolved" && setup.grant === "client_credentials";
+  const needsSecret = setup !== "unresolved" && setup.tokenEndpointAuthMethod !== "none";
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
-  const [authMethod, setAuthMethod] = useState<
-    "none" | "client_secret_basic" | "client_secret_post"
-  >("none");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
   const blocked =
     disabled ||
+    setup === "unresolved" ||
     pending ||
     !label.trim() ||
-    (manual && (!clientId.trim() || (authMethod !== "none" && !clientSecret)));
+    (manual && (!clientId.trim() || (needsSecret && !clientSecret)));
   const connect = () => {
     if (blocked) return;
     setPending(true);
@@ -59,8 +107,7 @@ export function OAuthFields<A, E>({
     const client = manual
       ? {
           clientId: clientId.trim(),
-          tokenEndpointAuthMethod: authMethod,
-          ...(authMethod === "none" ? {} : { clientSecret: Redacted.make(clientSecret) }),
+          ...(needsSecret ? { clientSecret: Redacted.make(clientSecret) } : {}),
         }
       : undefined;
     const operation = start({ label: label.trim(), ...(client ? { client } : {}) });
@@ -72,18 +119,86 @@ export function OAuthFields<A, E>({
         onAuthorized(exit.value);
       } else {
         if (requiresClient(exit.cause)) setManual(true);
-        else setError(exit.cause);
+        setError(exit.cause);
       }
     });
   };
   return (
     <>
+      {setup !== "unresolved" && setup.mode === "saved" && (
+        <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs">
+          <span className="text-muted-foreground">
+            {manual
+              ? "New details are saved after a successful connection."
+              : "Using a saved OAuth client."}
+          </span>
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto shrink-0 p-0 text-xs"
+            disabled={pending || disabled}
+            onClick={() => {
+              setManual(!manual);
+              setError(undefined);
+            }}
+          >
+            {manual ? "Use saved client" : "Change OAuth client"}
+          </Button>
+        </div>
+      )}
+      {manual && (
+        <>
+          <Alert role="note" className="gap-y-2 bg-muted/30 px-3 py-3">
+            <HugeiconsIcon icon={InformationCircleIcon} aria-hidden="true" />
+            <AlertTitle className="text-[13px]">Set up an OAuth client</AlertTitle>
+            <AlertDescription className="gap-2 text-xs leading-relaxed">
+              <p>
+                {machine
+                  ? "This service uses an OAuth client ID and secret to connect."
+                  : setup !== "unresolved" && setup.mode === "client-required"
+                    ? "Executor can’t set up sign-in automatically for this service."
+                    : "Use your OAuth app’s details to connect this account."}
+              </p>
+              <ol className="list-decimal space-y-1 pl-4">
+                <li>Open or create an OAuth app in {providerName}’s developer settings.</li>
+                {!machine ? (
+                  <li>Add the redirect URL below to that app.</li>
+                ) : setup.scopes.length > 0 ? (
+                  <li>Enable the permissions listed below for that app.</li>
+                ) : null}
+                <li>
+                  {needsSecret
+                    ? "Enter its client ID and client secret here."
+                    : "Enter its client ID here."}
+                </li>
+              </ol>
+            </AlertDescription>
+          </Alert>
+          {!machine && (
+            <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
+              <span>Redirect URL</span>
+              <div className="oauth-redirect flex items-start gap-3 [&_>_code]:flex-1 [&_>_code]:min-w-0 [&_>_code]:py-[3px] [&_>_code]:px-0 [&_>_code]:font-mono [&_>_code]:text-[12px] [&_>_code]:font-normal [&_>_code]:wrap-anywhere [&_>_code]:[user-select:all]">
+                <code>{redirectUri}</code>
+                <CopyButton code={redirectUri} label="Copy redirect URL" inline />
+              </div>
+            </div>
+          )}
+        </>
+      )}
       {account === undefined && (
-        <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+        <label className="flex flex-col gap-2 text-[13px] font-medium">
           Account name
           <Input
+            autoFocus
             value={label}
             onChange={(event) => setLabel(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                connect();
+              }
+            }}
             disabled={pending || disabled}
             maxLength={120}
           />
@@ -91,85 +206,57 @@ export function OAuthFields<A, E>({
       )}
       {manual && (
         <>
-          <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-            This provider needs your OAuth client.
-          </p>
-          <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-            <span>Redirect URL</span>
-            <div className="oauth-redirect flex items-start gap-3 [&_>_code]:flex-1 [&_>_code]:min-w-0 [&_>_code]:py-[3px] [&_>_code]:px-0 [&_>_code]:font-mono [&_>_code]:text-[12px] [&_>_code]:font-normal [&_>_code]:wrap-anywhere [&_>_code]:[user-select:all]">
-              <code>{redirectUri}</code>
-              <CopyButton code={redirectUri} label="Copy redirect URL" inline />
-            </div>
-            <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-              Use this URL in your OAuth client settings.
-            </span>
-          </div>
           <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
             Client ID
             <Input
               value={clientId}
-              onChange={(event) => setClientId(event.target.value)}
+              onChange={(event) => {
+                setManual(true);
+                setClientId(event.target.value);
+              }}
               disabled={pending || disabled}
               autoComplete="off"
             />
           </label>
-          <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-            Client authentication
-            <Select
-              value={authMethod}
-              onValueChange={(value) => {
-                if (
-                  value === "none" ||
-                  value === "client_secret_basic" ||
-                  value === "client_secret_post"
-                )
-                  setAuthMethod(value);
-              }}
-              disabled={pending || disabled}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Public client (PKCE)</SelectItem>
-                <SelectItem value="client_secret_basic">Client secret in header</SelectItem>
-                <SelectItem value="client_secret_post">Client secret in body</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
-          {authMethod !== "none" && (
+          {needsSecret && (
             <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
               Client secret
               <Input
                 type="password"
                 autoComplete="off"
                 value={clientSecret}
-                onChange={(event) => setClientSecret(event.target.value)}
+                onChange={(event) => {
+                  setManual(true);
+                  setClientSecret(event.target.value);
+                }}
                 disabled={pending || disabled}
               />
             </label>
           )}
         </>
       )}
+      {setup !== "unresolved" && setup.scopes.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-[13px] font-medium">Required permissions</span>
+          <div className="flex flex-wrap gap-1.5">
+            {setup.scopes.map((scope) => (
+              <code key={scope} className="rounded bg-muted px-2 py-1 text-xs break-all">
+                {scope}
+              </code>
+            ))}
+          </div>
+        </div>
+      )}
       {error && <Failure cause={error} />}
-      <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
-        <Button type="button" disabled={blocked} onClick={connect}>
+      <div className="form-actions pt-1">
+        <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
           {pending
-            ? "Preparing sign-in…"
+            ? machine
+              ? "Connecting…"
+              : "Preparing sign-in…"
             : `${account === undefined ? "Connect" : "Reconnect"} ${providerName}`}
         </Button>
       </div>
-      <Button
-        type="button"
-        variant="ghost"
-        disabled={pending || disabled}
-        onClick={() => {
-          setManual(!manual);
-          setError(undefined);
-        }}
-      >
-        {manual ? "Use automatic setup" : "Use your own OAuth client"}
-      </Button>
     </>
   );
 }

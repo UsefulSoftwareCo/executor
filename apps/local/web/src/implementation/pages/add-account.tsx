@@ -40,7 +40,7 @@ export function AccountForm({
         </div>
       }
       submit={(input: AccountSubmission) => add({ payload: { provider: provider.id, ...input } })}
-      oauth={(props) => <OAuthFields provider={provider} {...props} />}
+      oauth={(props) => <OAuthFields provider={provider} onSaved={onSaved} {...props} />}
     />
   );
 }

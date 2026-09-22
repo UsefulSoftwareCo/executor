@@ -38,13 +38,13 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
             page.getByRole("button", { name: "Add app", exact: true }).click(),
           );
           yield* browser.use("Wait for committed setup navigation", (page) =>
-            page.waitForURL("**/apps/*/setup"),
+            page.waitForURL("**/apps/*?view=accounts"),
           );
           const pathname = yield* browser.use("Read the installed app location", (page) =>
             page.evaluate(() => location.pathname),
           );
           const id = yield* Schema.decodeUnknownEffect(Schema.String)(
-            /^\/org\/[^/]+\/apps\/([^/]+)\/setup$/.exec(pathname)?.[1],
+            /^\/org\/[^/]+\/apps\/([^/]+)$/.exec(pathname)?.[1],
           );
           const app = yield* body(
             App,
@@ -65,7 +65,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
               .pipe(Effect.orDie),
           );
           yield* browser.use("Setup follows the committed installation", (page) =>
-            page.waitForURL(`**/apps/${app.id}/setup`),
+            page.waitForURL(`**/apps/${app.id}?view=accounts`),
           );
           const timings = yield* browser.use("Record request timing for this install", (page) =>
             page.evaluate(() =>

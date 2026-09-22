@@ -1,18 +1,18 @@
+import { accountOAuthRedirectUri } from "./auth.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
-import { permitsApp } from "@executor-js/authorization";
+import { permitsApp, permittedAppIds } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { recordConnection, checkConnection, checkDestination } from "./connection-policy.ts";
 import { accountDestination } from "./resource-lifecycle.ts";
-import { requireAccountAccess, requireAppAccess, visibleApps } from "./resource-policy.ts";
+import {
+  requireAccountAccess,
+  requireAppAccess,
+  visibleApps,
+  visibleAccounts,
+} from "./resource-policy.ts";
 import type { ConnectionDestination } from "../contracts/resource-access.ts";
 /** Account use cases, connection grants and OAuth routes share the same ownership checks. */
-import {
-  HttpUrl,
-  type AccountId,
-  type AppId,
-  type Executor,
-  type OwnerId,
-} from "@executor-js/sdk/core";
+import { type AccountId, type AppId, type Executor, type OwnerId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -37,6 +37,33 @@ export const getAccount = (owner: OwnerId, account: AccountId) =>
     if (policy.tools.kind !== "all" && apps.length === 0) return yield* new OrganizationForbidden();
     return { account: metadata, provider, apps };
   });
+/** Check only providers reachable through the caller's app or account access; return no client details. */
+export const oauthSetup = (
+  owner: OwnerId,
+  input: Omit<Parameters<Executor["accountConnections"]["oauthSetup"]>[0], "owner">,
+) =>
+  Effect.gen(function* () {
+    const executor = yield* Effect.flatten(HostedExecutor);
+    const policy = yield* CurrentAuthorization;
+    const apps = yield* executor.apps
+      .list({ owner, ids: permittedAppIds(policy) })
+      .pipe(Effect.flatMap(visibleApps));
+    const installed = apps.some((app) =>
+      Object.values(app.requirements.accounts).some(
+        (requirement) => requirement.provider === input.provider,
+      ),
+    );
+    if (
+      !installed &&
+      (policy.tools.kind !== "all" ||
+        (yield* executor.accounts
+          .list({ owner, provider: input.provider })
+          .pipe(Effect.flatMap(visibleAccounts))).length === 0)
+    )
+      return yield* new OrganizationForbidden();
+    return yield* executor.accountConnections.oauthSetup({ ...input, owner });
+  });
+
 /** Replace credentials on the same identity so every app keeps its selection. */
 export const reconnectAccount = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
@@ -121,8 +148,12 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
-    return yield* executor.accountConnections.startOAuth({ ...input, owner });
+    const intent = yield* checkConnection(
+      yield* ownedConnection(executor, owner, input.connection),
+    );
+    return yield* executor.accountConnections
+      .startOAuth({ ...input, owner })
+      .pipe(accountDestination(intent.destination));
   });
 /** Completion rechecks connection and target ownership before saving provider credentials. */
 export const completeOAuth = (
@@ -144,9 +175,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
   Effect.gen(function* () {
     const auth = yield* Authentication;
     const api = yield* ApiAuthentication;
-    const redirectUri = HttpUrl.make(
-      auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href,
-    );
+    const redirectUri = accountOAuthRedirectUri(auth);
     return handlers
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
@@ -171,6 +200,11 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       .handle("rename", ({ params, payload }) =>
         Effect.flatMap(accountManagerOwner(params.account), (owner) =>
           renameAccount(owner, params.account, payload.label),
+        ),
+      )
+      .handle("oauthSetup", ({ params }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          oauthSetup(owner, { provider: params.provider, method: params.method, redirectUri }),
         ),
       )
       .handle("connect", ({ params, payload }) =>
@@ -202,7 +236,11 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       .handle("startOAuth", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>
           startOAuth(owner, { connection: params.connection, ...payload, redirectUri }),
-        ).pipe(Effect.map((signIn) => ({ ...signIn, redirectUri }))),
+        ).pipe(
+          Effect.map((result) =>
+            result.status === "redirect" ? { ...result, redirectUri } : result,
+          ),
+        ),
       )
       .handle("completeOAuth", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>

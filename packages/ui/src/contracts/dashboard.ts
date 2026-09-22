@@ -180,7 +180,11 @@ export function providerDisplayUrl(definition: ProviderDefinition | undefined): 
   if (definition)
     for (const method of Object.values(definition.auth)) {
       if (method.type === "oauth2")
-        return new URL("discover" in method ? method.discover : method.authorizationUrl).origin;
+        return new URL(
+          method.discover !== undefined
+            ? method.discover
+            : (method.authorizationUrl ?? method.tokenUrl),
+        ).origin;
     }
   return null;
 }

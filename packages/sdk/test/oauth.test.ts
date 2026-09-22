@@ -291,6 +291,9 @@ async function setup(
             oauth: {
               type: "oauth2",
               discover: urls.resource,
+              ...(mode === "manual"
+                ? { tokenEndpointAuthMethod: "client_secret_basic" as const }
+                : {}),
               response: {
                 type: "object",
                 properties: { access_token: { type: "string" } },
@@ -356,7 +359,6 @@ async function setup(
       client?: {
         clientId: string;
         clientSecret: string;
-        tokenEndpointAuthMethod: "client_secret_basic";
       };
     },
     host: Executor = executor,
@@ -366,6 +368,7 @@ async function setup(
       ...input,
       connection: connection.id,
     });
+    assert.ok(signIn.status === "redirect");
     const state = new URL(signIn.authorizationUrl).searchParams.get("state");
     assert.ok(state);
     requests.set(state, connection.id);
@@ -383,7 +386,6 @@ async function setup(
             client: {
               clientId: "manual-client",
               clientSecret: "synthetic-client-secret",
-              tokenEndpointAuthMethod: "client_secret_basic" as const,
             },
           }
         : {}),
@@ -1287,6 +1289,7 @@ for (const changed of [false, true])
         label: "Default",
         redirectUri,
       });
+      assert.ok(signIn.status === "redirect");
       const callbackUrl = f.service.callback(signIn.authorizationUrl);
       if (changed) {
         const paused = f.service.pauseNext("exchange");

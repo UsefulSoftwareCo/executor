@@ -27,7 +27,9 @@ export const accountSignIn =
       const encrypted = yield* credentials.decrypt(account.id, Redacted.make(row.encrypted));
       const grant = yield* Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(encrypted));
       const reconnectAt =
-        grant.refreshToken === undefined && grant.expiresAt !== undefined
+        grant.grant !== "client_credentials" &&
+        grant.refreshToken === undefined &&
+        grant.expiresAt !== undefined
           ? new Date(grant.expiresAt)
           : null;
       return reconnectAt !== null && reconnectAt.getTime() <= now

@@ -1,5 +1,5 @@
 /** Typed account management; successful responses contain metadata only. */
-import type { Account, AccountId, AccountFieldsInput } from "@executor-js/sdk";
+import type { Account, AccountId, AccountFieldsInput, OAuthClientInput } from "@executor-js/sdk";
 import { Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
@@ -62,7 +62,22 @@ export const disconnectAccountAtom = Atom.family((account: AccountId) =>
     ),
   ),
 );
-export const reconnectAccountAtom = DashboardClient.mutation("dashboard", "reconnectAccount");
+export const reconnectAccountAtom = DashboardClient.runtime.fn(
+  (
+    input: {
+      params: { account: AccountId };
+      payload: { client?: OAuthClientInput };
+    },
+    get,
+  ) =>
+    Effect.flatMap(DashboardClient, (client) => client.dashboard.reconnectAccount(input)).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          if (result.status === "completed") accountCredentialsChanged(get, result.account);
+        }),
+      ),
+    ),
+);
 
 /** All dashboard credential paths invalidate unknown health and account-dependent catalogs. */
 export function accountCredentialsChanged(get: Atom.FnContext | Atom.AtomContext, saved: Account) {

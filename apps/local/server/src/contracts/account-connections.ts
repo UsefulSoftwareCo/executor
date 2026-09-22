@@ -19,7 +19,8 @@ import {
   AccountFieldsInvalid,
   AuthMethodInvalid,
   OAuthClientInput,
-  OAuthSignIn,
+  OAuthClientSetup,
+  OAuthStartResult,
   OAuthClientUnavailable,
   OAuthSetupFailed,
   OAuthCompletionFailed,
@@ -46,10 +47,10 @@ export const AccountConnectionLink = Schema.Struct({
   expiresAt: Schema.Date,
 });
 /** Dashboard navigation retains the connection identity across OAuth redirects. */
-export const ConnectionSignIn = Schema.Struct({
-  ...OAuthSignIn.fields,
-  connection: AccountConnectionId,
-});
+export const ConnectionSignIn = Schema.Union([
+  Schema.Struct({ ...OAuthStartResult.members[0].fields, connection: AccountConnectionId }),
+  Schema.Struct({ ...OAuthStartResult.members[1].fields, connection: AccountConnectionId }),
+]);
 
 const errors = [
   ConnectionLinkRejected,
@@ -102,6 +103,13 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
       }),
     )
     .add(
+      HttpApiEndpoint.post("oauthSetup", "/account-connect/api/oauth/setup", {
+        payload: Schema.Struct({ ...ConnectionGrant.fields, method: Schema.NonEmptyString }),
+        success: OAuthClientSetup,
+        error: [...errors, AuthMethodInvalid, OAuthSetupFailed],
+      }),
+    )
+    .add(
       HttpApiEndpoint.post("startOAuth", "/account-connect/api/oauth/start", {
         payload: Schema.Struct({
           ...ConnectionGrant.fields,
@@ -109,7 +117,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
           label: Schema.NonEmptyString,
           client: Schema.optional(OAuthClientInput),
         }),
-        success: OAuthSignIn,
+        success: OAuthStartResult,
         error: [...errors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
       }),
     )

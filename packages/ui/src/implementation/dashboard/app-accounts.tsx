@@ -1,24 +1,28 @@
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import type { ReactNode } from "react";
 import { useDashboard } from "./context.tsx";
-import type { App } from "@executor-js/sdk";
-import { providerDisplayUrl, type AccountSummary } from "../../contracts/dashboard.ts";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { AlertCircleIcon, Key01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
-import { accountSelectionIssues, accountNeedsSignIn } from "../../contracts/dashboard.ts";
+import type { App, AccountRequirement } from "@executor-js/sdk";
+import {
+  providerDisplayUrl,
+  accountSelectionIssues,
+  accountNeedsSignIn,
+  type AccountSummary,
+} from "../../contracts/dashboard.ts";
 import { Empty, ProviderIcon } from "./common.tsx";
 
-/** Inspect each declared account slot and its saved selection without changing it. */
+/** Compact provider rows show the selected identities and the host's account actions. */
 export function AppAccounts({
   app,
   accounts,
   chooseAction,
   reconnectAction,
+  accountActions,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
   readonly chooseAction?: ReactNode;
   readonly reconnectAction?: (account: AccountSummary) => ReactNode;
+  readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
 }) {
   const { AccountLink } = useDashboard();
   const requirements = Object.entries(app.requirements.accounts);
@@ -33,114 +37,81 @@ export function AppAccounts({
         {requirements.length === 0 ? (
           <Empty title="No accounts required">This app can run without a saved account.</Empty>
         ) : (
-          <div className="requirements-list max-w-185 border border-border rounded-[8px] overflow-hidden">
+          <div className="requirements-list max-w-185 overflow-hidden rounded-lg border border-border">
             {requirements.map(([slot, requirement]) => {
               const selection = app.accounts[slot];
-              const ids =
-                selection === undefined
-                  ? []
-                  : typeof selection === "string"
-                    ? [selection]
-                    : selection;
+              const ids = typeof selection === "string" ? [selection] : (selection ?? []);
               return (
                 <section
-                  className="requirement [.requirement_+_&]:border-t [.requirement_+_&]:border-t-border"
                   key={slot}
+                  aria-label={
+                    requirements.length > 1
+                      ? `${requirement.definition.name} (${slot})`
+                      : requirement.definition.name
+                  }
+                  className="requirement flex items-center gap-3.5 p-4 [&+.requirement]:border-t max-[480px]:flex-wrap"
                 >
-                  <div className="requirement-heading p-[17px] flex items-center gap-2.75 bg-muted [&_>_div]:flex-1 [&_h3]:text-[13px] [&_h3]:font-medium [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
-                    <ProviderIcon
-                      name={requirement.definition.name}
-                      url={providerDisplayUrl(requirement.definition)}
-                    />
-                    <div>
-                      <h3>{requirement.definition.name}</h3>
-                      <span className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
-                        {requirements.length > 1 && (
-                          <>
-                            <code>{slot}</code>
-                            <span>·</span>
-                          </>
-                        )}
-                        <span>
-                          {requirement.cardinality === "many" ? "Multiple accounts" : "One account"}
+                  <ProviderIcon
+                    name={requirement.definition.name}
+                    url={providerDisplayUrl(requirement.definition)}
+                  />
+                  <div className="min-w-0 flex-1 max-[480px]:min-w-[calc(100%-52px)]">
+                    <h3 className="text-sm font-medium">
+                      {requirement.definition.name}
+                      {requirements.length > 1 && (
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          {slot}
                         </span>
-                      </span>
-                    </div>
-                    {!issues.some((issue) => issue.slot === slot) &&
-                      ids.every((id) =>
-                        accounts.some(
-                          (account) =>
-                            account.id === id &&
-                            !accountNeedsSignIn(account) &&
-                            account.signIn?.state !== "unavailable",
-                        ),
-                      ) && (
-                        <HugeiconsIcon
-                          icon={Tick02Icon}
-                          strokeWidth={2}
-                          aria-hidden
-                          size={15}
-                          className="muted text-muted-foreground"
-                        />
                       )}
-                  </div>
-                  <div className="selected-accounts py-0 px-[17px]">
-                    {ids.map((id) => {
-                      const account = accounts.find((item) => item.id === id);
-                      return (
-                        <div
-                          className="selected-account [&_>_[data-slot='button']]:ml-auto [&_>_[data-slot='button']]:shrink-0 flex gap-2.5 items-start py-[17px] px-0 [.selected-account_+_&]:border-t [.selected-account_+_&]:border-t-border [&_>_svg]:mt-0.75 [&_>_svg]:text-muted-foreground [&_strong]:text-[13px] [&_strong]:font-medium [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere [&_>_svg]:shrink-0 max-[740px]:flex-wrap"
-                          key={id}
-                        >
-                          {account &&
-                          !accountNeedsSignIn(account) &&
-                          account.signIn?.state !== "unavailable" ? (
-                            <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={14} />
-                          ) : (
-                            <HugeiconsIcon
-                              icon={AlertCircleIcon}
-                              strokeWidth={2}
-                              aria-hidden
-                              size={14}
-                            />
-                          )}
-                          <div>
-                            <strong>
-                              {account ? (
-                                <AccountLink account={account.id}>
-                                  {account.label || "Unnamed account"}
-                                </AccountLink>
-                              ) : (
-                                "Account disconnected"
-                              )}
-                            </strong>
-                            {account && (
-                              <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
+                    </h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      {ids.map((id, index) => {
+                        const account = accounts.find((item) => item.id === id);
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex min-w-0 items-center gap-2 break-words"
+                          >
+                            {index > 0 && <span aria-hidden>·</span>}
+                            {account ? (
+                              <>
+                                <span className="text-foreground/80 hover:text-foreground hover:underline">
+                                  <AccountLink account={account.id}>
+                                    {account.label || "Unnamed account"}
+                                  </AccountLink>
+                                </span>
                                 {accountNeedsSignIn(account) ? (
-                                  <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
-                                    Needs sign-in
-                                  </span>
+                                  <>
+                                    <span className="text-sign-in-warning">Needs sign-in</span>
+                                    {reconnectAction?.(account)}
+                                  </>
                                 ) : account.signIn?.state === "unavailable" ? (
-                                  "Account unavailable"
-                                ) : (
-                                  account.method
-                                )}
-                              </div>
+                                  <span className="text-destructive">Unavailable</span>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-destructive">Account disconnected</span>
+                                {chooseAction}
+                              </>
                             )}
-                          </div>
-                          {!account && chooseAction}
-                          {account && accountNeedsSignIn(account) && reconnectAction?.(account)}
-                        </div>
-                      );
-                    })}
-                    {ids.length === 0 && (
-                      <div className="unselected py-[18px] px-0 text-[12px] text-muted-foreground">
-                        {issues.some((issue) => issue.slot === slot)
-                          ? "No account selected."
-                          : "No accounts selected."}
-                      </div>
-                    )}
+                          </span>
+                        );
+                      })}
+                      {ids.length === 0 && (
+                        <span>
+                          {issues.some((issue) => issue.slot === slot)
+                            ? "No account connected"
+                            : "No account needed"}
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  {accountActions && (
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 max-[480px]:ml-[48px]">
+                      {accountActions(slot, requirement)}
+                    </div>
+                  )}
                 </section>
               );
             })}

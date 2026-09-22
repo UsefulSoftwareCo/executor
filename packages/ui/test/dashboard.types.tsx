@@ -70,6 +70,7 @@ function checkForms(
   });
   OAuthFields({
     providerName: "Example",
+    setup: "unresolved",
     redirectUri: "https://example.com/callback",
     start,
     Failure,
@@ -80,6 +81,7 @@ function checkForms(
   });
   OAuthFields({
     providerName: "Example",
+    setup: "unresolved",
     redirectUri: "https://example.com/callback",
     start,
     // @ts-expect-error OAuth start failures cannot be narrowed by the renderer.

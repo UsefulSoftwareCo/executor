@@ -10,7 +10,7 @@ import { OperationSchedule } from "./schedules.ts";
 import { DatabaseSchema } from "@executor-js/app-data/contracts";
 /** Portable framework dispatch contracts. Requests never carry account bindings. */
 import { Schema, type Effect, type Redacted } from "effect";
-import { AccountId, HttpUrl, JsonObject, JsonValue } from "./schema.ts";
+import { AccountId, JsonObject, JsonValue } from "./schema.ts";
 import type { AppStorage } from "./storage.ts";
 import type { InvocationTelemetry } from "@executor-js/telemetry";
 export { AppStorageError, AppStorageUnavailable, StorageName, type AppStorage } from "./storage.ts";
@@ -33,24 +33,38 @@ export * from "./webhook-protocol.ts";
 import { ToolAnnotations } from "./tools.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
+import { OAuth2Config } from "./provider.ts";
+export { OAuthClientAuth, OAuthSecretClientAuth } from "./provider.ts";
+
+/** Serializable auth methods shared with SDK hosts; protocol configuration has one schema. */
+export const DeclaredAuthMethod = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("secrets"), label: Schema.String, fields: JsonObject }),
+  Schema.Struct({
+    type: Schema.Literal("oauth2"),
+    ...OAuth2Config.members[0].fields,
+    response: JsonObject,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("oauth2"),
+    ...OAuth2Config.members[1].fields,
+    response: JsonObject,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("oauth2"),
+    ...OAuth2Config.members[2].fields,
+    response: JsonObject,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("oauth2"),
+    ...OAuth2Config.members[3].fields,
+    response: JsonObject,
+  }),
+]);
 
 /** Serializable declaration of a provider's named authentication methods. */
 export const DeclaredProvider = Schema.Struct({
   name: Schema.NonEmptyString,
-  auth: Schema.Record(
-    Schema.NonEmptyString,
-    Schema.Union([
-      Schema.Struct({ type: Schema.Literal("secrets"), label: Schema.String, fields: JsonObject }),
-      Schema.Struct({ type: Schema.Literal("oauth2"), discover: HttpUrl, response: JsonObject }),
-      Schema.Struct({
-        type: Schema.Literal("oauth2"),
-        authorizationUrl: HttpUrl,
-        tokenUrl: HttpUrl,
-        scopes: Schema.Array(Schema.String),
-        response: JsonObject,
-      }),
-    ]),
-  ),
+  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
 });
 /** Credential-free provider declaration; content matching remains host policy. */
 export type DeclaredProvider = typeof DeclaredProvider.Type;

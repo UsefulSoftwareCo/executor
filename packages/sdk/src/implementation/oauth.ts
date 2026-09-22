@@ -21,6 +21,8 @@ import {
 import { Account } from "../contracts/account.ts";
 import {
   OAuthClientUnavailable,
+  type CheckOAuthSetup,
+  type OAuthClientSetup,
   OAuthCompletionFailed,
   OAuthAttempt,
   OAuthAttemptId,
@@ -28,6 +30,7 @@ import {
   OAuthGrant,
   OAuthReconnectRequired,
   OAuthRegistration,
+  OAuthConfidentialRegistration,
   OAuthSetupFailed,
   type OAuthOptions,
 } from "../contracts/oauth.ts";
@@ -104,26 +107,10 @@ export const makeOAuth = (
       .decrypt(identity, Redacted.make(bytes))
       .pipe(Effect.flatMap((value) => decode(schema, Redacted.value(value))));
 
-  const beginOAuth = (
-    input: typeof StartConnectionOAuth.Type & {
-      readonly owner: OwnerId;
-      readonly provider: ProviderId;
-    },
-    existing?: Account,
-  ) =>
+  const resolveSetup = (input: typeof CheckOAuthSetup.Type, automatic: boolean) =>
     Effect.gen(function* () {
       if (protocol === undefined || options === undefined)
-        return yield* new OAuthClientUnavailable(input);
-      const redirect = parseEndpoint(input.redirectUri, options.urlPolicy);
-      // Static callback parameters are legal; response fields must remain provider-owned.
-      if (
-        redirect === undefined ||
-        ["code", "state", "error", "error_description", "error_uri", "iss"].some((key) =>
-          redirect.searchParams.has(key),
-        )
-      ) {
-        return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      }
+        return yield* new OAuthSetupFailed({ reason: "unsupported" });
       const row = yield* query(() =>
         db.findFirst("providers", { where: (b) => b("id", "=", input.provider) }),
       );
@@ -134,6 +121,18 @@ export const makeOAuth = (
         : undefined;
       if (method === undefined || method.type !== "oauth2")
         return yield* new AuthMethodInvalid(input);
+      const redirect =
+        method.grant === "client_credentials" || input.redirectUri === undefined
+          ? undefined
+          : parseEndpoint(input.redirectUri, options.urlPolicy);
+      if (
+        method.grant !== "client_credentials" &&
+        (redirect === undefined ||
+          ["code", "state", "error", "error_description", "error_uri", "iss"].some((key) =>
+            redirect.searchParams.has(key),
+          ))
+      )
+        return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       const discovered = yield* protocol
         .discover(method)
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "discovery" })));
@@ -147,6 +146,7 @@ export const makeOAuth = (
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "discovery" });
       }
       if (
+        discovered.grant === "authorization_code" &&
         discovered.server.code_challenge_methods_supported !== undefined &&
         !discovered.server.code_challenge_methods_supported.includes("S256")
       ) {
@@ -159,7 +159,7 @@ export const makeOAuth = (
             input.owner,
             input.provider,
             input.method,
-            redirect.href,
+            redirect?.href,
             discovered.server.issuer,
             options.clientMetadataUrl,
             [...discovered.scopes].sort(),
@@ -167,19 +167,11 @@ export const makeOAuth = (
         )}`,
       );
       const now = yield* Clock.currentTimeMillis;
-      const saved = yield* query(() =>
-        db.findFirst("oauthClients", { where: (b) => b("id", "=", clientId) }),
-      );
+      const saved = automatic
+        ? yield* query(() => db.findFirst("oauthClients", { where: (b) => b("id", "=", clientId) }))
+        : null;
       let client: OAuthRegistration | undefined;
-      if (input.client !== undefined) {
-        client = yield* Schema.decodeUnknownEffect(OAuthRegistration)({
-          client_id: input.client.clientId,
-          token_endpoint_auth_method: input.client.tokenEndpointAuthMethod,
-          ...(input.client.clientSecret === undefined
-            ? {}
-            : { client_secret: Redacted.value(input.client.clientSecret) }),
-        }).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
-      } else if (saved !== null) {
+      if (saved !== null) {
         const registered = yield* decrypt(clientId, saved.encrypted, OAuthRegistration);
         if (
           registered.client_secret_expires_at === undefined ||
@@ -188,8 +180,13 @@ export const makeOAuth = (
         )
           client = registered;
       }
+      const savedClient = client !== undefined;
       if (
+        automatic &&
+        discovered.grant === "authorization_code" &&
         client === undefined &&
+        (method.tokenEndpointAuthMethod === undefined ||
+          method.tokenEndpointAuthMethod === "none") &&
         discovered.server.client_id_metadata_document_supported === true &&
         options.clientMetadataUrl !== undefined
       ) {
@@ -198,21 +195,180 @@ export const makeOAuth = (
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }
-      if (client === undefined && discovered.server.registration_endpoint !== undefined) {
+      return { method, redirect, discovered, clientId, client, savedClient };
+    });
+  const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
+    resolveSetup(input, true).pipe(
+      Effect.map(({ client, discovered, method, savedClient }): OAuthClientSetup => {
+        const mode = savedClient
+          ? "saved"
+          : client !== undefined ||
+              (discovered.grant === "authorization_code" &&
+                discovered.server.registration_endpoint !== undefined)
+            ? "automatic"
+            : "client-required";
+        return method.grant === "client_credentials"
+          ? {
+              mode,
+              scopes: discovered.scopes,
+              grant: method.grant,
+              tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
+            }
+          : {
+              mode,
+              scopes: discovered.scopes,
+              grant: "authorization_code",
+              tokenEndpointAuthMethod: discovered.tokenEndpointAuthMethod,
+            };
+      }),
+      Effect.withSpan("oauth.setup"),
+    );
+
+  const beginOAuth = (
+    input: typeof StartConnectionOAuth.Type & {
+      readonly owner: OwnerId;
+      readonly provider: ProviderId;
+    },
+    existing?: Account,
+  ) =>
+    Effect.gen(function* () {
+      if (protocol === undefined || options === undefined)
+        return yield* new OAuthClientUnavailable(input);
+      const {
+        method,
+        redirect,
+        discovered,
+        clientId,
+        client: availableClient,
+      } = yield* resolveSetup(input, input.client === undefined);
+      const now = yield* Clock.currentTimeMillis;
+      let client: OAuthRegistration | undefined;
+      if (input.client !== undefined) {
+        if (
+          discovered.tokenEndpointAuthMethod === "none" &&
+          input.client.clientSecret !== undefined
+        )
+          return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+        client = yield* Schema.decodeUnknownEffect(OAuthRegistration)({
+          client_id: input.client.clientId,
+          token_endpoint_auth_method: discovered.tokenEndpointAuthMethod,
+          ...(input.client.clientSecret === undefined
+            ? {}
+            : { client_secret: Redacted.value(input.client.clientSecret) }),
+        }).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
+      } else client = availableClient;
+      if (
+        client === undefined &&
+        discovered.grant === "authorization_code" &&
+        discovered.server.registration_endpoint !== undefined
+      ) {
+        if (redirect === undefined)
+          return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
         client = yield* protocol
-          .register(discovered.server, redirect.href, discovered.scopes)
+          .register(
+            discovered.server,
+            redirect.href,
+            discovered.scopes,
+            method.tokenEndpointAuthMethod,
+          )
           .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "registration" })));
       }
       if (client === undefined) return yield* new OAuthClientUnavailable(input);
+      if (
+        client.token_endpoint_auth_method === "client_secret_basic_raw" &&
+        client.client_id.includes(":")
+      )
+        return yield* new OAuthSetupFailed({ reason: "invalid_client" });
       const registered = client;
       const encryptedClient = yield* encrypt(clientId, registered);
-      yield* query(() =>
-        db.upsert("oauthClients", {
-          where: (b) => b("id", "=", clientId),
-          create: { id: clientId, encrypted: encryptedClient },
-          update: { encrypted: encryptedClient },
-        }),
-      );
+      const saveClient = (store: Query) =>
+        query(() =>
+          store.upsert("oauthClients", {
+            where: (b) => b("id", "=", clientId),
+            create: { id: clientId, encrypted: encryptedClient },
+            update: { encrypted: encryptedClient },
+          }),
+        );
+      if (discovered.grant === "client_credentials") {
+        const confidential = yield* Schema.decodeUnknownEffect(OAuthConfidentialRegistration)(
+          registered,
+        ).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
+        const tokens = yield* protocol
+          .clientCredentials({ ...discovered, client: confidential })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new OAuthSetupFailed({
+                  reason: error.reason === "invalid_client" ? "invalid_client" : "token_exchange",
+                }),
+            ),
+          );
+        const fields = yield* project(method.response, tokens).pipe(
+          Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })),
+        );
+        const completedAt = yield* Clock.currentTimeMillis;
+        const account = existing ?? {
+          id: AccountId.make(`acc_${yield* nextId}`),
+          owner: input.owner,
+          provider: input.provider,
+          method: input.method,
+          label: input.label,
+          createdAt: new Date(completedAt),
+        };
+        const grant = yield* decode(OAuthGrant, {
+          ...discovered,
+          client: confidential,
+          fields,
+          response: method.response,
+          ...(tokens.expires_in === undefined
+            ? {}
+            : { expiresAt: completedAt + tokens.expires_in * 1000 }),
+        });
+        const encryptedCredentials = yield* encrypt(account.id, fields);
+        const encryptedGrant = yield* encrypt(account.id, grant);
+        const ready = `ready_${yield* nextId}`;
+        const saved = yield* transaction(db, (tx) =>
+          Effect.gen(function* () {
+            const current = yield* lockConnection(tx, input, crypto);
+            if (current.state.status === "completed") return current.state.account;
+            yield* openConnection(tx, input);
+            const saved =
+              existing === undefined
+                ? account
+                : yield* ownedAccount(tx, { account: account.id, owner: input.owner });
+            if (existing === undefined) {
+              yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
+              if (lifecycle) yield* lifecycle.accountCreated(saved);
+            } else
+              yield* query(() =>
+                tx.updateMany("accounts", {
+                  where: (b) => b("id", "=", saved.id),
+                  set: { encryptedCredentials },
+                }),
+              );
+            const state = {
+              encrypted: encryptedGrant,
+              status: ready,
+              updatedAt: new Date(completedAt),
+            };
+            yield* query(() =>
+              tx.upsert("oauthGrants", {
+                where: (b) => b("id", "=", saved.id),
+                create: { id: saved.id, ...state },
+                update: state,
+              }),
+            );
+            if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
+            yield* finishConnection(tx, input, saved);
+            yield* saveClient(tx);
+            return saved;
+          }),
+        );
+        return { status: "completed" as const, account: saved };
+      }
+      if (redirect === undefined)
+        return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+      if (input.client === undefined) yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
@@ -226,6 +382,7 @@ export const makeOAuth = (
         account,
         ...(existing === undefined ? {} : { reconnect: true }),
         client: registered,
+        ...(input.client === undefined ? {} : { clientKey: clientId }),
         response: method.response,
       });
       const encrypted = yield* encrypt(id, attempt);
@@ -246,11 +403,18 @@ export const makeOAuth = (
           );
         }),
       );
-      return { authorizationUrl: HttpUrl.make(authorization.authorizationUrl), expiresAt };
+      return {
+        status: "redirect" as const,
+        authorizationUrl: HttpUrl.make(authorization.authorizationUrl),
+        expiresAt,
+      };
     }).pipe(Effect.withSpan("oauth.beginOAuth"));
 
   const startOAuth = (input: typeof StartConnectionOAuth.Type) =>
     Effect.gen(function* () {
+      const saved = yield* readConnection(db, input);
+      if (saved.state.status === "completed")
+        return { status: "completed" as const, account: saved.state.account };
       const connection = yield* openConnection(db, input);
       const existing =
         connection.reconnectAccount === null
@@ -350,11 +514,22 @@ export const makeOAuth = (
       if (claimed?.status !== claim)
         return yield* new OAuthCompletionFailed({ reason: "already_completed" });
       if (callback.searchParams.has("error"))
-        return yield* new OAuthCompletionFailed({ reason: "denied" });
+        return yield* new OAuthCompletionFailed({
+          reason: ["invalid_client", "unauthorized_client"].includes(
+            callback.searchParams.get("error") ?? "",
+          )
+            ? "invalid_client"
+            : "denied",
+        });
       if (attempt.reconnect) yield* reconnectTarget(db, attempt);
-      const tokens = yield* protocol
-        .exchange(attempt, callback)
-        .pipe(Effect.mapError(() => new OAuthCompletionFailed({ reason: "exchange_failed" })));
+      const tokens = yield* protocol.exchange(attempt, callback).pipe(
+        Effect.mapError(
+          (error) =>
+            new OAuthCompletionFailed({
+              reason: error.reason === "invalid_client" ? "invalid_client" : "exchange_failed",
+            }),
+        ),
+      );
       const fields = yield* project(attempt.response, tokens).pipe(
         Effect.mapError(() => new OAuthCompletionFailed({ reason: "exchange_failed" })),
       );
@@ -380,6 +555,13 @@ export const makeOAuth = (
       });
       const encryptedCredentials = yield* encrypt(account.id, fields);
       const encryptedGrant = yield* encrypt(account.id, grant);
+      const savedClient =
+        attempt.clientKey === undefined
+          ? undefined
+          : {
+              id: attempt.clientKey,
+              encrypted: yield* encrypt(attempt.clientKey, attempt.client),
+            };
       const ready = `ready_${yield* nextId}`;
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -419,6 +601,14 @@ export const makeOAuth = (
           );
           if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
           yield* finishConnection(tx, input, saved);
+          if (savedClient !== undefined)
+            yield* query(() =>
+              tx.upsert("oauthClients", {
+                where: (b) => b("id", "=", savedClient.id),
+                create: savedClient,
+                update: { encrypted: savedClient.encrypted },
+              }),
+            );
           return saved;
         }),
       );
@@ -442,14 +632,21 @@ export const makeOAuth = (
           continue;
         }
         const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         if (
           grant.expiresAt === undefined ||
           grant.expiresAt > now + 30_000 ||
-          (grant.refreshToken === undefined && grant.expiresAt > now)
+          (!renewable && grant.expiresAt > now)
         )
           return Redacted.make(grant.fields);
-        if (grant.refreshToken === undefined || protocol === undefined) return yield* reconnect();
-        const refreshToken = grant.refreshToken;
+        if (protocol === undefined) return yield* reconnect();
+        const renewal =
+          grant.grant === "client_credentials"
+            ? protocol.clientCredentials(grant)
+            : grant.refreshToken === undefined
+              ? undefined
+              : protocol.refresh({ ...grant, refreshToken: grant.refreshToken });
+        if (renewal === undefined) return yield* reconnect();
         const claim = `refresh_${yield* nextId}`;
         yield* query(() =>
           db.updateMany("oauthGrants", {
@@ -461,7 +658,7 @@ export const makeOAuth = (
           db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
         );
         if (claimed?.status !== claim) continue;
-        const result = yield* protocol.refresh({ ...grant, refreshToken }).pipe(
+        const result = yield* renewal.pipe(
           Effect.flatMap((tokens) =>
             project(grant.response, { ...grant.fields, ...tokens }).pipe(
               Effect.map((fields) => ({ tokens, fields })),
@@ -493,7 +690,9 @@ export const makeOAuth = (
         const updated = yield* decode(OAuthGrant, {
           ...grant,
           fields,
-          refreshToken: tokens.refresh_token ?? refreshToken,
+          ...(grant.grant === "client_credentials"
+            ? {}
+            : { refreshToken: tokens.refresh_token ?? grant.refreshToken }),
           expiresAt:
             tokens.expires_in === undefined
               ? undefined
@@ -530,6 +729,7 @@ export const makeOAuth = (
         return Redacted.make(fields);
       }
     }).pipe(Effect.withSpan("oauth.resolve"));
+
   const resolve = (account: StoredAccount, provider: ProviderDefinition) =>
     Effect.gen(function* () {
       if (lifecycle) yield* lifecycle.accountResolving(account);
@@ -538,5 +738,5 @@ export const makeOAuth = (
       if (lifecycle) yield* lifecycle.accountResolving(account);
       return fields;
     });
-  return { connections: { startOAuth, completeOAuth }, resolve };
+  return { connections: { oauthSetup, startOAuth, completeOAuth }, resolve };
 };

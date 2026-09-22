@@ -5,10 +5,14 @@ import {
   AppId,
   DeploymentId,
   AccountConnectionId,
+  AccountConnectionTargetChanged,
+  type AccountConnection,
+  type ProviderId,
   HttpUrl,
   type App,
   type Account,
   type AccountFieldsInput,
+  type OAuthClientInput,
 } from "@executor-js/sdk";
 import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -33,6 +37,24 @@ class ConnectionKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly connection: AccountConnectionId;
 }> {}
+
+class OAuthSetupKey extends Data.Class<{
+  readonly organization: OrganizationReference;
+  readonly provider: ProviderId;
+  readonly method: string;
+}> {}
+const oauthSetupQuery = Atom.family((key: OAuthSetupKey) =>
+  HostedClient.query("accounts", "oauthSetup", { params: key }).pipe(
+    Atom.setIdleTTL("5 minutes"),
+    Atom.refreshOnWindowFocus,
+  ),
+);
+/** Safe client capability hints are shared across forms for the same organization, provider, and method. */
+export const oauthSetupAtom = (key: {
+  organization: OrganizationReference;
+  provider: ProviderId;
+  method: string;
+}) => oauthSetupQuery(new OAuthSetupKey(key));
 
 const appQuery = Atom.family(
   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
@@ -116,13 +138,90 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
   renameApp(new AppKey(key));
 export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   removeApp(new AppKey(key));
-export const connectAppAtom = HostedClient.mutation("accounts", "connect");
+/** A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its ID. */
+export function appConnectionAtoms(key: {
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly requirement: string;
+  readonly provider: ProviderId;
+}) {
+  const request = Atom.make<AccountConnection | undefined>(undefined);
+  const connection = (get: Atom.FnContext) =>
+    Effect.gen(function* () {
+      const current = get(request);
+      const client = yield* HostedClient;
+      const saved =
+        current ??
+        (yield* client.accounts.connect({
+          params: { organization: key.organization, app: key.app },
+          payload: { requirement: key.requirement },
+        }));
+      if (current === undefined) get.set(request, saved);
+      // Cached form definitions cannot send credentials to a different provider after an app edit.
+      if (saved.provider.id !== key.provider) {
+        get.refresh(appAtom({ organization: key.organization, app: key.app }));
+        get.refresh(inventoryAtom(key.organization));
+        return yield* new AccountConnectionTargetChanged({
+          app: key.app,
+          requirement: key.requirement,
+        });
+      }
+      return saved;
+    });
+  return {
+    request,
+    submit: HostedClient.runtime.fn(
+      (payload: { method: string; label: string; fields: typeof AccountFieldsInput.Type }, get) =>
+        Effect.gen(function* () {
+          const pending = yield* connection(get);
+          const client = yield* HostedClient;
+          const params = { organization: key.organization, connection: pending.id };
+          const saved = yield* client.accounts.submit({ params, payload });
+          connectionSaved(get, new ConnectionKey(params), saved, key.app);
+          return saved;
+        }),
+    ),
+    startOAuth: HostedClient.runtime.fn(
+      (payload: { method: string; label: string; client?: OAuthClientInput }, get) =>
+        Effect.gen(function* () {
+          const pending = yield* connection(get);
+          const client = yield* HostedClient;
+          const signIn = yield* client.accounts.startOAuth({
+            params: { organization: key.organization, connection: pending.id },
+            payload,
+          });
+          if (signIn.status === "completed")
+            connectionSaved(
+              get,
+              new ConnectionKey({ organization: key.organization, connection: pending.id }),
+              signIn.account,
+              key.app,
+            );
+          return { ...signIn, connection: pending.id };
+        }),
+    ),
+  };
+}
+
 const submitConnection = Atom.family((key: ConnectionKey) =>
   HostedClient.runtime.fn(
     (payload: { method: string; label: string; fields: typeof AccountFieldsInput.Type }, get) =>
       Effect.flatMap(HostedClient, (client) =>
         client.accounts.submit({ params: key, payload }),
-      ).pipe(Effect.tap((saved) => Effect.sync(() => connectionSaved(get, key, saved)))),
+      ).pipe(
+        Effect.tap((saved) =>
+          Effect.sync(() => {
+            const connection = AsyncResult.value(get(connectionAtom(key)));
+            connectionSaved(
+              get,
+              key,
+              saved,
+              Option.isSome(connection) ? (connection.value.target?.app ?? null) : null,
+            );
+            get.refresh(connectionAtom(key));
+          }),
+        ),
+      ),
   ),
 );
 const completeOAuth = Atom.family((key: ConnectionKey) =>
@@ -133,12 +232,7 @@ const completeOAuth = Atom.family((key: ConnectionKey) =>
       ).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
-            connectionSaved(get, key, saved);
-            if (input.app !== null) {
-              const target = { organization: key.organization, app: input.app };
-              invalidate(get, appAtom(target));
-              get.refresh(toolsAtom(target));
-            }
+            connectionSaved(get, key, saved, input.app);
           }),
         ),
       ),
@@ -153,7 +247,40 @@ export const completeOAuthAtom = (key: {
   organization: OrganizationReference;
   connection: AccountConnectionId;
 }) => completeOAuth(new ConnectionKey(key));
-export const startOAuthAtom = HostedClient.mutation("accounts", "startOAuth");
+const startOAuth = Atom.family((key: ConnectionKey) =>
+  HostedClient.runtime.fn(
+    (
+      payload: {
+        readonly method: string;
+        readonly label: string;
+        readonly client?: OAuthClientInput;
+      },
+      get,
+    ) =>
+      Effect.flatMap(HostedClient, (client) =>
+        client.accounts.startOAuth({ params: key, payload }),
+      ).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (result.status === "completed") {
+              const connection = AsyncResult.value(get(connectionAtom(key)));
+              connectionSaved(
+                get,
+                key,
+                result.account,
+                Option.isSome(connection) ? (connection.value.target?.app ?? null) : null,
+              );
+            }
+          }),
+        ),
+      ),
+  ),
+);
+/** Retry or manual setup belongs to one connection and cannot supersede another provider's sign-in. */
+export const startOAuthAtom = (key: {
+  organization: OrganizationReference;
+  connection: AccountConnectionId;
+}) => startOAuth(new ConnectionKey(key));
 export const callToolAtom = HostedClient.mutation("tools", "call");
 
 /** Browser-only return context. The server verifies connection ownership and OAuth state. */
@@ -163,6 +290,8 @@ export const PendingOAuth = Schema.Struct({
   connection: AccountConnectionId,
   app: Schema.NullOr(AppId),
   redirectUri: HttpUrl,
+  label: Schema.optionalKey(Schema.String),
+  manualClient: Schema.optionalKey(Schema.Boolean),
 });
 export { appError } from "./errors.ts";
 
@@ -218,15 +347,18 @@ export function acknowledgeApp(
     }));
 }
 
-function connectionSaved(get: Atom.FnContext, key: ConnectionKey, saved: Account) {
+function connectionSaved(
+  get: Atom.FnContext,
+  key: ConnectionKey,
+  saved: Account,
+  app: AppId | null,
+) {
   acknowledgeAccount(get, key.organization, saved, true);
-  const connection = AsyncResult.value(get(connectionAtom(key)));
-  if (Option.isSome(connection) && connection.value.target) {
-    const target = { organization: key.organization, app: connection.value.target.app };
+  if (app !== null) {
+    const target = { organization: key.organization, app };
     invalidate(get, appAtom(target));
     get.refresh(toolsAtom(target));
   }
-  get.refresh(connectionAtom(key));
   // The inventory response contains selected accounts, which the account response does not.
   invalidate(get, inventoryAtom(key.organization));
 }

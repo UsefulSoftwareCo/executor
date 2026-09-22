@@ -26,7 +26,14 @@ import {
 } from "../contracts/deployment.ts";
 import type { Executor } from "../contracts/executor.ts";
 import { RuntimeBuildFailed, type Runtime } from "../contracts/runtime.ts";
-import { AppCodeId, AppId, DeploymentId, OwnerId, StorageError } from "../contracts/shared.ts";
+import {
+  AppCodeId,
+  AppId,
+  DeploymentId,
+  OwnerId,
+  StorageError,
+  JsonObject,
+} from "../contracts/shared.ts";
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
@@ -292,11 +299,14 @@ export const makeApps = (
           const accounts = existing === undefined ? {} : existing.accounts;
           yield* validateSelection(tx, appId, requirements, accounts);
           for (const { provider } of entries) {
+            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
+              provider.definition,
+            ).pipe(Effect.mapError(() => new StorageError()));
             yield* query(() =>
               tx.upsert("providers", {
                 where: (b) => b("id", "=", provider.id),
-                create: provider,
-                update: { definition: provider.definition },
+                create: { id: provider.id, definition },
+                update: { definition },
               }),
             );
           }

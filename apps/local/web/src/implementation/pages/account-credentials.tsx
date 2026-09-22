@@ -49,7 +49,16 @@ export function AccountCredentials({
         onSaved={() => {
           void navigate({ to: "/accounts/$accountId", params: { accountId: account.id } });
         }}
-        oauth={(props) => <OAuthFields provider={provider} account={account} {...props} />}
+        oauth={(props) => (
+          <OAuthFields
+            provider={provider}
+            account={account}
+            onSaved={() => {
+              void navigate({ to: "/accounts/$accountId", params: { accountId: account.id } });
+            }}
+            {...props}
+          />
+        )}
       />
     </>
   );

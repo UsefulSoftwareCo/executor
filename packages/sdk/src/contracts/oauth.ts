@@ -3,6 +3,9 @@ import type { UrlPolicy } from "@executor-js/utils/url-policy";
 import { AuthMethodName } from "./provider.ts";
 import { AccountConnectionId } from "./shared.ts";
 import { Schema } from "effect";
+import { OAuthClientAuth, OAuthSecretClientAuth } from "apps/contracts";
+import { Account } from "./account.ts";
+export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/unstable/http";
 import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
 
@@ -13,6 +16,39 @@ export const OAuthSignIn = Schema.Struct({
 });
 
 export type OAuthSignIn = typeof OAuthSignIn.Type;
+
+/** Authorization code needs a redirect; client credentials completes the same connection immediately. */
+export const OAuthStartResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("redirect"), ...OAuthSignIn.fields }),
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+]);
+export type OAuthStartResult = typeof OAuthStartResult.Type;
+
+const clientSetup = {
+  mode: Schema.Literals(["automatic", "saved", "client-required"]),
+  scopes: Schema.Array(Schema.String),
+};
+/** Safe form metadata resolved from provider code and discovery. Never contains saved client IDs or secrets. */
+export const OAuthClientSetup = Schema.Union([
+  Schema.Struct({
+    ...clientSetup,
+    grant: Schema.Literal("authorization_code"),
+    tokenEndpointAuthMethod: OAuthClientAuth,
+  }),
+  Schema.Struct({
+    ...clientSetup,
+    grant: Schema.Literal("client_credentials"),
+    tokenEndpointAuthMethod: OAuthSecretClientAuth,
+  }),
+]);
+export type OAuthClientSetup = typeof OAuthClientSetup.Type;
+/** Inspect the client configuration for one owner, provider, method, and callback. */
+export const CheckOAuthSetup = Schema.Struct({
+  owner: OwnerId,
+  provider: ProviderId,
+  method: AuthMethodName,
+  redirectUri: Schema.optional(HttpUrl),
+});
 
 /** The host cannot resolve an approved OAuth client for this provider method. */
 export class OAuthClientUnavailable extends Schema.TaggedError<OAuthClientUnavailable>()(
@@ -34,6 +70,7 @@ export class OAuthCompletionFailed extends Schema.TaggedError<OAuthCompletionFai
       "denied",
       "already_completed",
       "exchange_failed",
+      "invalid_client",
       "account_unavailable",
     ]),
   },
@@ -43,17 +80,10 @@ export class OAuthCompletionFailed extends Schema.TaggedError<OAuthCompletionFai
   },
 ) {}
 
-/** How the trusted host authenticates a client at the token endpoint. */
-export const OAuthClientAuth = Schema.Literals([
-  "none",
-  "client_secret_post",
-  "client_secret_basic",
-]);
 /** User-supplied client configuration. A client secret is write-only at API boundaries. */
 export const OAuthClientInput = Schema.Struct({
   clientId: Schema.NonEmptyString,
   clientSecret: Schema.optional(Schema.RedactedFromValue(Schema.NonEmptyString)),
-  tokenEndpointAuthMethod: OAuthClientAuth,
 });
 export type OAuthClientInput = typeof OAuthClientInput.Type;
 
@@ -75,6 +105,7 @@ export class OAuthSetupFailed extends Schema.TaggedError<OAuthSetupFailed>()(
       "registration",
       "invalid_client",
       "invalid_redirect",
+      "token_exchange",
       "unsupported",
     ]),
   },
@@ -100,9 +131,9 @@ export const OAuthAttemptId = Schema.NonEmptyString.pipe(Schema.brand("OAuthAtte
 export type OAuthAttemptId = typeof OAuthAttemptId.Type;
 
 /** Validated subset of authorization-server metadata used for saved grants. */
-export const OAuthServer = Schema.Struct({
+export const OAuthTokenServer = Schema.Struct({
   issuer: HttpUrl,
-  authorization_endpoint: HttpUrl,
+  authorization_endpoint: Schema.optional(HttpUrl),
   token_endpoint: HttpUrl,
   registration_endpoint: Schema.optional(HttpUrl),
   jwks_uri: Schema.optional(HttpUrl),
@@ -111,6 +142,12 @@ export const OAuthServer = Schema.Struct({
   code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
   token_endpoint_auth_methods_supported: Schema.optional(Schema.Array(Schema.String)),
   scopes_supported: Schema.optional(Schema.Array(Schema.String)),
+});
+export type OAuthTokenServer = typeof OAuthTokenServer.Type;
+/** Browser grants require an authorization endpoint as well as a token endpoint. */
+export const OAuthServer = Schema.Struct({
+  ...OAuthTokenServer.fields,
+  authorization_endpoint: HttpUrl,
 });
 export type OAuthServer = typeof OAuthServer.Type;
 /** The protected resource owns its canonical identifier and authorization-server list. */
@@ -124,13 +161,16 @@ const registration = {
   client_id: Schema.NonEmptyString,
   client_secret_expires_at: Schema.optional(Schema.Number),
 };
+/** A secret-bearing client suitable for machine grants and confidential browser clients. */
+export const OAuthConfidentialRegistration = Schema.Struct({
+  ...registration,
+  token_endpoint_auth_method: OAuthSecretClientAuth,
+  client_secret: Schema.NonEmptyString,
+});
+export type OAuthConfidentialRegistration = typeof OAuthConfidentialRegistration.Type;
 export const OAuthRegistration = Schema.Union([
   Schema.Struct({ ...registration, token_endpoint_auth_method: Schema.Literal("none") }),
-  Schema.Struct({
-    ...registration,
-    token_endpoint_auth_method: Schema.Literals(["client_secret_basic", "client_secret_post"]),
-    client_secret: Schema.NonEmptyString,
-  }),
+  OAuthConfidentialRegistration,
 ]);
 export type OAuthRegistration = typeof OAuthRegistration.Type;
 /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
@@ -148,18 +188,34 @@ export const OAuthAttempt = Schema.Struct({
   nonce: Schema.optional(Schema.NonEmptyString),
   server: OAuthServer,
   client: OAuthRegistration,
+  /** User-entered clients become reusable only when this attempt completes successfully. */
+  clientKey: Schema.optionalKey(OAuthClientId),
   resource: Schema.optional(HttpUrl),
   response: JsonObject,
 });
 export type OAuthAttempt = typeof OAuthAttempt.Type;
 /** Private refresh context. Access-token projections are stored separately on the account. */
-export const OAuthGrant = Schema.Struct({
-  server: OAuthServer,
-  client: OAuthRegistration,
+const grantFields = {
   resource: Schema.optional(HttpUrl),
   response: JsonObject,
-  refreshToken: Schema.optional(Schema.NonEmptyString),
   expiresAt: Schema.optional(Schema.Number),
   fields: JsonObject,
-});
+};
+/** Private renewal context; machine grants retain scopes and exchange client credentials again. */
+export const OAuthGrant = Schema.Union([
+  Schema.Struct({
+    ...grantFields,
+    grant: Schema.optionalKey(Schema.Literal("authorization_code")),
+    server: OAuthServer,
+    client: OAuthRegistration,
+    refreshToken: Schema.optional(Schema.NonEmptyString),
+  }),
+  Schema.Struct({
+    ...grantFields,
+    grant: Schema.Literal("client_credentials"),
+    server: OAuthTokenServer,
+    client: OAuthConfidentialRegistration,
+    scopes: Schema.Array(Schema.String),
+  }),
+]);
 export type OAuthGrant = typeof OAuthGrant.Type;

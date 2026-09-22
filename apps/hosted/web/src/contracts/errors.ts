@@ -74,15 +74,21 @@ const errorMessage = Match.type<HostedError>().pipe(
       "This connection is no longer available. Start account setup again.",
     AccountConnectionClosed: () => "This connection has ended. Start account setup again.",
     AccountConnectionTargetChanged: () =>
-      "The app’s account selection changed. Start account setup again.",
+      "The app’s account setup changed. Close this form and try again.",
     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
     OAuthReconnectRequired: () => "This account needs to sign in again.",
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",
-    OAuthSetupFailed: () =>
-      "Sign-in could not start. Check the OAuth client details and try again.",
-    OAuthCompletionFailed: () =>
-      "Sign-in did not complete. Start again from the app’s account setup.",
+    OAuthSetupFailed: (error) =>
+      error.reason === "invalid_client"
+        ? "The OAuth client details were not accepted. Check the client ID and secret, then try again."
+        : error.reason === "token_exchange"
+          ? "Couldn’t connect to this service. Try again."
+          : "Connection setup failed. Check the provider’s OAuth configuration and try again.",
+    OAuthCompletionFailed: (error) =>
+      error.reason === "invalid_client"
+        ? "The OAuth client was rejected. Update its details and try again."
+        : "Sign-in did not complete. Try connecting again.",
     InputInvalid: () => "The input does not match this tool’s schema.",
     AppEvaluationFailed: () =>
       "The app could not load its tools. Check its accounts and try again.",

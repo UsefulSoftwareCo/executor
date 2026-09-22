@@ -10,35 +10,60 @@ holds a second copy.
 There are two kinds of credential, and the provider decides which it accepts:
 
 - **Secrets**: fields you paste, such as an API token, or an email and a key.
-- **OAuth**: a sign-in in your browser. Executor stores the resulting tokens.
+- **OAuth**: browser sign-in or a client ID and secret for machine-to-machine access.
+  Executor stores and renews the resulting tokens.
 
-## From the dashboard
+## From the hosted dashboard
 
-<Steps>
-  <Step title="Open Accounts and add one">
-    Pick the provider and the authentication method.
-  </Step>
-  <Step title="Label it">
-    Labels matter once you have two. "Work Vercel" and "Personal Vercel" are two
-    accounts of the same provider, and an app selects exactly one of them.
-  </Step>
-  <Step title="Fill in the fields, or complete the sign-in">
-    A secrets method asks for the fields it declared. An OAuth method sends you
-    to the provider and stores the tokens it returns.
-  </Step>
-  <Step title="Select it on the app">
-    Open the app and choose which account fills each of its requirements.
-  </Step>
-</Steps>
+Choose **Connect** on the app's Overview card or **Accounts** tab for a provider
+without an account. Set **Account name** in the compact dialog, then choose **Connect** to
+start browser sign-in. If the provider needs credentials, enter them in the same
+dialog. Use **Change account** for a connected
+provider; its picker also offers **Connect another account**. The connection dialog
+contains the sign-in methods supported by the provider.
 
-## From the app you are configuring
+The dialog uses the provider fields already loaded with the app. Opening it does
+not create a connection or fetch the fields again. A connection is created when
+you submit; retries in that dialog reuse the same request.
 
-It is usually easier to start at the app. An app declares **requirements**: one
-named slot per provider it needs. Connecting from the app fills the slot as well
-as saving the account, so there is no second step.
+OAuth setup is checked in the background and reused across forms. If Executor can
+use a saved client or register one automatically, the dialog can connect without
+asking for client details.
+If your own client is required, its fields appear immediately. A failed check offers
+**Retry** without guessing which setup to show. Client IDs and secrets stay on the
+server during these checks.
 
-In the dashboard, open the app and use the connect action on the unfilled
-requirement.
+The provider's code declares the grant, endpoints, scopes, and authentication
+method. The dialog shows the required permissions and asks only for a client ID
+and, when required, a client secret. For browser sign-in, copy the fixed redirect
+URL into the OAuth app's settings. Machine-to-machine connections complete in the
+dialog and need no browser redirect.
+
+If saved OAuth client details are wrong, choose **Change OAuth client** in the
+connection form and enter the replacement. Executor saves manual client details
+only after a successful sign-in. A failed replacement keeps the previous client
+and account. If browser sign-in rejects the client, **Update client details**
+opens the form again with the account name retained.
+
+The account name is optional during setup. New accounts use `Default`, then
+`Default 2`, and so on when that name is already in use for the provider. Use
+**Account name** in the form to choose a name such as “Work” or “Personal.” You can also rename
+an account later from its detail page.
+
+Completing a connection saves the account and selects it for this app. There is
+no separate selection to save. Browser sign-in returns to the app's Accounts tab;
+cancelling or failing sign-in offers a direct way back to the app.
+
+To reuse an account, choose **Use saved account** or **Change account**. The picker
+also offers **Connect another account**. For a
+single-account requirement, clicking a saved account applies it immediately. For
+multiple accounts, check the accounts you want and choose **Use selected accounts**.
+An empty selection can be saved with **Use without accounts** when the app allows
+multiple accounts.
+
+**Stop using this account** removes the app's selection. It keeps the saved account
+available to other apps. The global **Accounts** page lists saved accounts and the
+apps that use them.
 
 ## From an agent
 

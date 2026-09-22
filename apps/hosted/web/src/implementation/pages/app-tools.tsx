@@ -10,8 +10,9 @@ import { appToolReadiness, type AccountSummary } from "@executor-js/ui/contracts
 import { Button } from "@executor-js/ui/components/button";
 import { Textarea } from "@executor-js/ui/components/textarea";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { appError, callToolAtom } from "../../contracts/apps.ts";
+import { AppAccounts } from "./app-accounts.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
 /** Tool execution is a hosted action slot; the browser and schema view are shared with local. */
@@ -19,34 +20,18 @@ export function AppTools({
   app,
   accounts,
   selected,
+  redirectUri,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
   readonly selected: string | undefined;
+  readonly redirectUri: string;
 }) {
   const atoms = useDashboardAtoms();
   const { role, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
   if (appToolReadiness(app, accounts).state !== "ready")
-    return (
-      <div className="app-account-setup flex items-center gap-3.5 p-[22px] border border-border rounded-[8px] [&_>_svg]:text-muted-foreground [&_>_svg]:shrink-0 [&_>_div]:flex-1 [&_>_div]:min-w-0 [&_h2]:text-[14px] [&_h2]:font-medium [&_p]:text-[13px] [&_p]:text-muted-foreground [&_p]:mt-1 [&_>_[data-slot='button']]:shrink-0 max-[740px]:flex-wrap max-[740px]:p-[18px] max-[740px]:[&_>_div]:basis-[calc(100%_-_32px)] max-[740px]:[&_>_[data-slot='button']]:ml-8">
-        <HugeiconsIcon icon={Key01Icon} size={18} />
-        <div>
-          <h2>Choose an account</h2>
-          <p>Connect or choose an account to load this app’s tools.</p>
-        </div>
-        {(role === "owner" || role === "admin") && (
-          <Button asChild>
-            <Link
-              to="/org/$organizationSlug/apps/$appId/setup"
-              params={{ organizationSlug, appId: app.id }}
-            >
-              Choose accounts
-            </Link>
-          </Button>
-        )}
-      </div>
-    );
+    return <AppAccounts app={app} accounts={accounts} redirectUri={redirectUri} />;
   return (
     <ToolBrowser
       Failure={HostedFailure}

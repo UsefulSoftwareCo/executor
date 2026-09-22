@@ -11,7 +11,7 @@ import {
 import { Exit, Option } from "effect";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
-import { AppId, type App } from "@executor-js/sdk";
+import { AppId, type App, type AccountRequirement } from "@executor-js/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -30,7 +30,7 @@ import {
   AppOverviewSource,
 } from "@executor-js/ui/dashboard/app-overview";
 import { appManagement } from "../../contracts/app-management.ts";
-import { AppAccounts } from "@executor-js/ui/dashboard/app-accounts";
+import { AppAccounts, AppAccountActions } from "./app-accounts.tsx";
 import { QueryView, QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
 import {
   appAtom,
@@ -183,7 +183,24 @@ export function AppDetailPage({
                       pending={<OverviewCardLoading label="Loading accounts preview" />}
                     >
                       {(inventory) => (
-                        <AppOverviewAccounts app={current} accounts={inventory.accounts} />
+                        <AppOverviewAccounts
+                          app={current}
+                          accounts={inventory.accounts}
+                          {...(canInspectSource && current.activeDeployment !== null
+                            ? {
+                                accountActions: (slot: string, requirement: AccountRequirement) => (
+                                  <AppAccountActions
+                                    app={current}
+                                    slot={slot}
+                                    requirement={requirement}
+                                    accounts={inventory.accounts}
+                                    connectLabel="Connect"
+                                    redirectUri={inventory.accountSetup.redirectUri}
+                                  />
+                                ),
+                              }
+                            : {})}
+                        />
                       )}
                     </QueryResult>
                   }
@@ -249,7 +266,12 @@ export function AppDetailPage({
                   {(inventory) =>
                     selectedView === "tools" ? (
                       canUse ? (
-                        <AppTools app={current} accounts={inventory.accounts} selected={tool} />
+                        <AppTools
+                          app={current}
+                          accounts={inventory.accounts}
+                          selected={tool}
+                          redirectUri={inventory.accountSetup.redirectUri}
+                        />
                       ) : (
                         <p className="p-5 text-sm text-muted-foreground">
                           This app is not shared with you. You can manage its settings.
@@ -259,18 +281,7 @@ export function AppDetailPage({
                       <AppAccounts
                         app={current}
                         accounts={inventory.accounts}
-                        chooseAction={
-                          canInspectSource && (
-                            <Button variant="outline" size="sm" asChild>
-                              <Link
-                                to="/org/$organizationSlug/apps/$appId/setup"
-                                params={{ organizationSlug, appId }}
-                              >
-                                Choose accounts
-                              </Link>
-                            </Button>
-                          )
-                        }
+                        redirectUri={inventory.accountSetup.redirectUri}
                       />
                     )
                   }

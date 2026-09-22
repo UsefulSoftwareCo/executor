@@ -37,7 +37,11 @@ export {
 } from "./implementation/organization-removal.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
-export type { HostedAccountConnection } from "./contracts/accounts.ts";
+export type {
+  HostedAccountConnection,
+  HostedOAuthSignIn,
+  HostedOAuthStartResult,
+} from "./contracts/accounts.ts";
 
 export { hostedMcpBackend } from "./implementation/mcp.ts";
 

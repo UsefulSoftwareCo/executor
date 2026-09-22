@@ -42,6 +42,7 @@ import {
   SkillDefinitionInvalid,
   SelectedAccounts,
   OAuthClientInput,
+  OAuthClientSetup,
   OAuthClientUnavailable,
   OAuthCompletionFailed,
   OAuthSetupFailed,
@@ -171,7 +172,11 @@ export const providerDisplayUrl = (
   for (const method of Object.values(definition.auth)) {
     if (method.type === "oauth2")
       return HttpUrl.make(
-        new URL("discover" in method ? method.discover : method.authorizationUrl).origin,
+        new URL(
+          method.discover !== undefined
+            ? method.discover
+            : (method.authorizationUrl ?? method.tokenUrl),
+        ).origin,
       );
   }
   return null;
@@ -467,6 +472,19 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           AccountWebhooksActive,
           AccountWorkflowsActive,
           AccountManagementBlocked,
+        ],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("oauthSetup", "/dashboard/api/accounts/oauth/setup", {
+        payload: Schema.Struct({ provider: ProviderId, method: AuthMethodName }),
+        success: OAuthClientSetup,
+        error: [
+          StorageError,
+          CredentialsError,
+          ProviderNotFound,
+          AuthMethodInvalid,
+          OAuthSetupFailed,
         ],
       }),
     )

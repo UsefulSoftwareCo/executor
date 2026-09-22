@@ -89,7 +89,6 @@ export function AppAccountsLoading({ app }: { readonly app?: App | undefined }) 
     <section role="status" aria-label="Loading accounts" className="w-full">
       <AppSectionHeader>
         <AppSectionTitle>Accounts</AppSectionTitle>
-        <Skeleton className="h-8 max-[740px]:h-11 w-32" />
       </AppSectionHeader>
       <div className="p-7 max-[740px]:p-4">
         {requirements?.length === 0 ? (
@@ -97,25 +96,17 @@ export function AppAccountsLoading({ app }: { readonly app?: App | undefined }) 
         ) : (
           <div className="max-w-185 overflow-hidden rounded-lg border">
             {(requirements ?? [{ slot: "pending", name: undefined }]).map(({ slot, name }) => (
-              <div key={slot} className="border-b last:border-b-0">
-                <div className="flex items-center gap-3 bg-muted p-[17px]">
-                  <Skeleton className="size-8.5 shrink-0 rounded-md" />
-                  <div className="space-y-2">
-                    {name ? (
-                      <h3 className="text-[13px] font-medium">{name}</h3>
-                    ) : (
-                      <Skeleton className="h-3 w-28" />
-                    )}
-                    <Skeleton className="h-2.5 w-20" />
-                  </div>
+              <div key={slot} className="flex items-center gap-3.5 border-b p-4 last:border-b-0">
+                <Skeleton className="size-8.5 shrink-0 rounded-md" />
+                <div className="flex-1 space-y-2">
+                  {name ? (
+                    <h3 className="text-sm font-medium">{name}</h3>
+                  ) : (
+                    <Skeleton className="h-3.5 w-28" />
+                  )}
+                  <Skeleton className="h-3 w-24" />
                 </div>
-                <div className="flex items-center gap-3 p-[17px]">
-                  <Skeleton className="size-3.5" />
-                  <div className="space-y-2">
-                    <Skeleton className="h-3 w-32" />
-                    <Skeleton className="h-2.5 w-20" />
-                  </div>
-                </div>
+                <Skeleton className="h-8 w-28 max-[740px]:h-11" />
               </div>
             ))}
           </div>
