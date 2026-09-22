@@ -511,10 +511,15 @@ otherwise the host supplies them.
 
 ## Private app UI
 
+Author app UIs as React SPAs. React is the only supported UI framework for now.
 Add `ui/index.html`, a module script such as `ui/main.tsx`, and styles. The host
 compiles browser assets alongside the server build. Declare `react` and
-`react-dom` in the deployment's package dependencies for React apps. The local
-product opens each configured app on its own localhost subdomain.
+`react-dom` in the deployment's package dependencies. The local product opens
+each configured app on its own localhost subdomain.
+
+Use local React components or browser-compatible npm component libraries.
+Declare library dependencies and include their required styles and assets.
+Do not assume that the host runs custom build plugins required by a library.
 
 For hosted apps, discover and call `appUi_location` after deployment:
 
@@ -546,8 +551,8 @@ effects. All callbacks use Promises; the framework runs Effect internally.
 Do not include an app ID or credentials in browser code. The host binds both
 identity and authentication. Keep asset URLs relative to the document's base;
 compiled imports and `ui/public/` files are retained with the deployment. Each
-activation automatically reloads open pages. The first renderer is a SPA; SSR
-and public sharing are not part of this version.
+activation automatically reloads open pages. SSR, React Server Components and
+public sharing are not part of this version.
 
 ## Updating a hosted app
 

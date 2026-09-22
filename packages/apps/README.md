@@ -78,9 +78,15 @@ Human approval delivery is separate; Executor SDK call/resume persists the pendi
 
 ## Browser UI
 
-Add `ui/index.html` with a module script such as `./main.tsx`. Declare React and
-React DOM in the app's dependencies when using React. UI code is compiled into a
-separate bundle; import server operation types with `import type`.
+React is the only supported app UI framework for now. Add `ui/index.html` with
+a module script such as `./main.tsx`, and declare `react` and `react-dom` in the
+app's dependencies. UI code is compiled into a separate browser bundle; import
+server operation types with `import type`. SSR and React Server Components are
+not supported yet.
+
+Use your own React components or browser-compatible npm component libraries.
+Declare library dependencies and include their required styles and assets.
+Libraries that need custom build plugins require additional build support.
 
 ```ts
 import type { listMessages, receiveMessage } from "./index.ts";
@@ -103,8 +109,8 @@ await client.mutate(
 
 React components use `useAppQuery(inbox)` from `apps/react`. It returns `data`,
 `pending`, and `error`, and owns its Effect Atom subscription until unmount.
-`apps/react` requires the optional React peer. Other frontends can use the Promise
-client methods or the query atoms directly.
+`apps/react` requires the optional React peer; apps without a UI do not need it.
+Use the Promise client methods for one-time reads and explicit writes.
 
 The product host supplies authentication and binds the browser to one configured
 app. No app ID, account token or Executor API key belongs in UI code. New

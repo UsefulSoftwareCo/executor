@@ -322,9 +322,16 @@ deployment; activation does not roll back stored data.
 
 ## Open an app UI
 
-Include `ui/index.html` and its browser scripts and styles in the deployment.
-The host builds and activates them with the server code. No separate publish
-step is needed.
+React is the only supported app UI framework for now. Include `ui/index.html`,
+a React entry such as `ui/main.tsx`, and styles in the deployment. Declare
+`react` and `react-dom` in the app's package dependencies. The host builds and
+activates the browser assets with the server code. No separate publish step is
+needed. SSR and React Server Components are not supported yet.
+
+You can bring your own React components or browser-compatible npm component
+libraries. Declare their dependencies and include the required styles and
+assets. Libraries that need custom build plugins require additional build
+support.
 
 For hosted apps, discover `appUi_location` through `tools.search` and call it:
 
