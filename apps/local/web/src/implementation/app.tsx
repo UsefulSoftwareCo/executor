@@ -5,7 +5,7 @@ import { Cause, Option, Schema } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Key01Icon,
+  UserCircleIcon,
   LaptopIcon,
   PackageIcon,
   Plug01Icon,
@@ -155,7 +155,7 @@ function Dashboard() {
                 "active [.sidebar_nav_a&]:bg-accent [.sidebar_nav_a&]:text-foreground",
             )}
           >
-            <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={16} />
+            <HugeiconsIcon icon={UserCircleIcon} strokeWidth={2} aria-hidden size={16} />
             Accounts
             {Option.isSome(data) && <span>{data.value.accounts.length}</span>}
           </Link>

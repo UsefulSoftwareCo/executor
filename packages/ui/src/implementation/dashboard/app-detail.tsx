@@ -6,7 +6,7 @@ import {
   BookOpen01Icon,
   WorkflowSquare01Icon,
   Calendar03Icon,
-  Key01Icon,
+  UserCircleIcon,
   SourceCodeIcon,
   ToolsIcon,
   PackageIcon,
@@ -23,7 +23,7 @@ import { cn } from "../lib/utils.ts";
 
 const sections = [
   { view: "overview", label: "Overview", icon: GridViewIcon },
-  { view: "accounts", label: "Accounts", icon: Key01Icon },
+  { view: "accounts", label: "Accounts", icon: UserCircleIcon },
   { view: "tools", label: "Tools", icon: ToolsIcon },
   { view: "skills", label: "Skills", icon: BookOpen01Icon },
   { view: "workflows", label: "Workflows", icon: WorkflowSquare01Icon },

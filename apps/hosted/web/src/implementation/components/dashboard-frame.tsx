@@ -6,6 +6,7 @@ import {
   Plug01Icon,
   Settings05Icon,
   Shield01Icon,
+  UserCircleIcon,
   UserGroupIcon,
 } from "@hugeicons/core-free-icons";
 import type { ReactNode } from "react";
@@ -18,7 +19,7 @@ import { documentationUrl } from "../../contracts/documentation.ts";
 const items = [
   { to: "/org/$organizationSlug/connect", label: "Connect", icon: Plug01Icon },
   { to: "/org/$organizationSlug/apps", label: "Apps", icon: BoxesIcon },
-  { to: "/org/$organizationSlug/accounts", label: "Accounts", icon: Key01Icon },
+  { to: "/org/$organizationSlug/accounts", label: "Accounts", icon: UserCircleIcon },
   { to: "/org/$organizationSlug/api-keys", label: "API keys", icon: Key01Icon },
   { to: "/org/$organizationSlug/approvals", label: "Approvals", icon: Shield01Icon },
   { to: "/org/$organizationSlug/groups", label: "Groups", icon: UserGroupIcon },
