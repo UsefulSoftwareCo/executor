@@ -57,6 +57,11 @@ const navigationTiming = () => {
   const navigation = performance.getEntriesByType("navigation")[0];
   if (!(navigation instanceof PerformanceNavigationTiming))
     throw new Error("Navigation timing is unavailable");
+  const entry = document.querySelector('script[type="module"][src]');
+  if (!(entry instanceof HTMLScriptElement)) throw new Error("Browser entry missing");
+  const script = performance.getEntriesByName(entry.src)[0];
+  if (!(script instanceof PerformanceResourceTiming))
+    throw new Error("Browser entry timing is unavailable");
   const dataReadyMs = Number(document.documentElement.getAttribute("data-e2e-ready-ms"));
   if (!Number.isFinite(dataReadyMs) || dataReadyMs <= 0)
     throw new Error("The app readiness transition was not observed");
@@ -65,6 +70,13 @@ const navigationTiming = () => {
     htmlHeadersMs: navigation.responseStart - navigation.requestStart,
     htmlBodyMs: navigation.responseEnd - navigation.responseStart,
     domContentLoadedMs: navigation.domContentLoadedEventEnd,
+    script: {
+      durationMs: script.duration,
+      headersMs: script.responseStart - script.requestStart,
+      bodyMs: script.responseEnd - script.responseStart,
+      encodedBytes: script.encodedBodySize,
+      decodedBytes: script.decodedBodySize,
+    },
   };
 };
 
@@ -243,6 +255,12 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           false,
         );
         yield* evidence.json("app-asset-trace.json", assetTrace);
+        if (target.metadata.target === "cloud") {
+          expect(
+            assetTrace.data.filter((row) => row.span.operationName === "sql.connect"),
+            "An authenticated asset shares one SQL connection between app and permission reads",
+          ).toHaveLength(1);
+        }
         const first = spans.find((span) => span.operationName === "ui.app.first_result");
         const headers = spans.find((span) => span.operationName === "ui.app.subscribe");
         expect(first?.tags["executor.milestone.reached"]).toBe("true");

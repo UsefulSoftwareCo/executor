@@ -245,6 +245,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
           }),
         ),
         Effect.map((context) => hostedAppSessions(context, globalThis.crypto)),
+        Effect.withSpan("auth.app_sessions.initialize"),
       ),
     );
     const requestHandler = Effect.flatMap(

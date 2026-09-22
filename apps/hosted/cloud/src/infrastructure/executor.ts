@@ -1,11 +1,8 @@
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
-import { executorCloudApiDocument } from "../contracts/api.ts";
 import { AppManagementHost } from "@executor-js/app-management";
 import { createAppRegistry, makeRegistryStorage, storedRegistry } from "@executor-js/app-registry";
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
-import { executorSkillFiles } from "@executor-js/app-templates/executor";
-import authoring from "../../.generated/executor-authoring.json" with { type: "json" };
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { PgClient } from "@effect/sql-pg";
 import {
@@ -15,16 +12,17 @@ import {
   OrganizationIcons,
   makeOrganizationIcons,
   OrganizationDefaults,
-  organizationDefaults,
 } from "@executor-js/hosted-server";
+import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
 import { StorageError, BlobStore, makeExecutorStorage } from "@executor-js/sdk/core";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Effect, Layer, Option } from "effect";
+import { Config, Context, Effect, Layer, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { SqlClient } from "effect/unstable/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
@@ -69,13 +67,18 @@ export const cloudExecutor = Effect.fn(function* (
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
   const { sources, repositories } = yield* cloudAppSources;
-  const executor = yield* makeExecutionMemo(
+  // App storage and hosted permission checks use the same database. Share its
+  // client only inside this execution; the event scope owns all connections.
+  const database = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const url = yield* connection.connectionString;
+      return yield* Layer.build(PgClient.layer({ url, maxConnections: 1, prepare: false }));
+    }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
+  );
+  const executor = yield* makeExecutionMemo(
+    Effect.gen(function* () {
       const key = yield* secrets.encryptionKey;
-      const services = yield* Layer.build(
-        PgClient.layer({ url, maxConnections: 1, prepare: false }),
-      );
+      const services = yield* database;
       const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
         Effect.provideContext(services),
       );
@@ -97,17 +100,10 @@ export const cloudExecutor = Effect.fn(function* (
       const scheduleAuthority = yield* makeScheduledAuthority(executor).pipe(
         Effect.provideContext(services),
       );
-      const initialize = yield* organizationDefaults(
-        executor,
-        origin,
-        storage,
-        executorSkillFiles(authoring),
-        executorCloudApiDocument(origin),
-      ).pipe(Effect.provideContext(services));
       return {
         executor,
+        storage,
         scheduleAuthority,
-        initialize,
         management: {
           executor,
           sources,
@@ -118,11 +114,38 @@ export const cloudExecutor = Effect.fn(function* (
           access: yield* hostedAppCapabilities.pipe(Effect.provideContext(services)),
         },
       };
-    }).pipe(Effect.mapError(() => new StorageError())),
+    }).pipe(
+      Effect.mapError(() => new StorageError()),
+      Effect.withSpan("runtime.cloud.executor.initialize"),
+    ),
+  );
+  // Serving an app does not install the default management app. Keep its API
+  // document, templates and authoring files off the app-serving startup path.
+  const defaults = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      const { defaultApp } = yield* Effect.promise(
+        () => import("../implementation/default-app.ts"),
+      );
+      const resources = yield* executor;
+      return yield* defaultApp(resources.executor, origin, resources.storage).pipe(
+        Effect.provideContext(yield* database),
+      );
+    }).pipe(
+      Effect.mapError(() => new StorageError()),
+      Effect.withSpan("runtime.cloud.defaults.initialize"),
+    ),
   );
   // Alchemy's runtime requirement marks event-only operations; it is not a
   // service supplied to request fibers. Keep the live caller scope and tracer.
   return Layer.mergeAll(
+    Layer.succeed(
+      GroupDatabase,
+      database.pipe(
+        Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
+        Effect.provide(RuntimeContext.phantom),
+        Effect.mapError(() => new GroupsUnavailable()),
+      ),
+    ),
     Layer.succeed(ScheduledAuthority, (target) =>
       executor.pipe(
         Effect.flatMap((resources) => resources.scheduleAuthority(target)),
@@ -154,8 +177,8 @@ export const cloudExecutor = Effect.fn(function* (
     Layer.succeed(
       OrganizationDefaults,
       OrganizationDefaults.of((organization, user) =>
-        executor.pipe(
-          Effect.flatMap((resources) => resources.initialize(organization, user)),
+        defaults.pipe(
+          Effect.flatMap((initialize) => initialize(organization, user)),
           Effect.provide(RuntimeContext.phantom),
         ),
       ),
