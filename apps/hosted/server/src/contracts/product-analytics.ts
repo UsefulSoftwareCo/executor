@@ -5,6 +5,10 @@ import { CurrentOrganization } from "./organization.ts";
 
 /** Explicit metadata only. Never add request bodies, URLs, credentials, or operation results. */
 export interface UsageProperties {
+  readonly event_id?: string;
+  readonly trace_id?: string;
+  readonly span_id?: string;
+  readonly operation_id?: string;
   readonly area?: string;
   readonly operation?: string;
   readonly app_id?: string;
@@ -77,12 +81,23 @@ export const recordUsage = (event: UsageEvent, properties: UsageProperties = {})
     const userId = yield* CurrentUserId;
     if (userId === undefined) return;
     const organization = yield* Effect.serviceOption(CurrentOrganization);
+    const span = yield* Effect.currentSpan.pipe(Effect.option);
     sink.capture({
       event,
       userId,
       ...(Option.isSome(organization) ? { organizationId: organization.value.organization } : {}),
       context: yield* CurrentUsage,
-      properties,
+      properties: {
+        ...properties,
+        event_id: crypto.randomUUID(),
+        ...(Option.isNone(span)
+          ? {}
+          : {
+              trace_id: span.value.traceId,
+              span_id: span.value.spanId,
+              operation_id: span.value.spanId,
+            }),
+      },
     });
   });
 
@@ -136,4 +151,10 @@ export const observeProductOperation = <A, E, R>(
 ) =>
   recordUsage("product_operation_started", properties).pipe(
     Effect.andThen(observeUsage("product_operation_completed", properties, effect, result)),
+    Effect.withSpan("product.operation", {
+      attributes: {
+        "executor.product.area": properties.area,
+        "executor.product.operation": properties.operation,
+      },
+    }),
   );

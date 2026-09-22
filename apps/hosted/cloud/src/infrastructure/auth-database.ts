@@ -2,9 +2,16 @@
 import { Database } from "@alchemy.run/better-auth/Database";
 import { openPostgresPool } from "alchemy/SQL/PostgresDriver";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import { Kysely, PostgresDialect, type QueryId } from "kysely";
 import { DatabaseConnection } from "./database.ts";
+
+const DriverCode = Schema.Struct({
+  code: Schema.String.check(Schema.isPattern(/^(?:[0-9A-Z]{5}|E[A-Z_]{2,40})$/)),
+});
+class AuthDatabaseFailed extends Schema.TaggedError<AuthDatabaseFailed>()("AuthDatabaseFailed", {
+  code: Schema.String,
+}) {}
 
 /** Resolve the native Hyperdrive binding once; Postgres keeps its pool in the invocation scope. */
 export const cloudAuthDatabase = Layer.unwrap(
@@ -36,7 +43,17 @@ export const cloudAuthDatabase = Layer.unwrap(
               const start = started.get(event.query.queryId);
               started.delete(event.query.queryId);
               return Effect.runPromiseWith(context)(
-                Effect.void.pipe(
+                (event.level === "error"
+                  ? Effect.fail(
+                      new AuthDatabaseFailed({
+                        code: Option.match(Schema.decodeUnknownOption(DriverCode)(event.error), {
+                          onNone: () => "UnknownDriverError",
+                          onSome: ({ code }) => code,
+                        }),
+                      }),
+                    )
+                  : Effect.void
+                ).pipe(
                   Effect.withSpan("auth.sql.timing", {
                     attributes: {
                       "db.query.kind": event.query.query.kind,
@@ -49,6 +66,8 @@ export const cloudAuthDatabase = Layer.unwrap(
                         : { "db.query.compile_to_result_ms": Date.now() - start }),
                     },
                   }),
+                  Effect.withErrorReporting,
+                  Effect.ignore,
                 ),
               );
             },

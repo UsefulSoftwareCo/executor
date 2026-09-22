@@ -18,6 +18,7 @@ import type { AccountSlots, BoundContext } from "../contracts/app.ts";
 import {
   DeclaredProvider,
   DeclaredRequirements,
+  ToolResultObservation,
   HostAccountsInvalid,
   HostDeclarationInvalid,
   HostOperationNotFound,
@@ -607,10 +608,21 @@ export const createAppHandler =
         "executor.operation": command.operation,
         ...(command.operation === "call" ? { "executor.tool.name": command.tool } : {}),
       });
+      let toolError = false;
       const value = yield* dispatch(app, command, context, request.signal).pipe(
+        Effect.provideService(ToolResultObservation, {
+          failed: () => {
+            toolError = true;
+          },
+        }),
         Effect.withSpan(`app.${command.operation}`),
       );
-      return Response.json({ ok: true, value });
+      if (toolError)
+        yield* Effect.annotateCurrentSpan({
+          "executor.outcome": "failed",
+          "error.type": "McpToolError",
+        });
+      return Response.json({ ok: true, value, ...(toolError ? { toolError: true } : {}) });
     }).pipe(
       Effect.catch((error) =>
         Schema.encodeEffect(HostError)(error).pipe(

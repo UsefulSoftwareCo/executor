@@ -133,7 +133,8 @@ export const renderBrowserReplay = (page: Page, snapshots: readonly Schema.Json[
       const replay = new rrwebReplay.Replayer(events, {
         root: document.body, mouseTail: false, showWarning: false,
       });
-      replay.pause(events.at(-1).timestamp - events[0].timestamp);
+      // rrweb applies events strictly before the seek time. Include the final mutation.
+      replay.pause(events.at(-1).timestamp - events[0].timestamp + 1);
     `,
       }),
     );

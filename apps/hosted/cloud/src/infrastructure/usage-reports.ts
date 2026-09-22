@@ -44,6 +44,23 @@ const trend = (series: EventsNode[], breakdown?: string): InsightQuerySchema => 
     ...(breakdown === undefined ? {} : { breakdownFilter: { breakdown, breakdown_type: "event" } }),
   },
 });
+const failureRate = (name: string, breakdown?: string): InsightQuerySchema => ({
+  kind: "InsightVizNode",
+  source: {
+    kind: "TrendsQuery",
+    version: 4,
+    dateRange: { date_from: "-30d" },
+    interval: "day",
+    filterTestAccounts: true,
+    properties: human,
+    series: [
+      event(name, [property("ok", false)]),
+      event(name, [{ type: "hogql", key: "properties.ok IN (true, false)" }]),
+    ],
+    trendsFilter: { formula: "100 * A / B", aggregationAxisFormat: "percentage", decimalPlaces: 2 },
+    ...(breakdown === undefined ? {} : { breakdownFilter: { breakdown, breakdown_type: "event" } }),
+  },
+});
 interface UsageReport {
   readonly id: string;
   readonly name: string;
@@ -52,6 +69,48 @@ interface UsageReport {
 }
 /** Resource IDs preserve existing saved reports while adding explicit adoption and quality views. */
 export const usageReports: readonly UsageReport[] = [
+  {
+    id: "OperationFailureRate",
+    name: "Product operation failure rate",
+    description:
+      "Failed terminal product operations divided by terminal operations with a known outcome. Starts, pauses and automation are excluded. Empty denominators have no rate.",
+    query: failureRate("product_operation_completed", "area"),
+  },
+  {
+    id: "ToolFailureRate",
+    name: "Tool execution failure rate by release",
+    description:
+      "Failed tool completions divided by all known tool completions in the same release. Approval pauses and background work are excluded.",
+    query: failureRate("tool_execution_completed", "release"),
+  },
+  {
+    id: "AffectedUsers",
+    name: "People affected by failed operations",
+    description:
+      "Distinct people with failed terminal product operations. Separate from failure counts and automation.",
+    query: trend([event("product_operation_completed", [property("ok", false)], "dau")], "source"),
+  },
+  {
+    id: "AffectedOrganizations",
+    name: "Organizations affected by failed operations",
+    description:
+      "Daily distinct organizations with failed product operations, excluding explicitly marked internal/test events and background sources.",
+    query: {
+      kind: "DataTableNode",
+      source: {
+        kind: "HogQLQuery",
+        query:
+          "SELECT toDate(timestamp) AS day, count(DISTINCT properties.organization_id) AS affected_organizations FROM events WHERE event = 'product_operation_completed' AND properties.ok = false AND properties.executor_test = false AND properties.executor_internal = false AND properties.organization_id IS NOT NULL AND properties.source NOT IN ('schedule', 'workflow') AND timestamp >= now() - INTERVAL 30 DAY GROUP BY day ORDER BY day",
+      },
+    },
+  },
+  {
+    id: "BrowserOperationFailures",
+    name: "Browser operation failures",
+    description:
+      "Decoded, transport and unexpected server failures by release. Each event has page, trace and span IDs for investigation.",
+    query: trend([event("browser_operation_failed")], "release"),
+  },
   {
     id: "Visitors",
     name: "Daily visitors",

@@ -1,3 +1,5 @@
+import type { AstroIntegration } from "astro";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { defineConfig } from "blume";
 import { siteOrigin } from "@executor-js/marketing/site-origin";
 
@@ -70,7 +72,28 @@ const analyticsSettings = `(function(){
 // directory under /docs, beside the marketing site and the dashboard.
 // `deployment.base` moves the whole site under that path, so pages link to
 // each other by their bare route and Blume rewrites the base in.
+const errors: AstroIntegration = {
+  name: "executor-docs-errors",
+  hooks: {
+    "astro:config:setup": ({ updateConfig }) => {
+      updateConfig({
+        vite: {
+          build: { sourcemap: "hidden" },
+          plugins: process.env.SENTRY_AUTH_TOKEN
+            ? [
+                sentryVitePlugin({
+                  telemetry: false,
+                  sourcemaps: { filesToDeleteAfterUpload: ["./dist/**/*.map"] },
+                }),
+              ]
+            : [],
+        },
+      });
+    },
+  },
+};
 export default defineConfig({
+  integrations: [errors],
   title: "Executor docs",
   description: "Connect your accounts once, then use them from the dashboard or any MCP client.",
   content: { root: "content" },

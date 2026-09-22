@@ -13,6 +13,7 @@ import {
   CurrentUsage,
   CurrentUserId,
   recordUsage,
+  usageFailure,
   Authentication,
   AuthenticationUnavailable,
   McpAuthentication,
@@ -121,6 +122,11 @@ export const cloudAuth = (send: SendAuthEmail) =>
               .getSession({ headers, query: { disableRefresh: true, disableCookieCache: true } })
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
+                Effect.tapCause((cause) =>
+                  Effect.annotateCurrentSpan({
+                    "auth.failure.type": usageFailure(cause).error_type ?? "Interrupted",
+                  }),
+                ),
                 Effect.mapError(() => new AuthenticationUnavailable()),
                 Effect.flatMap(sessionPrincipal),
               )

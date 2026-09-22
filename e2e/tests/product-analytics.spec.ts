@@ -99,7 +99,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           browser.use("Navigate product page", (page) => page.goto(url));
         const appsReady = () =>
           browser.use("Wait for apps", (page) =>
-            page.getByRole("heading", { name: /^Apps(?:\s*\d+)?$/ }).waitFor(),
+            page.getByRole("heading", { level: 1, name: /^Apps(?:\s*\d+)?$/ }).waitFor(),
           );
         const interact = () =>
           browser.use("Interact with dashboard", (page) => page.mouse.click(900, 350));

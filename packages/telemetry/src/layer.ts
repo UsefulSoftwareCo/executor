@@ -40,7 +40,9 @@ export const telemetryLayer = (
       ? Layer.empty
       : // Credentials travel in provider headers and query strings this product does
         // not choose, so every exported span records only allowlisted HTTP attributes.
-        spanAttributes(config.clock).pipe(
+        // Record every operation. Caller-supplied sampling is correlation metadata,
+        // not authority to suppress server diagnostics.
+        spanAttributes(config.clock, true).pipe(
           Layer.provideMerge(
             OtlpTracer.layer(signal(config.traces)).pipe(
               Layer.provide(OtlpSerialization.layerJson),
@@ -68,6 +70,9 @@ export const telemetryLayer = (
         ),
   ).pipe(
     Layer.provide(telemetryHttpClient),
+    // Export fibers capture services during construction. Their failure evidence
+    // must reach the host logger even after the remote log exporter is closed.
+    Layer.provide(console),
     // Each event exports only its own measurements; process hosts share a process registry.
     Layer.provideMerge(Layer.sync(Metric.MetricRegistry, () => new Map())),
   );

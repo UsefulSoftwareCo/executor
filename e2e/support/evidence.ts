@@ -79,7 +79,7 @@ export class Telemetry extends Context.Service<
         );
       return {
         query: (id) =>
-          target.metadata.target === "cloud"
+          target.metadata.target === "cloud" && target.metadata.mode === "attached"
             ? cloudQuery(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
             : safe(
                 Effect.scoped(
@@ -191,7 +191,7 @@ export const evidenceLayer = (context: TestContext) =>
           api: rows.map((r) => r.traceId),
           browser: [...browserTraces],
         });
-        if (target.metadata.target === "cloud") {
+        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           yield* json("telemetry.json", {
             state: "not-collected",
             reason: "Cloud telemetry exports to Axiom; collection is a separate adapter.",

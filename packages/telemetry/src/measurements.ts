@@ -10,6 +10,9 @@ const responseReady = Metric.histogram("executor.http.response_ready_ms", {
 });
 const requests = Metric.counter("executor.http.requests", { incremental: true });
 const exportFailures = Metric.counter("executor.telemetry.export_failures", { incremental: true });
+const rejectedRecords = Metric.counter("executor.telemetry.rejected_records", {
+  incremental: true,
+});
 const workerCpu = Metric.histogram("executor.worker.cpu_ms", {
   boundaries,
   attributes: { unit: "ms" },
@@ -54,7 +57,16 @@ export const recordResponseReady = (
 };
 
 /** Fixed failure metadata goes to both local/native logs and the metric registry, even when the remote exporter is down. */
-export const recordExportFailure = (path: string) => {
+export const recordExportFailure = (
+  path: string,
+  reason:
+    | "transport"
+    | "interrupted"
+    | "partial-success"
+    | "capacity"
+    | "acknowledgement" = "transport",
+  records = 0,
+) => {
   const signal = path.endsWith("/traces")
     ? "traces"
     : path.endsWith("/logs")
@@ -62,10 +74,17 @@ export const recordExportFailure = (path: string) => {
       : path.endsWith("/metrics")
         ? "metrics"
         : "other";
-  return Metric.update(Metric.withAttributes(exportFailures, { signal }), 1).pipe(
+  return Metric.update(Metric.withAttributes(exportFailures, { signal, reason }), 1).pipe(
+    Effect.andThen(
+      Metric.update(Metric.withAttributes(rejectedRecords, { signal, reason }), records),
+    ),
     Effect.andThen(
       Effect.logWarning("Telemetry export failed").pipe(
-        Effect.annotateLogs({ "executor.telemetry.signal": signal }),
+        Effect.annotateLogs({
+          "executor.telemetry.signal": signal,
+          "executor.telemetry.failure": reason,
+          "executor.telemetry.rejected_records": records,
+        }),
       ),
     ),
   );

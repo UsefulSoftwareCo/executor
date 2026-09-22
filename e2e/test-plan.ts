@@ -35,6 +35,33 @@ export const scenarios = {
       local: na("Local has no organization member roles."),
     },
   },
+  localStartupObservability: {
+    file: "local-startup-observability.spec.ts",
+    title: "local startup failures retain their resource phase and safe system code",
+    targets: {
+      local: scheduled,
+      cloud: na("Local process startup"),
+      "self-host": na("Local process startup"),
+    },
+  },
+  optimisticObservability: {
+    file: "optimistic-observability.spec.ts",
+    title: "optimistic replay failures are delivered without changing a submitted write",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Shared app client covered on hosted targets"),
+    },
+  },
+  browserObservability: {
+    file: "browser-observability.spec.ts",
+    title: "browser decode and startup failures reach correlated error collectors",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
   emptyStateRecovery: {
     file: "empty-state-recovery.spec.ts",
     title: "Empty states preserve drafts and respect app permissions",
@@ -665,6 +692,15 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
+  observabilityOutcomes: {
+    file: "observability-outcomes.spec.ts",
+    title: "observability retains logical failures, large app traces and unsampled requests",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted APIs; the runtime and collector are shared with Local."),
     },
   },
   appDomainStatus: {

@@ -141,3 +141,10 @@ export const browserSettings = (
     traces: { url: new URL(`${basePath}/traces`, window.location.origin).href },
     logs: { url: new URL(`${basePath}/logs`, window.location.origin).href },
   }));
+
+export {
+  browserPageId,
+  BrowserOperationFailure,
+  observeBrowserTransport,
+  observeBrowserResponse,
+} from "./browser-operations.ts";

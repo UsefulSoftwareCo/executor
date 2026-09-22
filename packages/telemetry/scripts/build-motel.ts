@@ -16,6 +16,7 @@ const build = Effect.gen(function* () {
   const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "executor-motel-build-" });
   yield* fs.copyFile(path.join(source, "package.json"), path.join(scratch, "package.json"));
   yield* fs.copyFile(path.join(source, "bun.lock"), path.join(scratch, "bun.lock"));
+  yield* fs.copy(path.join(source, "patches"), path.join(scratch, "patches"));
   const command = (args: readonly string[]) =>
     processes
       .exitCode(

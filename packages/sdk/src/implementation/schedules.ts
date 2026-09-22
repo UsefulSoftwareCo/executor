@@ -187,7 +187,22 @@ export const makeSchedules = (
       Effect.flatMap((completed) =>
         completed === undefined
           ? Effect.void
-          : Effect.flatMap(ScheduleObservation, (observer) => observer.completed(completed)),
+          : Effect.annotateCurrentSpan({
+              "executor.run.id": run.id,
+              "executor.schedule.id": run.scheduleId,
+              "executor.app.id": run.app,
+              "executor.outcome":
+                status === "succeeded"
+                  ? "completed"
+                  : status === "cancelled"
+                    ? "cancelled"
+                    : "failed",
+              ...(failure === null ? {} : { "error.type": failure }),
+            }).pipe(
+              Effect.andThen(
+                Effect.flatMap(ScheduleObservation, (observer) => observer.completed(completed)),
+              ),
+            ),
       ),
       Effect.catchTag("ScheduleNotFound", () => Effect.void),
     );
@@ -393,7 +408,9 @@ export const makeSchedules = (
   ) => {
     switch (result.status) {
       case "completed":
-        return finish(run, "succeeded");
+        return result.toolError === true
+          ? finish(run, "failed", "McpToolError")
+          : finish(run, "succeeded");
       case "denied":
         return finish(run, "denied");
       case "cancelled":
@@ -489,8 +506,21 @@ export const makeSchedules = (
                   });
                   yield* complete(claim, response);
                 }).pipe(
+                  Effect.withErrorReporting,
                   Effect.catch((error) => finish(claim, "failed", diagnostic(error))),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.withSpan("schedule.run", {
+                    attributes: {
+                      "executor.run.id": claim.id,
+                      "executor.schedule.id": claim.scheduleId,
+                      "executor.app.id": claim.app,
+                      "executor.attempt.id": globalThis.crypto.randomUUID(),
+                      "executor.schedule.lateness_ms": Math.max(
+                        0,
+                        time.getTime() - claim.scheduledAt.getTime(),
+                      ),
+                    },
+                  }),
                 );
               }).pipe(Effect.catchTag("ScheduleNotFound", () => Effect.void)),
             ),
@@ -633,7 +663,9 @@ export const makeSchedules = (
                     input: declared.input,
                   });
                   if (response.status === "completed") {
-                    yield* finish(claim, "succeeded");
+                    yield* response.toolError === true
+                      ? finish(claim, "failed", "McpToolError")
+                      : finish(claim, "succeeded");
                     return;
                   }
                   if (setting.approvalMode === "automatic") {
@@ -659,6 +691,7 @@ export const makeSchedules = (
                     );
                   }
                 }).pipe(
+                  Effect.withErrorReporting,
                   Effect.catch((error) =>
                     Effect.gen(function* () {
                       // Removed/invalid declarations require an explicit re-enable. Other
@@ -682,6 +715,18 @@ export const makeSchedules = (
                     }),
                   ),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.withSpan("schedule.run", {
+                    attributes: {
+                      "executor.run.id": claim.id,
+                      "executor.schedule.id": claim.scheduleId,
+                      "executor.app.id": claim.app,
+                      "executor.attempt.id": globalThis.crypto.randomUUID(),
+                      "executor.schedule.lateness_ms": Math.max(
+                        0,
+                        time.getTime() - claim.scheduledAt.getTime(),
+                      ),
+                    },
+                  }),
                 );
               }).pipe(Effect.catchTag("ScheduleNotFound", () => Effect.void)),
             ),

@@ -2,6 +2,7 @@ import { Effect, FileSystem, Path, Redacted, Schedule, Schema, Stream } from "ef
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { HttpClient } from "effect/unstable/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
+import { startOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
 
@@ -44,6 +45,7 @@ export const startCloudEnvironment = (input: {
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
+    const collector = yield* startOtlpCollector(directory);
     const databasePassword = randomBytes(24).toString("hex");
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
@@ -63,6 +65,12 @@ export const startCloudEnvironment = (input: {
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
       EXECUTOR_BUILD_VERSION: input.commit,
       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+      SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
+      VITE_SENTRY_TUNNEL: "/api/fedcba9876543210/submit",
+      VITE_SENTRY_DSN: `http://synthetic@127.0.0.1:${analyticsPort}/1`,
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
+      EXECUTOR_ENVIRONMENT: "test-local",
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,

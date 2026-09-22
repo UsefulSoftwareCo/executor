@@ -40,7 +40,12 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
     ).pipe(Effect.asVoid);
 });
 
-const Payload = Schema.String.check(Schema.isMaxLength(262_144));
+const payloadBytes = 262_144;
+const encoder = new TextEncoder();
+const Payload = Schema.String.check(
+  Schema.isMaxLength(payloadBytes),
+  Schema.makeFilter((body) => encoder.encode(body).byteLength <= payloadBytes),
+);
 /** Untrusted isolate batches are bounded before decoding; no endpoint or credential crosses back. */
 export const TelemetryBatch = Schema.Struct({
   traces: Schema.Array(Payload).check(Schema.isMaxLength(4)),
@@ -59,9 +64,27 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     const capture: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
       const body = await request.text();
-      const target = new URL(request.url).pathname === "/v1/traces" ? traces : logs;
-      if (body.length <= 262_144 && target.length < 4) target.push(body);
-      else dropped++;
+      if (new URL(request.url).pathname === "/v1/traces") {
+        const payload = Schema.decodeUnknownSync(TracePayload)(body);
+        dropped += packRecords(
+          payload.resourceSpans.flatMap((resource) =>
+            resource.scopeSpans.flatMap((scope) => scope.spans),
+          ),
+          traces,
+          '{"resourceSpans":[{"scopeSpans":[{"spans":[',
+          "]}]}]}",
+        );
+      } else {
+        const payload = Schema.decodeUnknownSync(LogPayload)(body);
+        dropped += packRecords(
+          payload.resourceLogs.flatMap((resource) =>
+            resource.scopeLogs.flatMap((scope) => scope.logRecords),
+          ),
+          logs,
+          '{"resourceLogs":[{"scopeLogs":[{"logRecords":[',
+          "]}]}]}",
+        );
+      }
       return Response.json({});
     };
     const value = yield* effect.pipe(
@@ -82,6 +105,44 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     );
     return { value, telemetry: { traces, logs, dropped } };
   });
+
+// Native exporters can emit a thousand records at once. Split complete records,
+// not JSON text, and preserve the existing four-envelope memory bound per signal.
+// Resource identity is deliberately assigned by the parent, never the isolate.
+const packRecords = (
+  records: ReadonlyArray<Schema.Json>,
+  target: string[],
+  prefix: string,
+  suffix: string,
+): number => {
+  let parts: string[] = [];
+  const overhead = encoder.encode(prefix + suffix).byteLength;
+  let bytes = overhead;
+  let dropped = 0;
+  const flush = () => {
+    if (parts.length === 0) return;
+    target.push(prefix + parts.join(",") + suffix);
+    parts = [];
+    bytes = overhead;
+  };
+  for (const record of records) {
+    const encoded = JSON.stringify(record);
+    const size = encoder.encode(encoded).byteLength;
+    if (size + overhead > payloadBytes || target.length >= 4) {
+      dropped++;
+      continue;
+    }
+    if (bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes) flush();
+    if (target.length >= 4) {
+      dropped++;
+      continue;
+    }
+    bytes += size + (parts.length > 0 ? 1 : 0);
+    parts.push(encoded);
+  }
+  flush();
+  return dropped;
+};
 
 const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
 const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/));
@@ -137,10 +198,7 @@ export const forwardTelemetry = (
       ],
     };
     const client = yield* HttpClient.HttpClient;
-    if (batch.dropped > 0)
-      yield* Effect.logWarning("Telemetry batches were dropped before forwarding").pipe(
-        Effect.annotateLogs({ droppedBatches: batch.dropped }),
-      );
+    if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
     for (const signal of ["traces", "logs"] as const) {
       const target = config[signal];
       if (target === undefined) continue;

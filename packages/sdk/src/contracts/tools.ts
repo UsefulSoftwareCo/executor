@@ -172,8 +172,12 @@ export const ToolInvocation = Schema.Struct({
   ),
 });
 export type ToolInvocation = typeof ToolInvocation.Type;
-/** Successful tool execution; value is the original JSON output. */
-export const ToolCompleted = Schema.Struct({ status: Schema.Literal("completed"), value: Json });
+/** Completed transport; toolError marks a framework-recognized semantic error. Value is unchanged. */
+export const ToolCompleted = Schema.Struct({
+  status: Schema.Literal("completed"),
+  value: Json,
+  toolError: Schema.optionalKey(Schema.Literal(true)),
+});
 /** Pending call plus the framework's MCP confirmation form. The SDK does not collect the response. */
 export const ToolPending = Schema.Struct({
   status: Schema.Literal("approval-required"),

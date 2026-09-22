@@ -14,6 +14,7 @@
     "build:motel": "bun scripts/build-motel.ts"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "2.11.0",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
   },
   "devDependencies": {

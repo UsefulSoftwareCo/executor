@@ -1,5 +1,6 @@
 /** Local PGlite driver composition and additive schema setup. */
-import { makeExecutorStorage, StorageError } from "@executor-js/sdk/core";
+import { makeExecutorStorage } from "@executor-js/sdk/core";
+import { startupPhase } from "./startup-diagnostics.ts";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -20,4 +21,4 @@ export const openStorage = (directory: string) =>
     );
     yield* storage.migrate;
     return storage;
-  }).pipe(Effect.mapError(() => new StorageError()));
+  }).pipe(startupPhase("storage"));

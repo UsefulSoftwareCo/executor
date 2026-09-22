@@ -13,9 +13,12 @@ for (const mode of ["explicit", "local", "railway"] as const)
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
         const architecture = yield* Config.String("EXECUTOR_E2E_DOCKER_ARCH");
+        const version = yield* Config.NonEmptyString("EXECUTOR_E2E_DOCKER_VERSION");
         const id = `executor-release-${randomBytes(8).toString("hex")}`;
         const run = (args: readonly string[], env: Record<string, string> = {}) =>
-          processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
+          processes.string(
+            ChildProcess.make("docker", args, { env, extendEnv: true, stderr: "inherit" }),
+          );
         expect(
           (yield* run(["image", "inspect", "--format", "{{.Architecture}}", image])).trim(),
         ).toBe(architecture);
@@ -102,7 +105,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
             environment,
           );
         yield* Effect.acquireRelease(start(), () => run(["rm", "--force", id]).pipe(Effect.orDie));
-        const request = (route: string, data?: unknown, cookie?: string) =>
+        const request = (route: string, data?: unknown, cookie?: string, trace?: string) =>
           driver("image HTTP request", () =>
             fetch(`${address}${route}`, {
               method: data === undefined ? "GET" : "POST",
@@ -110,6 +113,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
                 origin,
                 "content-type": "application/json",
                 ...(cookie === undefined ? {} : { cookie }),
+                ...(trace === undefined ? {} : { traceparent: `00-${trace}-1234567890abcdef-01` }),
               },
               ...(data === undefined ? {} : { body: JSON.stringify(data) }),
             }),
@@ -212,8 +216,51 @@ for (const mode of ["explicit", "local", "railway"] as const)
             yield* start();
             yield* ready;
           }
-          const viewer = yield* request("/api/viewer", undefined, cookie);
+          const trace = randomBytes(16).toString("hex");
+          const viewer = yield* request("/api/viewer", undefined, cookie, trace);
           expect(viewer.status).toBe(200);
+          const delivered = yield* run([
+            "exec",
+            id,
+            "node",
+            "-e",
+            `
+const fs = require("node:fs");
+const collector = JSON.parse(fs.readFileSync("/app/data/diagnostics/collector.json", "utf8"));
+fetch(collector.url + "/api/traces/" + process.argv[1] + "/spans").then((r) => r.text()).then((text) => process.stdout.write(text));
+`,
+            trace,
+          ]).pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.fromJsonString(
+                  Schema.Struct({
+                    data: Schema.Array(
+                      Schema.Struct({
+                        span: Schema.Struct({
+                          serviceName: Schema.String,
+                          tags: Schema.Record(Schema.String, Schema.String),
+                        }),
+                      }),
+                    ),
+                  }),
+                ),
+              ),
+            ),
+            Effect.flatMap((trace) =>
+              trace.data.some(
+                ({ span }) =>
+                  span.serviceName === "executor-selfhost" &&
+                  span.tags["service.version"] === version,
+              )
+                ? Effect.succeed(trace)
+                : Effect.fail("Released version has not reached the collector"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
+          );
+          expect(delivered.data.some(({ span }) => span.tags["service.version"] === version)).toBe(
+            true,
+          );
           const called = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
             { tool: "queries.check", input: {} },

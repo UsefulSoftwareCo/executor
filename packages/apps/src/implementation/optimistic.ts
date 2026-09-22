@@ -24,6 +24,8 @@ interface Entry {
   subscribers: number;
 }
 interface Pending {
+  readonly operationId: string;
+  readonly name: string;
   readonly project: (store: OptimisticLocalStore) => void;
   readonly result: Deferred.Deferred<unknown, unknown>;
   sent: boolean;
@@ -48,7 +50,11 @@ export interface OptimisticTransport {
   ) => Effect.Effect<unknown, unknown>;
   readonly fork: (effect: Effect.Effect<void>) => void;
   readonly run: <A>(effect: Effect.Effect<A, unknown>) => Promise<A>;
-  readonly reportProjectionError: (error: unknown) => void;
+  readonly reportProjectionError: (details: {
+    readonly operationId: string;
+    readonly name: string;
+    readonly sent: boolean;
+  }) => void;
 }
 
 const canonical = (value: JsonValue): JsonValue =>
@@ -123,7 +129,11 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
         update.invalid = true;
         pending.delete(update);
         if (!update.sent) Deferred.doneUnsafe(update.result, Effect.fail(error));
-        else transport.reportProjectionError(error);
+        transport.reportProjectionError({
+          operationId: update.operationId,
+          name: update.name,
+          sent: update.sent,
+        });
       }
     }
     Atom.batch(() => {
@@ -209,6 +219,8 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
       }
       const result = Deferred.makeUnsafe<unknown, unknown>();
       const item: Pending = {
+        operationId: crypto.randomUUID(),
+        name: reference.name,
         project: (store) => update?.(store, structuredClone(args)),
         result,
         sent: false,
@@ -225,7 +237,11 @@ export const makeOptimisticClient = (transport: OptimisticTransport) => {
               idle = false;
               for (const entry of entries.values()) stop(entry);
               item.sent = true;
-              const exit = yield* Effect.exit(transport.write(reference.name, parsed, output));
+              const exit = yield* Effect.exit(
+                transport
+                  .write(reference.name, parsed, output)
+                  .pipe(Effect.annotateSpans("executor.operation.id", item.operationId)),
+              );
               Deferred.doneUnsafe(result, exit);
               callers.delete(result);
               if (Exit.isFailure(exit)) {

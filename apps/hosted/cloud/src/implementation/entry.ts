@@ -5,6 +5,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { CloudEntry, CloudEntryPage } from "../contracts/entry.ts";
 import { Onboarding, OnboardingInvitation, OnboardingReady } from "../contracts/onboarding.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
+import { reportCloudFailure } from "./error-reporting.ts";
 
 const privateHeaders = {
   "cache-control": "private, no-store",
@@ -97,6 +98,7 @@ export const cloudEntryDocument = <E, R, E2, R2>(
       ),
     ).pipe(HttpServerResponse.setHeaders(privateHeaders));
   }).pipe(
+    Effect.tapCause(reportCloudFailure),
     Effect.catch(() =>
       Effect.succeed(
         HttpServerResponse.html(

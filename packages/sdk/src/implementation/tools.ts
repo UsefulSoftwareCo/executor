@@ -5,6 +5,7 @@ import { bindAppStorage } from "./app-database.ts";
 import {
   type WorkflowHostControls,
   HostToolApprovalRequired,
+  ToolResultObservation,
   type ResolvedAccounts,
 } from "apps/contracts";
 import { AccountRequired, AppNotFound, AppNotDeployed } from "../contracts/apps.ts";
@@ -329,6 +330,7 @@ export const makeTools = (
           "executor.build.id": state.deployment.build,
           "executor.tool.name": parsed.tool,
         });
+        let toolError = false;
         const result = yield* runtime
           .call({
             app: state.app.id,
@@ -343,9 +345,26 @@ export const makeTools = (
             input: args,
             ...(options?.elicitation === undefined ? {} : { elicitation: options.elicitation }),
           })
-          .pipe(Effect.result);
-        if (Result.isSuccess(result))
-          return { status: "completed" as const, value: result.success };
+          .pipe(
+            Effect.provideService(ToolResultObservation, {
+              failed: () => {
+                toolError = true;
+              },
+            }),
+            Effect.result,
+          );
+        if (Result.isSuccess(result)) {
+          if (toolError)
+            yield* Effect.annotateCurrentSpan({
+              "executor.outcome": "failed",
+              "error.type": "McpToolError",
+            });
+          return {
+            status: "completed" as const,
+            value: result.success,
+            ...(toolError ? { toolError: true as const } : {}),
+          };
+        }
         if (Schema.is(HostToolApprovalRequired)(result.failure)) {
           return yield* approvals.save(
             yield* invocation(state, parsed.tool, result.failure.input),
@@ -406,21 +425,42 @@ export const makeTools = (
                     resolveAccount,
                     lifecycle,
                   ).pipe(Effect.withSpan("sdk.accounts.resolve"));
-                  const value = yield* runtime.call({
-                    app: saved.app,
-                    ...(yield* bindAppStorage(appStorage, saved.app)),
-                    ...(workflows === undefined ? {} : { workflowControls: workflows(saved.app) }),
-                    build: checked.success.state.deployment.build,
-                    database: checked.success.state.deployment.requirements.database !== undefined,
-                    ...context,
-                    tool: saved.tool,
-                    input: originalInput,
-                    approval: { tool: saved.tool, input: saved.input },
-                    ...(options?.elicitation === undefined
-                      ? {}
-                      : { elicitation: options.elicitation }),
-                  });
-                  return { status: "completed" as const, value };
+                  let toolError = false;
+                  const value = yield* runtime
+                    .call({
+                      app: saved.app,
+                      ...(yield* bindAppStorage(appStorage, saved.app)),
+                      ...(workflows === undefined
+                        ? {}
+                        : { workflowControls: workflows(saved.app) }),
+                      build: checked.success.state.deployment.build,
+                      database:
+                        checked.success.state.deployment.requirements.database !== undefined,
+                      ...context,
+                      tool: saved.tool,
+                      input: originalInput,
+                      approval: { tool: saved.tool, input: saved.input },
+                      ...(options?.elicitation === undefined
+                        ? {}
+                        : { elicitation: options.elicitation }),
+                    })
+                    .pipe(
+                      Effect.provideService(ToolResultObservation, {
+                        failed: () => {
+                          toolError = true;
+                        },
+                      }),
+                    );
+                  if (toolError)
+                    yield* Effect.annotateCurrentSpan({
+                      "executor.outcome": "failed",
+                      "error.type": "McpToolError",
+                    });
+                  return {
+                    status: "completed" as const,
+                    value,
+                    ...(toolError ? { toolError: true as const } : {}),
+                  };
                 }).pipe(
                   Effect.catch(() =>
                     Effect.succeed({

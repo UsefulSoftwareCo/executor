@@ -6,7 +6,7 @@ import { mcpOAuthPlugins } from "./mcp-oauth.ts";
 import type { BetterAuthOptions } from "better-auth";
 import { organization } from "better-auth/plugins/organization";
 import { admin } from "better-auth/plugins/admin";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
@@ -128,6 +128,7 @@ export const requireUserLive = Layer.effect(
               }),
             );
         return (yield* tracked.pipe(
+          Effect.tapCause(ErrorReporter.report),
           Effect.provideService(CurrentPrincipal, principal),
           Effect.provideService(CurrentUserId, principal.userId),
           Effect.provideService(CurrentUsage, { source: "dashboard" }),

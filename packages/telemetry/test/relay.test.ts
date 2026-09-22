@@ -5,12 +5,48 @@ import { test } from "node:test";
 import { Deferred, Effect, Result, Schema, Tracer } from "effect";
 import { HttpClientError } from "effect/unstable/http";
 import {
+  TelemetryBatch,
   collectTelemetry,
   forwardTelemetry,
   makeTelemetryForwarder,
   CurrentTelemetryConfig,
   telemetryLayer,
 } from "../src/index.ts";
+
+const spanCount = (batches: ReadonlyArray<string>) =>
+  batches.reduce((total, body) => total + (body.match(/"spanId":/g)?.length ?? 0), 0);
+
+test("a thousand normal spans survive the bounded isolate return channel", async () => {
+  const captured = await Effect.runPromise(
+    collectTelemetry(
+      Effect.forEach(
+        Array.from({ length: 1000 }, (_, index) => index),
+        (index) => Effect.void.pipe(Effect.withSpan(`operation.${index}`)),
+      ).pipe(Effect.withSpan("app.call")),
+    ),
+  );
+  assert.equal(spanCount(captured.telemetry.traces), 1001);
+  assert.equal(captured.telemetry.dropped, 0);
+  assert.ok(captured.telemetry.traces.every((body) => Buffer.byteLength(body) <= 262_144));
+  Schema.decodeUnknownSync(TelemetryBatch)(captured.telemetry);
+});
+
+test("one oversized Unicode record is counted without losing its neighbors", async () => {
+  const captured = await Effect.runPromise(
+    collectTelemetry(
+      Effect.gen(function* () {
+        yield* Effect.void.pipe(Effect.withSpan("before"));
+        yield* Effect.annotateCurrentSpan("fixture", "🛰️".repeat(70_000)).pipe(
+          Effect.withSpan("oversized"),
+        );
+        yield* Effect.void.pipe(Effect.withSpan("after"));
+      }).pipe(Effect.withSpan("app.call")),
+    ),
+  );
+  assert.equal(spanCount(captured.telemetry.traces), 3);
+  assert.equal(captured.telemetry.dropped, 1);
+  assert.ok(captured.telemetry.traces.every((body) => Buffer.byteLength(body) <= 262_144));
+});
 
 test("relay retains error messages, structured logs and custom attributes", async () => {
   const captured = await Effect.runPromise(

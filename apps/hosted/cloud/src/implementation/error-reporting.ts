@@ -2,7 +2,8 @@
 import { CloudflareClient, Scope, createTransport } from "@sentry/cloudflare";
 import { createStackParser, nodeStackLineParser } from "@sentry/core";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Cause, Context, Effect, ErrorReporter, Option, Schema } from "effect";
+import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
+import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
 
 // Match Sentry's Cloudflare parser: Worker module names are relative, while
 // uploaded release artifacts use root-relative paths.
@@ -94,30 +95,56 @@ export const withCloudSentry = <A, E, R>(
         ),
     );
     const seen = new Set<unknown>();
+    const captureIn = (cause: Cause.Cause<unknown>, context: Context.Context<never>) => {
+      if (Cause.hasInterruptsOnly(cause)) return;
+      const exception = Cause.squash(cause);
+      if (ErrorReporter.isIgnored(exception) || seen.has(exception)) return;
+      // Declared client rejections remain in request/operation telemetry. Only
+      // unexpected failures and server errors become Sentry incidents.
+      if (exception instanceof Error && Schema.isSchema(exception.constructor)) {
+        const status = SchemaAST.resolveAt<unknown>("httpApiStatus")(exception.constructor.ast);
+        if (typeof status === "number" && status >= 400 && status < 500) return;
+      }
+      seen.add(exception);
+      const scope = new Scope();
+      scope.setClient(client);
+      scope.setTag("product_version", "v2");
+      scope.setTag(
+        "executor_test",
+        config.environment.startsWith("test-") || config.environment === "verification",
+      );
+      const actor = Context.get(context, CurrentUserId);
+      if (actor !== undefined) scope.setUser({ id: actor });
+      const organization = Context.getOption(context, CurrentOrganization);
+      if (Option.isSome(organization))
+        scope.setTag("organization_id", organization.value.organization);
+      const span = Context.getOption(context, Tracer.ParentSpan);
+      if (Option.isSome(span)) {
+        scope.setContext("trace", { trace_id: span.value.traceId, span_id: span.value.spanId });
+        if (span.value._tag === "Span") {
+          for (const key of [
+            "executor.app.id",
+            "executor.deployment.id",
+            "executor.run.id",
+            "executor.operation.id",
+            "executor.attempt.id",
+          ]) {
+            const value = span.value.attributes.get(key);
+            if (typeof value === "string") scope.setTag(key, value);
+          }
+        }
+      }
+      client.captureException(exception, undefined, scope);
+    };
     const capture = (cause: Cause.Cause<unknown>) =>
-      Effect.gen(function* () {
-        if (Cause.hasInterruptsOnly(cause)) return;
-        const exception = Cause.squash(cause);
-        // Expected failures such as HttpServerError.RouteNotFound mark themselves
-        // ignored; internet scanners probing arbitrary paths must not page Sentry.
-        if (ErrorReporter.isIgnored(exception)) return;
-        if (seen.has(exception)) return;
-        seen.add(exception);
-        const scope = new Scope();
-        scope.setClient(client);
-        scope.setTag("product_version", "v2");
-        scope.setTag(
-          "executor_test",
-          config.environment.startsWith("test-") || config.environment === "verification",
-        );
-        const span = yield* Effect.currentSpan.pipe(Effect.option);
-        if (Option.isSome(span))
-          scope.setContext("trace", { trace_id: span.value.traceId, span_id: span.value.spanId });
-        client.captureException(exception, undefined, scope);
-      });
+      Effect.withFiber((fiber) => Effect.sync(() => captureIn(cause, fiber.context)));
+    const nativeReporter = ErrorReporter.make(({ cause, fiber }) =>
+      captureIn(cause, fiber.context),
+    );
     return yield* handler.pipe(
       Effect.tapCause(capture),
       Effect.provideService(Reporter, { capture }),
+      Effect.provide(ErrorReporter.layer([nativeReporter], { mergeWithExisting: true })),
     );
   });
 

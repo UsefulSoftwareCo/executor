@@ -1,9 +1,8 @@
+import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
 import { organizationHttpClient } from "./organization-reference.ts";
 /** Browser calls use the same hosted HTTP contract on Cloudflare and Docker. */
 import { DashboardRuntime } from "./telemetry.ts";
-import { Effect } from "effect";
 import { HostedApi } from "@executor-js/hosted-server/contracts";
-import { HttpClient } from "effect/unstable/http";
 import { AtomHttpApi } from "effect/unstable/reactivity";
 
 /** Relative URLs keep the dashboard and API on the current origin. */
@@ -11,7 +10,8 @@ export class HostedClient extends AtomHttpApi.Service<HostedClient>()("HostedCli
   api: HostedApi,
   httpClient: organizationHttpClient,
   runtime: DashboardRuntime,
-  transformClient: (client) => client.pipe(HttpClient.transformResponse(Effect.withSpan("ui.api"))),
+  transformClient: observeBrowserTransport,
+  transformResponse: observeBrowserResponse,
 }) {}
 
 /** Catalog metadata for the signed-in dashboard; no credential or installation reads. */

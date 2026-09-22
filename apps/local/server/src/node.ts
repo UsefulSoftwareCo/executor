@@ -20,6 +20,7 @@ import type { ServerConfig } from "./contracts/config.ts";
 import { StartupFailed } from "./contracts/startup.ts";
 import { makeLocalAuth, pairingUrl } from "./implementation/auth.ts";
 import { localApi } from "./implementation/server.ts";
+import { startupPhase } from "./implementation/startup-diagnostics.ts";
 
 /** Consume the parent's private fd3 envelope, bounded in size and time, and parse before use. */
 export const readDesktopBootstrap = NodeStream.toString(
@@ -47,7 +48,9 @@ export const startLocalServer = (
     return yield* Effect.gen(function* () {
       yield* Effect.logInfo("Starting local server");
       yield* Effect.addFinalizer(() => Effect.logInfo("Local server stopped"));
-      const auth = yield* makeLocalAuth(globalThis.crypto, settings.directory);
+      const auth = yield* makeLocalAuth(globalThis.crypto, settings.directory).pipe(
+        startupPhase("authentication"),
+      );
       if (bootstrap !== undefined) yield* auth.issue(bootstrap.token);
       const socket = yield* Effect.sync(() => createServer());
       const ready = yield* Deferred.make<void>();
@@ -63,11 +66,15 @@ export const startLocalServer = (
       );
       // Close active connections before the adapter's final shutdown. Requests receive
       // cancellation through Effect; an idle MCP stream cannot hold the process open.
-      const listener = NodeHttpServer.layer(() => socket, {
-        host: "127.0.0.1",
-        port: settings.port,
-        gracefulShutdownTimeout: 1_000,
-      });
+      const listener = Layer.unwrap(
+        Layer.build(
+          NodeHttpServer.layer(() => socket, {
+            host: "127.0.0.1",
+            port: settings.port,
+            gracefulShutdownTimeout: 1_000,
+          }),
+        ).pipe(startupPhase("listen"), Effect.map(Layer.succeedContext)),
+      );
       yield* Layer.build(
         HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
           Layer.provide(listener),
@@ -75,7 +82,7 @@ export const startLocalServer = (
           Layer.provide(NodeServices.layer),
           Layer.provide(Layer.succeedContext(telemetry)),
         ),
-      ).pipe(Effect.mapError(() => new StartupFailed({ stage: "listen" })));
+      ).pipe(startupPhase("composition"));
       yield* Deferred.succeed(ready, undefined);
       yield* Effect.addFinalizer(() => Effect.sync(() => socket.closeAllConnections()));
       const url = `http://127.0.0.1:${port}`;
@@ -92,7 +99,16 @@ export const startLocalServer = (
         ),
       };
     }).pipe(
-      Effect.tapCause((cause) => Effect.logError("Local server startup failed", cause)),
+      startupPhase("composition"),
+      Effect.tapError((error) =>
+        Effect.logError("Local server startup failed").pipe(
+          Effect.annotateLogs({
+            "startup.stage": error.stage,
+            "error.type": "StartupFailed",
+            ...(error.code === undefined ? {} : { "error.code": error.code }),
+          }),
+        ),
+      ),
       Effect.provideContext(telemetry),
     );
   });

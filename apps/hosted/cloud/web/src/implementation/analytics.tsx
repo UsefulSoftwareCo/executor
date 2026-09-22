@@ -1,3 +1,4 @@
+import { browserPageId, BrowserOperationFailure } from "@executor-js/telemetry/browser";
 /** Cloud-only product analytics, sharing the marketing site's PostHog project. */
 import posthog from "posthog-js";
 import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
@@ -36,6 +37,7 @@ const deniedUrlProperties = [
 const deploymentProperties = () => ({
   product_version: "v2",
   surface: "dashboard",
+  page_id: browserPageId(),
   environment: import.meta.env.VITE_EXECUTOR_ENVIRONMENT,
   release: import.meta.env.VITE_EXECUTOR_RELEASE,
   executor_test: String(import.meta.env.VITE_EXECUTOR_ENVIRONMENT).startsWith("test-"),
@@ -57,6 +59,7 @@ export const startAnalytics = () => {
       if (event?.event === "$snapshot")
         return identified && replayPageAllowed(new URL(location.href)) ? event : null;
       if (event) {
+        event.properties.event_id ??= crypto.randomUUID();
         // property_denylist covers event.properties only. Initial person properties
         // travel on $set_once and $set, and $initial_current_url is the raw
         // first-visit href, including an invitation token or an OAuth code.
@@ -94,6 +97,15 @@ export const startAnalytics = () => {
   });
   posthog.register(deploymentProperties());
   started = true;
+  window.addEventListener("executor:operation-failed", (event) => {
+    if (!(event instanceof CustomEvent)) return;
+    const failure = Schema.decodeUnknownOption(BrowserOperationFailure)(event.detail);
+    if (Option.isSome(failure))
+      posthog.capture("browser_operation_failed", {
+        ...failure.value,
+        ...pageContext(location.pathname, location.search),
+      });
+  });
   window.addEventListener("executor:product-usage", (event) => {
     if (!(event instanceof CustomEvent)) return;
     const usage = Schema.decodeUnknownOption(BrowserUsage)(event.detail);

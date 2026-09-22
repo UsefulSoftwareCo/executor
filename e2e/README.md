@@ -75,11 +75,15 @@ non-root execution, generated key permissions, and refusal to replace missing ke
 
 ```sh
 EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \
+EXECUTOR_E2E_DOCKER_VERSION=<commit-sha> \
   bunx --no-install vitest run --config e2e/docker-release.config.ts
 ```
 
 Use `amd64` when checking that image architecture. The scenario creates and
 removes its own container and volume. It does not publish the image.
+Build with `--build-arg EXECUTOR_BUILD_VERSION=<commit-sha>`. The image embeds this
+identity in both dashboard assets and the server environment. The release check
+requires the same version in a delivered server trace before and after restart.
 
 | Command                 | Target                                                          | Current coverage                                              |
 | ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |

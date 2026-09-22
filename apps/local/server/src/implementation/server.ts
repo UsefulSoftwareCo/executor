@@ -1,4 +1,5 @@
 import { localAppBrowserHandlers } from "./app-browser.ts";
+import { startupPhase } from "./startup-diagnostics.ts";
 import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { localScheduleHandlers } from "./schedules.ts";
 import { localMcpApproval } from "./mcp-approvals.ts";
@@ -82,7 +83,7 @@ export const localApi = (
         // The bundled Executor app calls this process on 127.0.0.1, and local development
         // routinely targets a service on the operator's own machine.
         allowPrivateAppFetch: true,
-      });
+      }).pipe(startupPhase("runtime"));
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault("https://v2.executor.sh"),
@@ -107,7 +108,7 @@ export const localApi = (
             ? {}
             : { clientMetadataUrl: config.oauthClientMetadataUrl }),
         },
-      });
+      }).pipe(startupPhase("sdk"));
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(
         recoverAppRepositories({ database: storage, sources, blobs }).pipe(

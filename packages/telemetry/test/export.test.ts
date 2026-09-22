@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { ConfigProvider, Effect, Metric, Redacted, Schema } from "effect";
+import { ConfigProvider, Effect, Logger, Metric, Redacted, Schema, Tracer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { telemetryConfig, TelemetryConfig, telemetryLayer } from "../src/index.ts";
 
@@ -74,6 +74,44 @@ const Metrics = Schema.fromJsonString(
     ),
   }),
 );
+
+test("caller sampling cannot suppress a server failure", async () => {
+  const bodies: string[] = [];
+  const capture: typeof fetch = async (input, init) => {
+    bodies.push(await new Request(input, init).text());
+    return Response.json({});
+  };
+  const traceId = "1234567890abcdef1234567890abcdef";
+  await Effect.runPromise(
+    Effect.fail(new Error("Synthetic server failure")).pipe(
+      Effect.withSpan("server.operation", {
+        kind: "server",
+        parent: Tracer.externalSpan({ traceId, spanId: "1234567890abcdef", sampled: false }),
+      }),
+      Effect.ignore,
+      Effect.provide(
+        telemetryLayer(
+          {
+            service: "test",
+            version: "test",
+            environment: "test",
+            traces: { url: "http://collector.test/v1/traces" },
+          },
+          "event",
+        ),
+      ),
+      Effect.provideService(FetchHttpClient.Fetch, capture),
+    ),
+  );
+  const spans = bodies.flatMap((body) =>
+    Schema.decodeUnknownSync(Traces)(body).resourceSpans.flatMap((resource) =>
+      resource.scopeSpans.flatMap((scope) => scope.spans),
+    ),
+  );
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0]?.traceId, traceId);
+  assert.equal(spans[0]?.status.code, 2);
+});
 
 test("event exporters release HTTP responses before their scope finishes", async () => {
   const signals: AbortSignal[] = [];
@@ -255,4 +293,105 @@ test("a signal endpoint overrides the base without rewriting its path", async ()
   );
   assert.equal(config.traces?.url, "http://collector.test/otel/v1/traces?source=development");
   assert.equal(config.metrics?.url, "http://metrics.test/ingest");
+});
+
+for (const fixture of [
+  {
+    name: "traces",
+    type: "application/json",
+    body: '{"partialSuccess":{"rejectedSpans":"3","errorMessage":"private-collector-message"}}',
+    rejected: 3,
+  },
+  {
+    name: "logs",
+    type: "application/json",
+    body: '{"partialSuccess":{"rejectedLogRecords":2}}',
+    rejected: 2,
+  },
+  {
+    name: "metrics",
+    type: "application/x-protobuf",
+    body: new Uint8Array([10, 2, 8, 4]),
+    rejected: 4,
+  },
+]) {
+  test(`partial ${fixture.name} acceptance records loss without resending accepted records`, async () => {
+    const lines: string[] = [];
+    let requests = 0;
+    const server = createServer(async (request, response) => {
+      for await (const _chunk of request) {
+        /* consume the real export */
+      }
+      requests++;
+      response.writeHead(200, { "content-type": fixture.type }).end(fixture.body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      assert.ok(address !== null && typeof address !== "string");
+      await Effect.runPromise(
+        Effect.void.pipe(
+          Effect.withSpan("partial-acceptance"),
+          Effect.provide(
+            telemetryLayer(
+              {
+                service: "test",
+                version: "test",
+                environment: "test",
+                traces: { url: `http://127.0.0.1:${address.port}/v1/${fixture.name}` },
+              },
+              "event",
+              Logger.make((options) => {
+                lines.push(Logger.formatJson.log(options));
+              }),
+            ),
+          ),
+        ),
+      );
+      assert.equal(requests, 1, "Partial success must never retry accepted records");
+      const log = lines.join("\n");
+      assert.match(log, /partial-success/);
+      assert.ok(log.includes(`"executor.telemetry.rejected_records":${fixture.rejected}`));
+      assert.doesNotMatch(log, /private-collector-message/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+}
+
+test("shutdown interruption remains visible in the host logger", { timeout: 6000 }, async () => {
+  const lines: string[] = [];
+  const server = createServer(async (request) => {
+    for await (const _chunk of request) {
+      /* deliberately never acknowledge */
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string");
+    await Effect.runPromise(
+      Effect.void.pipe(
+        Effect.withSpan("shutdown"),
+        Effect.provide(
+          telemetryLayer(
+            {
+              service: "test",
+              version: "test",
+              environment: "test",
+              traces: { url: `http://127.0.0.1:${address.port}/v1/traces` },
+            },
+            "event",
+            Logger.make((options) => {
+              lines.push(Logger.formatJson.log(options));
+            }),
+          ),
+        ),
+      ),
+    );
+    assert.match(lines.join("\n"), /interrupted/);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

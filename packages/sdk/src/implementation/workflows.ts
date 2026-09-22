@@ -273,6 +273,11 @@ export const makeWorkflowRuns = (
       const result = yield* safe(
         Effect.gen(function* () {
           const current = yield* seed(run);
+          yield* Effect.annotateCurrentSpan({
+            "executor.app.id": current.app,
+            "executor.build.id": current.build,
+            "executor.workflow.name": current.name,
+          });
           const bound = yield* context(run);
           return yield* runtime.workflow({
             app: current.app,
@@ -297,7 +302,7 @@ export const makeWorkflowRuns = (
       }
       yield* finish(run, { ok: true, output: result.success });
       return result.success;
-    });
+    }).pipe(Effect.withSpan("workflow.run", { attributes: { "executor.run.id": run } }));
   const reconcile = (row: typeof StoredRun.Type) =>
     Effect.gen(function* () {
       if (terminal(row)) return yield* view(row);
@@ -456,9 +461,10 @@ export const makeWorkflowRuns = (
       const payload = yield* decrypt(retained);
       if (retained.name !== input.workflow || stable(payload.request) !== stable(input.input))
         return yield* failure("conflict");
+      yield* Effect.annotateCurrentSpan("executor.run.id", retained.id);
       if (!terminal(retained)) yield* backend.start(retained.id);
       return yield* view(yield* read(retained.id));
-    });
+    }).pipe(Effect.withSpan("workflow.start", { attributes: { "executor.app.id": input.app } }));
   const terminate = (input: typeof WorkflowTarget.Type) =>
     Effect.gen(function* () {
       yield* storedApp(db, { app: input.app });

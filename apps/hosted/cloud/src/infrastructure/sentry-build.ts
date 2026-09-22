@@ -4,8 +4,12 @@ import type { WorkerProps } from "alchemy/Cloudflare";
 import { Effect, FileSystem, Path } from "effect";
 
 /** A Rolldown output hook copies unchanged artifacts before Cloudflare uploads them. */
-export const sentryWorkerBuild: NonNullable<WorkerProps["build"]> = {
+export const sentryWorkerBuild = (
+  worker: "api" | "app-pages",
+): NonNullable<WorkerProps["build"]> => ({
   output: {
+    entryFileNames: `${worker}-[name].js`,
+    chunkFileNames: `${worker}-[name]-[hash].js`,
     // Normal ESM ordering avoids an initializer wrapper around every module.
     // This graph is covered by the workerd MCP and app-UI tests; keep source maps for diagnostics.
     strictExecutionOrder: false,
@@ -20,7 +24,7 @@ export const sentryWorkerBuild: NonNullable<WorkerProps["build"]> = {
               const fs = yield* FileSystem.FileSystem;
               const path = yield* Path.Path;
               const directory = yield* path.fromFileUrl(
-                new URL("../../.generated/sentry-worker", import.meta.url),
+                new URL(`../../.generated/sentry-worker/${worker}`, import.meta.url),
               );
               yield* fs.remove(directory, { recursive: true, force: true });
               yield* fs.makeDirectory(directory, { recursive: true });
@@ -37,4 +41,4 @@ export const sentryWorkerBuild: NonNullable<WorkerProps["build"]> = {
       },
     ],
   },
-};
+});

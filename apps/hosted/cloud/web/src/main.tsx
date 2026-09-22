@@ -1,5 +1,5 @@
 import { cloudEntryInitialValues } from "./implementation/entry.ts";
-import { startErrorReporting, reactErrorHandlers } from "./implementation/error-reporting.tsx";
+import { reactErrorHandlers } from "./implementation/error-reporting.tsx";
 import { startAnalytics, capturePageview, pauseReplay } from "./implementation/analytics.tsx";
 import { Effect } from "effect";
 import { PageTelemetry } from "@executor-js/hosted-web/contracts/telemetry";
@@ -21,7 +21,6 @@ const initialValues = cloudEntryInitialValues();
 const publicEmailPage = window.location.pathname.startsWith("/email/unsubscribe");
 if (!publicEmailPage) {
   startAnalytics();
-  startErrorReporting();
 }
 const router = createDashboardRouter();
 if (!publicEmailPage) {

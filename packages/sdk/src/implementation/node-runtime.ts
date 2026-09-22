@@ -11,6 +11,7 @@ import {
   DeclaredRequirements,
   HostRequest,
   HostResponse,
+  ToolResultObservation,
   HostedTool,
   type HostContext,
   type ResolvedAccountsInput,
@@ -102,6 +103,13 @@ function dispatch<A, E>(
         Effect.mapError(() => new RuntimeProtocolFailed()),
         Effect.flatMap(Effect.fail),
       );
+    if (envelope.toolError === true) {
+      (yield* ToolResultObservation).failed();
+      yield* Effect.annotateCurrentSpan({
+        "executor.outcome": "failed",
+        "error.type": "McpToolError",
+      });
+    }
     if (!response.ok) return yield* Effect.fail(new RuntimeProtocolFailed());
     return yield* Schema.decodeUnknownEffect(value)(envelope.value).pipe(
       Effect.mapError(() => new RuntimeProtocolFailed()),

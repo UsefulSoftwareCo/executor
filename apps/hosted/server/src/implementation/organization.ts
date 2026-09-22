@@ -15,7 +15,7 @@ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
-import { Effect, Layer, Schema } from "effect";
+import { ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
@@ -122,6 +122,7 @@ export const withOrganizationRequest = <E, R>(
           "executor.user.id": grant.userId,
         });
       return (yield* response(Effect.succeed(grant.organizationSlug)).pipe(
+        Effect.tapCause(ErrorReporter.report),
         Effect.provideService(CurrentAuthorization, grant.policy),
         Effect.provideService(CurrentOrganization, grant.access),
         Effect.provideService(CurrentOrganizationNamespace, Effect.succeed(grant.organizationSlug)),
@@ -146,6 +147,7 @@ export const withOrganizationRequest = <E, R>(
       role: membership.role,
     };
     return (yield* response(auth.organizationSlug(headers, organization)).pipe(
+      Effect.tapCause(ErrorReporter.report),
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(
         CurrentOrganizationNamespace,

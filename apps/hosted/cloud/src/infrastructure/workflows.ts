@@ -1,3 +1,4 @@
+import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
 /** One native Cloudflare workflow routes every run to its retained Dynamic Worker app build. */
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -52,11 +53,23 @@ const runWorkflow = (input: {
           step.do({
             name,
             ...options,
-            effect: work().pipe(
-              Effect.provideContext(services),
-              Effect.catch((error) =>
-                Effect.die(
-                  error.retryable ? new Error(encode(error)) : new NonRetryableError(encode(error)),
+            effect: Effect.suspend(() =>
+              work().pipe(
+                Effect.tapCause(reportCloudFailure),
+                Effect.withSpan("workflow.step", {
+                  attributes: {
+                    "executor.run.id": run,
+                    "executor.workflow.step": name,
+                    "executor.attempt.id": crypto.randomUUID(),
+                  },
+                }),
+                Effect.provideContext(services),
+                Effect.catch((error) =>
+                  Effect.die(
+                    error.retryable
+                      ? new Error(encode(error))
+                      : new NonRetryableError(encode(error)),
+                  ),
                 ),
               ),
             ),
@@ -85,8 +98,25 @@ export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   Effect.gen(function* () {
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
     const analytics = yield* cloudAnalytics;
+    const report = yield* cloudSentry;
     return (input: { run: string }) =>
-      Effect.scoped(analytics.wrap(runWorkflow(input).pipe(Effect.provide(executor))));
+      Effect.scoped(
+        report(
+          analytics.wrap(
+            runWorkflow(input).pipe(
+              Effect.provide(executor),
+              Effect.tapCause(reportCloudFailure),
+              Effect.withSpan("workflow.attempt", {
+                root: true,
+                attributes: {
+                  "executor.run.id": input.run,
+                  "executor.attempt.id": crypto.randomUUID(),
+                },
+              }),
+            ),
+          ),
+        ),
+      );
   }),
 ) {}
 

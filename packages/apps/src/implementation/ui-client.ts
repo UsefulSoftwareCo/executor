@@ -225,8 +225,20 @@ export const createAppClient = () => {
       runtime.runFork(effect);
     },
     run: awaitWrite,
-    reportProjectionError: (error) =>
-      console.error("Optimistic update failed during replay.", error),
+    reportProjectionError: ({ operationId, name, sent }) => {
+      runtime.runFork(
+        Effect.fail(new UiFailed({ reason: "operation_failed" })).pipe(
+          Effect.withSpan("ui.optimistic.failure", {
+            attributes: {
+              "executor.operation.id": operationId,
+              "executor.operation.name": name,
+              "executor.optimistic.sent": sent,
+            },
+          }),
+          Effect.ignore,
+        ),
+      );
+    },
   });
   return {
     /** Close this client when its page or embedding owner is removed. */

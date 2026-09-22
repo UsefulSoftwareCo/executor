@@ -217,20 +217,28 @@ export const recordBackgroundUsage = (
   identity: string,
   properties: UsageProperties,
 ) =>
-  Effect.flatMap(Analytics, (analytics) =>
-    Effect.sync(() =>
-      analytics.add({
-        event,
-        distinct_id: `automation:${identity}`,
-        timestamp: new Date().toISOString(),
-        properties: {
-          ...properties,
-          source: event === "schedule_run_completed" ? "schedule" : "workflow",
-          actor_type: "automation",
-        },
-      }),
-    ),
-  );
+  Effect.gen(function* () {
+    const analytics = yield* Analytics;
+    const span = yield* Effect.currentSpan.pipe(Effect.option);
+    analytics.add({
+      event,
+      distinct_id: `automation:${identity}`,
+      timestamp: new Date().toISOString(),
+      properties: {
+        ...properties,
+        event_id: crypto.randomUUID(),
+        ...(Option.isNone(span)
+          ? {}
+          : {
+              trace_id: span.value.traceId,
+              span_id: span.value.spanId,
+              operation_id: span.value.spanId,
+            }),
+        source: event === "schedule_run_completed" ? "schedule" : "workflow",
+        actor_type: "automation",
+      },
+    });
+  });
 
 /** Instrument completed tool work while keeping approval pauses out of completion counts. */
 const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
@@ -259,10 +267,15 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
             yield* recordUsage("tool_execution_completed", {
               ...timed,
               status,
-              ok: status === "completed",
+              ok: status === "completed" && exit.value.toolError !== true,
+              ...(status === "completed" && exit.value.toolError === true
+                ? { error_type: "McpToolError" }
+                : {}),
               outcome:
                 status === "completed"
-                  ? "success"
+                  ? exit.value.toolError === true
+                    ? "failure"
+                    : "success"
                   : status === "cancelled"
                     ? "cancelled"
                     : "failure",
@@ -273,7 +286,7 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
         }),
       ),
     );
-  });
+  }).pipe(Effect.withSpan("product.tool.execution"));
 
 /** Product host boundaries cover API/MCP work and private app queries without inspecting payloads. */
 export const withExecutorAnalytics = (executor: Executor): Executor => ({

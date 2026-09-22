@@ -2,10 +2,41 @@
 import { Schema } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 
+/** System codes permitted in persistent startup diagnostics. */
+export const StartupCode = Schema.Literals([
+  "EADDRINUSE",
+  "EACCES",
+  "EPERM",
+  "ENOENT",
+  "ENOSPC",
+  "ENOTDIR",
+  "EISDIR",
+  "EEXIST",
+  "EMFILE",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+]);
+
 /** One explicit startup stage failed without exposing its raw input. */
 export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupFailed", {
-  stage: Schema.Literals(["desktop-bootstrap", "listen", "browser", "pair", "dev-server"]),
-}) {}
+  stage: Schema.Literals([
+    "desktop-bootstrap",
+    "authentication",
+    "storage",
+    "runtime",
+    "sdk",
+    "composition",
+    "listen",
+    "browser",
+    "pair",
+    "dev-server",
+  ]),
+  code: Schema.optional(StartupCode),
+}) {
+  get message() {
+    return `Local startup failed at ${this.stage}${this.code === undefined ? "" : ` (${this.code})`}`;
+  }
+}
 /** Entry modes share a server implementation; desktop receives a private bootstrap pipe. */
 export type LaunchMode = "browser" | "headless" | "pair" | "desktop";
 

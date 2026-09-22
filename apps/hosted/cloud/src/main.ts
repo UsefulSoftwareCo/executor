@@ -57,6 +57,7 @@ import { homepage } from "./implementation/homepage.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { sentryWorkerBuild } from "./infrastructure/sentry-build.ts";
+import { reportCloudFailure } from "./implementation/error-reporting.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
 import { cloudErrorTunnel } from "./implementation/error-tunnel.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
@@ -93,7 +94,7 @@ export default Api.make(
         ...sentry.env,
         ...(yield* billingBindings),
       },
-      build: sentryWorkerBuild,
+      build: sentryWorkerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
       ...(origin === undefined ? {} : { domain: origin.hostname }),
       // Opt in per deployment; the database's cloud region is a proximity hint,
@@ -164,6 +165,9 @@ export default Api.make(
     yield* Cloudflare.Workers.cron("* * * * *", () =>
       Effect.flatten(AppRepositoryRecovery).pipe(
         Effect.provide(executor),
+        reportErrors,
+        Effect.scoped,
+        Effect.withSpan("job.repository.recover"),
         Effect.catch(() => Effect.logWarning("App repository recovery failed")),
         lifetime.background,
       ),
@@ -185,9 +189,15 @@ export default Api.make(
           Effect.flatten(HostedExecutor).pipe(
             Effect.flatMap((sdk) => sdk[WorkflowHost].reconcile),
             Effect.provide(executor),
+            reportErrors,
+            Effect.scoped,
+            Effect.withSpan("job.workflow.reconcile"),
             Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
           ),
           meter.reconcileSeats.pipe(
+            reportErrors,
+            Effect.scoped,
+            Effect.withSpan("job.billing.reconcile"),
             Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
           ),
         ],
@@ -293,6 +303,7 @@ export default Api.make(
           );
         return yield* handle;
       }).pipe(
+        Effect.tapCause(reportCloudFailure),
         Effect.catchTag("AuthenticationUnavailable", () =>
           Effect.succeed(HttpServerResponse.empty({ status: 503 })),
         ),

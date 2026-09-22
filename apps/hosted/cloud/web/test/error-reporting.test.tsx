@@ -1,7 +1,7 @@
 /** URL-borne capabilities must not reach Sentry through a breadcrumb or a request URL. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { strippedBreadcrumb, strippedUrl } from "../src/implementation/error-reporting.tsx";
+import { strippedBreadcrumb, strippedUrl } from "../src/implementation/error-reporting-client.ts";
 
 test("a stripped URL keeps its path and loses its query and fragment", () => {
   assert.equal(strippedUrl("/oauth/callback?code=live-code&state=x"), "/oauth/callback");

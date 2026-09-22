@@ -1,6 +1,10 @@
 /** This bootstrap must run before authored modules and must not depend on their framework. */
 const installAppFailureUI = () => {
-  let reported = false;
+  let dialogOpen = false;
+  let windowStart = Date.now(),
+    reports = 0,
+    dropped = 0;
+  const recent = new Map<string, number>();
   const extension = /^(?:chrome|moz|safari-web)-extension:/;
   const errorTypes = new Set([
     "Error",
@@ -38,13 +42,35 @@ const installAppFailureUI = () => {
     details: string,
     attributes: ReturnType<typeof sourceAttributes> = [],
   ) => {
-    if (reported) return;
-    reported = true;
+    const now = Date.now();
+    if (now - windowStart >= 60000) {
+      windowStart = now;
+      reports = 0;
+      recent.clear();
+    }
+    // Deduplicate locally. Error text never leaves this document.
+    const signature = `${kind}:${details.slice(0, 2000)}`;
+    const previous = recent.get(signature);
+    if ((previous !== undefined && now - previous < 1000) || reports >= 20) {
+      dropped++;
+      return;
+    }
+    recent.set(signature, now);
+    reports++;
+    attributes.push({
+      key: "executor.ui.failure.suppressed",
+      value: { intValue: String(dropped) },
+    });
+    dropped = 0;
     const traceId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
       byte.toString(16).padStart(2, "0"),
     ).join("");
     const time = `${Date.now()}000000`;
+    let status: HTMLParagraphElement | undefined;
+    let deliveryMessage = "Sending error report…";
     const show = () => {
+      if (dialogOpen) return;
+      dialogOpen = true;
       const host = document.createElement("div");
       const root = host.attachShadow({ mode: "open" });
       const dialog = document.createElement("dialog");
@@ -70,9 +96,9 @@ const installAppFailureUI = () => {
       report.setAttribute("aria-label", "Error details");
       report.value = `${details.slice(0, 12000)}\n\nDiagnostic ID: ${traceId}`;
       disclosure.append(summary, report);
-      const status = document.createElement("p");
+      status = document.createElement("p");
       status.setAttribute("role", "status");
-      status.textContent = "Sending error report…";
+      status.textContent = deliveryMessage;
       const reload = document.createElement("button");
       reload.type = "button";
       reload.textContent = "Reload page";
@@ -81,58 +107,63 @@ const installAppFailureUI = () => {
       close.type = "button";
       close.textContent = "Close";
       close.addEventListener("click", () => dialog.close());
+      dialog.addEventListener("close", () => {
+        dialogOpen = false;
+        host.remove();
+      });
       dialog.append(title, message, warning, disclosure, status, reload, close);
       root.append(dialog);
       document.documentElement.append(host);
       dialog.showModal();
-
-      // Error text can contain app data. Keep it in this browser; export only a fixed classification.
-      void fetch("/_executor/api/telemetry/traces", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "same-origin",
-        keepalive: true,
-        body: JSON.stringify({
-          resourceSpans: [
-            {
-              scopeSpans: [
-                {
-                  spans: [
-                    {
-                      traceId,
-                      spanId: traceId.slice(0, 16),
-                      name: "ui.app.failure",
-                      kind: 1,
-                      startTimeUnixNano: time,
-                      endTimeUnixNano: time,
-                      status: { code: 2 },
-                      attributes: [
-                        { key: "executor.ui.failure.kind", value: { stringValue: kind } },
-                        ...attributes,
-                      ],
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-        }),
-      }).then(
-        (response) => {
-          status.textContent = response.ok
-            ? "Error report sent."
-            : "Could not send the error report. You can copy the error details.";
-        },
-        () => {
-          status.textContent = "Could not send the error report. You can copy the error details.";
-        },
-      );
     };
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", show, { once: true });
     } else {
       show();
     }
+    // Error text can contain app data. Keep it in this browser; export only a fixed classification.
+    void fetch("/_executor/api/telemetry/traces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      keepalive: true,
+      body: JSON.stringify({
+        resourceSpans: [
+          {
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId,
+                    spanId: traceId.slice(0, 16),
+                    name: "ui.app.failure",
+                    kind: 1,
+                    startTimeUnixNano: time,
+                    endTimeUnixNano: time,
+                    status: { code: 2 },
+                    attributes: [
+                      { key: "executor.ui.failure.kind", value: { stringValue: kind } },
+                      ...attributes,
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    }).then(
+      (response) => {
+        deliveryMessage = response.ok
+          ? "Error report sent."
+          : "Could not send the error report. You can copy the error details.";
+        if (status) status.textContent = deliveryMessage;
+      },
+      () => {
+        deliveryMessage = "Could not send the error report. You can copy the error details.";
+        if (status) status.textContent = deliveryMessage;
+      },
+    );
   };
   window.addEventListener(
     "error",

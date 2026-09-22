@@ -80,6 +80,7 @@ type Event =
   | { readonly kind: "wake" }
   | { readonly kind: "done"; readonly result: typeof ExecuteResult.Type };
 type Run = {
+  readonly id: string;
   readonly scheduling: ReturnType<typeof programScheduler>;
   readonly caller: string;
   readonly scope: Scope.Closeable;
@@ -448,6 +449,7 @@ export const makeExecutions = (
           if (runs.size >= defaultMcpRuntimeLimits.maxExecutions)
             return { status: "capacity-exceeded" };
           const run: Run = {
+            id: crypto.randomUUID(),
             caller,
             scheduling: programScheduler(scheduler),
             scope: yield* Scope.make(),
@@ -464,6 +466,7 @@ export const makeExecutions = (
             return { status: "capacity-exceeded" };
           }
           runs.add(run);
+          yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
           yield* beforeExecute.pipe(
             Effect.onError(() => stop(run)),
             Effect.onInterrupt(() => stop(run)),
@@ -510,6 +513,7 @@ export const makeExecutions = (
             return unavailable(input.requestId);
           const response = yield* pending.respond(input.response);
           const run = pending.run;
+          yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
           if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
             yield* stop(run);
             return unavailable(input.requestId);

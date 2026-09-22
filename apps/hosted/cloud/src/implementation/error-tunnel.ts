@@ -5,19 +5,29 @@ import { ByteSize, Effect, Option, Schema } from "effect";
 import { HttpIncomingMessage, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 const Settings = Schema.Struct({
+  localTest: Schema.optional(Schema.Literal(true)),
   browserDsn: Schema.String,
   tunnel: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}\/submit$/)),
 });
 const Header = Schema.fromJsonString(Schema.Struct({ dsn: Schema.String }));
 
 /** Validate the envelope's destination before deriving a fixed ingestion URL from configuration. */
-export const sentryEnvelopeTarget = (body: string, expectedDsn: string): string | undefined => {
+export const sentryEnvelopeTarget = (
+  body: string,
+  expectedDsn: string,
+  localTest = false,
+): string | undefined => {
   const newline = body.indexOf("\n");
   if (newline < 0 || newline > 8192) return undefined;
   const header = Schema.decodeUnknownOption(Header)(body.slice(0, newline));
   if (Option.isNone(header) || header.value.dsn !== expectedDsn) return undefined;
   const dsn = new URL(expectedDsn);
-  if (dsn.protocol !== "https:" || !/^\/\d+$/.test(dsn.pathname)) return undefined;
+  if (
+    (dsn.protocol !== "https:" &&
+      !(localTest && dsn.protocol === "http:" && dsn.hostname === "127.0.0.1")) ||
+    !/^\/\d+$/.test(dsn.pathname)
+  )
+    return undefined;
   return `${dsn.origin}/api${dsn.pathname}/envelope/?sentry_version=7&sentry_key=${encodeURIComponent(dsn.username)}`;
 };
 
@@ -40,6 +50,7 @@ export const cloudErrorTunnel = Effect.gen(function* () {
     const target = sentryEnvelopeTarget(
       new TextDecoder().decode(bytes.subarray(0, 8193)),
       config.browserDsn,
+      config.localTest === true,
     );
     if (!target) return HttpServerResponse.empty({ status: 400 });
     const response = yield* Effect.tryPromise({

@@ -1,5 +1,17 @@
 /** One execution manager with model, native and browser delivery adapters. */
-import { Array as Arr, Context, Effect, Layer, Match, Schema, Tracer, type Scope } from "effect";
+import {
+  Array as Arr,
+  Cause,
+  Clock,
+  Context,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Schema,
+  Tracer,
+  type Scope,
+} from "effect";
 import { McpServer } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { ElicitationMode } from "../contracts/elicitation.ts";
@@ -15,6 +27,64 @@ import type { McpExecutionResult } from "../contracts/execute.ts";
 import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
 import { skills } from "./skills.ts";
+
+// Observe the final protocol value after timeout, admission and resume handling.
+const observeExecution =
+  (name: "mcp.execute" | "mcp.resume") =>
+  <A extends McpExecutionResult, E, R>(work: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const started = yield* Clock.currentTimeMillis;
+      yield* Effect.annotateCurrentSpan("executor.attempt.id", crypto.randomUUID());
+      return yield* work.pipe(
+        Effect.onExit((exit) =>
+          Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan(
+              "executor.duration_ms",
+              Math.max(0, (yield* Clock.currentTimeMillis) - started),
+            );
+            if (Exit.isFailure(exit)) {
+              yield* Effect.annotateCurrentSpan(
+                "executor.outcome",
+                Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed",
+              );
+              return;
+            }
+            const result: McpExecutionResult = exit.value;
+            yield* Match.value(result).pipe(
+              Match.when({ status: "completed" }, ({ execution }) =>
+                Effect.annotateCurrentSpan({
+                  "executor.outcome": execution.ok ? "completed" : "failed",
+                  "executor.tool_call.count": execution.toolCalls.length,
+                  ...(execution.ok ? {} : { "error.type": execution.error.kind }),
+                }),
+              ),
+              Match.when({ status: "approval-required" }, () =>
+                Effect.annotateCurrentSpan("executor.outcome", "pending"),
+              ),
+              Match.when({ status: "input-required" }, () =>
+                Effect.annotateCurrentSpan("executor.outcome", "pending"),
+              ),
+              Match.when({ status: "capacity-exceeded" }, () =>
+                Effect.annotateCurrentSpan({
+                  "executor.outcome": "failed",
+                  "error.type": "CapacityExceeded",
+                }),
+              ),
+              Match.when({ status: "unavailable" }, () =>
+                Effect.annotateCurrentSpan({
+                  "executor.outcome": "failed",
+                  "error.type": "ContinuationUnavailable",
+                }),
+              ),
+              Match.when({ status: "busy" }, () =>
+                Effect.annotateCurrentSpan("executor.outcome", "busy"),
+              ),
+              Match.exhaustive,
+            );
+          }),
+        ),
+      );
+    }).pipe(Effect.withSpan(name));
 
 const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
 const identity = (product: string, mode: ElicitationMode, session: string) =>
@@ -77,7 +147,7 @@ export const makeMcp = (options: McpOptions) =>
                         Effect.flatMap(({ id }) =>
                           executeNative(executions, id, options.backend, code),
                         ),
-                        Effect.withSpan("mcp.execute"),
+                        observeExecution("mcp.execute"),
                       ),
                     skills: skill,
                   }),
@@ -96,7 +166,7 @@ export const makeMcp = (options: McpOptions) =>
                                 Effect.flatMap((result) => withLink(result, sessionId, delivery)),
                               ),
                           ),
-                          Effect.withSpan("mcp.execute"),
+                          observeExecution("mcp.execute"),
                         ),
                       resume: ({ requestId }) =>
                         caller.pipe(
@@ -121,7 +191,7 @@ export const makeMcp = (options: McpOptions) =>
                                 : withLink(pending, sessionId, delivery);
                             }),
                           ),
-                          Effect.withSpan("mcp.resume"),
+                          observeExecution("mcp.resume"),
                         ),
                       skills: skill,
                     }),
@@ -133,12 +203,12 @@ export const makeMcp = (options: McpOptions) =>
                       execute: ({ code }) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) => executions.execute(id, options.backend, code)),
-                          Effect.withSpan("mcp.execute"),
+                          observeExecution("mcp.execute"),
                         ),
                       resume: (input) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) => executions.resume(id, options.backend, input)),
-                          Effect.withSpan("mcp.resume"),
+                          observeExecution("mcp.resume"),
                         ),
                       skills: skill,
                     }),

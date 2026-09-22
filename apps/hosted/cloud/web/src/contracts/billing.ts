@@ -1,3 +1,4 @@
+import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
 import { organizationHttpClient } from "@executor-js/hosted-web/contracts/organization-reference";
 import { DashboardRuntime } from "@executor-js/hosted-web/contracts/telemetry";
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
@@ -9,6 +10,8 @@ export class CloudClient extends AtomHttpApi.Service<CloudClient>()("CloudClient
   api: ExecutorCloudApi,
   httpClient: organizationHttpClient,
   runtime: DashboardRuntime,
+  transformClient: observeBrowserTransport,
+  transformResponse: observeBrowserResponse,
 }) {}
 /** Poll while the page is mounted so asynchronous checkout settlement becomes visible. */
 export const billingAtom = Atom.family((organization: OrganizationReference) =>

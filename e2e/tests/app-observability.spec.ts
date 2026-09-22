@@ -498,7 +498,9 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           to: previous.traceId,
           parent: previous.spanId,
         });
-        if (target.metadata.target === "cloud") {
+        // Motel's read API omits native links. The outgoing OTLP assertion above
+        // covers managed targets; the deployed Axiom adapter also exposes stored links.
+        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           const deliveredRetry = yield* telemetry.query(retrySpan.traceId).pipe(
             Effect.flatMap((result) =>
               result.data.some(

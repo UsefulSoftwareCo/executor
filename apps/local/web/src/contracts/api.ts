@@ -1,9 +1,10 @@
+import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
 import { DashboardRuntime } from "./telemetry.ts";
 import { LocalAppManagementApi } from "@executor-js/local-server/app-management";
 import { DashboardApi } from "@executor-js/local-server/contracts";
 import type { AppId, DeploymentId, ProfileId } from "@executor-js/sdk";
 import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientError } from "effect/unstable/http";
+import { FetchHttpClient, HttpClientError } from "effect/unstable/http";
 import { AsyncResult, Atom, AtomHttpApi } from "effect/unstable/reactivity";
 import { accountNeedsSignIn } from "./dashboard.ts";
 import { acknowledgedQuery, currentQuery } from "@executor-js/ui/contracts/mutations";
@@ -13,7 +14,8 @@ export class DashboardClient extends AtomHttpApi.Service<DashboardClient>()("Das
   api: DashboardApi.addHttpApi(LocalAppManagementApi),
   httpClient: FetchHttpClient.layer,
   runtime: DashboardRuntime,
-  transformClient: (client) => client.pipe(HttpClient.transformResponse(Effect.withSpan("ui.api"))),
+  transformClient: observeBrowserTransport,
+  transformResponse: observeBrowserResponse,
 }) {}
 
 /** An ended connection is resubscribed from current state, never treated as a completed query. */

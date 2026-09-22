@@ -1,5 +1,4 @@
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
-import { reportCloudFailure } from "../implementation/error-reporting.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
 import { appRpcBridge, appFacetBridge } from "../implementation/app-bridge.ts";
 import {
@@ -24,6 +23,7 @@ import {
   DeclaredRequirements,
   HostedTool,
   HostResponse,
+  ToolResultObservation,
   type HostContext,
   type HostRequest,
 } from "apps/contracts";
@@ -192,6 +192,13 @@ export const cloudRuntime = Effect.fn(function* (
               Effect.mapError((cause) => protocolFailed(cause)),
               Effect.flatMap(Effect.fail),
             );
+          if (envelope.toolError === true) {
+            (yield* ToolResultObservation).failed();
+            yield* Effect.annotateCurrentSpan({
+              "executor.outcome": "failed",
+              "error.type": "McpToolError",
+            });
+          }
           return yield* Schema.decodeUnknownEffect(schema)(envelope.value).pipe(
             Effect.mapError((cause) => protocolFailed(cause)),
           );
@@ -199,7 +206,6 @@ export const cloudRuntime = Effect.fn(function* (
       ).pipe(
         Effect.provide(RuntimeContext.phantom),
         Effect.catchDefect((defect) => Effect.fail(protocolFailed(defect))),
-        Effect.tapCause(reportCloudFailure),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "dispatch.cause": causeOf(error) }),
         ),
@@ -394,7 +400,17 @@ export const cloudRuntime = Effect.fn(function* (
             build,
             identity,
           );
-        }),
+        }).pipe(
+          Effect.withSpan("runtime.cloud.workflow", {
+            attributes: {
+              "executor.app.id": app,
+              "executor.build.id": build,
+              ...(context.workflow === undefined
+                ? {}
+                : { "executor.run.id": context.workflow.runId }),
+            },
+          }),
+        ),
       webhook: (input) => data(input.command, input),
       call: (input) =>
         data({ operation: "call", tool: input.tool, input: input.input }, input).pipe(

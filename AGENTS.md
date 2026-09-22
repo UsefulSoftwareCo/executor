@@ -51,9 +51,15 @@ Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold.
-- `e2e-cloud` runs the Cloud onboarding scenarios. It starts the local Cloud
+- `e2e-cloud` runs Cloud onboarding and delivered observability scenarios. It starts the local Cloud
   Worker, a throwaway Postgres container and the service emulators, so it needs
   Docker but no credentials.
+
+The check job also verifies bounded OTLP export, partial rejection, privacy,
+seven-day local retrieval, Sentry and usage receivers. Cloud scenarios verify
+API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
+These checks remain manually invoked. Deployment gating and automatic CI
+enforcement remain deferred as recorded in `notes/deferred.md`.
 
 A failed e2e job uploads its `.local/e2e` evidence directory as an artifact.
 Private `actors.json` session files are excluded.

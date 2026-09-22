@@ -62,3 +62,8 @@ const stars = await getStars();
     </nav>
   </details>
 </div>
+
+<script>
+  import { startPublicErrorReporting } from "@executor-js/marketing/error-reporting";
+  startPublicErrorReporting("docs", { dsn: import.meta.env.PUBLIC_SENTRY_DSN, tunnel: import.meta.env.PUBLIC_SENTRY_TUNNEL, environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE });
+</script>

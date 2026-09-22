@@ -18,7 +18,12 @@
  *
  * Attributes outside these namespaces are the product's own and pass through.
  */
-import { Effect, Layer, Tracer, type Exit } from "effect";
+import { Effect, Exit, Layer, Option, Schema, Tracer } from "effect";
+
+class LogicalOperationFailed extends Schema.TaggedError<LogicalOperationFailed>()(
+  "LogicalOperationFailed",
+  {},
+) {}
 
 /** Namespaces the HTTP client and server tracers write into. */
 const httpNamespaces = ["http.", "url.", "server.", "client.", "user_agent."];
@@ -88,7 +93,15 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => ({
   get kind() {
     return span.kind;
   },
-  end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) => span.end(endTime, exit),
+  // A successful transport can carry a failed domain operation. The producer
+  // explicitly marks that outcome; arbitrary result payloads are never inspected.
+  end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) =>
+    span.end(
+      endTime,
+      Exit.isSuccess(exit) && span.attributes.get("executor.outcome") === "failed"
+        ? Exit.fail(new LogicalOperationFailed())
+        : exit,
+    ),
   attribute: (key: string, value: unknown) => {
     if (spanAttributeAllowed(key)) span.attribute(key, value);
   },
@@ -98,13 +111,24 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => ({
 });
 
 /** Wrap whichever tracer is already in scope; provide this above the exporter. */
-export const spanAttributes = (clock?: "system" | "cloudflare-io"): Layer.Layer<never> =>
+export const spanAttributes = (
+  clock?: "system" | "cloudflare-io",
+  recordAll = false,
+): Layer.Layer<never> =>
   Layer.effect(Tracer.Tracer)(
     Tracer.Tracer.pipe(
       Effect.map((tracer) => ({
         ...tracer,
         span: (options) => {
-          const span = allowlistedSpan(tracer.span(options));
+          const span = allowlistedSpan(
+            tracer.span(recordAll ? { ...options, sampled: true } : options),
+          );
+          if (
+            recordAll &&
+            Option.isSome(options.parent) &&
+            options.parent.value._tag === "ExternalSpan"
+          )
+            span.attribute("executor.trace.parent_sampled", options.parent.value.sampled);
           if (clock !== undefined) span.attribute("executor.clock.type", clock);
           return span;
         },

@@ -114,12 +114,8 @@ const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? 
       }
     </script>
     <script>
-      import * as Sentry from "@sentry/browser";
-      const dsn = import.meta.env.PUBLIC_SENTRY_DSN;
-      if (dsn) Sentry.init({ dsn, tunnel: import.meta.env.PUBLIC_SENTRY_TUNNEL, environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT,
-        release: import.meta.env.PUBLIC_EXECUTOR_RELEASE, sendDefaultPii: false, tracesSampleRate: 0,
-        initialScope: { tags: { product_version: "v2", surface: "marketing" } },
-      });
+      import { startPublicErrorReporting } from "../error-reporting";
+      startPublicErrorReporting("marketing", { dsn: import.meta.env.PUBLIC_SENTRY_DSN, tunnel: import.meta.env.PUBLIC_SENTRY_TUNNEL, environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE });
     </script>
   </body>
 </html>

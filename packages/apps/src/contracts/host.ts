@@ -9,7 +9,7 @@ export * from "./workflows.ts";
 import { OperationSchedule } from "./schedules.ts";
 import { DatabaseSchema } from "@executor-js/app-data/contracts";
 /** Portable framework dispatch contracts. Requests never carry account bindings. */
-import { Schema, type Effect, type Redacted } from "effect";
+import { Context, Schema, type Effect, type Redacted } from "effect";
 import { AccountId, JsonObject, JsonValue } from "./schema.ts";
 import type { AppStorage } from "./storage.ts";
 import type { InvocationTelemetry } from "@executor-js/telemetry";
@@ -265,9 +265,20 @@ export const HostError = Schema.Union([
 /** Expected host failures. */
 export type HostError = typeof HostError.Type;
 
+/** Invocation-owned outcome sink. Framework adapters report semantic failures
+ * independently of successful JSON transport; customer output is never inspected. */
+export const ToolResultObservation = Context.Reference<{ readonly failed: () => void }>(
+  "apps/ToolResultObservation",
+  { defaultValue: () => ({ failed: () => {} }) },
+);
+
 /** Portable response envelope; callers parse the success value for their operation. */
 export const HostResponse = Schema.Union([
-  Schema.Struct({ ok: Schema.Literal(true), value: JsonValue }),
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    value: JsonValue,
+    toolError: Schema.optionalKey(Schema.Literal(true)),
+  }),
   Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
 ]);
 /** Parsed response envelope. */

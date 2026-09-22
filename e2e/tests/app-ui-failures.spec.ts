@@ -250,6 +250,37 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         expect(span?.tags["code.file.path"]).toMatch(/^\/_executor\/assets\/.*\.js$/);
         expect(Number(span?.tags["code.line.number"])).toBeGreaterThan(0);
         expect(JSON.stringify(delivered)).not.toContain("Fixture boot failure");
+        yield* browser.use("Close the first report", (page) =>
+          page.getByRole("button", { name: "Close", exact: true }).click(),
+        );
+        yield* browser.use("Trigger a second distinct failure without reloading", (page) =>
+          page.evaluate(() => {
+            window.dispatchEvent(
+              new ErrorEvent("error", {
+                error: new TypeError("Second private failure"),
+                message: "Second private failure",
+              }),
+            );
+          }),
+        );
+        yield* browser.use("Open the second report", (page) =>
+          page.getByText("Error details", { exact: true }).click(),
+        );
+        const second = yield* browser.use("Read the second diagnostic ID", (page) =>
+          page.getByRole("textbox", { name: "Error details" }).inputValue(),
+        );
+        const nextId = second.match(/Diagnostic ID: ([a-f0-9]{32})/)?.[1];
+        expect(nextId).not.toBe(traceId);
+        if (nextId === undefined) return yield* Effect.die("Second diagnostic ID missing");
+        const next = yield* telemetry.query(nextId).pipe(
+          Effect.flatMap((result) =>
+            result.data.some(({ span }) => span.operationName === "ui.app.failure")
+              ? Effect.succeed(result)
+              : Effect.fail(new Error("Second app error was not delivered")),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
+        );
+        expect(JSON.stringify(next)).not.toContain("Second private failure");
       }),
     ),
   );

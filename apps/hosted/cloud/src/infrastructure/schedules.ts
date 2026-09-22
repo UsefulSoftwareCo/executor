@@ -1,3 +1,4 @@
+import { cloudSentry } from "../implementation/error-reporting.ts";
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
@@ -24,6 +25,7 @@ import { BillingMeter } from "../contracts/billing-meter.ts";
 
 const makeScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
+  const report = yield* cloudSentry;
   const resources = yield* cloudExecutor(yield* AppDataSupervisor);
   const billing = yield* billingLive;
   const meter = yield* BillingMeter.pipe(Effect.provide(billing));
@@ -109,6 +111,9 @@ const makeScheduleCoordinator = Effect.gen(function* () {
       ),
     ).pipe(
       lifetime.background,
+      report,
+      Effect.scoped,
+      Effect.withSpan("schedule.dispatch"),
       Effect.catch(() => Effect.logError("Cloud scheduled dispatch failed")),
     );
     return {
@@ -142,6 +147,9 @@ const makeScheduleCoordinator = Effect.gen(function* () {
           // Keep considering unclaimed due work while admitted runs are waiting on external I/O.
           yield* Effect.scoped(arm).pipe(
             lifetime.background,
+            report,
+            Effect.scoped,
+            Effect.withSpan("schedule.plan"),
             Effect.catch(() => Effect.logError("Schedule alarm planning failed")),
           );
         }),
@@ -166,9 +174,13 @@ export const ScheduleCoordinatorLive = ScheduleCoordinator.make(makeScheduleCoor
 /** Route changes wake the coordinator promptly; a native cron heartbeat repairs missing alarms after failures. */
 export const cloudSchedules = Effect.gen(function* () {
   const coordinator = yield* ScheduleCoordinator;
+  const report = yield* cloudSentry;
   const lifetime = yield* previewLifetime;
   // The namespace binding only exists at runtime, so resolve the stub when the wake runs.
-  const wake = Effect.suspend(() => coordinator.getByName("executor").wake()).pipe(
+  const wake = Effect.scoped(
+    report(Effect.suspend(() => coordinator.getByName("executor").wake())),
+  ).pipe(
+    Effect.withSpan("schedule.wake"),
     Effect.catch(() => Effect.logError("Schedule coordinator wake failed")),
     Effect.provide(RuntimeContext.phantom),
   );

@@ -1,3 +1,4 @@
+import { ToolResultObservation } from "../contracts/host.ts";
 /** Adapt any MCP transport into ordinary tools with shared validation behavior. */
 import { Effect, Schema } from "effect";
 import { McpError, type McpTools } from "../contracts/mcp.ts";
@@ -40,6 +41,13 @@ export const adaptMcpTools = (client: McpClient): Effect.Effect<McpTools, McpErr
               // mutating call, so an unsupported schema cannot fail after its effects.
               const outputDecoder = output === undefined ? undefined : yield* output;
               const result = yield* client.call(tool.name, arguments_, context);
+              if (result.isError === true) {
+                (yield* ToolResultObservation).failed();
+                yield* Effect.annotateCurrentSpan({
+                  "executor.outcome": "failed",
+                  "error.type": "McpToolError",
+                });
+              }
               if (outputDecoder !== undefined && !result.isError)
                 yield* Schema.decodeUnknownEffect(outputDecoder)(result.structuredContent).pipe(
                   Effect.mapError(

@@ -29,6 +29,100 @@ const Collector = Schema.fromJsonString(
 );
 
 test(
+  "bundled collector searches and paginates the full seven-day retention window",
+  { timeout: 20_000 },
+  async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const directory = yield* fs.makeTempDirectoryScoped();
+          const runtime = ManagedRuntime.make(
+            localTelemetry(directory, "retention-test").pipe(Layer.provide(NodeServices.layer)),
+          );
+          yield* Effect.addFinalizer(() => Effect.promise(() => runtime.dispose()));
+          yield* Effect.promise(() => runtime.runPromise(Effect.logInfo("retention test ready")));
+          yield* Effect.promise(() =>
+            runtime.runPromise(Effect.flatMap(OtlpExporter.Flusher, (flusher) => flusher.flush)),
+          );
+          const state = yield* fs
+            .readFileString(`${directory}/diagnostics/collector.json`)
+            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Collector)));
+          assert.ok(state.url);
+          const url = state.url;
+          const old = BigInt(Date.now() - 3 * 24 * 60 * 60 * 1000) * 1_000_000n;
+          const resource = {
+            attributes: [{ key: "service.name", value: { stringValue: "retained-fixture" } }],
+          };
+          const spans = [1, 2, 3].map((id) => ({
+            traceId: id.toString(16).padStart(32, "0"),
+            spanId: id.toString(16).padStart(16, "0"),
+            name: `retained.${id}`,
+            startTimeUnixNano: String(old + BigInt(id) * 1_000_000n),
+            endTimeUnixNano: String(old + BigInt(id + 1) * 1_000_000n),
+          }));
+          for (const [signal, payload] of [
+            ["traces", { resourceSpans: [{ resource, scopeSpans: [{ spans }] }] }],
+            [
+              "logs",
+              {
+                resourceLogs: [
+                  {
+                    resource,
+                    scopeLogs: [
+                      {
+                        logRecords: spans.map((span) => ({
+                          timeUnixNano: span.startTimeUnixNano,
+                          observedTimeUnixNano: span.startTimeUnixNano,
+                          body: { stringValue: span.name },
+                          severityNumber: 9,
+                        })),
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          ] as const) {
+            const response = yield* Effect.promise(() =>
+              fetch(`${url}/v1/${signal}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              }),
+            );
+            assert.equal(response.status, 200);
+            const Page = Schema.Struct({
+              data: Schema.Array(Schema.Unknown),
+              meta: Schema.Struct({
+                lookback: Schema.String,
+                nextCursor: Schema.NullOr(Schema.String),
+                truncated: Schema.Boolean,
+              }),
+            });
+            let cursor: string | null = null;
+            const records: unknown[] = [];
+            for (let page = 0; page < 3; page++) {
+              const endpoint: string = `${url}/api/${signal}?lookback=7d&service=retained-fixture&limit=1${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
+              const result: typeof Page.Type = yield* Effect.promise(() =>
+                fetch(endpoint).then((response) => response.json()),
+              ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Page)));
+              assert.equal(result.meta.lookback, "7d");
+              assert.equal(result.data.length, 1);
+              records.push(...result.data);
+              cursor = result.meta.nextCursor;
+              if (page < 2) assert.ok(cursor);
+              else assert.equal(result.meta.truncated, false);
+            }
+            assert.equal(new Set(records.map((record) => JSON.stringify(record))).size, 3);
+          }
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  },
+);
+
+test(
   "Motel retains traces through a crash and local files survive collector downtime",
   { timeout: 35_000 },
   async () => {

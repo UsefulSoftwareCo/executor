@@ -51,7 +51,8 @@ export default Alchemy.Stack(
     const api = yield* Api;
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
     if (appBase !== undefined) {
-      yield* AppPages;
+      const pages = yield* AppPages;
+      yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
       if (!(yield* AlchemyContext).dev) {
         const lifecycle = yield* AppDomainLifecycle("AppDomains", {
           origin: yield* cloudOrigin.pipe(Effect.orDie),
@@ -65,7 +66,7 @@ export default Alchemy.Stack(
         });
       }
     }
-    yield* uploadCloudSourceMaps(api.hash).pipe(Effect.orDie);
+    yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
     return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
   }).pipe(Effect.provide(Layer.mergeAll(ApiLive, AppCompilerLive, InvocationTelemetryLive))),
 );

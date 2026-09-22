@@ -43,6 +43,7 @@ import {
   ElicitationFailed,
   ElicitationReply,
   HostResponse,
+  ToolResultObservation,
   HostInspectError,
   HostCallError,
   HostDataError,
@@ -413,6 +414,13 @@ export const workerdApps = (options: {
             Effect.mapError(protocolFailure),
             Effect.flatMap(Effect.fail),
           );
+        if (reply.toolError === true) {
+          (yield* ToolResultObservation).failed();
+          yield* Effect.annotateCurrentSpan({
+            "executor.outcome": "failed",
+            "error.type": "McpToolError",
+          });
+        }
         const value = yield* Schema.decodeUnknownEffect(output)(reply.value).pipe(
           Effect.mapError(protocolFailure),
         );
