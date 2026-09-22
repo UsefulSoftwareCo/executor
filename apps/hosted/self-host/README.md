@@ -59,8 +59,10 @@ The health endpoint is [http://localhost:4400/health](http://localhost:4400/heal
 
 Create an image service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`,
 attach a new volume at `/app/data`, and generate a public domain routed to port
-`4400` (or your `PORT`). Set the healthcheck path to `/health` with a 120-second
-startup timeout. Deploy, open the domain, and create the first administrator.
+`8080` (Railway injects `PORT=8080`; use your own value if you override it).
+Set the healthcheck path to `/health` with a 120-second startup timeout.
+Deploy, or redeploy if the service already started, so it picks up the new
+public domain. Open the domain and create the first administrator.
 
 Executor derives its HTTPS origin from `RAILWAY_PUBLIC_DOMAIN`, generates keys,
 and prepares Railway's root-owned mount before dropping to the `node` user.

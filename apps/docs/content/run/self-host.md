@@ -89,9 +89,9 @@ have configured it.
 
 1. Create a service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`.
 2. Attach a new persistent volume at `/app/data`.
-3. Generate a public domain in the service's networking settings. Route it to port `4400`, or your configured `PORT`.
+3. Generate a public domain in the service's networking settings. Route it to port `8080`, which Railway supplies through `PORT`. If you override `PORT`, use that value.
 4. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
-5. Deploy and open the public domain to create the first administrator.
+5. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
 
 No database service or secret variables are needed. Executor reads
 `RAILWAY_PUBLIC_DOMAIN` and `PORT`. The container prepares the root-owned volume,
