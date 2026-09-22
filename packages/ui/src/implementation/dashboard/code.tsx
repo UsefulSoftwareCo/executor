@@ -26,11 +26,13 @@ export function Code({
         ? "css"
         : /\.(md|markdown)$/.test(path)
           ? "markdown"
-          : path.endsWith(".sh")
-            ? "shellscript"
-            : path.endsWith(".json")
-              ? "json"
-              : "text";
+          : /\.html?$/.test(path)
+            ? "html"
+            : path.endsWith(".sh")
+              ? "shellscript"
+              : path.endsWith(".json")
+                ? "json"
+                : "text";
   const atom = useMemo(() => highlightedAtom({ code, language }), [code, language]);
   const result = useAtomValue(atom);
   const view = (

@@ -28,7 +28,7 @@ const cloudOnboarding = {
 export const scenarios = {
   sourceHighlighting: {
     file: "source-highlighting.spec.ts",
-    title: "Source browser highlights CSS, Markdown, and JSON files",
+    title: "Source browser highlights CSS, Markdown, JSON, and HTML files",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

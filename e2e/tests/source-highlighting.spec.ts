@@ -9,10 +9,55 @@ import { App } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
 const files = [
-  { path: "styles.css", content: ".example { color: #123456; margin: 2px; }" },
-  { path: "README.md", content: "# Example\nA **bold** description with `code`." },
+  {
+    path: "index.html",
+    content: `<!doctype html>
+<html lang="en">
+  <head>
+    <title>Example app</title>
+    <style>.example { color: #123456; }</style>
+  </head>
+  <body>
+    <!-- A small source example -->
+    <h1 class="example">Hello, world!</h1>
+    <script>const enabled = true;</script>
+  </body>
+</html>`,
+  },
+  {
+    path: "styles.css",
+    content: `/* Shared app styles */
+@layer base {
+  :root {
+    color-scheme: dark;
+    --accent: #123456;
+  }
+
+  .example:hover {
+    color: var(--accent);
+    margin: 2px;
+  }
+}`,
+  },
+  {
+    path: "README.md",
+    content: `# Example app
+
+A **bold** description with \`inline code\`.
+
+## Getting started
+
+- Read [the guide](guide.markdown).
+- Open the app in your browser.
+
+> Keep the source readable.`,
+  },
   { path: "guide.markdown", content: "# Guide\nRead [the example](README.md)." },
-  { path: "config.json", content: '{ "enabled": true, "count": 42, "name": "Example" }' },
+  {
+    path: "config.json",
+    content:
+      '{\n  "name": "Example",\n  "enabled": true,\n  "count": 42,\n  "tags": ["source", "highlighting"],\n  "options": null\n}',
+  },
 ];
 
 layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => {
@@ -37,6 +82,9 @@ layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => 
           ),
         );
         yield* browser.login(actors.owner);
+        yield* browser.use("Use the dark source theme", (page) =>
+          page.emulateMedia({ colorScheme: "dark" }),
+        );
         yield* browser.use("Open working source", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
         );
@@ -67,6 +115,7 @@ layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => 
                 .allTextContents(),
             ),
           ).toEqual(file.content.split("\n"));
+          yield* browser.checkpoint(`Highlighted ${file.path}`);
         }
         yield* browser.checkpoint("Highlighted source after switching file types");
       }),
