@@ -32,11 +32,25 @@ export const createAppClient = () => {
   const deploymentChanged = Effect.sync(() => {
     window.dispatchEvent(new Event("executor:deployment-changed"));
   });
+  let pendingWrites = 0;
+  const beforeUnload = (event: BeforeUnloadEvent) => {
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  // Protect queued writes as well as the request currently awaiting its response.
+  // Reconciliation reads can outlive acknowledgement and do not need this guard.
+  const awaitWrite = <A>(effect: Effect.Effect<A, unknown>): Promise<A> => {
+    if (pendingWrites++ === 0) window.addEventListener("beforeunload", beforeUnload);
+    return runtime.runPromise(effect).finally(() => {
+      if (--pendingWrites === 0) window.removeEventListener("beforeunload", beforeUnload);
+    });
+  };
   const onHide = (event: PageTransitionEvent) => {
     if (!event.persisted) void dispose().catch((error) => console.error(error));
   };
   const dispose = async () => {
     window.removeEventListener("pagehide", onHide);
+    window.removeEventListener("beforeunload", beforeUnload);
     optimistic.dispose();
     await runtime.dispose();
   };
@@ -182,8 +196,12 @@ export const createAppClient = () => {
               );
             }),
           ).pipe(
-            Stream.tapError((error) =>
-              EffectSchema.is(UiDeploymentChanged)(error) ? deploymentChanged : Effect.void,
+            // Keep the last snapshot while the watcher replaces the document.
+            // Unmount or client disposal interrupts the deployment-change wait.
+            Stream.catch((error) =>
+              EffectSchema.is(UiDeploymentChanged)(error)
+                ? Stream.unwrap(deploymentChanged.pipe(Effect.as(Stream.never)))
+                : Stream.fail(error),
             ),
             Stream.retry(
               Schedule.spaced("1 second").pipe(
@@ -206,7 +224,7 @@ export const createAppClient = () => {
     fork: (effect) => {
       runtime.runFork(effect);
     },
-    run: (effect) => runtime.runPromise(effect),
+    run: awaitWrite,
     reportProjectionError: (error) =>
       console.error("Optimistic update failed during replay.", error),
   });

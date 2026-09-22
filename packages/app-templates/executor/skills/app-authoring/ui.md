@@ -122,5 +122,12 @@ outcome uncertain; the client reconciles but never retries the write automatical
 Other clients remain independent. This API does not provide offline writes or
 atomic visibility across separate clients or different queries.
 
+The client requests the browser's leave-page warning while any mutation is
+queued or waiting for its response. It removes the warning once those Promises
+settle, even if query reconciliation continues. The queue lives in the page:
+choosing to leave, force-closing the browser, or a browser that suppresses the
+warning can still discard unsent writes. Optimistic UI is not proof of a saved
+write, and this warning does not provide durable background delivery.
+
 Describe `AppClient.mutation`, `AppMutation.withOptimisticUpdate`, and
 `OptimisticLocalStore.getAllQueries` for their generated signatures.

@@ -49,7 +49,7 @@ const client = createAppClient();
 const result = client.queryAtom(queryReference<typeof version>("version"), {}, string());
 function App() {
   const { data, error } = useAppQuery(result);
-  return <main><h1>{data || "Loading"}</h1><p role="status">{error || "Ready"}</p></main>;
+  return <main><h1>{data || "Loading"}</h1><p role="status">{error || "Ready"}</p><label>Draft<input /></label></main>;
 }
 createRoot(document.getElementById("root")).render(<App />);`
       : `import React from "react";
@@ -149,6 +149,26 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
             return route.abort();
           }),
         );
+        // Register before the next document's host watcher. Hold the public signal
+        // before navigation freezes its renderer, then forward it after inspection.
+        yield* browser.use("Hold the next page's deployment reload notification", (page) =>
+          page.addInitScript(() => {
+            const hold = (event: Event) => {
+              event.stopImmediatePropagation();
+              document.documentElement.setAttribute("data-reload-held", "true");
+            };
+            window.addEventListener("executor:deployment-changed", hold);
+            window.addEventListener(
+              "e2e:release-reload",
+              () => {
+                window.removeEventListener("executor:deployment-changed", hold);
+                if (document.documentElement.hasAttribute("data-reload-held"))
+                  window.dispatchEvent(new Event("executor:deployment-changed"));
+              },
+              { once: true },
+            );
+          }),
+        );
         const updated = yield* saveAndDeploy(actors.owner, path, {
           files: files(true),
         });
@@ -165,12 +185,47 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
           yield* browser.use("Reload keeps the bookmark", (page) => Promise.resolve(page.url())),
         ).toBe(bookmark);
         yield* browser.checkpoint("New deployment loaded automatically");
-        const activated = yield* api.request(actors.owner, "POST", `${path}/activate`, {
-          deployment: original.activeDeployment,
-          expectedDeployment: live.activeDeployment,
-        });
-        expect(activated.status).toBe(200);
-        expect((yield* readVersion()).body).toBe("Static version");
+        yield* browser.use("Keep an unsaved draft in the outgoing page", (page) =>
+          page.getByLabel("Draft").fill("Draft before rollback"),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              browser
+                .use("Release the deployment reload notification", (page) =>
+                  page.evaluate(() => {
+                    window.dispatchEvent(new Event("e2e:release-reload"));
+                  }),
+                )
+                .pipe(Effect.orDie),
+            );
+            const activated = yield* api.request(actors.owner, "POST", `${path}/activate`, {
+              deployment: original.activeDeployment,
+              expectedDeployment: live.activeDeployment,
+            });
+            expect(activated.status).toBe(200);
+            expect((yield* readVersion()).body).toBe("Static version");
+            yield* browser.use("The query stream requests a reload", (page) =>
+              page.locator("html[data-reload-held]").waitFor({ state: "attached" }),
+            );
+            yield* browser.checkpoint("Outgoing page while the reload notification is held");
+            expect(
+              yield* browser.use("The outgoing query stays successful", (page) =>
+                page.getByRole("status").textContent(),
+              ),
+            ).toBe("Ready");
+            expect(
+              yield* browser.use("Keep the last result until reload", (page) =>
+                page.getByRole("heading").textContent(),
+              ),
+            ).toBe("Live version");
+            expect(
+              yield* browser.use("Keep the draft until reload", (page) =>
+                page.getByLabel("Draft").inputValue(),
+              ),
+            ).toBe("Draft before rollback");
+          }),
+        );
         yield* browser.use(
           "An outdated query stream automatically reloads after rollback",
           (page) =>

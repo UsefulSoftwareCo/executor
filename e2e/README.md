@@ -458,3 +458,10 @@ Run it with `bun run e2e:self-host --test-name 'framework discovery deploys'`.
 `bun run e2e:local --test-name 'local MCP skills'` checks local framework queries
 and topic routing alongside configured copies and pinned deployments. Package tests
 cover queued writes, argument variants, read failures, unmounts and disposal.
+
+`closing an app warns about queued optimistic deletes until writes settle`
+holds writes and reconciliation reads while deleting three stored rows. It
+checks the native close-tab warning for active and queued writes, dismissal,
+failure cleanup, and safe closing after the last acknowledgement. Read-only
+reconciliation must not retain the warning. The final API read verifies that
+all three deletions persisted after the tab closed.

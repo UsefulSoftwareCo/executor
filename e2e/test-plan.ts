@@ -474,6 +474,15 @@ export const scenarios = {
       local: na("Hosted discovery-to-browser journey; local skills have separate MCP coverage."),
     },
   },
+  appPendingWrites: {
+    file: "app-pending-writes.spec.ts",
+    title: "closing an app warns about queued optimistic deletes until writes settle",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The shared browser client is exercised through hosted app authentication."),
+    },
+  },
   appUi: {
     file: "app-ui.spec.ts",
     title: "private app bookmarks authenticate and execute through the hosted runtime",

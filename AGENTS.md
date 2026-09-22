@@ -44,7 +44,7 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 Continuous deployment runs separately on every push to `main`; it does not
 wait for the CI workflow.
 
-GitHub-hosted `ubuntu-24.04` runners run four jobs:
+Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
 
 - `check` runs `bun run check`: the format check, `oxlint`, the typecheck and
   the e2e boundary check.
