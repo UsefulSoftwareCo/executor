@@ -18,7 +18,7 @@ import {
   UiUnauthorized,
   type UiOperation,
 } from "apps/ui/contracts";
-import { appDocument, appAsset } from "apps/ui/serving";
+import { appDocument, appAsset, appWatchScript } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext } from "@executor-js/telemetry";
 import { Effect, Result, Schema, Stream } from "effect";
@@ -32,12 +32,6 @@ import { appPrivateHeaders as privateHeaders, appSignInPage } from "apps/ui/auth
 
 const failed = (reason: UiFailed["reason"] = "unavailable") => new UiFailed({ reason });
 const UiBuild = Schema.Struct({ id: DeploymentId, build: Deployment.fields.build });
-const watchScript = `const deployment = JSON.parse(document.getElementById("executor-context").textContent).deployment;
-const stream = new EventSource("/_executor/version");
-stream.addEventListener("version", event => {if(JSON.parse(event.data).deployment !== deployment) location.reload();});
-stream.addEventListener("revoked", () => {stream.close(); location.reload();});
-window.addEventListener("pagehide", () => stream.close(), {once:true});
-window.addEventListener("pageshow", event => {if(event.persisted) location.reload();});`;
 
 /** Build app handlers and session middleware; the host composition registers their routes. */
 export const appUi = (
@@ -185,7 +179,6 @@ export const appUi = (
       origin: target.origin,
       deployment: version.id,
       asset: (path) => readAsset(version.build, path),
-      head: '<script src="/_executor/watch.js" defer></script>',
     });
   }).pipe(
     Effect.catchTag("UiUnauthorized", (error) =>
@@ -203,7 +196,7 @@ export const appUi = (
   );
   const watch = authorize.pipe(
     Effect.as(
-      HttpServerResponse.text(watchScript, {
+      HttpServerResponse.text(appWatchScript, {
         contentType: "text/javascript",
         headers: privateHeaders,
       }),

@@ -23,7 +23,7 @@ import {
   UiForbidden,
   UiUnauthorized,
 } from "apps/ui/contracts";
-import { appAsset, appDocument } from "apps/ui/serving";
+import { appAsset, appDocument, appWatchScript } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext } from "@executor-js/telemetry";
 import { Clock, Context, Effect, Option, Redacted, Schema, Stream } from "effect";
@@ -399,6 +399,50 @@ export const hostedAppUi = (
         HttpServerResponse.text("App unavailable.", { status: 422, headers: appPrivateHeaders }),
       ),
   });
+  const watch = authorize.pipe(
+    Effect.as(
+      HttpServerResponse.text(appWatchScript, {
+        contentType: "text/javascript",
+        headers: appPrivateHeaders,
+      }),
+    ),
+    htmlFailure,
+  );
+  const versions = Effect.gen(function* () {
+    const current = yield* authorize;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const sessions = yield* HostedAppSessions;
+    const executor = yield* HostedExecutor;
+    const groups = yield* GroupDatabase;
+    // App metadata lives in SQL, across isolates. Reconcile it on each heartbeat
+    // with fresh authorization, retaining only this request's service instances.
+    const version = authorize.pipe(
+      Effect.map(({ app }) => app.activeDeployment),
+      Effect.withSpan("app.ui.version.authorize"),
+      Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+      Effect.provideService(HostedAppSessions, sessions),
+      Effect.provideService(HostedExecutor, executor),
+      Effect.provideService(GroupDatabase, groups),
+    );
+    const stream = Stream.make(current.app.activeDeployment).pipe(
+      Stream.concat(
+        Stream.tick("5 seconds").pipe(
+          Stream.drop(1),
+          Stream.mapEffect(() => version),
+        ),
+      ),
+      Stream.map((deployment) => `event: version\ndata: ${JSON.stringify({ deployment })}\n\n`),
+      Stream.catchTags({
+        UiUnauthorized: () => Stream.make("event: revoked\ndata: {}\n\n"),
+        UiForbidden: () => Stream.make("event: revoked\ndata: {}\n\n"),
+      }),
+      Stream.encodeText,
+    );
+    return HttpServerResponse.stream(stream, {
+      contentType: "text/event-stream",
+      headers: { ...appPrivateHeaders, "x-accel-buffering": "no" },
+    });
+  }).pipe(htmlFailure);
   const page = Effect.gen(function* () {
     const current = yield* authorize;
     const version = yield* deployment(current.app);
@@ -453,5 +497,16 @@ export const hostedAppUi = (
       ),
       htmlFailure,
     );
-  return { appAuth, dashboard, calls, page, asset, originAccess, sessionAccess, telemetry };
+  return {
+    appAuth,
+    dashboard,
+    calls,
+    page,
+    asset,
+    watch,
+    versions,
+    originAccess,
+    sessionAccess,
+    telemetry,
+  };
 };

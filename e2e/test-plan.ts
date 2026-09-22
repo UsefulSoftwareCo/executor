@@ -474,6 +474,15 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appReload: {
+    file: "app-reload.spec.ts",
+    title: "hosted apps reload on deployment and recover missed version notifications",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local already has a deployment watcher; this covers hosted app sessions."),
+    },
+  },
   appTailwind: {
     file: "app-tailwind.spec.ts",
     title: "React app deployments compile Tailwind utilities and preserve ordinary styles",

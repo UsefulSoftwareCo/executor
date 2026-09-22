@@ -6,12 +6,11 @@ import { UiForbidden, type AppUiAsset } from "../contracts/ui.ts";
 import { appPrivateHeaders } from "./ui-auth.ts";
 import { appFailureBootstrap } from "./ui-errors.ts";
 
-/** Render an authorized deployment. Host-owned markup may add local-only deployment watching. */
+/** Render an authorized deployment with a host-owned deployment watcher. */
 export const appDocument = <E, R>(options: {
   readonly deployment: string;
   readonly origin: string;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
-  readonly head?: string;
 }) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -40,7 +39,7 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${options.head ?? ""}`;
+    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}<script src="/_executor/watch.js" defer></script>`;
     return HttpServerResponse.text(
       new TextDecoder().decode(document.body).replace("<!--executor-ui-->", boot),
       { contentType: "text/html", headers: appPrivateHeaders },

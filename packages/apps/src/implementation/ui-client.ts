@@ -16,7 +16,7 @@ import { Atom } from "effect/unstable/reactivity";
 import { externalTrace, pendingSpan } from "@executor-js/telemetry";
 import { FetchHttpClient, HttpClientError } from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import { AppUiApi, UiContext, UiFailed } from "../contracts/ui.ts";
+import { AppUiApi, UiContext, UiDeploymentChanged, UiFailed } from "../contracts/ui.ts";
 import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
 import { JsonValue } from "../contracts/schema.ts";
 import { decoderOf, type Schema } from "./schema.ts";
@@ -28,6 +28,9 @@ export const createAppClient = () => {
     browserSettings("/_executor/api/telemetry", "executor-app-web"),
   );
   const browser = atoms(Layer.empty);
+  const deploymentChanged = Effect.sync(() => {
+    window.dispatchEvent(new Event("executor:deployment-changed"));
+  });
   const onHide = (event: PageTransitionEvent) => {
     if (!event.persisted) void dispose().catch((error) => console.error(error));
   };
@@ -61,7 +64,10 @@ export const createAppClient = () => {
       const api = yield* client;
       const value = yield* api.ui[kind]({ payload: yield* payload(name, input) });
       return yield* EffectSchema.decodeUnknownEffect(decoderOf(output))(value);
-    }).pipe(Effect.withSpan(`ui.app.${kind}`, { attributes: { "executor.operation.name": name } }));
+    }).pipe(
+      Effect.tapErrorTag("UiDeploymentChanged", () => deploymentChanged),
+      Effect.withSpan(`ui.app.${kind}`, { attributes: { "executor.operation.name": name } }),
+    );
   return {
     /** Close this client when its page or embedding owner is removed. */
     dispose,
@@ -194,6 +200,9 @@ export const createAppClient = () => {
                 );
               }),
             ).pipe(
+              Stream.tapError((error) =>
+                EffectSchema.is(UiDeploymentChanged)(error) ? deploymentChanged : Effect.void,
+              ),
               Stream.retry(
                 Schedule.spaced("1 second").pipe(
                   Schedule.while(

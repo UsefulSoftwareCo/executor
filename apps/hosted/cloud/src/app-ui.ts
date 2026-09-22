@@ -76,6 +76,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const protectedRoutes = Layer.mergeAll(
       HttpApiBuilder.layer(AppSignInApi).pipe(Layer.provide(appUi.appAuth)),
       HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
+      HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
+      HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
       HttpRouter.add("GET", "*", appUi.page),
