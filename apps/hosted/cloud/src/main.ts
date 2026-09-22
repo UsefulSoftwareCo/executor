@@ -6,6 +6,7 @@ import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainCoordinatorLive, cloudAppDomains } from "./infrastructure/app-domains.ts";
 import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
+import { OrganizationRemoval } from "./infrastructure/organization-removal-workflow.ts";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
 import { ExecutionAdmission } from "@executor-js/hosted-server";
@@ -152,6 +153,7 @@ export default Api.make(
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
     yield* Provisioning;
+    yield* OrganizationRemoval;
     const executor = yield* cloudExecutor(yield* AppDataSupervisor);
     const schedules = yield* cloudSchedules;
     const dispatch = dispatchProvisioning.pipe(

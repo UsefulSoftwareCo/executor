@@ -11,6 +11,7 @@ import { AppId } from "@executor-js/sdk/core";
 import { Context } from "effect";
 import { visibleApps, visibleAccounts } from "./resource-policy.ts";
 import { readOrganizationIconUpload } from "./organization-icons.ts";
+import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
@@ -32,6 +33,7 @@ import {
   CurrentOrganization,
   CurrentOrganizationNamespace,
   OrganizationIcons,
+  OrganizationId,
   OrganizationForbidden,
   OrganizationReference,
   OrganizationRole,
@@ -72,6 +74,20 @@ export const lookupOrganizationSlug = (call: () => Promise<unknown>) =>
     Effect.catchTag("SchemaError", () => Effect.fail(new AuthenticationUnavailable())),
   );
 
+/**
+ * The single choke point for a removed organization. Removal is durable and
+ * asynchronous, so a tombstone stands in for the records its workflow has not
+ * deleted yet. Both authentication paths pass through here, so one check hides
+ * the organization from membership, inventory, apps, accounts and MCP alike.
+ * A tombstone read that fails refuses the request rather than serving an
+ * organization that is being erased.
+ */
+const refuseRemoved = (organization: OrganizationId) =>
+  Effect.flatMap(OrganizationTombstones, (removed) => removed(organization)).pipe(
+    Effect.mapError(() => new AuthenticationUnavailable()),
+    Effect.flatMap((gone) => (gone ? Effect.fail(new OrganizationForbidden()) : Effect.void)),
+  );
+
 /** Access resolves only the explicit route ID or slug. Shared session preferences never participate. */
 export const withOrganizationRequest = <E, R>(
   response: (
@@ -92,6 +108,7 @@ export const withOrganizationRequest = <E, R>(
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* new Forbidden();
       const grant = yield* api.authenticate(headers, reference);
+      yield* refuseRemoved(grant.access.organization);
       if (!permitsAction(grant.policy, action)) return yield* new OrganizationForbidden();
       if (params.app !== undefined) {
         const app = yield* Schema.decodeUnknownEffect(AppId)(params.app).pipe(
@@ -121,6 +138,7 @@ export const withOrganizationRequest = <E, R>(
     const principal = yield* auth.current(headers);
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
+    yield* refuseRemoved(organization);
     const membership = yield* auth.membership(headers, organization);
     const access = {
       organization,

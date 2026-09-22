@@ -1,7 +1,7 @@
 import { scenarios } from "../test-plan.ts";
 /** Cloud-only removal: a throwaway organization with real state is deleted by its owner alone. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -24,6 +24,8 @@ const OrganizationRemoved = Schema.Struct({
 });
 /** The danger-zone card counts what removal deletes, in the product's own wording. */
 const noun = (value: number, word: string) => `${value} ${word}${value === 1 ? "" : "s"}`;
+/** The organization row is deleted by a durable step, not by the request that accepts removal. */
+class StillListed extends Error {}
 
 const files = [
   {
@@ -322,11 +324,8 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
         yield* evidence.step(
           "No organization record, access or inventory survives",
           Effect.gen(function* () {
-            const listed = yield* api.request(actors.owner, "GET", "/api/auth/organization/list");
-            expect(listed.status).toBe(200);
-            const remaining = yield* body(Schema.Array(Organization), listed);
-            expect(remaining.some((entry) => entry.id === created.id)).toBe(false);
-            expect(remaining.some((entry) => entry.id === actors.organization.id)).toBe(true);
+            // Access is refused the moment removal is accepted; the auth records
+            // are deleted by the workflow, so wait for the list to agree.
             expect((yield* api.request(actors.owner, "GET", `${prefix}/access`)).status).toBe(403);
             expect((yield* api.request(actors.admin, "GET", `${prefix}/access`)).status).toBe(403);
             expect((yield* api.request(actors.owner, "GET", `${prefix}/inventory`)).status).toBe(
@@ -335,6 +334,24 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/apps/${state.app}`)).status,
             ).toBe(403);
+            yield* api.request(actors.owner, "GET", "/api/auth/organization/list").pipe(
+              Effect.flatMap((listed) => body(Schema.Array(Organization), listed)),
+              Effect.flatMap((remaining) =>
+                remaining.some((entry) => entry.id === created.id)
+                  ? Effect.fail(new StillListed())
+                  : Effect.succeed(remaining),
+              ),
+              Effect.retry({
+                while: (error) => error instanceof StillListed,
+                schedule: Schedule.spaced("500 millis"),
+              }),
+              Effect.timeout("60 seconds"),
+              Effect.tap((remaining) =>
+                Effect.sync(() =>
+                  expect(remaining.some((entry) => entry.id === actors.organization.id)).toBe(true),
+                ),
+              ),
+            );
           }),
         );
       }),

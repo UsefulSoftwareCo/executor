@@ -18,17 +18,16 @@ export type OrganizationRemovalError =
 
 const message = Match.type<OrganizationRemovalError>().pipe(
   Match.tags({
-    OwnerWebhooksActive: () =>
-      "A webhook subscription is still registered. Remove it from its app, then delete the organization.",
+    AppWorkflowsActive: () =>
+      "A workflow is still running. Wait for it to finish, then delete the organization.",
+    AccountWorkflowsActive: () =>
+      "A running workflow is still using a saved account. Wait for it to finish, then delete the organization.",
     OrganizationForbidden: () => "Only an organization owner can delete it.",
-    OrganizationIconUnavailable: () =>
-      "The organization was deleted, but its icon was not removed.",
+    OrganizationRemovalUnavailable: () => "Deletion is unavailable right now. Try again shortly.",
     AuthenticationUnavailable: () => "Sign-in is unavailable. Try again shortly.",
     HttpClientError: () => "Could not reach the server. Check your connection and try again.",
   }),
-  Match.orElse(
-    () => "The organization could not be deleted. Check its apps and webhooks, then try again.",
-  ),
+  Match.orElse(() => "The organization could not be deleted. Try again."),
 );
 /** Safe copy for the delete dialog; defects never render their raw cause. */
 export const organizationRemovalError = (cause: Cause.Cause<OrganizationRemovalError>) =>

@@ -29,14 +29,14 @@ export {
   requireOrganizationLive,
 } from "./implementation/organization.ts";
 export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
-export {
-  HostedOrganizationRemoval,
-  OrganizationRemoved,
-} from "./contracts/organization-removal.ts";
+export * from "./contracts/organization-removal.ts";
 export {
   deleteOrganizationRecords,
-  removeCurrentOrganization,
+  beginOrganizationRemoval,
+  removeOrganizationDurably,
 } from "./implementation/organization-removal.ts";
+export { makeOrganizationRemovals } from "./implementation/organization-removals.ts";
+export { migrateOrganizationRemovals } from "./implementation/organization-removal-schema.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export type {

@@ -12,6 +12,10 @@ import {
   OrganizationIcons,
   makeOrganizationIcons,
   OrganizationDefaults,
+  makeOrganizationRemovals,
+  OrganizationRemovals,
+  OrganizationRemovalUnavailable,
+  OrganizationTombstones,
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
@@ -147,9 +151,20 @@ export const cloudExecutor = Effect.fn(function* (
       Effect.withSpan("runtime.cloud.defaults.initialize"),
     ),
   );
+  // Removal tombstones share the same client. The request check that hides a
+  // removed organization and the workflow's writes read the same rows.
+  const removals = makeOrganizationRemovals(
+    database.pipe(
+      Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
+      Effect.provide(RuntimeContext.phantom),
+      Effect.mapError(() => new OrganizationRemovalUnavailable()),
+    ),
+  );
   // Alchemy's runtime requirement marks event-only operations; it is not a
   // service supplied to request fibers. Keep the live caller scope and tracer.
   return Layer.mergeAll(
+    Layer.succeed(OrganizationRemovals, removals.removals),
+    Layer.succeed(OrganizationTombstones, removals.tombstones),
     Layer.succeed(
       AppRepositoryRecovery,
       executor.pipe(
