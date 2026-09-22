@@ -335,14 +335,22 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
             provider.getByRole("button", { name: "Remove First account", exact: true }).click(),
           );
           yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
-            provider.getByText("No accounts", { exact: true }).waitFor(),
+            provider
+              .getByRole("link", { name: "First account", exact: true })
+              .waitFor({ state: "hidden" }),
           );
           yield* browser.use("Remove the scalar binding without deleting its saved account", () =>
             provider
               .getByRole("button", { name: "Add Account fixture account", exact: true })
               .waitFor(),
           );
+          expect(
+            yield* browser.use("Empty providers omit the account count label", () =>
+              provider.getByText("No accounts", { exact: true }).count(),
+            ),
+          ).toBe(0);
         });
+        yield* browser.checkpoint("Empty account row without count");
         const afterScalarRemoval = yield* body(
           Schema.Struct({
             accounts: Schema.Record(

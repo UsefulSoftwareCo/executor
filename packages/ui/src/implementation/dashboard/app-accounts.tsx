@@ -211,11 +211,11 @@ export function AppAccounts({
                   />
                 </p>
               </div>
-              <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                {ids.length === 0
-                  ? "No accounts"
-                  : `${ids.length} ${ids.length === 1 ? "account" : "accounts"}`}
-              </span>
+              {ids.length > 0 && (
+                <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+                  {ids.length} {ids.length === 1 ? "account" : "accounts"}
+                </span>
+              )}
             </div>
             {(ids.length > 0 || action) && (
               <div
