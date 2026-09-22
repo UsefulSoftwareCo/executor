@@ -21,13 +21,13 @@ export function AppOverviewEntries<E>({
   return (
     <>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
+        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
         aria-label="App skills preview"
       >
         <EntryHeader app={app} view="skills" label="Skills" />
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
           {app.activeDeployment === null ? (
-            <EmptyState size="compact" heading="h3" title="No deployment yet">
+            <EmptyState size="card" heading="h3" title="No deployment yet">
               Deploy this app to view its skills.
             </EmptyState>
           ) : (
@@ -42,13 +42,13 @@ export function AppOverviewEntries<E>({
         </div>
       </section>
       <section
-        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
+        className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
         aria-label="App workflows preview"
       >
         <EntryHeader app={app} view="workflows" label="Workflows" />
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
           {app.activeDeployment === null ? (
-            <EmptyState size="compact" heading="h3" title="No deployment yet">
+            <EmptyState size="card" heading="h3" title="No deployment yet">
               Deploy this app to view its workflows.
             </EmptyState>
           ) : (
@@ -99,7 +99,7 @@ function EntryList({
   readonly items: readonly { readonly name: string; readonly description?: string }[];
   readonly empty: string;
 }) {
-  if (items.length === 0) return <EmptyState size="compact" heading="h3" title={empty} />;
+  if (items.length === 0) return <EmptyState size="card" heading="h3" title={empty} />;
   return (
     <ul className="divide-y">
       {items.slice(0, 4).map((item) => (

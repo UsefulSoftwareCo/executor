@@ -316,20 +316,21 @@ export const checkAppBrowser = (input: {
         page.getByRole("heading", { name: "Overview", level: 2, exact: true }).count(),
       ),
     ).toBe(0);
-    const cards = yield* browser.use("Only empty overview cards collapse", (page) =>
-      page.locator(".app-overview > div > section").evaluateAll((cards) =>
-        cards.map((card) => ({
-          height: card.getBoundingClientRect().height,
-          empty: card.querySelector(".empty-state") !== null,
-        })),
-      ),
+    const cards = yield* browser.use(
+      "Empty and populated overview cards keep the same height",
+      (page) =>
+        page.locator(".app-overview > div > section").evaluateAll((cards) =>
+          cards.map((card) => ({
+            height: card.getBoundingClientRect().height,
+            empty: card.querySelector(".empty-state") !== null,
+          })),
+        ),
     );
     expect(cards.length).toBeGreaterThanOrEqual(4);
     expect(cards.some((card) => card.empty)).toBe(true);
     expect(cards.some((card) => !card.empty)).toBe(true);
     for (const card of cards) {
-      if (card.empty) expect(card.height).toBeLessThan(320);
-      else expect(card.height).toBe(320);
+      expect(card.height).toBe(320);
     }
     yield* browser.checkpoint("Overview with skills and workflows");
     yield* browser.use("Open Skills from its Overview card", (page) =>

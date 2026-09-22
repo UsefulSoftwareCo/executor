@@ -120,6 +120,90 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
+        for (const viewport of [
+          { width: 1440, height: 960 },
+          { width: 390, height: 844 },
+        ]) {
+          yield* browser.use("Set empty overview viewport", (page) =>
+            page.setViewportSize(viewport),
+          );
+          yield* browser.use("Open deployed empty overview", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}`),
+          );
+          for (const title of [
+            "No accounts required",
+            "No tools",
+            "No skills yet",
+            "No workflows",
+          ]) {
+            yield* browser.use(`Wait for ${title}`, (page) =>
+              page.getByRole("heading", { name: title, exact: true }).waitFor(),
+            );
+          }
+          yield* browser.use("Wait for source preview", (page) =>
+            page.getByText("View the files that make this app work.", { exact: true }).waitFor(),
+          );
+          yield* browser.checkpoint(`${viewport.width} centered empty overview`);
+          const layout = yield* browser.use(
+            "Measure empty messages within their card bodies",
+            (page) =>
+              page.locator(".app-overview > div > section").evaluateAll((cards) =>
+                cards.flatMap((card) => {
+                  const empty = card.querySelector(".empty-state");
+                  if (!empty) return [];
+                  const bounds = empty.parentElement?.getBoundingClientRect();
+                  if (!bounds) throw new Error("Empty overview card has no body");
+                  const contextHeight =
+                    card
+                      .querySelector('[aria-label="Tool account context"]')
+                      ?.getBoundingClientRect().height ?? 0;
+                  const content = Array.from(empty.children).map((child) =>
+                    child.getBoundingClientRect(),
+                  );
+                  const top = Math.min(...content.map((child) => child.top));
+                  const bottom = Math.max(...content.map((child) => child.bottom));
+                  return [
+                    {
+                      height: card.getBoundingClientRect().height,
+                      verticalOffset: Math.abs(
+                        (top + bottom) / 2 - (bounds.top + contextHeight + bounds.bottom) / 2,
+                      ),
+                      horizontalOffset: Math.max(
+                        ...content.map((child) =>
+                          Math.abs(
+                            (child.left + child.right) / 2 - (bounds.left + bounds.right) / 2,
+                          ),
+                        ),
+                      ),
+                    },
+                  ];
+                }),
+              ),
+          );
+          expect(layout).toHaveLength(4);
+          for (const card of layout) {
+            expect(card.height).toBe(320);
+            expect(card.verticalOffset).toBeLessThanOrEqual(1);
+            expect(card.horizontalOffset).toBeLessThanOrEqual(1);
+          }
+          expect(
+            yield* browser.use("No horizontal overflow", (page) =>
+              page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+            ),
+          ).toBe(true);
+          if (viewport.width === 390) {
+            for (const region of [
+              "App tools preview",
+              "App skills preview",
+              "App workflows preview",
+            ]) {
+              yield* browser.use(`Scroll to ${region}`, (page) =>
+                page.getByRole("region", { name: region, exact: true }).scrollIntoViewIfNeeded(),
+              );
+              yield* browser.checkpoint(`390 centered ${region}`);
+            }
+          }
+        }
         yield* browser.use("Owner sees the authoring action", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?view=skills`),
         );

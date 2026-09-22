@@ -72,7 +72,7 @@ export function AppOverview({
         )}
       >
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App accounts"
         >
           <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
@@ -88,10 +88,10 @@ export function AppOverview({
               </AppLink>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">{accounts}</div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto">{accounts}</div>
         </section>
         <section
-          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 has-[.empty-state]:h-auto"
+          className="flex h-80 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
           aria-label="App tools preview"
         >
           {tools}
@@ -134,7 +134,7 @@ export function AppOverviewTools<E>({
   if (readiness.state !== "ready")
     return (
       <ToolsPreviewFrame app={app} accounts={accounts}>
-        <EmptyState size="compact" heading="h3" title="Tools unavailable">
+        <EmptyState size="card" heading="h3" title="Tools unavailable">
           {readiness.state === "not-deployed"
             ? "Deploy source to make tools available."
             : readiness.state === "unavailable"
@@ -171,7 +171,7 @@ function LiveToolsPreview<E>({
       >
         {(page) =>
           page.items.length === 0 ? (
-            <EmptyState size="compact" heading="h3" title="No tools">
+            <EmptyState size="card" heading="h3" title="No tools">
               This app does not expose any tools.
             </EmptyState>
           ) : (
@@ -244,7 +244,7 @@ function ToolsPreviewFrame({
           </AppLink>
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         <ToolAccounts app={app} accounts={accounts} compact />
         {children}
       </div>
@@ -268,7 +268,7 @@ export function AppOverviewAccounts({
   if (requirements.length === 0)
     return (
       <EmptyState
-        size="compact"
+        size="card"
         heading="h3"
         title={app.activeDeployment === null ? "No deployment yet" : "No accounts required"}
       >
