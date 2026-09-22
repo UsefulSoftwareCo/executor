@@ -1,3 +1,4 @@
+import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
@@ -134,6 +135,7 @@ export default Api.make(
     };
   }),
   Effect.gen(function* () {
+    const lifetime = yield* previewLifetime;
     const analytics = yield* cloudAnalytics;
     const reportErrors = yield* cloudSentry;
     const errorTunnel = yield* cloudErrorTunnel;
@@ -167,7 +169,7 @@ export default Api.make(
           ),
         ],
         { concurrency: 2, discard: true },
-      ),
+      ).pipe(lifetime.background),
     );
 
     const groupDatabase = yield* cloudGroupDatabase;
@@ -253,6 +255,7 @@ export default Api.make(
         analytics.wrap,
         reportErrors,
         requestTiming,
+        lifetime.http,
       ),
     };
   }).pipe(

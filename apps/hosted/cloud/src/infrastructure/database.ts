@@ -9,9 +9,8 @@ import { adopt } from "alchemy/AdoptPolicy";
 import { retain } from "alchemy/RemovalPolicy";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { developmentDatabase } from "./development.ts";
-import { LogicalDatabase } from "./logical-database.ts";
 import { cloudOrigin, testStage } from "./stage.ts";
-import { testStageConnectionLimit } from "../contracts/test-stage-capacity.ts";
+import { testStageConnectionLimit } from "../contracts/test-stage-lifetime.ts";
 
 /**
  * Hyperdrive needs an uploaded trust root even for publicly issued certificates.
@@ -82,36 +81,27 @@ export const DatabaseConnection = Effect.gen(function* () {
       });
       const stage = yield* testStage;
       if (Option.isSome(stage)) {
-        const settings = yield* Config.all({
-          name: Config.String("TEST_STAGE_DATABASE"),
-          adminUrl: Config.Redacted("TEST_STAGE_DATABASE_ADMIN_URL"),
-          clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
-          region: Config.String("PLANETSCALE_REGION"),
+        const database = yield* Config.String("TEST_STAGE_DATABASE");
+        // A development branch has its own compute and connection budget. No backup or production data is copied.
+        const branch = yield* Planetscale.PostgresBranch("PreviewDatabase", {
+          database,
+          name: stage.value.name,
+          parentBranch: "main",
         });
-        // Every test stage shares this cluster. Adopting and retaining it stops one destroy from taking the rest with it.
-        const cluster = yield* Planetscale.PostgresDatabase("Database", {
-          name: settings.name,
-          clusterSize: settings.clusterSize,
-          region: { slug: settings.region },
-        }).pipe(adopt(true), retain());
-        // Cluster-wide roles would expose every other stage's data, so this role starts with nothing
-        // and receives its rights as grants on its own logical database.
         const role = yield* Planetscale.PostgresRole("RuntimeRole", {
-          database: cluster,
-          inheritedRoles: [],
+          database,
+          branch,
+          inheritedRoles: ["pg_read_all_data", "pg_write_all_data"],
         });
-        const database = yield* LogicalDatabase("LogicalDatabase", {
-          adminUrl: settings.adminUrl,
-          name: `executor_${stage.value.slug.replaceAll("-", "_")}`,
-          // PlanetScale appends the branch id to the login name; the Postgres role has no suffix.
-          owner: role.username.pipe(Output.map((username) => username.split(".")[0] ?? username)),
+        const migrationRole = yield* Planetscale.PostgresRole("MigrationRole", {
+          database,
+          branch,
+          inheritedRoles: ["postgres"],
         });
         const migrations = yield* Command.Exec("Migrations", {
           command: "node src/migrate.ts",
           env: {
-            DATABASE_URL: Output.all(role.origin, database.name).pipe(
-              Output.map(([origin, name]) => roleUrl(origin, name)),
-            ),
+            DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
             BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
             BETTER_AUTH_URL: stage.value.origin,
@@ -137,11 +127,13 @@ export const DatabaseConnection = Effect.gen(function* () {
               BETTER_AUTH_URL: stage.value.origin,
               BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
               TEST_STAGE_ACCOUNTS_OUTPUT: fixtureOutput.value,
+              TEST_STAGE_DATABASE_BRANCH: branch.name,
+              TEST_STAGE_DATABASE_USERNAME: migrationRole.username,
               ...(Option.isSome(fixtureOrganization)
                 ? { TEST_STAGE_APP_ORGANIZATION: fixtureOrganization.value }
                 : {}),
-              DATABASE_URL: Output.all(role.origin, database.name, migrations.hash).pipe(
-                Output.map(([origin, name]) => roleUrl(origin, name)),
+              DATABASE_URL: Output.all(migrationRole.origin, migrations.hash).pipe(
+                Output.map(([origin]) => migrationUrl(origin)),
               ),
             },
             memo: false,
@@ -151,9 +143,7 @@ export const DatabaseConnection = Effect.gen(function* () {
         const authority = yield* certificateAuthority;
         return {
           // Depending on the migration hash keeps the Worker from serving an empty schema.
-          origin: Output.all(role.origin, database.name, migrations.hash).pipe(
-            Output.map(([origin, name]) => ({ ...origin, database: name })),
-          ),
+          origin: Output.all(role.origin, migrations.hash).pipe(Output.map(([origin]) => origin)),
           originConnectionLimit: testStageConnectionLimit,
           caching: { disabled: true },
           mtls: { sslmode: "verify-full" as const, caCertificateId: authority.mtlsCertificateId },

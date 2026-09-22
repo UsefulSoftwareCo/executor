@@ -1,4 +1,5 @@
 import { requestServices } from "@executor-js/hosted-server";
+import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { cloudGroupDatabase } from "./infrastructure/group-database.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -99,6 +100,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       HttpRouter.toHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
+    const lifetime = yield* previewLifetime;
     return {
       fetch: handle.pipe(
         reportErrors,
@@ -111,6 +113,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
           ),
         ),
         requestTiming,
+        lifetime.http,
       ),
     };
   }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),

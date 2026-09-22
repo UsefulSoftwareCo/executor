@@ -352,8 +352,11 @@ its model-endpoint configuration documented above; onboarding does not need it.
 
 Deploy to a dedicated stage whose slug starts with `e2e-`, using the normal Alchemy
 stack. Set `TEST_STAGE_ACCOUNTS_OUTPUT` to a new absolute path under ignored `.local/`.
-The separate fixture job runs after migrations, checks the exact stage origin and
-database name, and creates three one-hour sessions using the restricted stage role.
+The separate fixture job runs after migrations, checks the exact stage origin,
+isolated branch name, and branch-qualified migration username, and creates three
+one-hour sessions using that branch's migration role. The database inside the
+isolated branch is named `postgres`; production branch credentials cannot pass
+the required stage-branch identity supplied by Alchemy.
 It writes mode 0600 and refuses to overwrite an existing file. A later deploy with a
 new output path refreshes the sessions. No fixture auth plugin or provisioning route
 is added to the Worker. Fixture setup is not a login test.

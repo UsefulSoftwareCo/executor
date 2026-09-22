@@ -47,7 +47,7 @@
     "with:cloud": "op run --env-file=.env.production.op --",
     "with:cloud:dev": "op run --env-file=.env.cloud-development.op --",
     "with:self-host": "op run --env-file=.env.self-host.op --",
-    "with:test-stage": "op run --env-file=.env.test-stage.op --",
+    "with:test-stage": "agent-vault run --env-file=.env.test-stage.op --",
     "desktop:dev": "bun run telemetry:build && bun run with:local node apps/local/desktop/scripts/start.mjs --dev",
     "desktop:start": "bun run telemetry:build && bun run web:build && bun run with:local node apps/local/desktop/scripts/start.mjs",
     "marketing:build": "bun run --cwd apps/marketing build",

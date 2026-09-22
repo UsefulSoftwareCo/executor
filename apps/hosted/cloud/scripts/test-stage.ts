@@ -4,7 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Schema } from "effect";
 import { CliError, Command } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
-import { TestStageFailed } from "../src/contracts/test-stage-capacity.ts";
+import { TestStageFailed } from "../src/contracts/test-stage-lifetime.ts";
 import { testStageCommand } from "../src/implementation/test-stage-commands.ts";
 
 NodeRuntime.runMain(

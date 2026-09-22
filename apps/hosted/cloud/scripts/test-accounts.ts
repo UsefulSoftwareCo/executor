@@ -22,6 +22,8 @@ const provision = Effect.scoped(
     const databaseUrl = yield* Config.Redacted("DATABASE_URL");
     const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
     const output = yield* Config.String("TEST_STAGE_ACCOUNTS_OUTPUT");
+    const databaseBranch = yield* Config.String("TEST_STAGE_DATABASE_BRANCH");
+    const databaseUsername = yield* Config.String("TEST_STAGE_DATABASE_USERNAME");
     const requestedOrganization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
       Config.option,
     );
@@ -33,10 +35,12 @@ const provision = Effect.scoped(
       !path.isAbsolute(output)
     )
       return yield* new FixtureFailed({ phase: "configuration" });
-    const databaseName = `executor_${stage.slice(5).replaceAll("-", "_")}`;
+    const databaseName = "postgres";
     const url = new URL(Redacted.value(databaseUrl));
     if (
       decodeURIComponent(url.pathname.slice(1)) !== databaseName ||
+      databaseBranch !== stage ||
+      decodeURIComponent(url.username) !== databaseUsername ||
       url.searchParams.get("sslmode") !== "verify-full"
     )
       return yield* new FixtureFailed({ phase: "configuration" });

@@ -1,3 +1,4 @@
+import { previewLifetime } from "./test-stage-expiry.ts";
 /** Alchemy owns the controller, its zone-scoped token, and every runtime team DNS resource. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
@@ -77,10 +78,11 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
   const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
+    const lifetime = yield* previewLifetime;
     const lock = yield* Semaphore.make(1);
     const arm = (milliseconds: number) =>
       Effect.gen(function* () {
-        if (yield* state.storage.get<boolean>("stopped")) return;
+        if ((yield* lifetime.isExpired) || (yield* state.storage.get<boolean>("stopped"))) return;
         const due = (yield* Clock.currentTimeMillis) + milliseconds;
         const existing = yield* state.storage.getAlarm();
         if (existing === null || existing > due) yield* state.storage.setAlarm(due);
@@ -225,6 +227,10 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
+          if (yield* lifetime.isExpired) {
+            yield* state.storage.deleteAlarm();
+            return;
+          }
           yield* state.storage.setAlarm((yield* Clock.currentTimeMillis) + 60_000);
           yield* reconcile;
         }),

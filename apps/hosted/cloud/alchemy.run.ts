@@ -13,7 +13,6 @@ import ApiLive, { Api } from "./src/main.ts";
 import AppCompilerLive from "./src/compiler.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
 import { DatabaseConnection } from "./src/infrastructure/database.ts";
-import { LogicalDatabaseProvider } from "./src/infrastructure/logical-database.ts";
 import { developmentWeb } from "./src/infrastructure/development.ts";
 import { authEmailInfrastructure } from "./src/infrastructure/email.ts";
 import { uploadCloudSourceMaps } from "./src/infrastructure/sentry.ts";
@@ -38,13 +37,7 @@ export default Alchemy.Stack(
       Layer.unwrap(
         AlchemyContext.pipe(
           Effect.map(({ dev }) =>
-            dev
-              ? Layer.empty
-              : Layer.mergeAll(
-                  Planetscale.providers(),
-                  Axiom.providers(),
-                  LogicalDatabaseProvider(),
-                ),
+            dev ? Layer.empty : Layer.mergeAll(Planetscale.providers(), Axiom.providers()),
           ),
         ),
       ),

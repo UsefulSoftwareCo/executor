@@ -1,3 +1,4 @@
+import { previewLifetime } from "./test-stage-expiry.ts";
 import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -29,6 +30,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
   );
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
+    const lifetime = yield* previewLifetime;
     const pool = yield* Semaphore.make(concurrency);
     const lifecycle = yield* Semaphore.make(1);
     const alarms = yield* Semaphore.make(1);
@@ -77,11 +79,18 @@ const makeScheduleCoordinator = Effect.gen(function* () {
           yield* arm;
         }),
       ),
-    ).pipe(Effect.catch(() => Effect.logError("Cloud scheduled dispatch failed")));
+    ).pipe(
+      lifetime.background,
+      Effect.catch(() => Effect.logError("Cloud scheduled dispatch failed")),
+    );
     return {
       wake: () =>
         alarms.withPermits(1)(
           Effect.gen(function* () {
+            if (yield* lifetime.isExpired) {
+              yield* state.storage.deleteAlarm();
+              return;
+            }
             yield* state.storage.setAlarm(
               (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds,
             );
@@ -89,6 +98,10 @@ const makeScheduleCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
+          if (yield* lifetime.isExpired) {
+            yield* state.storage.deleteAlarm();
+            return;
+          }
           // A durable recovery wake remains if storage is temporarily unavailable or this event crashes.
           yield* alarms.withPermits(1)(
             Effect.gen(function* () {
@@ -100,6 +113,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
           yield* state.waitUntil(run);
           // Keep considering unclaimed due work while admitted runs are waiting on external I/O.
           yield* Effect.scoped(arm).pipe(
+            lifetime.background,
             Effect.catch(() => Effect.logError("Schedule alarm planning failed")),
           );
         }),
@@ -124,11 +138,12 @@ export const ScheduleCoordinatorLive = ScheduleCoordinator.make(makeScheduleCoor
 /** Route changes wake the coordinator promptly; a native cron heartbeat repairs missing alarms after failures. */
 export const cloudSchedules = Effect.gen(function* () {
   const coordinator = yield* ScheduleCoordinator;
+  const lifetime = yield* previewLifetime;
   // The namespace binding only exists at runtime, so resolve the stub when the wake runs.
   const wake = Effect.suspend(() => coordinator.getByName("executor").wake()).pipe(
     Effect.catch(() => Effect.logError("Schedule coordinator wake failed")),
     Effect.provide(RuntimeContext.phantom),
   );
-  yield* Cloudflare.Workers.cron("* * * * *", () => wake);
+  yield* Cloudflare.Workers.cron("* * * * *", () => wake.pipe(lifetime.background));
   return Layer.succeed(ScheduleWakeup, wake);
 });
