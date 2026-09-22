@@ -31,6 +31,65 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+/** Render a team invite with one acceptance URL in HTML and text; both payloads contain a secret. */
+export const invitationEmailMessage = ({
+  email,
+  id,
+  organizationName,
+  origin,
+}: {
+  readonly email: string;
+  readonly id: string;
+  readonly organizationName: string;
+  readonly origin: string;
+}): AuthEmail => {
+  const invitationUrl = `${origin}/invite?invitation=${encodeURIComponent(id)}`;
+  const name = escapeHtml(organizationName);
+  const link = escapeHtml(invitationUrl);
+  const instruction = "Sign in with this email address to accept.";
+  const unsolicited = "If you did not expect this invitation, ignore this email.";
+  return {
+    to: email,
+    subject: "You’re invited to Executor",
+    text: Redacted.make(
+      `You’re invited to join ${organizationName} on Executor.\n\n${invitationUrl}\n\n${instruction} ${unsolicited}`,
+    ),
+    html: Redacted.make(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>You’re invited to Executor</title></head>
+<body style="margin:0;padding:0;background:#f6f6f6;color:#171717;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">You’re invited to join ${name} on Executor.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr><td align="center" style="padding:40px 16px;">
+    <!--[if mso]><table role="presentation" width="520" align="center"><tr><td><![endif]-->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:520px;table-layout:fixed;border-collapse:separate;border-spacing:0;">
+      <tr><td style="padding:0 0 24px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+          <td width="32" valign="middle"><img src="https://executor.sh/favicon-192.png" alt="" width="32" height="32" style="display:block;width:32px;height:32px;border:0;border-radius:6px;"></td>
+          <td valign="middle" style="padding-left:10px;font-size:20px;line-height:28px;font-weight:700;letter-spacing:-0.5px;">Executor</td>
+        </tr></table>
+      </td></tr>
+      <tr><td bgcolor="#ffffff" style="padding:32px 28px;border:1px solid #e5e5e5;border-radius:12px;background:#ffffff;">
+        <p style="margin:0 0 16px;color:#666666;font-size:11px;line-height:16px;font-weight:700;letter-spacing:1.5px;">TEAM INVITATION</p>
+        <h1 style="margin:0 0 16px;font-size:28px;line-height:36px;letter-spacing:-0.7px;font-weight:700;">You’re invited.</h1>
+        <p style="margin:0 0 28px;color:#444444;font-size:16px;line-height:26px;overflow-wrap:anywhere;word-break:break-word;">Join <strong style="color:#171717;">${name}</strong> on Executor.</p>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td align="center" bgcolor="#0a0a0a" style="border-radius:6px;background:#0a0a0a;mso-padding-alt:14px 24px;">
+          <a href="${link}" style="display:inline-block;border:solid #0a0a0a;border-width:14px 24px;border-radius:6px;color:#ffffff;font-size:15px;line-height:20px;font-weight:700;text-align:center;text-decoration:none;mso-padding-alt:0;">Join team</a>
+        </td></tr></table>
+        <p style="margin:20px 0 0;color:#666666;font-size:13px;line-height:21px;">${instruction}</p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;table-layout:fixed;border-collapse:collapse;margin-top:28px;"><tr><td style="border-top:1px solid #eeeeee;padding-top:24px;">
+          <p style="margin:0 0 8px;color:#666666;font-size:12px;line-height:20px;">Or copy and paste this link into your browser:</p>
+          <a href="${link}" style="color:#444444;font-size:12px;line-height:20px;text-decoration:underline;overflow-wrap:anywhere;word-break:break-all;">${link}</a>
+        </td></tr></table>
+      </td></tr>
+      <tr><td style="padding:20px 4px 0;color:#666666;font-size:12px;line-height:20px;">${unsolicited}</td></tr>
+    </table>
+    <!--[if mso]></td></tr></table><![endif]-->
+  </td></tr></table>
+</body>
+</html>`),
+  };
+};
+
 /** Public docs live on the marketing site, not on the deployment origin. */
 const docsUrl = "https://executor.sh/docs";
 

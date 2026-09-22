@@ -16,7 +16,7 @@ import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
-import { emailCodeExpiresIn, emailCodeMessage } from "./email-messages.ts";
+import { emailCodeExpiresIn, emailCodeMessage, invitationEmailMessage } from "./email-messages.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
 import { cloudEmulators } from "../infrastructure/emulators.ts";
 import { emulatedSocialProviders } from "./emulated-auth.ts";
@@ -257,13 +257,14 @@ export const cloudAuthOptions = (
         requireEmailVerificationOnInvitation: true,
         sendInvitationEmail: ({ email, id, organization }) =>
           Effect.runPromise(
-            send({
-              to: email,
-              subject: "You’re invited to Executor",
-              text: Redacted.make(
-                `You’re invited to join ${organization.name} on Executor.\n\n${settings.url}/invite?invitation=${encodeURIComponent(id)}\n\nSign in with this email address to accept. If you did not expect this invitation, ignore this email.`,
-              ),
-            }),
+            send(
+              invitationEmailMessage({
+                email,
+                id,
+                organizationName: organization.name,
+                origin: settings.url,
+              }),
+            ),
           ),
       }),
       emailOTP({
