@@ -66,9 +66,10 @@ export class Authentication extends Context.Service<
   Authentication,
   {
     readonly origin: string;
-    /** Issue a native key only when creating a saved Executor account. */
+    /** Issue a native key only when creating a saved Executor account; it is pinned to that organization. */
     readonly apiKey: (
       headers: Headers,
+      organization: OrganizationId,
     ) => Effect.Effect<
       AccountApiKey,
       Unauthorized | OrganizationForbidden | AuthenticationUnavailable,

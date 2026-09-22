@@ -1,6 +1,11 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
-import { browserPersonalTokenAccess, apiKeyAccess, isApiKey } from "./api-keys.ts";
+import {
+  browserPersonalTokenAccess,
+  apiKeyAccess,
+  isApiKey,
+  requirePinnedOrganization,
+} from "./api-keys.ts";
 import { resolveOrganizationReference } from "./organization-reference.ts";
 import { ApprovalMode, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 
@@ -109,6 +114,7 @@ const projectPatAccess = (
   mode: ApprovalMode,
 ) =>
   Effect.gen(function* () {
+    yield* requirePinnedOrganization(identity, organization);
     const member = yield* membership(ctx.context, identity.userId, organization);
     return McpAccess.make({
       userId: identity.userId,
@@ -226,6 +232,7 @@ export const mcpOAuthPlugins = (origin: string) => {
                     ctx.query.organization ?? ctx.headers.get("x-executor-organization"),
                   ).pipe(Effect.mapError(() => new APIError("FORBIDDEN")));
                   const organization = yield* resolveReference(ctx.context, reference);
+                  yield* requirePinnedOrganization(identity, organization);
                   const member = yield* membership(ctx.context, identity.userId, organization);
                   return {
                     userId: identity.userId,

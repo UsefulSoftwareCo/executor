@@ -1,4 +1,5 @@
 import { AppManagementHost } from "@executor-js/app-management";
+import { readExecutorSkills } from "@executor-js/app-templates/executor";
 import { hostedResourceLifecycle } from "../../server/src/implementation/resource-lifecycle.ts";
 import { CurrentUserId } from "../../server/src/contracts/auth.ts";
 import { CurrentOrganization } from "../../server/src/contracts/organization.ts";
@@ -175,11 +176,12 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                     fixtureSql`update hosted_app_access set audience = 'everyone' where id = ${app.id}`,
                 ),
               );
+            const skills = yield* readExecutorSkills;
             const initialize = yield* organizationDefaults(
               executor,
               origin,
               storage,
-              [],
+              skills,
               executorSelfHostApiDocument(origin),
             );
             yield* Effect.all(
@@ -211,7 +213,12 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               (yield* executor.apps.source({ app: executorA.id })).files
                 .map((file) => file.path)
                 .sort(),
-              ["index.ts", "operations.json", "provider.ts"],
+              [
+                "index.ts",
+                "operations.json",
+                "provider.ts",
+                ...skills.map((file) => file.path),
+              ].sort(),
             );
             const alpha = yield* fixtureDeploy({
               owner: OwnerId.make(`organization:${a.id}`),

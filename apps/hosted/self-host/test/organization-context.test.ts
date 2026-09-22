@@ -324,6 +324,55 @@ test(
                   "PATCH",
                 ),
             });
+            // The default Executor app's key is pinned to the organization that minted it.
+            const pinned = yield* Effect.promise(
+              async () =>
+                await auth.api.createApiKey({
+                  headers: new Headers({ cookie, origin }),
+                  body: { name: "Executor app", metadata: { organization: a.id } },
+                }),
+            );
+            for (const [reference, status] of [
+              [a.id, 200],
+              [a.slug, 200],
+              [b.id, 403],
+              [b.slug, 403],
+              [c.slug, 403],
+            ] as const) {
+              const response = yield* Effect.promise(() =>
+                web.handler(
+                  new Request(`${origin}/api/organizations/${reference}/inventory`, {
+                    headers: { authorization: `Bearer ${pinned.key}` },
+                  }),
+                ),
+              );
+              assert.equal(response.status, status, `pinned key in ${reference}`);
+            }
+            for (const [organization, status] of [
+              [a.id, 200],
+              [b.id, 403],
+            ] as const) {
+              const access = yield* Effect.promise(() =>
+                auth.api
+                  .getMcpAccess({
+                    headers: new Headers({
+                      authorization: `Bearer ${pinned.key}`,
+                      "x-executor-organization": organization,
+                    }),
+                    asResponse: true,
+                  })
+                  .then((response) => response.status),
+              );
+              assert.equal(access, status, `pinned key MCP access in ${organization}`);
+            }
+            // Browser-created PATs cannot record metadata, so only setup mints pinned keys.
+            assert.equal(
+              (yield* request("/api/auth/api-key/create", {
+                name: "Hand pinned",
+                metadata: { organization: b.id },
+              })).status,
+              400,
+            );
             const sourcePath = `/api/organizations/${a.id}/apps/${app.app.id}/workspace`;
             const sourceView = yield* json(yield* request(sourcePath), AppSourceView);
             assert.equal(sourceView.files[0]?.content, "synthetic");

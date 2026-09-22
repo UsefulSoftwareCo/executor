@@ -11,6 +11,7 @@ import {
   apiAuthenticationError,
   Authentication,
   accountApiKey,
+  pinnedKeyMetadata,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
@@ -44,11 +45,15 @@ export const selfHostAuth = Effect.gen(function* () {
   );
   const identity = Layer.succeed(Authentication, {
     origin: settings.url,
-    apiKey: (headers) => {
+    apiKey: (headers, organization) => {
       const internal = new Headers(headers);
       internal.set("origin", settings.url);
       return accountApiKey(
-        () => auth.api.createApiKey({ headers: internal, body: { name: "Executor app" } }),
+        () =>
+          auth.api.createApiKey({
+            headers: internal,
+            body: { name: "Executor app", metadata: pinnedKeyMetadata(organization) },
+          }),
         (keyId) => auth.api.deleteApiKey({ headers: internal, body: { keyId } }),
       );
     },

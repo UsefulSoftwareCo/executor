@@ -6,6 +6,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
 import { AuthenticationUnavailable } from "../contracts/auth.ts";
 import { ApiKeyId, CreateApiKey } from "../contracts/api-keys.ts";
+import { OrganizationId } from "../contracts/organization.ts";
 
 /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
 export const apiKeys = apiKey({
@@ -15,7 +16,14 @@ export const apiKeys = apiKey({
   enableSessionForAPIKeys: false,
   rateLimit: { enabled: false },
   keyExpiration: { minExpiresIn: 1 / 86400 },
+  // Only the auto-minted Executor app key records metadata; the browser create
+  // endpoint rejects it through apiKeyManagement's strict body schema.
+  enableMetadata: true,
 });
+
+/** A saved Executor account's key authorizes only inside the organization that minted it. */
+const KeyMetadata = Schema.NullOr(Schema.Struct({ organization: Schema.optional(OrganizationId) }));
+export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
 
 /** Constrain native key management to browser sessions and the v1 PAT inputs. */
 export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
@@ -39,7 +47,10 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
 export const isApiKey = (token: string) => token.startsWith("exp_");
 
 /** Project a native key into current-user authority; deleted users cannot retain access. */
-const identity = (ctx: GenericEndpointContext, key: { id: string; referenceId: string }) =>
+const identity = (
+  ctx: GenericEndpointContext,
+  key: { id: string; referenceId: string; metadata: unknown },
+) =>
   Effect.gen(function* () {
     const user = yield* authCall(() =>
       ctx.context.adapter.findOne({
@@ -52,8 +63,30 @@ const identity = (ctx: GenericEndpointContext, key: { id: string; referenceId: s
     const id = yield* Schema.decodeUnknownEffect(ApiKeyId)(key.id).pipe(
       Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
     );
-    return { userId: key.referenceId, key: { id }, policy: fullAuthority };
+    // Unreadable metadata fails closed: it cannot prove the key is an unpinned PAT.
+    const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(key.metadata).pipe(
+      Effect.mapError(() => new APIError("UNAUTHORIZED")),
+    );
+    return {
+      userId: key.referenceId,
+      key: { id },
+      policy: fullAuthority,
+      organization: metadata?.organization,
+    };
   });
+
+/** User PATs carry no organization; a pinned key never authorizes another organization. */
+export const requirePinnedOrganization = (
+  identity: { readonly organization: OrganizationId | undefined },
+  organization: OrganizationId,
+) =>
+  identity.organization === undefined || identity.organization === organization
+    ? Effect.void
+    : Effect.fail(
+        new APIError("FORBIDDEN", {
+          message: "This key belongs to a different organization.",
+        }),
+      );
 
 /** Verify expiry, revocation and usage through Better Auth before applying product authorization. */
 export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redacted<string>) =>

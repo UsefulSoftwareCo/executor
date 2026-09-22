@@ -12,6 +12,7 @@ import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-opti
 import {
   Authentication,
   accountApiKey,
+  pinnedKeyMetadata,
   AuthenticationUnavailable,
   McpAuthentication,
   sessionPrincipal,
@@ -111,7 +112,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
         // Built inside fetch: database work stays in the current invocation's scope.
         return Authentication.of({
           origin: settings.url,
-          apiKey: (headers) => {
+          apiKey: (headers, organization) => {
             const internal = new Headers(headers);
             internal.set("origin", settings.url);
             return auth.auth.pipe(
@@ -119,7 +120,10 @@ export const cloudAuth = (send: SendAuthEmail) =>
               Effect.flatMap((native) =>
                 accountApiKey(
                   () =>
-                    native.api.createApiKey({ headers: internal, body: { name: "Executor app" } }),
+                    native.api.createApiKey({
+                      headers: internal,
+                      body: { name: "Executor app", metadata: pinnedKeyMetadata(organization) },
+                    }),
                   (keyId) => native.api.deleteApiKey({ headers: internal, body: { keyId } }),
                 ),
               ),

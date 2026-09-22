@@ -198,7 +198,7 @@ export const initializeOrganizationInventory = (authentication: typeof Authentic
               userId: principal.userId,
               name: principal.name,
               key: authentication
-                .apiKey(headers)
+                .apiKey(headers, organization.organization)
                 .pipe(Effect.catchTag("OrganizationForbidden", () => Effect.fail(new Forbidden()))),
             },
       );
