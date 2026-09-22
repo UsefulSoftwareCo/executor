@@ -26,6 +26,15 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  sdkQueryBudgets: {
+    file: "sdk-query-budgets.spec.ts",
+    title: "SDK batches invocation accounts and finished workflow history",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This query budget reads the self-host Motel collector."),
+      local: na("This scenario uses hosted organization routes."),
+    },
+  },
   toolAccountContext: {
     file: "tool-account-context.spec.ts",
     title: "Tools identify their accounts and replace catalogs after account selection",

@@ -283,10 +283,8 @@ export const makeWorkflowRuns = (
       yield* finish(run, { ok: true, output: result.success });
       return result.success;
     });
-  const get = (input: typeof WorkflowTarget.Type) =>
+  const reconcile = (row: typeof StoredRun.Type) =>
     Effect.gen(function* () {
-      yield* storedApp(db, { app: input.app });
-      const row = yield* read(input.run, input.app);
       if (terminal(row)) return yield* view(row);
       if (backend === undefined) return yield* unavailable();
       const state = yield* backend.status(row.id);
@@ -323,6 +321,11 @@ export const makeWorkflowRuns = (
         ...current,
         status: state.status === "missing" ? "queued" : state.status,
       }).pipe(Effect.mapError(() => failure("engine")));
+    });
+  const get = (input: typeof WorkflowTarget.Type) =>
+    Effect.gen(function* () {
+      yield* storedApp(db, { app: input.app });
+      return yield* reconcile(yield* read(input.run, input.app));
     });
   const start = (input: typeof StartWorkflow.Type) =>
     Effect.gen(function* () {
@@ -460,8 +463,10 @@ export const makeWorkflowRuns = (
           limit: limit + 1,
         }),
       );
-      const page = rows.slice(0, limit);
-      const items = yield* Effect.forEach(page, (row) => get({ app: input.app, run: row.id }), {
+      const page = yield* Schema.decodeUnknownEffect(Schema.Array(StoredRun))(
+        rows.slice(0, limit),
+      ).pipe(Effect.mapError(() => new StorageError()));
+      const items = yield* Effect.forEach(page, reconcile, {
         concurrency: 4,
       });
       const last = page.at(-1);
@@ -469,7 +474,7 @@ export const makeWorkflowRuns = (
         items,
         ...(rows.length > limit && last !== undefined ? { next: last.id } : {}),
       });
-    });
+    }).pipe(Effect.withSpan("sdk.workflows.list"));
   function controls(app: AppId): WorkflowHostControls {
     const parse = <A, B>(
       schema: Schema.Decoder<A>,

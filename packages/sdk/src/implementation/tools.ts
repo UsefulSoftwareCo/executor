@@ -7,7 +7,8 @@ import {
   HostToolApprovalRequired,
   type ResolvedAccounts,
 } from "apps/contracts";
-import { AccountRequired } from "../contracts/apps.ts";
+import { AccountRequired, AppNotFound, AppNotDeployed } from "../contracts/apps.ts";
+import { DeploymentNotFound } from "../contracts/deployment.ts";
 import type { Executor } from "../contracts/executor.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import {
@@ -35,11 +36,10 @@ import {
   type ToolResumeResult,
 } from "../contracts/tools.ts";
 import type { ExecutorDatabase } from "./storage.ts";
-import type { Credentials } from "../contracts/storage.ts";
+import { type Credentials, StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
-import { storedAccount } from "./accounts.ts";
-import { storedApp, storedDeployment } from "./apps.ts";
-import { database, transaction, type Query } from "./database.ts";
+import { storedDeployment } from "./apps.ts";
+import { database, query, transaction, type Query } from "./database.ts";
 import { validateSelection } from "./selection.ts";
 
 /** Resolve one consistent app/deployment/account selection before invoking authored code. */
@@ -50,24 +50,39 @@ export function snapshot(
 ) {
   return transaction(db, (tx) =>
     Effect.gen(function* () {
-      const app = yield* storedApp(tx, input);
-      const deployment = yield* storedDeployment(tx, app, input.deployment);
+      const row = yield* query(() =>
+        tx.findFirst("apps", {
+          join: (b) => b.deployment(),
+          where: (b) => b("id", "=", input.app),
+        }),
+      );
+      if (row === null) return yield* new AppNotFound({ app: input.app });
+      const app = yield* Schema.decodeUnknownEffect(StoredApp)(row).pipe(
+        Effect.mapError(() => new StorageError()),
+      );
+      const deploymentId = input.deployment ?? app.activeDeployment;
+      if (deploymentId === null) return yield* new AppNotDeployed({ app: app.id });
+      // Historical invocations retain their pinned deployment and its lineage check.
+      const deployment =
+        deploymentId !== app.activeDeployment
+          ? yield* storedDeployment(tx, app, deploymentId)
+          : row.deployment === null
+            ? yield* new DeploymentNotFound({ app: app.id, deployment: deploymentId })
+            : yield* Schema.decodeUnknownEffect(StoredDeployment)(row.deployment).pipe(
+                Effect.mapError(() => new StorageError()),
+              );
       const bindings = savedAccounts ?? app.accounts;
-      yield* validateSelection(tx, app.id, deployment.requirements, bindings);
+      const validated = yield* validateSelection(tx, app.id, deployment.requirements, bindings);
       const selections = yield* Effect.forEach(
-        Object.entries(deployment.requirements.accounts),
-        ([slot, required]) =>
+        Object.keys(deployment.requirements.accounts),
+        (slot) =>
           Effect.gen(function* () {
-            const selected = Object.hasOwn(bindings, slot) ? bindings[slot] : undefined;
+            const selected = validated.get(slot);
             if (selected === undefined)
               return yield* Effect.fail(
                 new AccountRequired({ app: app.id, deployment: deployment.id, slot }),
               );
-            const accounts = yield* Effect.forEach(
-              typeof selected === "string" ? [selected] : selected,
-              (id) => storedAccount(tx, id),
-            );
-            return { slot, required, accounts };
+            return selected;
           }),
       );
       return { app, deployment, selections };
