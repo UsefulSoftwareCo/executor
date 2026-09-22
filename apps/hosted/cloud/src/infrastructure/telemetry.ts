@@ -39,6 +39,43 @@ export const telemetryResources = Effect.gen(function* () {
   const traces = yield* dataset("TelemetryTraces", names.traces, "otel:traces:v1");
   const logs = yield* dataset("TelemetryLogs", names.logs, "otel:logs:v1");
   const metrics = yield* dataset("TelemetryMetrics", names.metrics, "otel:metrics:v1");
+  // Health monitors stay in Axiom. Notification routing requires a separately
+  // chosen destination; an observability deploy must not start messaging people.
+  for (const monitor of [
+    {
+      id: "AppTelemetryRejected",
+      title: "app telemetry rejected",
+      query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where ['attributes.url.path'] startswith '/_executor/api/telemetry/' | where ['attributes.http.response.status_code'] >= 400 | summarize count()`,
+    },
+    {
+      id: "AppBrowserFailures",
+      title: "app browser failures",
+      query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where name == 'ui.app.failure' | summarize count()`,
+    },
+    {
+      id: "AppTraceContextMissing",
+      title: "app trace context missing",
+      query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where name == 'ui.app.result.receive' and ['attributes.custom']['executor.trace.context_valid'] == false | summarize count()`,
+    },
+    {
+      id: "TelemetryExportFailures",
+      title: "telemetry export failures",
+      query: `['${names.logs}'] | where ['resource.deployment.environment.name'] == '${stage}' | where body == 'Telemetry export failed' | summarize count()`,
+    },
+  ]) {
+    yield* Axiom.Monitor(monitor.id, {
+      name: `Executor ${stage}: ${monitor.title}`,
+      type: "Threshold",
+      aplQuery: monitor.query,
+      operator: "Above",
+      threshold: 0,
+      intervalMinutes: 5,
+      rangeMinutes: 5,
+      alertOnNoData: false,
+      resolvable: true,
+      notifierIds: [],
+    });
+  }
   const ingest = yield* Axiom.ApiToken("TelemetryIngest", {
     name: `executor-next-${stage}-ingest`,
     datasetCapabilities: {
@@ -109,6 +146,7 @@ export const telemetryBindings = Effect.gen(function* () {
         return Redacted.make(
           JSON.stringify({
             service: "executor-cloud",
+            clock: "cloudflare-io",
             version,
             environment,
             traces: target(traceUrl, names.traces),
@@ -134,6 +172,10 @@ export const cloudTelemetry = Layer.unwrap(
     const config = yield* Schema.decodeUnknownEffect(
       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
-    return Telemetry.layer(Layer.mergeAll(telemetryLayer(config, "event"), sqlTracing));
+    // Alchemy owns the exporter for the entire event, including streamed bodies.
+    // Flush periodically so long-lived streams remain observable before disconnect.
+    return Telemetry.layer(
+      Layer.mergeAll(telemetryLayer({ ...config, clock: "cloudflare-io" }, "process"), sqlTracing),
+    );
   }),
 );

@@ -6,6 +6,7 @@ import { betterAuth } from "better-auth";
 import { testUtils } from "better-auth/plugins";
 import { Pool } from "pg";
 import { authOptions } from "@executor-js/hosted-server";
+import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
 
 class FixtureFailed extends Schema.TaggedError<FixtureFailed>()("FixtureFailed", {
@@ -21,6 +22,9 @@ const provision = Effect.scoped(
     const databaseUrl = yield* Config.Redacted("DATABASE_URL");
     const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
     const output = yield* Config.String("TEST_STAGE_ACCOUNTS_OUTPUT");
+    const requestedOrganization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
+      Config.option,
+    );
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
     if (
@@ -83,7 +87,10 @@ const provision = Effect.scoped(
         return yield* new FixtureFailed({ phase: "accounts" });
       const suffix = crypto.randomUUID().slice(0, 8);
       const saveOrganization = fixtures.saveOrganization;
-      const initial = fixtures.createOrganization({ name: "E2E parity", slug: `e2e-${suffix}` });
+      const slug = Option.isSome(requestedOrganization)
+        ? yield* Schema.decodeUnknownEffect(OrganizationSlug)(requestedOrganization.value)
+        : `e2e-${suffix}`;
+      const initial = fixtures.createOrganization({ name: "E2E parity", slug });
       const organization = yield* accountOperation(() => saveOrganization(initial)).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Organization)),
       );

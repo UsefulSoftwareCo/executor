@@ -123,6 +123,9 @@ export const DatabaseConnection = Effect.gen(function* () {
           Config.option,
         );
         if (Option.isSome(fixtureOutput)) {
+          const fixtureOrganization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
+            Config.option,
+          );
           if (!stage.value.name.startsWith("test-e2e-"))
             return yield* Effect.die(
               new Error("Account fixtures require a dedicated test-e2e- stage"),
@@ -134,6 +137,9 @@ export const DatabaseConnection = Effect.gen(function* () {
               BETTER_AUTH_URL: stage.value.origin,
               BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
               TEST_STAGE_ACCOUNTS_OUTPUT: fixtureOutput.value,
+              ...(Option.isSome(fixtureOrganization)
+                ? { TEST_STAGE_APP_ORGANIZATION: fixtureOrganization.value }
+                : {}),
               DATABASE_URL: Output.all(role.origin, database.name, migrations.hash).pipe(
                 Output.map(([origin, name]) => roleUrl(origin, name)),
               ),

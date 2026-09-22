@@ -131,6 +131,7 @@ export const browserSettings = (
 ): Effect.Effect<TelemetryConfig> =>
   Effect.sync(() => ({
     service,
+    clock: "system",
     version:
       document.querySelector<HTMLMetaElement>('meta[name="executor-build"]')?.content ??
       "development",

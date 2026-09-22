@@ -44,7 +44,11 @@ export class UiFailed extends Schema.TaggedError<UiFailed>()(
 ) {}
 /** Every live stream carries heartbeats so the browser can detect a lost connection. */
 export const UiSnapshot = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("snapshot"), value: JsonValue }),
+  Schema.Struct({
+    type: Schema.Literal("snapshot"),
+    value: JsonValue,
+    trace: Schema.optional(Schema.Unknown),
+  }),
   Schema.Struct({ type: Schema.Literal("failure"), error: UiFailed }),
   Schema.Struct({ type: Schema.Literal("heartbeat") }),
 ]);

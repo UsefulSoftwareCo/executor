@@ -1,6 +1,12 @@
 /** Native invocation totals include background cleanup; they are not response latency. */
 import { Effect, Option, Schema } from "effect";
 import {
+  TraceContext,
+  externalTrace,
+  traceLinks,
+  recordWorkerMeasurements,
+} from "@executor-js/telemetry";
+import {
   CloudInvocation,
   InvocationHttp,
   InvocationPhase,
@@ -8,6 +14,17 @@ import {
 
 const phase = Schema.decodeUnknownOption(
   Schema.Union([InvocationPhase, Schema.fromJsonString(InvocationPhase)]),
+);
+const RequestContext = Schema.Struct({
+  message: Schema.Literal("executor.request.context"),
+  annotations: Schema.Struct({
+    "executor.trace_id": TraceContext.fields.traceId,
+    "executor.span_id": TraceContext.fields.spanId,
+    "executor.trace_sampled": Schema.Boolean,
+  }),
+});
+const requestContext = Schema.decodeUnknownOption(
+  Schema.Union([RequestContext, Schema.fromJsonString(RequestContext)]),
 );
 const phaseAttribute = {
   "alchemy.runtime.initialize": "executor.initialize_ms",
@@ -31,6 +48,11 @@ export const invocationSummary = (input: unknown) =>
       };
       for (const log of event.logs)
         for (const message of log.message) {
+          const request = requestContext(message);
+          if (Option.isSome(request)) {
+            Object.assign(attributes, request.value.annotations);
+            attributes["executor.context_source"] = "server";
+          }
           const timing = phase(message);
           if (Option.isSome(timing)) {
             attributes["executor.phase_clock"] = "cloudflare-io";
@@ -53,9 +75,19 @@ export const invocationSummary = (input: unknown) =>
         if (ray !== undefined && /^[a-f0-9]{16,32}(?:-[A-Z]{3})?$/i.test(ray))
           attributes["cloudflare.ray_id"] = ray.replace(/-[A-Z]{3}$/i, "");
         const trace = http.value.request.headers.traceparent?.match(
-          /^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$/,
-        )?.[1];
-        if (trace !== undefined) attributes["executor.trace_id"] = trace;
+          /^00-([a-f0-9]{32})-([a-f0-9]{16})-([a-f0-9]{2})$/,
+        );
+        const incoming = externalTrace({
+          traceId: trace?.[1],
+          spanId: trace?.[2],
+          sampled: trace?.[3] !== undefined && (Number.parseInt(trace[3], 16) & 1) === 1,
+        });
+        if (attributes["executor.trace_id"] === undefined && Option.isSome(incoming)) {
+          attributes["executor.trace_id"] = incoming.value.traceId;
+          attributes["executor.span_id"] = incoming.value.spanId;
+          attributes["executor.trace_sampled"] = incoming.value.sampled;
+          attributes["executor.context_source"] = "incoming-parent";
+        }
       }
       return attributes;
     }),
@@ -66,9 +98,32 @@ export const recordInvocations = (events: ReadonlyArray<unknown>) =>
   Effect.forEach(
     events,
     (event) =>
-      invocationSummary(event).pipe(
+      Schema.decodeUnknownEffect(CloudInvocation)(event).pipe(
+        Effect.tap((event) =>
+          recordWorkerMeasurements(
+            event.scriptName ?? "unknown",
+            event.outcome,
+            event.cpuTime,
+            event.wallTime,
+          ),
+        ),
+        Effect.flatMap(invocationSummary),
         Effect.flatMap((attributes) =>
-          Effect.logInfo("cloudflare.invocation").pipe(Effect.annotateLogs(attributes)),
+          Effect.logInfo("cloudflare.invocation").pipe(
+            Effect.annotateLogs(attributes),
+            Effect.withSpan("cloudflare.invocation", {
+              root: true,
+              attributes: { ...attributes, "executor.measurement.kind": "native-invocation" },
+              links: traceLinks(
+                {
+                  traceId: attributes["executor.trace_id"],
+                  spanId: attributes["executor.span_id"],
+                  sampled: attributes["executor.trace_sampled"],
+                },
+                "native-invocation",
+              ),
+            }),
+          ),
         ),
         Effect.catchTag("SchemaError", () =>
           Effect.logError("Invalid Cloudflare invocation timing record"),

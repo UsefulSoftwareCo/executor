@@ -20,6 +20,7 @@ import {
 } from "apps/ui/contracts";
 import { appDocument, appAsset } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
+import { currentTraceContext } from "@executor-js/telemetry";
 import { Effect, Result, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -106,7 +107,23 @@ export const appUi = (
             Stream.merge(
               Stream.tick("15 seconds").pipe(Stream.map(() => ({ type: "heartbeat" as const }))),
             ),
-            Stream.mapEffect((frame) => operation(payload).pipe(Effect.as(frame))),
+            Stream.mapEffect((frame) =>
+              Effect.gen(function* () {
+                yield* operation(payload).pipe(
+                  Effect.withSpan(
+                    frame.type === "snapshot"
+                      ? "app.ui.snapshot.authorize"
+                      : "app.ui.heartbeat.authorize",
+                  ),
+                );
+                if (frame.type === "heartbeat") return frame;
+                return { ...frame, trace: yield* currentTraceContext };
+              }).pipe(
+                Effect.withSpan(
+                  frame.type === "snapshot" ? "app.ui.snapshot.send" : "app.ui.heartbeat",
+                ),
+              ),
+            ),
             Stream.provideService(HttpServerRequest.HttpServerRequest, request),
           );
         }),

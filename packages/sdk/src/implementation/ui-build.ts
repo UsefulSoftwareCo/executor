@@ -25,7 +25,7 @@ export const uiContentType = (file: string) =>
       ? "text/css"
       : file.endsWith(".svg")
         ? "image/svg+xml"
-        : file.endsWith(".json")
+        : file.endsWith(".json") || file.endsWith(".map")
           ? "application/json"
           : file.endsWith(".woff2")
             ? "font/woff2"

@@ -7,6 +7,7 @@ import { EvidenceEntries } from "../report-model.ts";
 import { Target } from "./platform.ts";
 import { Collector, SpanQuery } from "./contracts.ts";
 import { RecordingFocus } from "./recording-focus.ts";
+import { axiomTraceQuery } from "./axiom.ts";
 
 /** Public request measurements contain no request bodies, cookies or credentials. */
 export interface RequestEvidence {
@@ -66,6 +67,7 @@ export class Telemetry extends Context.Service<
       const target = yield* Target;
       const fs = yield* FileSystem.FileSystem;
       const http = yield* HttpClient.HttpClient;
+      const cloudQuery = yield* axiomTraceQuery;
       const origin = fs.readFileString(`${target.directory}/data/diagnostics/collector.json`).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))),
         Effect.map((collector) => collector.url),
@@ -77,18 +79,20 @@ export class Telemetry extends Context.Service<
         );
       return {
         query: (id) =>
-          safe(
-            Effect.scoped(
-              Effect.gen(function* () {
-                const url = yield* origin;
-                const response = yield* http.get(`${url}/api/traces/${id}/spans`);
-                if (response.status !== 200) return yield* new TelemetryUnavailable();
-                return yield* response.json.pipe(
-                  Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
-                );
-              }),
-            ),
-          ),
+          target.metadata.target === "cloud"
+            ? cloudQuery(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
+            : safe(
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const url = yield* origin;
+                    const response = yield* http.get(`${url}/api/traces/${id}/spans`);
+                    if (response.status !== 200) return yield* new TelemetryUnavailable();
+                    return yield* response.json.pipe(
+                      Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
+                    );
+                  }),
+                ),
+              ),
         export: (spans) =>
           safe(
             Effect.scoped(

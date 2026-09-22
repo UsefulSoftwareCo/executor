@@ -8,7 +8,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
-import { cloudAppUiBase, cloudAppUiPort } from "./contracts/app-ui.ts";
+import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
 import { requestTiming } from "@executor-js/telemetry/http";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAuth } from "./infrastructure/auth.ts";
@@ -50,7 +50,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         date: "2026-09-08",
         flags: ["nodejs_compat", "global_fetch_strictly_public"],
       },
-      ...(dev ? {} : { routes: [{ pattern: `*.${new URL(base).hostname}/*` }] }),
+      ...(dev ? {} : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
       dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
     };
   }),

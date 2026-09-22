@@ -79,6 +79,9 @@ test("the real event exporter delivers valid summaries and a safe decoding failu
               version: "test",
               environment: "test",
               logs: { url: `http://127.0.0.1:${address.port}` },
+              traces: { url: `http://127.0.0.1:${address.port}` },
+              metrics: { url: `http://127.0.0.1:${address.port}` },
+              metricsProtocol: "http/json",
             },
             "event",
           ),
@@ -90,6 +93,9 @@ test("the real event exporter delivers valid summaries and a safe decoding failu
     assert.match(payload, /Invalid Cloudflare invocation timing record/);
     assert.match(payload, /cloudflare.cpu_time_ms/);
     assert.match(payload, /1234567890abcdef/);
+    assert.match(payload, /"links":\[/);
+    assert.match(payload, /executor.worker.cpu_ms/);
+    assert.match(payload, /executor.worker.wall_ms/);
     assert.doesNotMatch(payload, /private-token|private-cookie|private-console|private-error/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

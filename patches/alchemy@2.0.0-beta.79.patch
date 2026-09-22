@@ -84,17 +84,21 @@ index d5e365c27c703aa143792cd6c786676a6a90c9de..724fec4eb9d6f7207805738c5459f606
                      services,
                      context,
 diff --git a/lib/Cloudflare/Workers/HttpServer.js b/lib/Cloudflare/Workers/HttpServer.js
-index 53d2536b6c086fb167269e07f1c04a1a2d1f55b6..2d5c7f06be994c24691a4dc67186ad5fe7cf3516 100644
+index 53d2536b6c086fb167269e07f1c04a1a2d1f55b6..80628efc856170ebaea904b32e95758018cd294e 100644
 --- a/lib/Cloudflare/Workers/HttpServer.js
 +++ b/lib/Cloudflare/Workers/HttpServer.js
-@@ -1,6 +1,5 @@
+@@ -1,7 +1,9 @@
  import * as Deferred from "effect/Deferred";
  import * as Effect from "effect/Effect";
 -import * as Layer from "effect/Layer";
  import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/unstable/http/HttpBody";
  import * as EffectHttp from "effect/unstable/http/HttpEffect";
  import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-@@ -22,10 +21,7 @@ export const makeRequestEffect = (webRequest, handler) => {
+ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+@@ -22,23 +24,30 @@ export const makeRequestEffect = (webRequest, handler) => {
                  raw: webRequest.body,
              }),
          });
@@ -106,12 +110,31 @@ index 53d2536b6c086fb167269e07f1c04a1a2d1f55b6..2d5c7f06be994c24691a4dc67186ad5f
      });
  };
  const toHandledWebResponse = (handler) => Effect.gen(function* () {
-@@ -38,7 +34,7 @@ const toHandledWebResponse = (handler) => Effect.gen(function* () {
-     HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
-         withoutBody: request.method === "HEAD",
-         context,
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
+     const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
+     const webResponse = yield* Deferred.make();
++    const toWeb = (request, response) => {
++        let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++        const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++        if (streaming && transferred.body instanceof HttpBody.Stream) {
++            const body = transferred.body;
++            transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++                body.stream.pipe(Stream.onExit((exit) => Scope.close(eventScope, exit))),
++                body.contentType, body.contentLength));
++        }
++        const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++        if (streaming) EffectHttp.scopeDisableClose(eventScope);
++        return web;
++    };
+     yield* EffectHttp.toHandled(handler, (request, response) => Deferred.succeed(webResponse, 
+-    // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-    HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-        withoutBody: request.method === "HEAD",
+-        context,
 -    })));
-+    }))).pipe(Effect.forkScoped);
++    toWeb(request, response))).pipe(Effect.forkScoped);
      return yield* Deferred.await(webResponse);
  });
  export { isScopeEjected } from "../../Http.js";
@@ -269,18 +292,22 @@ index 83cc61f5870ee6e74bede2d3396e28050d9b793c..37e603734a192ae9351c459dda1b6358
                    instance,
                    services,
 diff --git a/src/Cloudflare/Workers/HttpServer.ts b/src/Cloudflare/Workers/HttpServer.ts
-index 73034de2da062d5b083e213aeb4a087ae7fa2989..9b6b1333196c1c266c1263771394bd89a7ac5cce 100644
+index 73034de2da062d5b083e213aeb4a087ae7fa2989..54a73a37a0268d1236af0dcd345fec76b165371b 100644
 --- a/src/Cloudflare/Workers/HttpServer.ts
 +++ b/src/Cloudflare/Workers/HttpServer.ts
-@@ -1,7 +1,6 @@
+@@ -1,8 +1,10 @@
  import type * as cf from "@cloudflare/workers-types";
  import * as Deferred from "effect/Deferred";
  import * as Effect from "effect/Effect";
 -import * as Layer from "effect/Layer";
  import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/unstable/http/HttpBody";
  import * as EffectHttp from "effect/unstable/http/HttpEffect";
  import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-@@ -44,10 +43,8 @@ export const makeRequestEffect = <Req = never>(
+ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+@@ -44,10 +46,8 @@ export const makeRequestEffect = <Req = never>(
      });
  
      return yield* toHandledWebResponse(safeHandler).pipe(
@@ -293,20 +320,41 @@ index 73034de2da062d5b083e213aeb4a087ae7fa2989..9b6b1333196c1c266c1263771394bd89
      );
    }) as any;
  };
-@@ -61,6 +58,8 @@ const toHandledWebResponse = <Req>(
+@@ -59,18 +59,29 @@ const toHandledWebResponse = <Req>(
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
      const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
      const webResponse = yield* Deferred.make<Response>();
  
-+    // Return when the response callback fires. The event scope owns the
-+    // uninterruptible HTTP cleanup fiber, and the bridge closes it via waitUntil.
++    const toWeb = (request: HttpServerRequest.HttpServerRequest, response: HttpServerResponse.HttpServerResponse) => {
++      let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++      const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++      if (streaming && transferred.body instanceof HttpBody.Stream) {
++        const body = transferred.body;
++        // The HTTP scope (and its root span) closes first. The outer event
++        // exporter closes only after that stream finalizer has completed.
++        transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++          body.stream.pipe(Stream.onExit((exit) => Scope.close(eventScope, exit))),
++          body.contentType,
++          body.contentLength,
++        ));
++      }
++      const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++      if (streaming) EffectHttp.scopeDisableClose(eventScope);
++      return web;
++    };
      yield* EffectHttp.toHandled(handler, (request, response) =>
-       Deferred.succeed(
-         webResponse,
-@@ -70,7 +69,7 @@ const toHandledWebResponse = <Req>(
-           context,
-         }),
-       ),
+-      Deferred.succeed(
+-        webResponse,
+-        // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-        HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-          withoutBody: request.method === "HEAD",
+-          context,
+-        }),
+-      ),
 -    );
++      Deferred.succeed(webResponse, toWeb(request, response)),
 +    ).pipe(Effect.forkScoped);
      return yield* Deferred.await(webResponse);
    });

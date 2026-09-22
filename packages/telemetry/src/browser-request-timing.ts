@@ -50,6 +50,13 @@ export const browserRequestTiming = (
     "executor.trace_id": trace,
     "browser.request.duration_ms": value.duration,
   };
+  const span = value.serverTiming.find((timing) => timing.name === "executor-span")?.description;
+  if (span !== undefined && /^(?!0{16}$)[a-f0-9]{16}$/.test(span))
+    attributes["executor.span_id"] = span;
+  const sampled = value.serverTiming.find(
+    (timing) => timing.name === "executor-sampled",
+  )?.description;
+  if (sampled === "1" || sampled === "0") attributes["executor.trace_sampled"] = Number(sampled);
   const ray = value.serverTiming.find((timing) => timing.name === "cf-ray")?.description;
   if (ray !== undefined && /^[a-f0-9]{16,32}(?:-[A-Z]{3})?$/i.test(ray))
     attributes["cloudflare.ray_id"] = ray.replace(/-[A-Z]{3}$/i, "");

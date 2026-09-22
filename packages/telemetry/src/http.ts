@@ -7,6 +7,7 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { forwardTelemetry } from "./relay.ts";
+import { recordResponseReady } from "./measurements.ts";
 
 /**
  * Expose handler-to-response timing and correlation IDs to the caller.
@@ -20,6 +21,14 @@ export const requestTiming = <E, R>(
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const span = yield* Effect.currentSpan.pipe(Effect.option);
+    if (Option.isSome(span))
+      yield* Effect.logInfo("executor.request.context").pipe(
+        Effect.annotateLogs({
+          "executor.trace_id": span.value.traceId,
+          "executor.span_id": span.value.spanId,
+          "executor.trace_sampled": span.value.sampled,
+        }),
+      );
     const ray = request.headers["cf-ray"]?.match(/^[a-f0-9]{16,32}(?:-[A-Z]{3})?$/i)?.[0];
     if (ray !== undefined)
       yield* Effect.annotateCurrentSpan("cloudflare.ray_id", ray.replace(/-[A-Z]{3}$/i, ""));
@@ -28,8 +37,14 @@ export const requestTiming = <E, R>(
     yield* HttpEffect.appendPreResponseHandler((_request, response) =>
       Effect.gen(function* () {
         const elapsed = (yield* Clock.currentTimeMillis) - start;
+        const path = URL.parse(request.url, "http://executor.internal")?.pathname;
+        yield* recordResponseReady(path, request.method, response.status, Math.max(0, elapsed));
         const timings = [`executor;dur=${Math.max(0, elapsed)}`];
-        if (Option.isSome(span)) timings.push(`executor-trace;desc="${span.value.traceId}"`);
+        if (Option.isSome(span)) {
+          timings.push(`executor-trace;desc="${span.value.traceId}"`);
+          timings.push(`executor-span;desc="${span.value.spanId}"`);
+          timings.push(`executor-sampled;desc="${span.value.sampled ? "1" : "0"}"`);
+        }
         if (ray !== undefined) timings.push(`cf-ray;desc="${ray}"`);
         const existing = response.headers["server-timing"];
         return HttpServerResponse.setHeader(

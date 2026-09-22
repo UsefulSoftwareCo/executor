@@ -36,6 +36,7 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
             service: "executor-app",
             version: "invocation",
             environment: "isolated",
+            clock: "WebSocketPair" in globalThis ? "cloudflare-io" : "system",
             traces: { url: "http://telemetry.internal/v1/traces" },
             logs: { url: "http://telemetry.internal/v1/logs" },
           },

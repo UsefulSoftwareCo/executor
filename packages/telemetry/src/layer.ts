@@ -1,7 +1,7 @@
 /** Portable Effect exporters. The host owns scope and export lifetime. */
 import { Effect, Layer, Logger, Metric, Redacted } from "effect";
 import { telemetryHttpClient } from "./transport.ts";
-import { allowlistedSpans } from "./span-attributes.ts";
+import { spanAttributes } from "./span-attributes.ts";
 import {
   OtlpLogger,
   OtlpMetrics,
@@ -40,7 +40,7 @@ export const telemetryLayer = (
       ? Layer.empty
       : // Credentials travel in provider headers and query strings this product does
         // not choose, so every exported span records only allowlisted HTTP attributes.
-        allowlistedSpans.pipe(
+        spanAttributes(config.clock).pipe(
           Layer.provideMerge(
             OtlpTracer.layer(signal(config.traces)).pipe(
               Layer.provide(OtlpSerialization.layerJson),
@@ -55,7 +55,11 @@ export const telemetryLayer = (
         }).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provideMerge(console)),
     config.metrics === undefined
       ? Layer.empty
-      : OtlpMetrics.layer({ ...signal(config.metrics), temporality: "delta" }).pipe(
+      : OtlpMetrics.layer({
+          ...signal(config.metrics),
+          exportInterval: "30 seconds",
+          temporality: "delta",
+        }).pipe(
           Layer.provide(
             config.metricsProtocol === "http/json"
               ? OtlpSerialization.layerJson

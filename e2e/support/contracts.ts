@@ -28,11 +28,17 @@ export const SpanQuery = Schema.Struct({
     Schema.Struct({
       traceId: Schema.String,
       span: Schema.Struct({
+        spanId: Schema.String,
+        parentSpanId: Schema.NullOr(Schema.String),
         operationName: Schema.String,
         serviceName: Schema.String,
         durationMs: Schema.Number,
         status: Schema.String,
         tags: Schema.Record(Schema.String, Schema.String),
+        // Motel omits links; Axiom's adapter must supply the delivered array.
+        links: Schema.optionalKey(
+          Schema.Array(Schema.Struct({ traceId: Schema.String, spanId: Schema.String })),
+        ),
       }),
     }),
   ),

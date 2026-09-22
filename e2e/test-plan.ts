@@ -338,6 +338,15 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appObservability: {
+    file: "app-observability.spec.ts",
+    title: "app query traces connect browser, streamed host work, runtime and React commits",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
   appUiFailures: {
     file: "app-ui-failures.spec.ts",
     title: "private app failures stay visible and recover without losing drafts",
@@ -352,9 +361,7 @@ export const scenarios = {
     title: "private app crash reports reach the host collector before authored telemetry starts",
     targets: {
       "self-host": scheduled,
-      cloud: na(
-        "Cloud exports to the configured remote collector, not the local Motel query endpoint.",
-      ),
+      cloud: scheduled,
       local: na("This scenario uses hosted app deployment and browser authentication."),
     },
   },

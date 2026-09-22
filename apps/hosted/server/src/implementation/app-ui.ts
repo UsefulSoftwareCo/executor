@@ -24,6 +24,7 @@ import {
 } from "apps/ui/contracts";
 import { appAsset, appDocument } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
+import { currentTraceContext } from "@executor-js/telemetry";
 import { Clock, Effect, Option, Redacted, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -314,8 +315,18 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
           const { input, current } = yield* dataInput(payload);
           const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
           const check = dataInput(payload);
-          const context = yield* Effect.context<Effect.Services<typeof check>>();
-          const access = check.pipe(Effect.provideContext(context));
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const sessions = yield* HostedAppSessions;
+          const executorService = yield* HostedExecutor;
+          const groups = yield* GroupDatabase;
+          // Retain request services, not the handler's parent span or exporter scope.
+          // Each streamed check must inherit the current delivery/heartbeat span.
+          const access = check.pipe(
+            Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+            Effect.provideService(HostedAppSessions, sessions),
+            Effect.provideService(HostedExecutor, executorService),
+            Effect.provideService(GroupDatabase, groups),
+          );
           const source = yield* executor.appData
             .subscribe(input)
             .pipe(Effect.mapError(dataFailure));
@@ -323,13 +334,21 @@ export const hostedAppUi = (addresses: ReturnType<typeof appAddresses>) => {
             source.pipe(
               Stream.provideService(CurrentUserId, current.access.userId),
               Stream.provideService(CurrentOrganization, current.access),
+              Stream.provideService(GroupDatabase, groups),
               Stream.mapError(dataFailure),
               Stream.mapEffect((snapshot) =>
-                access.pipe(Effect.as({ type: "snapshot" as const, value: snapshot.value })),
+                Effect.gen(function* () {
+                  yield* access.pipe(Effect.withSpan("app.ui.snapshot.authorize"));
+                  return {
+                    type: "snapshot" as const,
+                    value: snapshot.value,
+                    trace: yield* currentTraceContext,
+                  };
+                }).pipe(Effect.withSpan("app.ui.snapshot.send")),
               ),
             ),
             Stream.tick("5 seconds").pipe(
-              Stream.mapEffect(() => access),
+              Stream.mapEffect(() => access.pipe(Effect.withSpan("app.ui.heartbeat.authorize"))),
               Stream.map(() => ({ type: "heartbeat" as const })),
             ),
           );

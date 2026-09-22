@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Result, Schema, Tracer } from "effect";
 import { HttpClientError } from "effect/unstable/http";
 import { collectTelemetry, forwardTelemetry, telemetryLayer } from "../src/index.ts";
 
@@ -17,7 +17,19 @@ test("relay retains error messages, structured logs and custom attributes", asyn
           Effect.result,
         );
         return (yield* Effect.currentSpan).traceId;
-      }).pipe(Effect.withSpan("app.call")),
+      }).pipe(
+        Effect.withSpan("app.call", {
+          links: [
+            {
+              span: Tracer.externalSpan({
+                traceId: "1234567890abcdef1234567890abcdef",
+                spanId: "abcdef1234567890",
+              }),
+              attributes: { "executor.link.kind": "fixture" },
+            },
+          ],
+        }),
+      ),
     ),
   );
   const received: string[] = [];
@@ -56,6 +68,9 @@ test("relay retains error messages, structured logs and custom attributes", asyn
     assert.match(payload, /attempts/);
     assert.match(payload, /\[1,2\]/);
     assert.ok(payload.includes(captured.value));
+    assert.match(payload, /"links":\[/);
+    assert.match(payload, /"traceId":"1234567890abcdef1234567890abcdef"/);
+    assert.match(payload, /"spanId":"abcdef1234567890"/);
   } finally {
     await new Promise<void>((resolve) => receiver.close(() => resolve()));
   }

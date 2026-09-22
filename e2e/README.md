@@ -423,3 +423,19 @@ The scenario checks HTTPS, the permitted HTTP origin and a denied different port
 It starts authorization with a synthetic manual client; it does not contact a live
 provider. SDK protocol tests separately cover discovery, registration, code exchange,
 refresh and callback parameter tampering through the production transport seam.
+
+### Authored app observability
+
+`app query traces connect browser, streamed host work, runtime and React commits`
+uses a real app, checks two results while its stream is open, then closes it and
+requires a complete parent graph. It checks linked source maps without embedded
+source text, preserved drafts, and a deliberately failed subscription followed
+by a linked retry. The failed attempt must also be present in the collector.
+
+Self-host reads actual delivery through Motel. For a dedicated deployed Cloud
+stage, bind `E2E_AXIOM_TOKEN` through the credential launcher and set
+`E2E_AXIOM_DATASET=executor-next-test-traces` together with the normal attached
+stage URL and private synthetic actor file. The query adapter reads only the
+validated trace ID in the current run's time window. Personal Axiom tokens also
+require `E2E_AXIOM_ORG_ID`; dataset-scoped API tokens do not. Partial or truncated
+results fail; missing parents are never replaced by synthetic success records.

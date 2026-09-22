@@ -48,6 +48,10 @@ export const browserBuild = (
           assetNames: "[name]-[hash]",
           splitting: true,
           metafile: true,
+          sourcemap: "linked",
+          // Mappings identify original file/line locations without publishing
+          // authored source text or tree-shaken values to every app viewer.
+          sourcesContent: false,
         });
         build.onResolve({ filter: /.*/ }, (args) => {
           if (args.path.startsWith("node:") || args.path.startsWith("cloudflare:"))

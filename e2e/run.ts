@@ -252,6 +252,15 @@ const command = Command.make("e2e", {
                             EXECUTOR_E2E_API_KEY: Redacted.value(apiKey),
                             EXECUTOR_E2E_CONTROL_ORIGIN: controlOrigin ?? "",
                             E2E_CLOUD_ACTORS: actors,
+                            ...(process.env.E2E_AXIOM_TOKEN === undefined
+                              ? {}
+                              : { E2E_AXIOM_TOKEN: process.env.E2E_AXIOM_TOKEN }),
+                            ...(process.env.E2E_AXIOM_DATASET === undefined
+                              ? {}
+                              : { E2E_AXIOM_DATASET: process.env.E2E_AXIOM_DATASET }),
+                            ...(process.env.E2E_AXIOM_ORG_ID === undefined
+                              ? {}
+                              : { E2E_AXIOM_ORG_ID: process.env.E2E_AXIOM_ORG_ID }),
                             E2E_SUITE: selected === "hosted" ? "hosted" : "all",
                             E2E_INTERACTIVE: interactive ? "1" : "0",
                             E2E_UI_OBSERVE: observeUI ? "1" : "0",

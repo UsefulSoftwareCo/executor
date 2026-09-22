@@ -1,6 +1,7 @@
 /** Native page measurements. Observers and reporting fibers belong to the browser Layer. */
 import { Effect, FiberSet, Option, Schedule, Schema } from "effect";
 import { browserRequestTiming } from "./browser-request-timing.ts";
+import { traceLinks } from "./trace-context.ts";
 
 const layoutShift = Schema.decodeUnknownOption(
   Schema.Struct({ value: Schema.Number, hadRecentInput: Schema.Boolean }),
@@ -55,7 +56,21 @@ export const observeBrowserPerformance = Effect.gen(function* () {
   const report = (name: string, attributes: Readonly<Record<string, string | number | boolean>>) =>
     Effect.logInfo(name).pipe(
       Effect.annotateLogs(attributes),
-      Effect.withSpan(name, { root: true, attributes }),
+      Effect.withSpan(name, {
+        root: true,
+        attributes,
+        links: traceLinks(
+          {
+            traceId: attributes["executor.trace_id"],
+            spanId: attributes["executor.span_id"],
+            sampled:
+              attributes["executor.trace_sampled"] === undefined
+                ? undefined
+                : attributes["executor.trace_sampled"] === 1,
+          },
+          "request-timing",
+        ),
+      }),
     );
 
   const record = (entries: readonly PerformanceEntry[]) => {

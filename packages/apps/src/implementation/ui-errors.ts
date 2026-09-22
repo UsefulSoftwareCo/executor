@@ -2,8 +2,42 @@
 const installAppFailureUI = () => {
   let reported = false;
   const extension = /^(?:chrome|moz|safari-web)-extension:/;
+  const errorTypes = new Set([
+    "Error",
+    "TypeError",
+    "ReferenceError",
+    "SyntaxError",
+    "RangeError",
+    "URIError",
+    "EvalError",
+    "AggregateError",
+  ]);
+  const sourceAttributes = (filename: string, line = 0, column = 0) => {
+    const attributes: Array<{
+      key: string;
+      value: { stringValue: string } | { intValue: string };
+    }> = [];
+    if (!URL.canParse(filename)) return attributes;
+    const url = new URL(filename);
+    if (
+      url.origin !== location.origin ||
+      !url.pathname.startsWith("/_executor/assets/") ||
+      !url.pathname.endsWith(".js")
+    )
+      return attributes;
+    attributes.push({ key: "code.file.path", value: { stringValue: url.pathname } });
+    if (Number.isSafeInteger(line) && line > 0)
+      attributes.push({ key: "code.line.number", value: { intValue: String(line) } });
+    if (Number.isSafeInteger(column) && column > 0)
+      attributes.push({ key: "code.column.number", value: { intValue: String(column) } });
+    return attributes;
+  };
 
-  const fail = (kind: "runtime" | "script" | "rejection", details: string) => {
+  const fail = (
+    kind: "runtime" | "script" | "rejection",
+    details: string,
+    attributes: ReturnType<typeof sourceAttributes> = [],
+  ) => {
     if (reported) return;
     reported = true;
     const traceId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
@@ -74,6 +108,7 @@ const installAppFailureUI = () => {
                       status: { code: 2 },
                       attributes: [
                         { key: "executor.ui.failure.kind", value: { stringValue: kind } },
+                        ...attributes,
                       ],
                     },
                   ],
@@ -104,12 +139,20 @@ const installAppFailureUI = () => {
     (event: Event) => {
       if (event instanceof ErrorEvent) {
         if (extension.test(event.filename)) return;
+        const attributes = sourceAttributes(event.filename, event.lineno, event.colno);
+        if (event.error instanceof Error && errorTypes.has(event.error.name))
+          attributes.push({ key: "exception.type", value: { stringValue: event.error.name } });
         fail(
           "runtime",
           event.error instanceof Error ? (event.error.stack ?? event.message) : event.message,
+          attributes,
         );
       } else if (event.target instanceof HTMLScriptElement) {
-        fail("script", `Could not load script: ${event.target.src}`);
+        fail(
+          "script",
+          `Could not load script: ${event.target.src}`,
+          sourceAttributes(event.target.src),
+        );
       }
     },
     true,

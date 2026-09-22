@@ -234,7 +234,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
           page.goto(`${url}/#boot`),
         );
         yield* browser.use("Open crash details", (page) =>
-          page.getByText("Error details", { exact: true }).click(),
+          // The first app visit includes the cross-origin sign-in journey.
+          page.getByText("Error details", { exact: true }).click({ timeout: 60_000 }),
         );
         const details = yield* browser.use("Get the diagnostic trace ID", (page) =>
           page.getByRole("textbox", { name: "Error details" }).inputValue(),
@@ -254,6 +255,9 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         )?.span;
         expect(span?.tags["executor.ui.failure.kind"]).toBe("runtime");
         expect(span?.tags["executor.build.id"]).toBe(app.activeDeployment);
+        expect(span?.tags["exception.type"]).toBe("Error");
+        expect(span?.tags["code.file.path"]).toMatch(/^\/_executor\/assets\/.*\.js$/);
+        expect(Number(span?.tags["code.line.number"])).toBeGreaterThan(0);
         expect(JSON.stringify(delivered)).not.toContain("Fixture boot failure");
       }),
     ),

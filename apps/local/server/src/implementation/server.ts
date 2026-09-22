@@ -20,6 +20,7 @@ import {
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 import { Config, Effect, Layer, Path, Redacted, Result, Deferred, Schedule } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { requestTiming } from "@executor-js/telemetry/http";
 import { safeHttpClient } from "@executor-js/utils/safe-fetch";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -328,7 +329,7 @@ export const localApi = (
           const request = yield* HttpServerRequest.HttpServerRequest;
           return yield* appFromHost(request.headers.host, config.port) === undefined
             ? productHandler
-            : appHandler;
+            : appHandler.pipe(requestTiming);
         }),
       );
     }),

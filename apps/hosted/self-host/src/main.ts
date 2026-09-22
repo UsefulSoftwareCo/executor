@@ -26,6 +26,7 @@ import {
   apiProtectedResource,
 } from "@executor-js/hosted-server";
 import { localTelemetry } from "@executor-js/telemetry/local";
+import { requestTiming } from "@executor-js/telemetry/http";
 import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { AppSignInApi, appSignInPage, appSignInScript } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
@@ -182,7 +183,8 @@ export const selfHostRoutes = Effect.gen(function* () {
     "*",
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      if (Option.isSome(addresses.fromHost(request.headers.host))) return yield* apps;
+      if (Option.isSome(addresses.fromHost(request.headers.host)))
+        return yield* apps.pipe(requestTiming);
       if (addresses.ownsHost(request.headers.host)) return notFound;
       return yield* product;
     }),

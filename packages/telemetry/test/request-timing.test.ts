@@ -17,6 +17,7 @@ const ray = "1234567890abcdef-SJC";
 
 test("the response exposes handler time and trace correlation without waiting for cleanup", async () => {
   let cleaned = false;
+  let serverSpan: string | undefined;
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -29,6 +30,7 @@ test("the response exposes handler time and trace correlation without waiting fo
           }),
         );
         const handler = Effect.gen(function* () {
+          serverSpan = (yield* Effect.currentSpan).spanId;
           yield* Effect.addFinalizer(() =>
             Deferred.await(release).pipe(
               Effect.andThen(
@@ -61,7 +63,7 @@ test("the response exposes handler time and trace correlation without waiting fo
           assert.equal(response.headers["cache-control"], "no-store");
           assert.equal(
             response.headers["server-timing"],
-            `upstream;dur=12, executor;dur=163, executor-trace;desc="${traceId}", cf-ray;desc="${ray}"`,
+            `upstream;dur=12, executor;dur=163, executor-trace;desc="${traceId}", executor-span;desc="${serverSpan}", executor-sampled;desc="1", cf-ray;desc="${ray}"`,
           );
           assert.equal(cleaned, false);
           assert.doesNotMatch(JSON.stringify(response.headers), /private-key|secret/);
@@ -111,6 +113,8 @@ const entry = {
   serverTiming: [
     { name: "executor", description: "", duration: 163 },
     { name: "executor-trace", description: traceId, duration: 0 },
+    { name: "executor-span", description: "abcdef1234567890", duration: 0 },
+    { name: "executor-sampled", description: "1", duration: 0 },
     { name: "cf-ray", description: ray, duration: 0 },
   ],
 };
@@ -119,6 +123,8 @@ test("browser timing retains the unexplained wait and correlates it without reco
   const value = browserRequestTiming(entry, "https://fixture.test");
   assert.deepEqual(value, {
     "executor.trace_id": traceId,
+    "executor.span_id": "abcdef1234567890",
+    "executor.trace_sampled": 1,
     "cloudflare.ray_id": "1234567890abcdef",
     "browser.request.duration_ms": 1463,
     "browser.request.dns_ms": 5,

@@ -98,11 +98,19 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => ({
 });
 
 /** Wrap whichever tracer is already in scope; provide this above the exporter. */
-export const allowlistedSpans: Layer.Layer<never> = Layer.effect(Tracer.Tracer)(
-  Tracer.Tracer.pipe(
-    Effect.map((tracer) => ({
-      ...tracer,
-      span: (options) => allowlistedSpan(tracer.span(options)),
-    })),
-  ),
-);
+export const spanAttributes = (clock?: "system" | "cloudflare-io"): Layer.Layer<never> =>
+  Layer.effect(Tracer.Tracer)(
+    Tracer.Tracer.pipe(
+      Effect.map((tracer) => ({
+        ...tracer,
+        span: (options) => {
+          const span = allowlistedSpan(tracer.span(options));
+          if (clock !== undefined) span.attribute("executor.clock.type", clock);
+          return span;
+        },
+      })),
+    ),
+  );
+
+/** Header and URL filtering without making an unsupported claim about the runtime clock. */
+export const allowlistedSpans = spanAttributes();

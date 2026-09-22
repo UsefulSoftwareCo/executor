@@ -2,7 +2,8 @@
 import type { ReadWriteNamespaceClient } from "alchemy/Cloudflare/Artifacts";
 import { RuntimeContext } from "alchemy";
 import { protectGit } from "./implementation/protected-git.ts";
-import { Effect, Option, Schema } from "effect";
+import { Context, Effect, Exit, Option, Schema, Scope } from "effect";
+import { captureTelemetry, pendingSpan, traceHeaders } from "@executor-js/telemetry";
 import * as Git from "isomorphic-git";
 import { Volume, createFsFromVolume } from "memfs";
 import { SourceFiles } from "@executor-js/sdk/core";
@@ -92,20 +93,26 @@ export const cloudflareRepositories = (
   const access = (id: string, write: boolean) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const repo = yield* Effect.acquireRelease(namespace.get(id), (repo) =>
-          disposeRpc(repo.raw),
+        const repo = yield* Effect.acquireRelease(
+          namespace.get(id).pipe(Effect.withSpan("source.repository.open")),
+          (repo) => disposeRpc(repo.raw),
         );
         const remote = yield* Schema.decodeUnknownEffect(remoteSchema)(
           `https://${settings.accountId}.artifacts.cloudflare.net/git/${settings.namespace}/${id}.git`,
         );
         const token = yield* Effect.acquireRelease(
-          repo.createToken(write ? "write" : "read", 300),
+          repo
+            .createToken(write ? "write" : "read", 300)
+            .pipe(Effect.withSpan("source.repository.token")),
           (value) => disposeRpc(value),
         );
         const plaintext = yield* Effect.tryPromise({
           try: async () => token.plaintext,
           catch: failure,
-        }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)));
+        }).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)),
+          Effect.withSpan("source.repository.token.read"),
+        );
         return { remote, token: plaintext };
       }),
     ).pipe(
@@ -113,7 +120,12 @@ export const cloudflareRepositories = (
       Effect.mapError(failure),
       Effect.tapError(observeFailure),
     );
-  const client = (token: string, remote: string, signal: AbortSignal): Git.HttpClient => ({
+  const client = (
+    token: string,
+    remote: string,
+    signal: AbortSignal,
+    context: Context.Context<Scope.Scope>,
+  ): Git.HttpClient => ({
     request: async (request) => {
       const url = new URL(request.url);
       if (
@@ -135,29 +147,70 @@ export const cloudflareRepositories = (
         body.set(chunk, offset);
         offset += chunk.length;
       }
-      const response = await fetch(url, {
-        method: request.method ?? "GET",
-        headers: { ...request.headers, authorization: `Bearer ${token}` },
-        ...(request.body === undefined ? {} : { body }),
-        redirect: "manual",
-        signal,
-      });
+      const run = Effect.runPromiseWith(context);
+      const { response, headersSpan } = await run(
+        Effect.gen(function* () {
+          const headersSpan = yield* Effect.currentSpan;
+          const propagation = yield* traceHeaders;
+          const response = yield* Effect.tryPromise({
+            try: () =>
+              fetch(url, {
+                method: request.method ?? "GET",
+                headers: { ...request.headers, ...propagation, authorization: `Bearer ${token}` },
+                ...(request.body === undefined ? {} : { body }),
+                redirect: "manual",
+                signal,
+              }),
+            catch: failure,
+          });
+          yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+          return { response, headersSpan };
+        }).pipe(
+          Effect.withSpan("source.git.http.headers", {
+            kind: "client",
+            attributes: {
+              "http.request.method": request.method ?? "GET",
+              "source.git.route": url.pathname.endsWith("/info/refs")
+                ? "refs"
+                : url.pathname.endsWith("/git-upload-pack")
+                  ? "read-pack"
+                  : "write-pack",
+            },
+          }),
+        ),
+        { signal },
+      );
       const stream = async function* () {
         if (response.body === null) return;
+        const observed = await run(pendingSpan("source.git.http.body", { parent: headersSpan }));
         const reader = response.body.getReader();
         let total = 0;
+        let exit: Exit.Exit<unknown, unknown> = Exit.void;
+        let cleanupFailure: SourceError | undefined;
         try {
           for (;;) {
             const next = await reader.read();
-            if (next.done) return;
+            if (next.done) break;
             total += next.value.length;
             if (total > 32 * 1024 * 1024) throw new Error("Git repository too large");
             yield next.value;
           }
+        } catch (error) {
+          exit = Exit.fail(failure(error));
+          throw error;
         } finally {
-          await reader.cancel();
-          reader.releaseLock();
+          observed.span.attribute("source.git.response.bytes", total);
+          try {
+            await reader.cancel();
+          } catch (error) {
+            cleanupFailure = failure(error);
+            exit = Exit.fail(cleanupFailure);
+          } finally {
+            reader.releaseLock();
+            await run(observed.finish(exit));
+          }
         }
+        if (cleanupFailure !== undefined) throw cleanupFailure;
       };
       return {
         url: response.url,
@@ -174,6 +227,20 @@ export const cloudflareRepositories = (
       };
     },
   });
+  const withGit = <A>(
+    name: string,
+    value: { readonly token: string; readonly remote: string },
+    work: (http: Git.HttpClient) => Promise<A>,
+  ) =>
+    Effect.gen(function* () {
+      const telemetry = yield* captureTelemetry;
+      const scope = yield* Scope.Scope;
+      const context = Context.add(telemetry.context, Scope.Scope, scope);
+      return yield* Effect.tryPromise({
+        try: (signal) => work(client(value.token, value.remote, signal, context)),
+        catch: failure,
+      });
+    }).pipe(Effect.withSpan(name), Effect.scoped);
   const session = (id: string, write: boolean) =>
     access(id, write).pipe(
       Effect.map((access) => ({ ...access, fs: createFsFromVolume(new Volume()), dir: "/repo" })),
@@ -182,27 +249,24 @@ export const cloudflareRepositories = (
     history: (id) =>
       Effect.gen(function* () {
         const value = yield* session(id, false);
-        const rows = yield* Effect.tryPromise({
-          try: async (signal) => {
-            const options = { fs: value.fs, dir: value.dir };
-            await Git.clone({
-              ...options,
-              http: client(value.token, value.remote, signal),
-              url: value.remote,
-              ref: "main",
-              singleBranch: true,
-              noCheckout: true,
-              noTags: true,
-              depth: 50,
-            });
-            return (await Git.log({ ...options, ref: "main", depth: 50 })).map((entry) => ({
-              commit: entry.oid,
-              author: entry.commit.author.name,
-              message: entry.commit.message.trim(),
-              timestamp: entry.commit.author.timestamp,
-            }));
-          },
-          catch: failure,
+        const rows = yield* withGit("source.git.history", value, async (http) => {
+          const options = { fs: value.fs, dir: value.dir };
+          await Git.clone({
+            ...options,
+            http,
+            url: value.remote,
+            ref: "main",
+            singleBranch: true,
+            noCheckout: true,
+            noTags: true,
+            depth: 50,
+          });
+          return (await Git.log({ ...options, ref: "main", depth: 50 })).map((entry) => ({
+            commit: entry.oid,
+            author: entry.commit.author.name,
+            message: entry.commit.message.trim(),
+            timestamp: entry.commit.author.timestamp,
+          }));
         });
         return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
       }).pipe(Effect.mapError(failure)),
@@ -236,15 +300,13 @@ export const cloudflareRepositories = (
       Effect.gen(function* () {
         const name = yield* Schema.decodeUnknownEffect(Branch)(branch);
         const value = yield* access(id, false);
-        const refs = yield* Effect.tryPromise({
-          try: (signal) =>
-            Git.listServerRefs({
-              http: client(value.token, value.remote, signal),
-              url: value.remote,
-              prefix: `refs/heads/${name}`,
-            }),
-          catch: failure,
-        });
+        const refs = yield* withGit("source.git.refs", value, (http) =>
+          Git.listServerRefs({
+            http,
+            url: value.remote,
+            prefix: `refs/heads/${name}`,
+          }),
+        );
         const ref = refs.find((ref) => ref.ref === `refs/heads/${name}`);
         return ref === undefined ? null : yield* Schema.decodeUnknownEffect(Commit)(ref.oid);
       }).pipe(Effect.mapError(failure)),
@@ -253,32 +315,35 @@ export const cloudflareRepositories = (
         if (!Schema.is(Commit)(ref) && !Schema.is(Branch)(ref))
           return yield* new SourceError({ reason: "invalid-source" });
         const value = yield* session(id, false);
+        const options = { fs: value.fs, dir: value.dir };
+        const refs = yield* withGit("source.git.refs", value, (http) =>
+          Git.listServerRefs({
+            http,
+            url: value.remote,
+            prefix: "refs/heads/",
+          }),
+        );
+        const exact = refs.find(
+          (entry) =>
+            entry.ref.startsWith("refs/heads/") &&
+            (entry.ref === `refs/heads/${ref}` || entry.oid === ref),
+        );
+        const head = exact ?? refs.find((entry) => entry.ref === "refs/heads/main") ?? refs[0];
+        if (head === undefined) return yield* new SourceError({ reason: "not-found" });
+        yield* withGit("source.git.clone", value, (http) =>
+          Git.clone({
+            ...options,
+            http,
+            url: value.remote,
+            ref: head.ref,
+            noCheckout: true,
+            singleBranch: exact !== undefined,
+            ...(exact === undefined ? {} : { depth: 1 }),
+            noTags: true,
+          }),
+        );
         const result = yield* Effect.tryPromise({
-          try: async (signal) => {
-            const options = { fs: value.fs, dir: value.dir };
-            const http = client(value.token, value.remote, signal);
-            const refs = await Git.listServerRefs({
-              http,
-              url: value.remote,
-              prefix: "refs/heads/",
-            });
-            const exact = refs.find(
-              (entry) =>
-                entry.ref.startsWith("refs/heads/") &&
-                (entry.ref === `refs/heads/${ref}` || entry.oid === ref),
-            );
-            const head = exact ?? refs.find((entry) => entry.ref === "refs/heads/main") ?? refs[0];
-            if (head === undefined) throw new SourceError({ reason: "not-found" });
-            await Git.clone({
-              ...options,
-              http,
-              url: value.remote,
-              ref: head.ref,
-              noCheckout: true,
-              singleBranch: exact !== undefined,
-              ...(exact === undefined ? {} : { depth: 1 }),
-              noTags: true,
-            });
+          try: async () => {
             const commit = Schema.is(Commit)(ref)
               ? ref
               : await Git.resolveRef({ ...options, ref: `refs/remotes/origin/${ref}` });
@@ -307,7 +372,7 @@ export const cloudflareRepositories = (
             return { commit, files };
           },
           catch: failure,
-        });
+        }).pipe(Effect.withSpan("source.git.tree"));
         return {
           commit: yield* Schema.decodeUnknownEffect(Commit)(result.commit),
           files: yield* sourceFiles(yield* Schema.decodeUnknownEffect(SourceFiles)(result.files)),
@@ -317,92 +382,88 @@ export const cloudflareRepositories = (
       Effect.gen(function* () {
         const files = yield* sourceFiles(input.files);
         const value = yield* session(input.id, true);
-        return yield* Effect.tryPromise({
-          try: async (signal) => {
-            const options = { fs: value.fs, dir: value.dir };
-            const http = client(value.token, value.remote, signal);
-            if (input.expected === null) {
-              await Git.init({ ...options, defaultBranch: input.branch });
-              await Git.addRemote({ ...options, remote: "origin", url: value.remote });
-            } else
-              await Git.clone({
-                ...options,
-                http,
-                url: value.remote,
-                noCheckout: true,
-                ref: input.branch,
-                singleBranch: true,
-                depth: 1,
-                noTags: true,
-              });
-            const writeTree = async (prefix: string): Promise<string> => {
-              const entries: Git.TreeEntry[] = [];
-              const directories = new Set<string>();
-              for (const file of files) {
-                if (!file.path.startsWith(prefix)) continue;
-                const rest = file.path.slice(prefix.length);
-                const slash = rest.indexOf("/");
-                if (slash >= 0) {
-                  directories.add(rest.slice(0, slash));
-                  continue;
-                }
-                entries.push({
-                  mode: "100644",
-                  path: rest,
-                  type: "blob",
-                  oid: await Git.writeBlob({
-                    ...options,
-                    blob: new TextEncoder().encode(file.content),
-                  }),
-                });
-              }
-              for (const directory of directories)
-                entries.push({
-                  mode: "040000",
-                  path: directory,
-                  type: "tree",
-                  oid: await writeTree(`${prefix}${directory}/`),
-                });
-              return Git.writeTree({ ...options, tree: entries });
-            };
-            const author = {
-              name: "Executor",
-              email: "apps@executor.local",
-              timestamp: Math.floor(Date.now() / 1000),
-              timezoneOffset: 0,
-            };
-            const commit = await Git.writeCommit({
-              ...options,
-              commit: {
-                tree: await writeTree(""),
-                parent: input.expected === null ? [] : [input.expected],
-                author,
-                committer: author,
-                message: input.message,
-              },
-            });
-            await Git.writeRef({
-              ...options,
-              ref: `refs/heads/${input.branch}`,
-              value: commit,
-              force: true,
-            });
-            const result = await Git.push({
+        return yield* withGit("source.git.commit", value, async (http) => {
+          const options = { fs: value.fs, dir: value.dir };
+          if (input.expected === null) {
+            await Git.init({ ...options, defaultBranch: input.branch });
+            await Git.addRemote({ ...options, remote: "origin", url: value.remote });
+          } else
+            await Git.clone({
               ...options,
               http,
               url: value.remote,
+              noCheckout: true,
               ref: input.branch,
-              remoteRef: input.branch,
-              onPrePush: ({ remoteRef }) => {
-                if (remoteRef.oid !== (input.expected ?? "0".repeat(40)))
-                  throw new SourceError({ reason: "conflict" });
-                return true;
-              },
+              singleBranch: true,
+              depth: 1,
+              noTags: true,
             });
-            if (!result.ok) throw new SourceError({ reason: "conflict" });
-            return commit;
-          },
-          catch: failure,
+          const writeTree = async (prefix: string): Promise<string> => {
+            const entries: Git.TreeEntry[] = [];
+            const directories = new Set<string>();
+            for (const file of files) {
+              if (!file.path.startsWith(prefix)) continue;
+              const rest = file.path.slice(prefix.length);
+              const slash = rest.indexOf("/");
+              if (slash >= 0) {
+                directories.add(rest.slice(0, slash));
+                continue;
+              }
+              entries.push({
+                mode: "100644",
+                path: rest,
+                type: "blob",
+                oid: await Git.writeBlob({
+                  ...options,
+                  blob: new TextEncoder().encode(file.content),
+                }),
+              });
+            }
+            for (const directory of directories)
+              entries.push({
+                mode: "040000",
+                path: directory,
+                type: "tree",
+                oid: await writeTree(`${prefix}${directory}/`),
+              });
+            return Git.writeTree({ ...options, tree: entries });
+          };
+          const author = {
+            name: "Executor",
+            email: "apps@executor.local",
+            timestamp: Math.floor(Date.now() / 1000),
+            timezoneOffset: 0,
+          };
+          const commit = await Git.writeCommit({
+            ...options,
+            commit: {
+              tree: await writeTree(""),
+              parent: input.expected === null ? [] : [input.expected],
+              author,
+              committer: author,
+              message: input.message,
+            },
+          });
+          await Git.writeRef({
+            ...options,
+            ref: `refs/heads/${input.branch}`,
+            value: commit,
+            force: true,
+          });
+          const result = await Git.push({
+            ...options,
+            http,
+            url: value.remote,
+            ref: input.branch,
+            remoteRef: input.branch,
+            onPrePush: ({ remoteRef }) => {
+              if (remoteRef.oid !== (input.expected ?? "0".repeat(40)))
+                throw new SourceError({ reason: "conflict" });
+              return true;
+            },
+          });
+          if (!result.ok) throw new SourceError({ reason: "conflict" });
+          return commit;
         }).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Commit)),
           Effect.mapError(failure),
