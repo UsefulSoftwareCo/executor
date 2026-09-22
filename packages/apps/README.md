@@ -54,6 +54,28 @@ credential placement metadata, and an optional selected account. It does not
 parse a raw OpenAPI specification. `packages/app-templates` owns that compiler.
 No extra OpenAPI parser is installed in the app.
 
+Authenticated templates use `provider.many()` and `accountOperations` from `apps`:
+
+```ts
+export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, signal }) =>
+  accountOperations(
+    accounts.service,
+    (account) =>
+      mcpOperations({
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer " + account.fields.token },
+        signal,
+      }),
+    { signal },
+  ),
+);
+```
+
+Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
+`accountId` must identify a selected account that exposes that tool. Discovery
+and validation remain specific to each account. An empty selection returns no
+tools. This helper also works with OpenAPI, GraphQL and stdio operations.
+
 Contracts live in `src/contracts/`; native operations live in `src/implementation/`.
 Promise conversion happens at the public entry points. `apps/mcp/effect` exposes
 the native HTTP discovery operation for host-side import probing.

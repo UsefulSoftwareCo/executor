@@ -52,6 +52,7 @@ export {
   type Provider,
 } from "./contracts/provider.ts";
 export { defineProvider } from "./implementation/provider.ts";
+export { accountOperations } from "./implementation/account-operations.ts";
 
 /** A secrets declaration inferred from an author schema. */
 export type SecretsMethod<Shape extends ObjectSchema<Fields>> = NativeSecretsMethod<

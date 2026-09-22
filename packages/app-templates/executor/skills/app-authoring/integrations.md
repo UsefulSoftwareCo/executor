@@ -16,9 +16,15 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-For an authenticated server, declare a provider and pass headers derived from
-the selected account. OAuth uses `oauth2({ discover: "https://example.com/mcp" })`
-and `Authorization: "Bearer " + accounts.service.fields.access_token`.
+Authenticated templates declare `service: provider.many()` and combine discovery
+with `accountOperations(accounts.service, account => mcpOperations({ ... }), { signal })`
+from `apps`. Each tool takes `{ accountId, input }`: the chosen account ID and the
+original upstream input. Same-name tools keep one name with an input schema for
+each account. Empty selections expose no tools.
+
+Pass headers derived from that callback's account.
+OAuth uses `oauth2({ discover: "https://example.com/mcp" })`
+and `Authorization: "Bearer " + account.fields.access_token`.
 API-key methods use their declared fields and the server's required headers.
 The factory runs with each configured app's selected account, so different
 accounts can expose different catalogs. Do not keep a global authenticated catalog.
@@ -44,7 +50,8 @@ Import `stdioOperations` from `apps/mcp/stdio` and declare
 `provider.ts`, and `package.json`. The HTTP helper never imports this process adapter.
 
 Declare environment variable names in the form. The generated provider stores
-their values as an account and passes `accounts.service.fields` to the child.
+their values as accounts and passes the chosen `account.fields` to the child.
+The generated app uses `provider.many()` and `accountOperations`, as above.
 Do not embed tokens in source, command arguments, or working-directory paths.
 Servers with no environment fields need no account.
 
@@ -68,6 +75,11 @@ Use `openapiOperations` from `apps/openapi` with the generated `operations.json`
 authentication metadata, and selected account. Custom Add generates these
 files from a specification. The runtime helper accepts normalized operations,
 not a raw specification, and needs no extra dependency.
+
+Authenticated GraphQL and OpenAPI templates also use `provider.many()` and
+`accountOperations`. Public templates keep their original tool inputs and need
+no account selection. Existing apps change only when their source is edited and
+deployed again.
 
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and

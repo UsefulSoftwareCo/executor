@@ -20,13 +20,13 @@ export const generateStdioApp = (input: StdioAppInput) =>
       files: yield* sourceFiles([
         {
           path: "index.ts",
-          content: `import { defineApp } from "apps";
+          content: `import { defineApp${account ? ", accountOperations" : ""} } from "apps";
 import { stdioOperations } from "apps/mcp/stdio";
 ${account ? 'import { provider } from "./provider.ts"\n' : ""}
 const process = ${serialize(config)};
-export default defineApp({ accounts: ${account ? "{ service: provider }" : "{}"} }, async ({ accounts, signal }) => ({
-    ...await stdioOperations({ ...process, env: ${account ? "accounts.service.fields" : "{}"} }, signal),
-}));
+export default defineApp({ accounts: ${account ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, signal }) =>
+  ${account ? "accountOperations(accounts.service, async (account) => " : ""}stdioOperations({ ...process, env: ${account ? "account.fields" : "{}"} }, signal)${account ? ", { signal })" : ""},
+);
 `,
         },
         packageFile(input.name, { "@modelcontextprotocol/sdk": "1.30.0" }),

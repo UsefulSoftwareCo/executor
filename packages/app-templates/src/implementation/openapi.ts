@@ -448,7 +448,7 @@ const generateDefinition = (
         files: Schema.decodeUnknownSync(SourceFiles)([
           {
             path: "index.ts",
-            content: `import { defineApp } from "apps"\nimport { openapiOperations } from "apps/openapi"\n${hasAccount ? 'import { provider } from "./provider.ts"\n' : ""}import operations from "./operations.json"\n\nexport default defineApp({ accounts: ${hasAccount ? "{ service: provider }" : "{}"} }, async (context) => ({\n  ...await openapiOperations({\n    operations,\n    methods: ${serialize(Object.fromEntries(secrets.map((m) => [m.name, m.bindings])))},\n    oauth: ${serialize(oauth.map(({ name }) => name))},\n${hasAccount ? "    account: context.accounts.service,\n" : ""}    ...(context.signal === undefined ? {} : { signal: context.signal }),\n  }),\n}))\n`,
+            content: `import { defineApp${hasAccount ? ", accountOperations" : ""} } from "apps"\nimport { openapiOperations } from "apps/openapi"\n${hasAccount ? 'import { provider } from "./provider.ts"\n' : ""}import operations from "./operations.json"\n\nexport default defineApp({ accounts: ${hasAccount ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, signal }) =>\n  ${hasAccount ? "accountOperations(accounts.service, async (account) => " : ""}openapiOperations({\n    operations,\n    methods: ${serialize(Object.fromEntries(secrets.map((m) => [m.name, m.bindings])))},\n    oauth: ${serialize(oauth.map(({ name }) => name))},\n${hasAccount ? "    account,\n" : ""}    signal,\n  })${hasAccount ? ", { signal })" : ""},\n)\n`,
           },
           ...(hasAccount
             ? [

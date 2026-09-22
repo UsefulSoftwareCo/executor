@@ -214,6 +214,15 @@ export const scenarios = {
       local: na("This scenario exercises the hosted import API."),
     },
   },
+  templateAccounts: {
+    file: "template-accounts.spec.ts",
+    title: "Imported templates route shared tools to explicitly selected accounts",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses loopback upstream fixtures for the shared protocol templates."),
+      local: na("Exercises the hosted import and profile APIs."),
+    },
+  },
   cloudDashboardRoutes: {
     file: "cloud-dashboard-routes.spec.ts",
     title: "Cloud dashboard deep links preserve API, docs and asset routing",

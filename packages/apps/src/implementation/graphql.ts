@@ -190,6 +190,7 @@ export const graphqlToolsEffect = (
           },
         }),
         Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+        Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
         Effect.provide(FetchHttpClient.layer),
         Effect.timeoutOrElse({
           duration: options.timeoutMs ?? defaultGraphqlClientLimits.timeoutMs,

@@ -21,12 +21,12 @@ export const generateRemoteApp = (
         : []),
     ];
     const keyHeader = auth.apiKey
-      ? `{ [${serialize(auth.apiKey.header)}]: ${serialize(auth.apiKey.prefix)} + accounts.service.fields.token }`
+      ? `{ [${serialize(auth.apiKey.header)}]: ${serialize(auth.apiKey.prefix)} + account.fields.token }`
       : undefined;
-    const oauthHeader = '{ Authorization: "Bearer " + accounts.service.fields.access_token }';
+    const oauthHeader = '{ Authorization: "Bearer " + account.fields.access_token }';
     const headers =
       auth.oauth && auth.apiKey
-        ? `accounts.service.method === "oauth" ? ${oauthHeader} : ${keyHeader}`
+        ? `account.method === "oauth" ? ${oauthHeader} : ${keyHeader}`
         : auth.oauth
           ? oauthHeader
           : keyHeader;
@@ -34,7 +34,7 @@ export const generateRemoteApp = (
       files: yield* sourceFiles([
         {
           path: "index.ts",
-          content: `import { defineApp } from "apps"\nimport { ${helper} } from "apps/${kind}"\n${methods.length ? 'import { provider } from "./provider.ts"\n' : ""}\nexport default defineApp({ accounts: ${methods.length ? "{ service: provider }" : "{}"} }, async ({ accounts, signal }) => ({\n  ...await ${helper}({\n    url: ${serialize(url)},\n${headers ? `    headers: ${headers},\n` : ""}    ...(signal === undefined ? {} : { signal }),\n  }),\n}))\n`,
+          content: `import { defineApp${methods.length ? ", accountOperations" : ""} } from "apps"\nimport { ${helper} } from "apps/${kind}"\n${methods.length ? 'import { provider } from "./provider.ts"\n' : ""}\nexport default defineApp({ accounts: ${methods.length ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, signal }) =>\n  ${methods.length ? "accountOperations(accounts.service, async (account) => " : ""}${helper}({\n    url: ${serialize(url)},\n${headers ? `    headers: ${headers},\n` : ""}    signal,\n  })${methods.length ? ", { signal })" : ""},\n)\n`,
         },
         ...(methods.length
           ? [

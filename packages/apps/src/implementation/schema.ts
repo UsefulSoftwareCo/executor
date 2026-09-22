@@ -1,7 +1,7 @@
 /** Author schema facade. Internals use the native decoder retained by each value. */
 import { Effect, Schema as EffectSchema, SchemaIssue, SchemaParser } from "effect";
 import { dereference, validate } from "@cfworker/json-schema";
-import { ValidationError, type JsonObject } from "../contracts/schema.ts";
+import { ValidationError, type JsonObject, type JsonValue } from "../contracts/schema.ts";
 
 import type { Field } from "@executor-js/app-data/contracts";
 const StorageField = Symbol("apps.StorageField");
@@ -151,6 +151,64 @@ const ImportedJsonSchema = Symbol("apps.JsonSchemaDocument");
 /** Read the original document for an imported decoder without a lossy schema round trip. */
 export const importedJsonSchema = (decoder: EffectSchema.Decoder<unknown>): unknown | undefined =>
   ImportedJsonSchema in decoder ? decoder[ImportedJsonSchema] : undefined;
+
+/** Attach a composed discovery document without replacing its authoritative native decoder. */
+export const withJsonSchemaDocument = <S extends EffectSchema.Decoder<unknown>>(
+  decoder: S,
+  document: JsonObject,
+): S => Object.assign(decoder, { [ImportedJsonSchema]: document });
+
+/**
+ * Relocate a self-contained JSON Schema under a document pointer. Resolve references
+ * before nesting so account schemas can reuse definition names, IDs and anchors.
+ * Only schema nodes are rewritten; examples and ordinary property values stay intact.
+ */
+export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject => {
+  const document = structuredClone(input);
+  const lookup = dereference(document);
+  const schemas = new Set(Object.values(lookup));
+  const pointers = new Map<unknown, string>();
+  const locate = (value: JsonValue, path: string): void => {
+    if (!pointers.has(value)) pointers.set(value, path);
+    if (Array.isArray(value)) value.forEach((item, index) => locate(item, `${path}/${index}`));
+    else if (value !== null && typeof value === "object")
+      for (const [key, item] of Object.entries(value))
+        locate(
+          item,
+          `${path}/${encodeURI(key.replaceAll("~", "~0").replaceAll("/", "~1")).replaceAll("#", "%23")}`,
+        );
+  };
+  locate(document, pointer);
+  const references = new Map<unknown, Readonly<Record<string, string>>>();
+  for (const schema of schemas) {
+    if (typeof schema === "boolean") continue;
+    const refs: Record<string, string> = {};
+    for (const [key, absolute] of [
+      ["$ref", schema.__absolute_ref__],
+      ["$recursiveRef", schema.__absolute_recursive_ref__],
+    ] as const) {
+      if (absolute === undefined) continue;
+      const target = lookup[absolute];
+      const path = pointers.get(target);
+      if (path === undefined) throw new ValidationError();
+      refs[key] = path;
+    }
+    references.set(schema, refs);
+  }
+  const rewrite = (value: JsonValue): JsonValue => {
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value === null || typeof value !== "object") return value;
+    const refs = references.get(value);
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => refs === undefined || !["$id", "id", "$anchor"].includes(key))
+        .map(([key, item]) => [key, refs?.[key] ?? rewrite(item)]),
+    );
+  };
+  return EffectSchema.decodeUnknownSync(
+    EffectSchema.Record(EffectSchema.String, EffectSchema.Json),
+  )(rewrite(document));
+};
 
 // Walk schema positions only. A property named "format" or "default" is still ordinary user data.
 const schemaMaps = new Set([
