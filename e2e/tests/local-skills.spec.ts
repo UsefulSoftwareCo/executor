@@ -111,6 +111,54 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
           authoring.structuredContent,
         );
         expect(guideDocument.content).toContain("# Build an Executor app");
+        expect(guideDocument.content).toContain("[ui.md](ui.md)");
+        const topic = yield* client.use("Read the routed UI reference on local", (client, signal) =>
+          client.callTool(
+            {
+              name: "skills",
+              arguments: {
+                app: guide.app.slug,
+                name: guide.name,
+                deployment: guideDocument.deployment,
+                file: "ui.md",
+              },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Document)(topic.structuredContent)).content,
+        ).toContain("withOptimisticUpdate");
+        const contracts = yield* client.use(
+          "Discover local framework types through the installed app",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: 'const found = await tools.executor.queries.framework_search({query: "withOptimisticUpdate"}); return await tools.executor.queries.framework_describe({symbol: "AppMutation.withOptimisticUpdate", ...found.reference});',
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        const described = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            status: Schema.Literal("completed"),
+            execution: Schema.Struct({
+              ok: Schema.Literal(true),
+              value: Schema.Struct({
+                entry: Schema.Struct({ signatures: Schema.Array(Schema.String) }),
+              }),
+            }),
+          }),
+        )(contracts.structuredContent);
+        expect(described.execution.value.entry.signatures.join(" ")).toContain(
+          "OptimisticUpdate<Input>",
+        );
+
         const source = yield* body(
           Schema.Struct({
             id: Schema.String,

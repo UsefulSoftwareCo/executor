@@ -24,6 +24,7 @@ export const OpenapiOperation = Schema.Struct({
   streaming: Schema.optionalKey(Schema.Literal(true)),
   security: Schema.Array(Schema.Array(Schema.String)),
   input: JsonObject,
+  outputSchema: Schema.optionalKey(JsonObject),
 });
 export type OpenapiOperation = typeof OpenapiOperation.Type;
 
@@ -70,6 +71,7 @@ export class OpenapiError extends Schema.TaggedError<OpenapiError>()("OpenapiErr
 export interface OpenapiTool {
   readonly description: string;
   readonly readOnly: boolean;
+  readonly outputSchema?: JsonObject;
   readonly input: Schema.Decoder<Schema.Json>;
   readonly run: (context: unknown, input: Schema.Json) => Effect.Effect<unknown, OpenapiError>;
 }

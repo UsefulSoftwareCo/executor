@@ -465,6 +465,15 @@ export const scenarios = {
       local: na("This journey checks hosted session entry and organization references."),
     },
   },
+  frameworkAuthoring: {
+    file: "framework-authoring.spec.ts",
+    title: "framework discovery deploys its checked example with optimistic updates and rollback",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted discovery-to-browser journey; local skills have separate MCP coverage."),
+    },
+  },
   appUi: {
     file: "app-ui.spec.ts",
     title: "private app bookmarks authenticate and execute through the hosted runtime",

@@ -24,9 +24,9 @@ export const listMessages = query(
     await db.messages.withIndex("by_creation").order("desc").take(100),
 );
 export const receiveMessage = mutation(
-  { input: object({ subject: string() }), output: Message },
+  { input: object({ subject: string(), clientId: string().optional() }), output: Message },
   async ({ db }: MutationContext<typeof requirements>, message) =>
-    await db.messages.insert(message),
+    await db.messages.insert({ subject: message.subject }),
 );
 export default defineApp(requirements, {
   queries: { listMessages },

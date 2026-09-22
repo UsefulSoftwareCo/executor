@@ -8,12 +8,20 @@ import { Message } from "../schema.ts";
 import "./style.css";
 
 const client = createAppClient();
-const inbox = client.queryAtom(
-  queryReference<typeof listMessages>("listMessages"),
-  {},
-  array(Message),
-);
-const receive = mutationReference<typeof receiveMessage>("receiveMessage");
+const listRef = queryReference<typeof listMessages>("listMessages");
+const inbox = client.queryAtom(listRef, {}, array(Message));
+const receive = client
+  .mutation(mutationReference<typeof receiveMessage>("receiveMessage"), Message)
+  .withOptimisticUpdate((store, input) => {
+    const rows = store.getQuery(listRef, {});
+    if (rows !== undefined && input.clientId !== undefined) {
+      store.setQuery(
+        listRef,
+        {},
+        [{ id: input.clientId, subject: input.subject }, ...rows].slice(0, 100),
+      );
+    }
+  });
 
 function Inbox() {
   const { data, pending, error } = useAppQuery(inbox);
@@ -53,7 +61,7 @@ function Inbox() {
           setSaving(true);
           setFailure(undefined);
           try {
-            await client.mutate(receive, { subject: subject.trim() }, Message);
+            await receive({ subject: subject.trim(), clientId: crypto.randomUUID() });
             setSubject("");
           } catch {
             setFailure("Could not save your message. Try again.");

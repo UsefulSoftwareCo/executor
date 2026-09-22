@@ -11,22 +11,27 @@ import {
 
 /** Index predicates are accumulated immutably, then checked against the declaration by the engine. */
 export interface IndexRange<Fields> {
+  /** Constrain an index prefix field to one value. Null matches a cleared optional field. */
   readonly eq: <Key extends keyof Fields & string>(
     field: Key,
     value: Fields[Key] | null,
   ) => IndexRange<Fields>;
+  /** Require a value greater than the bound on the next index field. */
   readonly gt: <Key extends keyof Fields & string>(
     field: Key,
     value: Fields[Key],
   ) => IndexRange<Fields>;
+  /** Require a value greater than or equal to the bound on the next index field. */
   readonly gte: <Key extends keyof Fields & string>(
     field: Key,
     value: Fields[Key],
   ) => IndexRange<Fields>;
+  /** Require a value less than the bound on the next index field. */
   readonly lt: <Key extends keyof Fields & string>(
     field: Key,
     value: Fields[Key],
   ) => IndexRange<Fields>;
+  /** Require a value less than or equal to the bound on the next index field. */
   readonly lte: <Key extends keyof Fields & string>(
     field: Key,
     value: Fields[Key],
@@ -34,11 +39,17 @@ export interface IndexRange<Fields> {
 }
 /** Bounded indexed reads; collect/count reject work beyond the invocation budget. */
 export interface Query<Row> {
+  /** Choose ascending or descending index order without changing this query. */
   readonly order: (direction: "asc" | "desc") => Query<Row>;
+  /** Read all matching rows within the invocation budget; exceeding it fails. */
   readonly collect: () => Promise<readonly Row[]>;
+  /** Count matching rows within the scan budget; exceeding it fails. */
   readonly count: () => Promise<number>;
+  /** Read the first matching row, or null when no row matches. */
   readonly first: () => Promise<Row | null>;
+  /** Read at most count matching rows within the invocation budget. */
   readonly take: (count: number) => Promise<readonly Row[]>;
+  /** Read one cursor page. Return its rows, continuation cursor and completion flag. */
   readonly paginate: (options: {
     readonly numItems: number;
     readonly cursor: string | null;
@@ -50,7 +61,9 @@ export interface Query<Row> {
 }
 /** Typed table operations exposed to authored queries. */
 export interface ReadTable<Row, Index extends string = string> {
+  /** Read a complete row by ID, or null when it does not exist. */
   readonly get: (id: string) => Promise<Row | null>;
+  /** Select a declared index or by_creation, with optional prefix and range constraints. */
   readonly withIndex: (
     index: Index | "by_creation",
     range?: (query: IndexRange<Row>) => IndexRange<Row>,
@@ -61,8 +74,11 @@ export interface WriteTable<Row, Insert, Index extends string = string> extends 
   Row,
   Index
 > {
+  /** Insert authored fields and return the complete row with generated id, createdAt and updatedAt. */
   readonly insert: (value: Insert) => Promise<Row>;
+  /** Patch authored fields and return the complete row, or null if the ID does not exist. */
   readonly update: (id: string, patch: Partial<Insert>) => Promise<Row | null>;
+  /** Delete the row and return whether it existed. */
   readonly delete: (id: string) => Promise<boolean>;
 }
 

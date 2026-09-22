@@ -42,6 +42,40 @@ function resolve(root: JsonObject, value: JsonObject, visited = new Set<string>(
     found = own(record(found), part.replace(/~1/g, "/").replace(/~0/g, "~"));
   return resolve(root, record(found), new Set([...visited, ref]));
 }
+/** Preserve every documented success shape. Missing schemas remain unknown rather than invented. */
+function responseSchema(
+  root: JsonObject,
+  operation: Operation,
+  method: string,
+  schemas: Readonly<Record<string, JsonObject>>,
+): JsonObject | undefined {
+  if (method === "HEAD") return { type: "null" };
+  const success = Object.entries(operation.responses ?? {}).filter(([status]) =>
+    /^2(?:[0-9]{2}|XX)$/i.test(status),
+  );
+  if (success.length === 0) return undefined;
+  const shapes: JsonObject[] = [];
+  for (const [status, response] of success) {
+    if (status === "204") {
+      shapes.push({ type: "null" });
+      continue;
+    }
+    const content = resolve(root, response).content;
+    if (content === undefined) return undefined;
+    const media = Object.entries(record(content));
+    if (media.length === 0) return undefined;
+    for (const [type, body] of media) {
+      if (!type.includes("json")) {
+        shapes.push({ type: "string" });
+        continue;
+      }
+      const schema = record(body).schema;
+      if (schema === undefined) return undefined;
+      shapes.push(record(schema));
+    }
+  }
+  return schemaDocument({ anyOf: shapes }, schemas);
+}
 function schemaDocument(
   input: JsonObject,
   schemas: Readonly<Record<string, JsonObject>>,
@@ -356,6 +390,12 @@ const generateDefinition = (
           } catch {
             fail(`Tool ${name} has an input schema this importer cannot preserve yet.`);
           }
+          const outputSchema = responseSchema(
+            root,
+            operation,
+            method.toUpperCase(),
+            spec.components?.schemas ?? {},
+          );
           const streaming = Object.values(operation.responses ?? {}).some((response) => {
             const content = resolve(root, response).content;
             return content !== undefined && Object.hasOwn(record(content), "text/event-stream");
@@ -371,6 +411,7 @@ const generateDefinition = (
             body,
             security,
             input,
+            ...(outputSchema === undefined ? {} : { outputSchema }),
           });
         }
       }
@@ -449,5 +490,13 @@ export const generateOpenApiApp = (
 ) =>
   Effect.gen(function* () {
     const generated = yield* generateDefinition(entry, document, options);
-    return { toolCount: generated.toolCount, files: yield* sourceFiles(generated.files) };
+    return {
+      toolCount: generated.toolCount,
+      files: yield* sourceFiles(generated.files),
+      metadata: {
+        operations: generated.operations,
+        methods: generated.methods,
+        oauth: generated.oauth,
+      },
+    };
   });

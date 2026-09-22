@@ -7,3 +7,9 @@ export {
   type QueryTransport,
 } from "./contracts/live.ts";
 export { createAppClient } from "./implementation/ui-client.ts";
+
+export type {
+  AppMutation,
+  OptimisticLocalStore,
+  OptimisticUpdate,
+} from "./contracts/optimistic.ts";

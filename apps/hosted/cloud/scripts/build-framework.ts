@@ -1,5 +1,6 @@
 /** Package the local app framework for the Worker bundler; no npm publication is required. */
 import { build } from "esbuild";
+import { generateFrameworkReference } from "../../../../packages/apps/scripts/reference.mjs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect, FileSystem, Path } from "effect";
@@ -72,12 +73,22 @@ NodeRuntime.runMain(
         JSON.stringify(files),
       );
     }
-    const authoring = yield* fs.readFileString(
-      path.join(root, "packages/app-templates/executor/skills/app-authoring/SKILL.md"),
+    const directory = path.join(root, "packages/app-templates/executor/skills/app-authoring");
+    const files = yield* Effect.forEach(
+      (yield* fs.readDirectory(directory)).filter((name) => name.endsWith(".md")),
+      (name) =>
+        fs
+          .readFileString(path.join(directory, name))
+          .pipe(Effect.map((content) => [`skills/app-authoring/${name}`, content] as const)),
     );
+    const reference = yield* Effect.promise(() => generateFrameworkReference());
     yield* fs.writeFileString(
       path.join(root, "apps/hosted/cloud/.generated/executor-authoring.json"),
-      JSON.stringify(authoring),
+      JSON.stringify({
+        ...Object.fromEntries(files),
+        "framework.ts": yield* fs.readFileString(path.join(directory, "../../framework.ts")),
+        "framework-reference.json": JSON.stringify(reference),
+      }),
     );
   }).pipe(Effect.provide(NodeServices.layer)),
 );

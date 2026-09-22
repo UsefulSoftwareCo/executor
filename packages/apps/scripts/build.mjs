@@ -1,6 +1,7 @@
 /** Stage a standalone npm package. Workspace dependencies are included in its JS and declarations. */
 import { build } from "esbuild";
 import ts from "typescript";
+import { generateFrameworkReference } from "./reference.mjs";
 import { readFile, writeFile, mkdir, rm, readdir, copyFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,10 +11,9 @@ const packages = resolve(root, "..");
 const out = join(root, "dist");
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const entries = Object.fromEntries(
-  Object.entries(manifest.exports).map(([key, source]) => [
-    key === "." ? "index" : key.slice(2),
-    join(root, source),
-  ]),
+  Object.entries(manifest.exports)
+    .filter(([key]) => !key.endsWith(".json"))
+    .map(([key, source]) => [key === "." ? "index" : key.slice(2), join(root, source)]),
 );
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
@@ -71,6 +71,11 @@ if (diagnostics.length > 0) {
     }),
   );
 }
+
+await writeFile(
+  join(out, "framework-reference.json"),
+  JSON.stringify(await generateFrameworkReference()),
+);
 
 // Internal package declarations travel with apps; consumers never need private
 // workspace packages. Relative .js specifiers work with NodeNext and bundlers.
@@ -150,13 +155,15 @@ await writeFile(
 );
 
 const exports = Object.fromEntries(
-  Object.entries(manifest.exports).map(([key, source]) => [
-    key,
-    {
-      types: `./types/apps/${source.slice(2).replace(/\.ts$/, ".d.ts")}`,
-      import: `./js/${key === "." ? "index" : key.slice(2)}.js`,
-    },
-  ]),
+  Object.entries(manifest.exports)
+    .filter(([key]) => !key.endsWith(".json"))
+    .map(([key, source]) => [
+      key,
+      {
+        types: `./types/apps/${source.slice(2).replace(/\.ts$/, ".d.ts")}`,
+        import: `./js/${key === "." ? "index" : key.slice(2)}.js`,
+      },
+    ]),
 );
 await writeFile(
   join(out, "package.json"),
@@ -171,8 +178,16 @@ await writeFile(
         ...exports,
         "./package.json": "./package.json",
         "./runtime.json": "./runtime.json",
+        "./framework-reference.json": "./framework-reference.json",
       },
-      files: ["js", "types", "runtime.json", "check-publish.mjs", "README.md"],
+      files: [
+        "js",
+        "types",
+        "runtime.json",
+        "framework-reference.json",
+        "check-publish.mjs",
+        "README.md",
+      ],
       dependencies: {
         effect: manifest.dependencies.effect,
         "@effect/sql-sqlite-do": manifest.dependencies["@effect/sql-sqlite-do"],

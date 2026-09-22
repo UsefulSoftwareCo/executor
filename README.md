@@ -324,6 +324,7 @@ HTTP contract. Configuration remains available through MCP and the SDK.
 
 ```sh
 bun install
+bun run apps:build
 bun run typecheck
 node --test apps/local/server/test/mcp.test.ts
 ```

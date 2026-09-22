@@ -4,8 +4,8 @@
   "type": "module",
   "exports": {},
   "scripts": {
-    "start": "node src/main.ts",
-    "build": "bun build src/main.ts --target=node --packages=external --outdir=dist --entry-naming=\"[name].mjs\""
+    "start": "bun run ../../../packages/apps/scripts/build.mjs && node src/main.ts",
+    "build": "bun run ../../../packages/apps/scripts/build.mjs && bun build src/main.ts --target=node --packages=external --outdir=dist --entry-naming=\"[name].mjs\""
   },
   "dependencies": {
     "@better-auth/core": "1.7.5",

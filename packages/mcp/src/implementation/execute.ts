@@ -129,7 +129,10 @@ function catalog(backend: McpBackend<Error>) {
                 Tool.make({
                   description: `${app.name}: ${tool.description}`,
                   input: renderableSchema(input),
-                  output: Schema.Json,
+                  output:
+                    tool.outputSchema === undefined
+                      ? Schema.Json
+                      : renderableSchema(tool.outputSchema),
                   execute: (input) =>
                     Schema.decodeUnknownEffect(Json)(input).pipe(
                       Effect.mapError(() => toolError("Tool arguments must be JSON")),

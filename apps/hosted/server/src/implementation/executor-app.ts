@@ -19,6 +19,24 @@ export const executorCatalogEntry = (origin: string) =>
   });
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
+const managementIndex = `import { defineApp } from "apps";
+import { openapiOperations } from "apps/openapi";
+import { provider } from "./provider.ts";
+import metadata from "./operations.json";
+import { frameworkQueries } from "./framework.ts";
+import reference from "./framework-reference.json";
+
+export default defineApp({ accounts: { service: provider } }, async (context) => {
+  const operations = await openapiOperations({
+    ...metadata,
+    account: context.accounts.service,
+    fetch: context.fetch,
+    ...(context.signal === undefined ? {} : { signal: context.signal }),
+  });
+  return { ...operations, queries: { ...operations.queries, ...frameworkQueries(reference) } };
+});
+`;
+
 export const executorAppSource = (
   origin: string,
   skills: readonly SourceFile[],
@@ -26,8 +44,15 @@ export const executorAppSource = (
 ) =>
   generateOpenApiApp(executorCatalogEntry(origin), document, { baseUrl: origin }).pipe(
     Effect.map((generated) => ({
-      ...generated,
-      files: SourceFiles.make([...generated.files, ...skills]),
+      toolCount: generated.toolCount + 2,
+      files: SourceFiles.make([
+        { path: "index.ts", content: managementIndex },
+        ...generated.files.filter(
+          (file) => file.path !== "index.ts" && file.path !== "operations.json",
+        ),
+        { path: "operations.json", content: JSON.stringify(generated.metadata) },
+        ...skills,
+      ]),
     })),
   );
 
@@ -42,20 +67,7 @@ export const defaultExecutorAppSource = (
       files: SourceFiles.make([
         {
           path: "index.ts",
-          content: `import { defineApp } from "apps";
-import { openapiOperations } from "apps/openapi";
-import { provider } from "./provider.ts";
-import metadata from "./operations.json";
-
-export default defineApp({ accounts: { service: provider } }, async (context) => ({
-  ...await openapiOperations({
-    ...metadata,
-    account: context.accounts.service,
-    fetch: context.fetch,
-    ...(context.signal === undefined ? {} : { signal: context.signal }),
-  }),
-}));
-`,
+          content: managementIndex,
         },
         {
           path: "provider.ts",

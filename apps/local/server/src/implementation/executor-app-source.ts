@@ -20,9 +20,11 @@ export const executorAppSource = () =>
 import { openapiOperations } from "apps/openapi";
 import { executor } from "./provider.ts";
 import metadata from "./operations.json";
+import { frameworkQueries } from "./framework.ts";
+import reference from "./framework-reference.json";
 
-export default defineApp({ accounts: { executor } }, async (context) => ({
-  ...await openapiOperations({
+export default defineApp({ accounts: { executor } }, async (context) => {
+  const operations = await openapiOperations({
     ...metadata,
     operations: metadata.operations.map(operation => ({
       ...operation,
@@ -34,8 +36,9 @@ export default defineApp({ accounts: { executor } }, async (context) => ({
     },
     fetch: context.fetch,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
-  }),
-}));
+  });
+  return { ...operations, queries: { ...operations.queries, ...frameworkQueries(reference) } };
+});
 `,
           },
           {

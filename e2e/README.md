@@ -445,3 +445,16 @@ stage URL and private synthetic actor file. The query adapter reads only the
 validated trace ID in the current run's time window. Personal Axiom tokens also
 require `E2E_AXIOM_ORG_ID`; dataset-scoped API tokens do not. Partial or truncated
 results fail; missing parents are never replaced by synthetic success records.
+
+### Framework authoring and optimistic UI
+
+`framework discovery deploys its checked example with optimistic updates and rollback`
+reads the built-in app through MCP, checks native and imported tool output signatures,
+follows a pinned skill topic, and deploys the example returned by `framework_describe`.
+It holds the real write and reconciliation read at the browser boundary, checks the
+optimistic row and draft, rejects a later write, then retries and reloads persisted data.
+Run it with `bun run e2e:self-host --test-name 'framework discovery deploys'`.
+
+`bun run e2e:local --test-name 'local MCP skills'` checks local framework queries
+and topic routing alongside configured copies and pinned deployments. Package tests
+cover queued writes, argument variants, read failures, unmounts and disposal.

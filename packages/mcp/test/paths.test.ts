@@ -38,6 +38,19 @@ const setup = (apps: readonly (typeof first)[]) => {
             properties: { query: { type: "string" } },
             required: ["query"],
           },
+          ...(name === "queries.search"
+            ? {
+                outputSchema: {
+                  type: "object",
+                  properties: {
+                    items: { type: "array", items: { type: "string" } },
+                    next: { anyOf: [{ type: "string" }, { type: "null" }] },
+                  },
+                  required: ["items", "next"],
+                  additionalProperties: false,
+                },
+              }
+            : {}),
         })),
       }),
     callTool: ({ app, tool }) =>
@@ -70,6 +83,17 @@ test("search returns nested slug paths and calls retain their original app IDs a
     result.items.every((item) => !item.path.includes("app_one") && !item.path.includes("%2E")),
   );
   assert.ok(result.items.every((item) => item.signature.includes(item.path)));
+  const signature = result.items.find(
+    (item) => item.path === "tools.axiom.queries.search",
+  )?.signature;
+  assert.ok(signature);
+  assert.ok(signature.includes("items: Array<string>"), signature);
+  assert.ok(signature.includes("next: string | null"), signature);
+  assert.ok(
+    result.items
+      .find((item) => item.path.endsWith("projects.list"))
+      ?.signature.includes("Promise<unknown>"),
+  );
   const called = await run(`return await Promise.all([
     tools.axiom.queries.search({ query: "errors" }),
     tools.axiom.queries.projects.list({ query: "projects" }),

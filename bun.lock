@@ -434,10 +434,12 @@
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
         "@modelcontextprotocol/sdk": "1.30.0",
+        "@types/node": "^26.6.1",
         "@types/react": "^19.2.0",
         "esbuild": "0.28.2",
         "graphql": "16.11.0",
         "react": "^19.2.0",
+        "typescript": "^5.9.2",
       },
       "peerDependencies": {
         "@modelcontextprotocol/sdk": "^1.30.0",
@@ -652,13 +654,13 @@
     "playground/demo-apps/live-inbox": {
       "name": "@executor-js/app-live-inbox",
       "dependencies": {
-        "apps": "workspace:*",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
       },
       "devDependencies": {
         "@types/react": "^19.2.0",
         "@types/react-dom": "^19.2.0",
+        "apps": "workspace:*",
       },
     },
     "playground/demo-apps/mail": {

@@ -16,7 +16,7 @@
     "./app-ui": "./src/contracts/app-ui.ts"
   },
   "scripts": {
-    "start": "node src/main.ts",
+    "start": "bun run ../../../packages/apps/scripts/build.mjs && node src/main.ts",
     "test:mcp": "node --test test/mcp.test.ts"
   },
   "dependencies": {

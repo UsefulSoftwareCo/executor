@@ -25,6 +25,7 @@ export const openapiToolsEffect = (
             description: op.description,
             readOnly: ["GET", "HEAD", "OPTIONS"].includes(op.method),
             input,
+            ...(op.outputSchema === undefined ? {} : { outputSchema: op.outputSchema }),
             run: (_context, value) =>
               Schema.decodeUnknownEffect(input)(value).pipe(
                 Effect.mapError(() => new OpenapiError({ reason: "invalid_input" })),
