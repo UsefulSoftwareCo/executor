@@ -121,6 +121,23 @@ const editIdentity = (app: AppId) =>
         : Effect.succeed(identity),
     ),
   );
+const authoring = (id: AppId) =>
+  Effect.gen(function* () {
+    const identity = yield* AppIdentity;
+    const host = yield* Effect.flatten(AppManagementHost);
+    const { app, access } = yield* ownedSource(host, identity, id);
+    const canEdit = identity.canWrite && access.edit && !identity.protectedApps.includes(id);
+    return {
+      app,
+      host,
+      metadata: {
+        namespace: identity.namespace,
+        gitPath: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git`,
+        canEdit,
+        canPublish: canEdit && host.publisher !== undefined && identity.namespace !== null,
+      },
+    };
+  });
 /** Routes call existing SDK app operations; authoring never creates another project identity. */
 export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id extends string>(
   api: ReturnType<typeof appManagementApi<I, S>>,
@@ -154,27 +171,25 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             .pipe(Effect.flatMap((app) => projectApp(host, app, identity)));
         }),
       )
+      .handle("authoring", ({ params }) =>
+        authoring(params.app).pipe(Effect.map(({ metadata }) => metadata)),
+      )
       .handle("source", ({ params }) =>
         Effect.gen(function* () {
-          const identity = yield* AppIdentity;
-          const host = yield* Effect.flatten(AppManagementHost);
-          const { app, access } = yield* ownedSource(host, identity, params.app);
+          const { app, host, metadata } = yield* authoring(params.app);
           const source = yield* host.executor.apps.workspace({
             owner: app.owner,
             app: params.app,
           });
-          const canEdit =
-            identity.canWrite && access.edit && !identity.protectedApps.includes(params.app);
+          const { canPublish, ...fields } = metadata;
           return {
             ...source,
-            namespace: identity.namespace,
-            gitPath: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git`,
-            canEdit,
+            ...fields,
             publication:
-              canEdit && host.publisher !== undefined && identity.namespace !== null
+              canPublish && host.publisher !== undefined && metadata.namespace !== null
                 ? yield* host.publisher.preview({
-                    owner: identity.owner,
-                    namespace: identity.namespace,
+                    owner: app.owner,
+                    namespace: metadata.namespace,
                     app: app.id,
                     name: app.name,
                     files: source.files,

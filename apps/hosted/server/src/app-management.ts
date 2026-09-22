@@ -93,7 +93,8 @@ export const hostedAppAccess = Layer.effect(
           }),
         endpoint.identifier === "list" || endpoint.identifier === "catalog"
           ? "discover"
-          : endpoint.identifier === "source" ||
+          : endpoint.identifier === "authoring" ||
+              endpoint.identifier === "source" ||
               endpoint.identifier === "history" ||
               endpoint.identifier === "published"
             ? "read"

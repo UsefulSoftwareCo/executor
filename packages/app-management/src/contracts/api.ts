@@ -42,12 +42,21 @@ export const appOperationErrors = [
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);
-/** Source permissions and clone metadata come from the serving product, not a client mode flag. */
-export const AppSourceView = Schema.Struct({
-  ...SourceSnapshot.fields,
+/** Authoring controls need product permissions and clone metadata, without reading Git contents. */
+const authoringFields = {
   namespace: Schema.NullOr(Schema.String),
   gitPath: Schema.String,
   canEdit: Schema.Boolean,
+};
+/** Permissions and clone location for controls that do not need a source snapshot. */
+export const AppAuthoringMetadata = Schema.Struct({
+  ...authoringFields,
+  canPublish: Schema.Boolean,
+});
+/** The editable snapshot carries the same server-authorized authoring metadata. */
+export const AppSourceView = Schema.Struct({
+  ...SourceSnapshot.fields,
+  ...authoringFields,
   publication: Schema.NullOr(PublicationReadiness),
 });
 
@@ -133,6 +142,11 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           OpenApi.Description,
           "Create a draft in Apps from its complete source file list. It keeps its app identity when deployed. Saving source does not run the app.",
         ),
+        HttpApiEndpoint.get("authoring", "/apps/:app/authoring", {
+          params: app,
+          success: AppAuthoringMetadata,
+          error: appOperationErrors,
+        }),
         HttpApiEndpoint.get("source", "/apps/:app/workspace", {
           params: app,
           success: AppSourceView,

@@ -33,6 +33,11 @@ export const makeAppManagementAtoms = <R, E>(
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
     .pipe((source) => acknowledgedQuery(source, retainFailure));
+  const authoring = Atom.family((app: AppId) =>
+    runtime
+      .atom(Effect.flatMap(client, (api) => api.authoring({ params: { ...params, app } })))
+      .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure)),
+  );
   const source = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.source({ params: { ...params, app } })))
@@ -107,6 +112,7 @@ export const makeAppManagementAtoms = <R, E>(
   return {
     catalog,
     published,
+    authoring,
     source,
     history,
     deploy,

@@ -438,7 +438,7 @@ export function AppDetailPage({
                               source={
                                 canManage && (
                                   <QueryView
-                                    query={appManagement(organization).source(current.id)}
+                                    query={appManagement(organization).authoring(current.id)}
                                     Failure={HostedFailure}
                                     pending={<OverviewCardLoading label="Loading source preview" />}
                                   >

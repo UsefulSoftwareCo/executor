@@ -130,81 +130,89 @@ export function PublishApp<E>({
 }: AppManagementProps<E> & { readonly app: App }) {
   return (
     <QueryView
-      query={atoms.source(app.id)}
+      query={atoms.authoring(app.id)}
       Failure={Failure}
       pending={
         <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
       }
     >
-      {(source) =>
-        source.publication !== null && (
-          <PublishAction
-            app={app}
-            source={{ ...source, publication: source.publication }}
-            atoms={atoms}
-            Failure={Failure}
-          />
-        )
+      {(metadata) =>
+        metadata.canPublish && <PublishAction app={app} atoms={atoms} Failure={Failure} />
       }
     </QueryView>
   );
 }
 
-/** Keep the reviewed source fixed while a dialog is open, including during background refreshes. */
+/** Source and publication reads begin only when someone opens the publishing dialog. */
 function PublishAction<E>({
   app,
-  source,
   atoms,
   Failure,
 }: AppManagementProps<E> & {
   readonly app: App;
-  readonly source: PublishableSource;
 }) {
-  const [selected, setSelected] = useState<PublishableSource | null>(null);
+  const [open, setOpen] = useState(false);
   const publishing = useAtomValue(atoms.publish(app.id));
-  const manifest = source.publication.status === "ready" ? source.publication.manifest : undefined;
   return (
     <>
-      <QueryView
-        query={atoms.published}
-        Failure={Failure}
-        pending={
-          <Skeleton className="h-9 w-44 max-[740px]:h-11" aria-label="Loading publication" />
-        }
-      >
-        {(publications) => (
-          <Button onClick={() => setSelected(source)}>
-            <HugeiconsIcon icon={Upload04Icon} size={16} strokeWidth={1.8} aria-hidden />
-            {publications.some((item) => item.name === manifest?.name)
-              ? "Manage Publishing"
-              : "Publish"}
-          </Button>
-        )}
-      </QueryView>
+      <Button onClick={() => setOpen(true)}>
+        <HugeiconsIcon icon={Upload04Icon} size={16} strokeWidth={1.8} aria-hidden />
+        Publish
+      </Button>
       <Dialog
-        open={selected !== null}
+        open={open}
         onOpenChange={(open) => {
-          if (!open && !publishing.waiting) setSelected(null);
+          if (!publishing.waiting) setOpen(open);
         }}
       >
-        {selected !== null && (
-          <PublishDialog
-            app={app}
-            source={selected}
-            atoms={atoms}
-            Failure={Failure}
-            onClose={() => setSelected(null)}
-          />
+        {open && (
+          <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-xl">
+            <div className="px-7 pb-6 pt-7 max-[740px]:px-5">
+              <DialogTitle className="pr-5 text-2xl leading-tight tracking-tight">
+                Publish {app.name}
+              </DialogTitle>
+              <DialogDescription className="mt-2 leading-6">
+                Share your app so anyone can find it and make their own copy.
+              </DialogDescription>
+            </div>
+            <QueryView
+              query={atoms.source(app.id)}
+              Failure={(props) => (
+                <div className="px-7 pb-6">
+                  <Failure {...props} />
+                </div>
+              )}
+              pending={
+                <div className="px-7 pb-6">
+                  <Skeleton className="h-32 w-full" aria-label="Loading publication details" />
+                </div>
+              }
+            >
+              {(source) =>
+                source.publication !== null ? (
+                  <PublishDialog
+                    app={app}
+                    source={{ ...source, publication: source.publication }}
+                    atoms={atoms}
+                    Failure={Failure}
+                    onClose={() => setOpen(false)}
+                  />
+                ) : (
+                  <p className="px-7 pb-6 text-sm">Publishing is not available for this app.</p>
+                )
+              }
+            </QueryView>
+          </DialogContent>
         )}
       </Dialog>
     </>
   );
 }
 
-/** Show the actual registry listing before sharing this saved source revision. */
+/** Keep the reviewed revision fixed while the dialog is open, including during source refreshes. */
 function PublishDialog<E>({
   app,
-  source,
+  source: initialSource,
   atoms,
   Failure,
   onClose,
@@ -213,17 +221,10 @@ function PublishDialog<E>({
   readonly source: PublishableSource;
   readonly onClose: () => void;
 }) {
+  const [source] = useState(initialSource);
   const manifest = source.publication.status === "ready" ? source.publication.manifest : undefined;
   return (
-    <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-xl">
-      <div className="px-7 pb-6 pt-7 max-[740px]:px-5">
-        <DialogTitle className="pr-5 text-2xl leading-tight tracking-tight">
-          Publish {app.name}
-        </DialogTitle>
-        <DialogDescription className="mt-2 leading-6">
-          Share your app so anyone can find it and make their own copy.
-        </DialogDescription>
-      </div>
+    <>
       <div className="px-7 pb-6 max-[740px]:px-5">
         {source.publication.status === "blocked" ? (
           <PublicationProblem {...source.publication} />
@@ -297,7 +298,7 @@ function PublishDialog<E>({
           )}
         </QueryView>
       )}
-    </DialogContent>
+    </>
   );
 }
 

@@ -1,7 +1,7 @@
 import { OverviewCatalog } from "./overview-catalog.tsx";
 import type { AccountContext } from "./account-group.tsx";
 import type { App, ToolPage } from "@executor-js/sdk";
-import type { AppSourceView } from "@executor-js/app-management/contracts";
+import type { AppAuthoringMetadata } from "@executor-js/app-management/contracts";
 import type { ComponentType, ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
@@ -296,7 +296,11 @@ export function AppOverviewAccounts({
 }
 
 /** Keep source approachable on the overview; repository details belong on the Source page. */
-export function AppOverviewSource({ source }: { readonly source: typeof AppSourceView.Type }) {
+export function AppOverviewSource({
+  source,
+}: {
+  readonly source: typeof AppAuthoringMetadata.Type;
+}) {
   return (
     <div className="space-y-3 pt-4 text-sm leading-6 text-muted-foreground">
       <p>View the files that make this app work.</p>

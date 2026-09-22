@@ -12,6 +12,7 @@ export const publishingPreview = (
   Effect.gen(function* () {
     const browser = yield* Browser;
     const workspace = (url: URL) => url.pathname.endsWith(`/apps/${app}/workspace`);
+    const authoring = (url: URL) => url.pathname.endsWith(`/apps/${app}/authoring`);
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
     const source = (route: Route) =>
       route.fetch().then((response) => {
@@ -33,6 +34,23 @@ export const publishingPreview = (
         contentType: "application/json",
         body: JSON.stringify(published),
       });
+    yield* browser.use("Enable publishing in the shared authoring controls", (page) =>
+      page.route(authoring, (route) =>
+        route.fetch().then((response) => {
+          if (response.status() !== 200) throw new Error("Real authoring access must succeed");
+          return response.json().then((body: unknown) =>
+            route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                ...Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(body),
+                canPublish: true,
+              }),
+            }),
+          );
+        }),
+      ),
+    );
     yield* browser.use("Provide publishing results for the shared dialog", (page) =>
       page.route(workspace, source),
     );

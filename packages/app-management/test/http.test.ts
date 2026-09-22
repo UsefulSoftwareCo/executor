@@ -32,6 +32,7 @@ import {
   AppGitAccess,
   AppIdentity,
   AppManagementHost,
+  AppAuthoringMetadata,
   AppSourceView,
   appManagementRoutes,
   appManagementApi,
@@ -169,8 +170,41 @@ test(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.toCodecJson(App))),
           );
           assert.equal(app.activeDeployment, null);
+          // Materialize the lazy Git repository before making it unavailable.
           const view = yield* json(`/api/apps/${app.id}/workspace`).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(AppSourceView)),
+          );
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                fs.rename(`${directory}/repositories`, `${directory}/repositories-unavailable`),
+                () =>
+                  fs
+                    .rename(`${directory}/repositories-unavailable`, `${directory}/repositories`)
+                    .pipe(Effect.orDie),
+              );
+              const metadata = yield* json(`/api/apps/${app.id}/authoring`).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(AppAuthoringMetadata)),
+              );
+              assert.deepEqual(metadata, {
+                namespace: "fixture",
+                gitPath: "/git/fixture/example.git",
+                canEdit: true,
+                canPublish: true,
+              });
+            }),
+          );
+          assert.equal(
+            (yield* request(`/api/apps/${app.id}/authoring`, undefined, {
+              "x-fixture-role": "member",
+            })).status,
+            403,
+          );
+          assert.equal(
+            (yield* request(`/api/apps/${app.id}/authoring`, undefined, {
+              "x-fixture-owner": "other",
+            })).status,
+            404,
           );
           assert.equal(view.publication?.status, "ready");
           assert.equal(view.gitPath, "/git/fixture/example.git");
