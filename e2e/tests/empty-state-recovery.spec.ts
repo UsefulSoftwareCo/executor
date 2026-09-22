@@ -226,15 +226,13 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
               .waitFor(),
           );
           expect(
-            yield* browser.use("No authoring action without management access", (page) =>
-              page.getByRole("button", { name: "Copy prompt", exact: true }).count(),
+            yield* browser.use("Restricted authoring actions stay visible and disabled", (page) =>
+              (tab === "skills"
+                ? page.getByRole("button", { name: "Copy prompt", exact: true })
+                : page.getByRole("link", { name: "Open source", exact: true })
+              ).isDisabled(),
             ),
-          ).toBe(0);
-          expect(
-            yield* browser.use("No source link without management access", (page) =>
-              page.getByRole("link", { name: "Open source", exact: true }).count(),
-            ),
-          ).toBe(0);
+          ).toBe(true);
           yield* browser.checkpoint(`Member empty ${tab}`);
         }
       }),

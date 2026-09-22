@@ -9,7 +9,7 @@ import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { AppSchedulesLoading } from "./schedules.tsx";
 import { SourceBrowserLoading } from "./source-browser.tsx";
 import { ToolBrowserLoading } from "./tools.tsx";
-import { Empty } from "./common.tsx";
+import { EmptyState } from "./empty-state.tsx";
 import { cn } from "../lib/utils.ts";
 
 /** Card contents load independently, without replacing a card with a table skeleton. */
@@ -40,25 +40,11 @@ export function OverviewCardLoading({
 }
 
 /** Reserve the same fixed-height cards and responsive grid as the app overview. */
-export function AppOverviewLoading({
-  showSource,
-  app,
-}: {
-  readonly showSource: boolean;
-  readonly app?: App | undefined;
-}) {
+export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) {
   return (
     <section role="status" aria-label="Loading overview" className="app-overview w-full">
-      <div
-        className={cn(
-          "grid grid-cols-1 gap-4 p-7 max-[740px]:p-4",
-          showSource ? "min-[1100px]:grid-cols-3" : "min-[900px]:grid-cols-2",
-        )}
-      >
-        {(showSource
-          ? ["Accounts", "Tools", "Skills", "Workflows", "Source"]
-          : ["Accounts", "Tools", "Skills", "Workflows"]
-        ).map((title) => (
+      <div className={cn("grid grid-cols-1 gap-4 p-7 max-[740px]:p-4", "min-[1100px]:grid-cols-3")}>
+        {["Accounts", "Tools", "Skills", "Workflows", "Source"].map((title) => (
           <section
             key={title}
             aria-label={`App ${title.toLowerCase()} placeholder`}
@@ -115,7 +101,9 @@ export function AppAccountsLoading({
           <div className="mb-4 flex max-w-185 justify-end">{action}</div>
         )}
         {requirements?.length === 0 ? (
-          <Empty title="No accounts required">This app can run without a saved account.</Empty>
+          <EmptyState size="compact" title="No accounts required">
+            This app can run without a saved account.
+          </EmptyState>
         ) : (
           <div className="overflow-hidden rounded-lg border">
             {(requirements ?? [{ slot: "pending", name: undefined }]).map(({ slot, name }) => (
@@ -290,13 +278,11 @@ export function AppDeploymentsLoading() {
 export function AppDetailLoading({
   view,
   app,
-  canInspectSource,
   selectedTool,
   accountAction,
 }: {
   readonly view: AppView;
   readonly app?: App | undefined;
-  readonly canInspectSource: boolean;
   readonly selectedTool?: string | undefined;
   readonly accountAction?: ReactNode;
 }): ReactElement {
@@ -320,7 +306,7 @@ export function AppDetailLoading({
     case "workflows":
       return <WorkflowBrowserLoading />;
     case "overview":
-      return <AppOverviewLoading showSource={canInspectSource} app={app} />;
+      return <AppOverviewLoading app={app} />;
     case "accounts":
       return <AppAccountsLoading app={app} action={accountAction} />;
     case "webhooks":
@@ -332,14 +318,7 @@ export function AppDetailLoading({
     case "schedules":
       return <AppSchedulesLoading />;
     case "tools":
-      return (
-        <>
-          <div className="shrink-0 border-b px-4 py-3 text-xs text-muted-foreground">
-            <Skeleton className="h-4 w-64 max-w-full" />
-          </div>
-          <ToolBrowserLoading selected={selectedTool} />
-        </>
-      );
+      return <ToolBrowserLoading selected={selectedTool} />;
     case "source":
     case "history":
       return <AppWorkspaceLoading view={view} />;
@@ -364,12 +343,7 @@ export function AppDetailPending({
 }) {
   return (
     <AppDetailLayout app={undefined} view={view} canInspectSource back={back}>
-      <AppDetailLoading
-        view={view}
-        canInspectSource
-        selectedTool={selectedTool}
-        accountAction={accountAction}
-      />
+      <AppDetailLoading view={view} selectedTool={selectedTool} accountAction={accountAction} />
     </AppDetailLayout>
   );
 }

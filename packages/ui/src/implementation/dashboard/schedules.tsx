@@ -15,6 +15,7 @@ import type { FailureProps } from "../../contracts/dashboard.ts";
 import type { ScheduleBindings, ScheduleControls } from "../../contracts/schedules.ts";
 import { QueryView, useDashboard, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
+import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
 import { Button } from "../components/button.tsx";
 import {
   Select,
@@ -60,13 +61,18 @@ export function AppSchedules<E>({
         <EmptyState
           title="No deployment yet"
           action={
-            canEdit ? (
-              <Button asChild>
-                <AppLink app={app.id} view="source">
-                  Open source
-                </AppLink>
-              </Button>
-            ) : undefined
+            <Button
+              asChild
+              disabledReason={
+                canEdit
+                  ? undefined
+                  : "You need permission to edit this app’s source to deploy schedules."
+              }
+            >
+              <AppLink app={app.id} view="source">
+                Open source
+              </AppLink>
+            </Button>
           }
         >
           {canEdit
@@ -219,13 +225,19 @@ function ScheduleList<E>({
         <EmptyState
           title="No schedules yet"
           action={
-            canEdit ? (
-              <Button asChild variant="outline">
-                <AppLink app={app.id} view="source">
-                  Open source
-                </AppLink>
-              </Button>
-            ) : undefined
+            <Button
+              asChild
+              variant="outline"
+              disabledReason={
+                canEdit
+                  ? undefined
+                  : "You need permission to edit this app’s source to add schedules."
+              }
+            >
+              <AppLink app={app.id} view="source">
+                Open source
+              </AppLink>
+            </Button>
           }
         >
           {canEdit
@@ -268,8 +280,36 @@ function ScheduleList<E>({
                     </p>
                   )}
                 </div>
-                {bindings.controls && (
+                {bindings.controls ? (
                   <Controls row={row} actions={bindings.controls(row.name)} Failure={Failure} />
+                ) : (
+                  <div className="flex max-w-full flex-wrap items-center gap-2">
+                    <DisabledTooltip reason="You need permission to manage this app or use your own enabled profile to change schedules.">
+                      <Select value={row.settings?.approvalMode ?? "automatic"} disabled>
+                        <SelectTrigger aria-label={`Approvals for ${row.name}`} className="w-44">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="automatic">Skip approvals</SelectItem>
+                          <SelectItem value="browser">Browser approvals</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </DisabledTooltip>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabledReason="You need permission to manage this app or use your own enabled profile to change schedules."
+                    >
+                      {row.settings?.enabled ? "Pause" : "Enable"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabledReason="You need permission to manage this app or use your own enabled profile to run schedules."
+                    >
+                      Run now
+                    </Button>
+                  </div>
                 )}
               </div>
             ))}

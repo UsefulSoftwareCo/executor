@@ -141,7 +141,7 @@ export function AppDetailPage({
       )}
     />
   );
-  const pending = <AppDetailLoading view={tab} app={app} canInspectSource selectedTool={tool} />;
+  const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} />;
   return (
     <AppDetailLayout
       key={id}

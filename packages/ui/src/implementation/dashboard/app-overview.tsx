@@ -24,12 +24,14 @@ export function AppOverview({
   accounts,
   tools,
   source,
+  sourceDisabledReason,
   entries,
 }: {
   readonly app: App;
   readonly accounts: ReactNode;
   readonly tools: ReactNode;
   readonly source?: ReactNode;
+  readonly sourceDisabledReason?: string | undefined;
   readonly entries: ReactNode;
 }) {
   const { AppLink } = useDashboard();
@@ -41,7 +43,7 @@ export function AppOverview({
           title="No deployment yet"
           action={
             source ? (
-              <Button asChild>
+              <Button asChild disabledReason={sourceDisabledReason}>
                 <AppLink app={app.id} view="source">
                   Open source
                 </AppLink>
@@ -102,14 +104,23 @@ export function AppOverview({
           >
             <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
               <h3 className="text-sm font-medium">Source</h3>
-              <AppLink
-                app={app.id}
-                view="source"
-                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              <Button
+                asChild
+                variant="ghost"
+                size="xs"
+                className="h-auto gap-1.5 rounded-none p-0 text-xs font-normal text-muted-foreground max-[740px]:min-h-0"
+                disabledReason={sourceDisabledReason}
               >
-                View files
-                <HugeiconsIcon icon={ArrowRight02Icon} size={13} aria-hidden />
-              </AppLink>
+                <AppLink app={app.id} view="source">
+                  View files
+                  <HugeiconsIcon
+                    icon={ArrowRight02Icon}
+                    size={13}
+                    className="size-3.25"
+                    aria-hidden
+                  />
+                </AppLink>
+              </Button>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">{source}</div>
           </section>

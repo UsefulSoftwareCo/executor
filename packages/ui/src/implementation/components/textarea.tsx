@@ -1,9 +1,14 @@
 import type { ComponentProps } from "react";
+import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { cn } from "../lib/utils.ts";
 
 /** Multiline input using the same field styles and focus treatment as Input. */
-export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return (
+export function Textarea({
+  className,
+  disabledReason,
+  ...props
+}: ComponentProps<"textarea"> & { readonly disabledReason?: string | undefined }) {
+  const control = (
     <textarea
       data-slot="textarea"
       className={cn(
@@ -12,6 +17,12 @@ export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
         className,
       )}
       {...props}
+      disabled={props.disabled || disabledReason !== undefined}
     />
+  );
+  return (
+    <DisabledTooltip reason={disabledReason} className="w-full">
+      {control}
+    </DisabledTooltip>
   );
 }

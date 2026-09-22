@@ -58,7 +58,13 @@ function AccountDetails({ data }: { readonly data: DashboardAccountDetail }) {
       readOnlyMessage="Managed by the local server."
       rename={rename}
       signInAction={
-        <Button variant="outline" asChild>
+        <Button
+          variant="outline"
+          asChild
+          disabledReason={
+            data.canManage ? undefined : "This account is managed by the local server."
+          }
+        >
           <Link to="/accounts/$accountId/credentials" params={{ accountId: account.id }}>
             {provider.definition.auth[account.method]?.type === "oauth2"
               ? "Reconnect"
@@ -67,7 +73,14 @@ function AccountDetails({ data }: { readonly data: DashboardAccountDetail }) {
         </Button>
       }
       disconnectAction={
-        <Button variant="ghost" asChild>
+        <Button
+          variant="ghost"
+          className="text-destructive"
+          asChild
+          disabledReason={
+            data.canManage ? undefined : "This account is managed by the local server."
+          }
+        >
           <Link to="/accounts/$accountId/disconnect" params={{ accountId: account.id }}>
             Disconnect account
           </Link>

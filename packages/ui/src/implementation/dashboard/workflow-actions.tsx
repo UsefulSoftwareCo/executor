@@ -38,54 +38,67 @@ export function WorkflowStart<E>({
         <summary className="cursor-pointer text-xs text-muted-foreground">Input schema</summary>
         <Code code={JSON.stringify(definition.inputSchema, null, 2)} />
       </details>
-      {editable && (
-        <form
-          className="max-w-xl space-y-3"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            const value = Schema.decodeUnknownExit(Schema.fromJsonString(Json))(input);
-            setInvalid(Exit.isFailure(value));
-            if (Exit.isFailure(value)) return;
-            setPending(true);
-            const result = await submit({ workflow: definition.name, input: value.value, key });
-            setPending(false);
-            setResult(result);
-            if (Exit.isSuccess(result)) {
-              setKey(crypto.randomUUID());
-              onStarted();
+      <form
+        className="max-w-xl space-y-3"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (!editable) return;
+          const value = Schema.decodeUnknownExit(Schema.fromJsonString(Json))(input);
+          setInvalid(Exit.isFailure(value));
+          if (Exit.isFailure(value)) return;
+          setPending(true);
+          const result = await submit({ workflow: definition.name, input: value.value, key });
+          setPending(false);
+          setResult(result);
+          if (Exit.isSuccess(result)) {
+            setKey(crypto.randomUUID());
+            onStarted();
+          }
+        }}
+      >
+        <label className="block space-y-2 text-xs">
+          Input
+          <Textarea
+            aria-label={`${definition.name} input`}
+            className="min-h-24 font-mono text-xs"
+            value={input}
+            disabled={pending}
+            disabledReason={
+              editable
+                ? undefined
+                : "You need permission to manage this app or use your own profile to start workflows."
             }
-          }}
+            onChange={(event) => {
+              setInput(event.target.value);
+              setKey(crypto.randomUUID());
+            }}
+            spellCheck={false}
+          />
+        </label>
+        {invalid && (
+          <p role="alert" className="text-sm text-destructive">
+            Enter valid JSON.
+          </p>
+        )}
+        {result && Exit.isFailure(result) && <Failure cause={result.cause} />}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          disabledReason={
+            editable
+              ? undefined
+              : "You need permission to manage this app or use your own profile to start workflows."
+          }
         >
-          <label className="block space-y-2 text-xs">
-            Input
-            <Textarea
-              aria-label={`${definition.name} input`}
-              className="min-h-24 font-mono text-xs"
-              value={input}
-              disabled={pending}
-              onChange={(event) => {
-                setInput(event.target.value);
-                setKey(crypto.randomUUID());
-              }}
-              spellCheck={false}
-            />
-          </label>
-          {invalid && (
-            <p role="alert" className="text-sm text-destructive">
-              Enter valid JSON.
-            </p>
-          )}
-          {result && Exit.isFailure(result) && <Failure cause={result.cause} />}
-          <Button size="sm" variant="outline" disabled={pending}>
-            {pending ? "Starting…" : "Start workflow"}
-          </Button>
-          {result && Exit.isSuccess(result) && (
-            <p role="status" className="text-xs text-muted-foreground">
-              Workflow started.
-            </p>
-          )}
-        </form>
-      )}
+          {pending ? "Starting…" : "Start workflow"}
+        </Button>
+        {result && Exit.isSuccess(result) && (
+          <p role="status" className="text-xs text-muted-foreground">
+            Workflow started.
+          </p>
+        )}
+      </form>
     </div>
   );
 }
@@ -106,11 +119,16 @@ export function WorkflowTerminate<E>({
     run.status === "complete" || run.status === "errored" || run.status === "terminated";
   return (
     <>
-      {!terminal && editable && (
+      {!terminal && (
         <Button
           size="sm"
           variant="outline"
           disabled={AsyncResult.isWaiting(result)}
+          disabledReason={
+            editable
+              ? undefined
+              : "You need permission to manage this app or own this run’s profile to stop it."
+          }
           onClick={() => stop()}
         >
           Terminate run

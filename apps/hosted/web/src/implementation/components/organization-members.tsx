@@ -1,6 +1,7 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
+import { DisabledTooltip } from "@executor-js/ui/components/disabled-tooltip";
 import { Button } from "@executor-js/ui/components/button";
 import {
   Dialog,
@@ -149,7 +150,7 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
         </h2>
         <div className="membership-toolbar flex items-center justify-between gap-4 [&_.search-input]:flex-1 [&_.search-input]:max-w-130 [&_.search-input]:w-auto [&_.search-input_input]:h-9 [&_.search-input_input]:border-input [&_.search-input_input]:rounded-[6px] [&_.search-input_input]:bg-transparent [&_.search-input_>_svg]:top-2.75 [&_>_button]:h-9 [&_>_button]:rounded-[6px] [&_>_button]:text-[12px] [&_>_button]:bg-transparent [&_>_button]:shadow-none max-[480px]:gap-2.5 max-[480px]:[&_.search-input_input]:h-10.5 max-[480px]:[&_.search-input_input]:text-[14px] max-[480px]:[&_.search-input_>_svg]:top-3.5 max-[480px]:[&_>_button]:min-h-10.5 max-[480px]:[&_>_button]:py-0 max-[480px]:[&_>_button]:px-[12px]">
           <SearchInput placeholder="Search by name or email…" value={search} onChange={setSearch} />
-          {admin && (
+          {admin ? (
             <Dialog
               open={invitationOpen}
               onOpenChange={(open) => {
@@ -226,6 +227,14 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                 </form>
               </DialogContent>
             </Dialog>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              disabledReason="Only organization owners and admins can invite members."
+            >
+              Add member
+            </Button>
           )}
         </div>
 
@@ -233,7 +242,7 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
           result={members}
           Failure={MembersFailure}
           retry={retry}
-          pending={<MembersSkeleton admin={admin} />}
+          pending={<MembersSkeleton />}
         >
           {() => (
             <div className={membershipPanelClass}>
@@ -267,11 +276,9 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                     >
                       Role
                     </th>
-                    {admin && (
-                      <th scope="col" className="membership-actions">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    )}
+                    <th scope="col" className="membership-actions">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -329,66 +336,92 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                                 <SelectItem value="admin">Admin</SelectItem>
                               </SelectContent>
                             </Select>
+                          ) : member ? (
+                            <DisabledTooltip
+                              className="w-full"
+                              reason={
+                                member.role === "owner"
+                                  ? "The organization owner’s role cannot be changed here."
+                                  : "Only organization owners and admins can change member roles."
+                              }
+                            >
+                              <Select value={member.role} disabled>
+                                <SelectTrigger
+                                  className="w-full"
+                                  aria-label={`Role for ${member.user.email}`}
+                                >
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="member">Member</SelectItem>
+                                  <SelectItem value="admin">Admin</SelectItem>
+                                  <SelectItem value="owner">Owner</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </DisabledTooltip>
                           ) : (
-                            <span className="membership-role-label block py-0 px-[12px] capitalize text-muted-foreground">
-                              {row.role}
-                            </span>
+                            <span className="capitalize text-muted-foreground">{row.role}</span>
                           )}
                         </td>
-                        {admin && (
-                          <td className="membership-actions">
-                            {invitation ? (
-                              <div className="membership-invite-actions flex items-center justify-end flex-wrap gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={inviting.waiting || revoking.waiting}
-                                  onClick={async () => {
-                                    if (invitation.role === "admin" || invitation.role === "member")
-                                      await sendInvite(invitation.email, invitation.role);
-                                  }}
-                                >
-                                  {emailInvitations ? "Resend" : "Get invite link"}
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  disabled={inviting.waiting || revoking.waiting}
-                                  aria-label={`Revoke invitation to ${invitation.email}`}
-                                  title="Revoke invitation"
-                                  className="membership-remove text-muted-foreground hover:text-destructive hover:[background:color-mix(in_srgb,_var(--destructive)_8%,_transparent)] max-[480px]:min-h-10"
-                                  onClick={() => {
-                                    setError(null);
-                                    setRevocation({ id: invitation.id, email: invitation.email });
-                                  }}
-                                >
-                                  <HugeiconsIcon icon={Delete02Icon} size={17} aria-hidden />
-                                </Button>
-                              </div>
-                            ) : (
-                              member &&
-                              member.role !== "owner" &&
-                              member.userId !== userId && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`Remove ${member.user.name || member.user.email}`}
-                                  title="Remove member"
-                                  className="membership-remove text-muted-foreground hover:text-destructive hover:[background:color-mix(in_srgb,_var(--destructive)_8%,_transparent)] max-[480px]:min-h-10"
-                                  onClick={() => {
-                                    setError(null);
-                                    setRemoval({
-                                      id: member.id,
-                                      name: member.user.name || member.user.email,
-                                    });
-                                  }}
-                                >
-                                  <HugeiconsIcon icon={Delete02Icon} size={17} aria-hidden />
-                                </Button>
-                              )
-                            )}
-                          </td>
-                        )}
+                        <td className="membership-actions">
+                          {invitation ? (
+                            <div className="membership-invite-actions flex items-center justify-end flex-wrap gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={inviting.waiting || revoking.waiting}
+                                onClick={async () => {
+                                  if (invitation.role === "admin" || invitation.role === "member")
+                                    await sendInvite(invitation.email, invitation.role);
+                                }}
+                              >
+                                {emailInvitations ? "Resend" : "Get invite link"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                disabled={inviting.waiting || revoking.waiting}
+                                aria-label={`Revoke invitation to ${invitation.email}`}
+                                title="Revoke invitation"
+                                className="membership-remove text-muted-foreground hover:text-destructive hover:[background:color-mix(in_srgb,_var(--destructive)_8%,_transparent)] max-[480px]:min-h-10"
+                                onClick={() => {
+                                  setError(null);
+                                  setRevocation({ id: invitation.id, email: invitation.email });
+                                }}
+                              >
+                                <HugeiconsIcon icon={Delete02Icon} size={17} aria-hidden />
+                              </Button>
+                            </div>
+                          ) : (
+                            member && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`Remove ${member.user.name || member.user.email}`}
+                                title="Remove member"
+                                disabledReason={
+                                  !admin
+                                    ? "Only organization owners and admins can remove members."
+                                    : member.role === "owner"
+                                      ? "The organization owner cannot be removed here."
+                                      : member.userId === userId
+                                        ? "You cannot remove yourself here."
+                                        : undefined
+                                }
+                                className="membership-remove text-muted-foreground hover:text-destructive hover:[background:color-mix(in_srgb,_var(--destructive)_8%,_transparent)] max-[480px]:min-h-10"
+                                onClick={() => {
+                                  setError(null);
+                                  setRemoval({
+                                    id: member.id,
+                                    name: member.user.name || member.user.email,
+                                  });
+                                }}
+                              >
+                                <HugeiconsIcon icon={Delete02Icon} size={17} aria-hidden />
+                              </Button>
+                            )
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
@@ -530,7 +563,7 @@ const membershipSkeletonRows = [
 ];
 
 /** Placeholder rows keep the members table's columns and row height while it loads. */
-function MembersSkeleton({ admin }: { readonly admin: boolean }) {
+function MembersSkeleton() {
   return (
     <div className={membershipPanelClass} role="status" aria-label="Loading members">
       <table className={membershipTableClass} aria-hidden>
@@ -543,11 +576,9 @@ function MembersSkeleton({ admin }: { readonly admin: boolean }) {
             <th scope="col" className="membership-role">
               Role
             </th>
-            {admin && (
-              <th scope="col" className="membership-actions">
-                <span className="sr-only">Actions</span>
-              </th>
-            )}
+            <th scope="col" className="membership-actions">
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -565,11 +596,9 @@ function MembersSkeleton({ admin }: { readonly admin: boolean }) {
               <td className="membership-role">
                 <Skeleton className="h-8.75 w-full rounded-[6px] max-[480px]:h-10" />
               </td>
-              {admin && (
-                <td className="membership-actions">
-                  <Skeleton className="w-8 h-8 ml-auto rounded-[6px]" />
-                </td>
-              )}
+              <td className="membership-actions">
+                <Skeleton className="w-8 h-8 ml-auto rounded-[6px]" />
+              </td>
             </tr>
           ))}
         </tbody>

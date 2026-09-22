@@ -1,10 +1,16 @@
 import * as React from "react";
 
+import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { cn } from "../lib/utils.ts";
 
 /** Input primitive; accepts native props and composes caller styles. */
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
-  return (
+function Input({
+  className,
+  type,
+  disabledReason,
+  ...props
+}: React.ComponentProps<"input"> & { readonly disabledReason?: string | undefined }) {
+  const control = (
     // oxlint-disable-next-line react/forbid-elements
     <input
       type={type}
@@ -16,7 +22,13 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
         className,
       )}
       {...props}
+      disabled={props.disabled || disabledReason !== undefined}
     />
+  );
+  return (
+    <DisabledTooltip reason={disabledReason} className="w-full">
+      {control}
+    </DisabledTooltip>
   );
 }
 

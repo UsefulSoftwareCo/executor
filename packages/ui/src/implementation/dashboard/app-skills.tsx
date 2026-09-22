@@ -68,7 +68,7 @@ function SkillCatalog({
         title="No skills yet"
         icon={<HugeiconsIcon icon={BookOpen01Icon} aria-hidden size={26} strokeWidth={1.3} />}
         action={
-          canEdit && (
+          canEdit ? (
             <CopyButton
               code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
               label="Copy prompt"
@@ -77,6 +77,10 @@ function SkillCatalog({
               size="default"
               inline
             />
+          ) : (
+            <Button disabledReason="You need permission to edit this app’s source to add skills.">
+              Copy prompt
+            </Button>
           )
         }
       >

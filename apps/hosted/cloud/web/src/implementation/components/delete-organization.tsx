@@ -56,7 +56,10 @@ export function DeleteOrganization() {
     setError(undefined);
   };
   // Admins manage the organization; only an owner can end it. The server checks this too.
-  if (organization.role !== "owner") return null;
+  const disabledReason =
+    organization.role === "owner"
+      ? undefined
+      : "Only an organization owner can delete the organization.";
   return (
     <Card className="gap-0 border-destructive/40 py-0">
       <CardHeader className="gap-1.5 px-4 pt-4 pb-3">
@@ -70,7 +73,7 @@ export function DeleteOrganization() {
         </CardDescription>
       </CardHeader>
       <CardContent className="px-4 pb-4">
-        <Button variant="destructive" onClick={() => setOpen(true)}>
+        <Button variant="destructive" disabledReason={disabledReason} onClick={() => setOpen(true)}>
           Delete organization
         </Button>
       </CardContent>

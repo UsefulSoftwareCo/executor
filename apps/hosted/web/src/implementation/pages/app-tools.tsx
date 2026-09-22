@@ -5,6 +5,8 @@ import { useAtomSet } from "@effect/atom-react";
 import { Json, type App, type Tool, type Profile, type ProfileId } from "@executor-js/sdk";
 import { Exit, Schema } from "effect";
 import { useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Code } from "@executor-js/ui/dashboard/code";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
@@ -81,11 +83,12 @@ export function AppTools({
         }}
         back={
           <Link
-            className="text-xs text-muted-foreground"
+            className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
             to="/org/$organizationSlug/apps/$appId"
             params={{ organizationSlug, appId: app.id }}
             search={{ view: "tools", profile: profile?.id }}
           >
+            <HugeiconsIcon icon={ArrowLeft02Icon} size={16} aria-hidden />
             All tools
           </Link>
         }

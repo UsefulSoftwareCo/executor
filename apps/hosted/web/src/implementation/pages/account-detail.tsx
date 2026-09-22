@@ -105,7 +105,7 @@ function AccountView({
     <AccountDetails<HostedError>
       data={{ ...data, canManage }}
       Failure={HostedFailure}
-      readOnlyMessage="You can use this account. Its owner and organization admins manage it."
+      readOnlyMessage="Only the account creator and organization admins can manage this shared account."
       rename={rename}
       signInAction={
         <>
@@ -113,6 +113,11 @@ function AccountView({
           <Button
             variant="outline"
             loading={pending}
+            disabledReason={
+              canManage
+                ? undefined
+                : "Only the account creator and organization admins can update its credentials."
+            }
             onClick={async () => {
               setPending(true);
               setError(undefined);
@@ -135,7 +140,15 @@ function AccountView({
         </>
       }
       disconnectAction={
-        <Button variant="destructive" asChild>
+        <Button
+          variant="destructive"
+          asChild
+          disabledReason={
+            canManage
+              ? undefined
+              : "Only the account creator and organization admins can delete this shared account."
+          }
+        >
           <Link
             to="/org/$organizationSlug/accounts/$accountId/disconnect"
             params={{ organizationSlug, accountId: account }}

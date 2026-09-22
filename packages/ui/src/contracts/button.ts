@@ -16,4 +16,6 @@ export type ButtonProps = ComponentProps<"button"> & {
   readonly asChild?: boolean;
   /** Disable interaction and overlay a spinner; ignored visually when composing with asChild. */
   readonly loading?: boolean;
+  /** Keep a forbidden action visible and explain its restriction on hover, focus, or tap. */
+  readonly disabledReason?: string | undefined;
 };

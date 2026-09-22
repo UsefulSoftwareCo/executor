@@ -3,11 +3,12 @@ import { cva } from "class-variance-authority";
 import { Slot } from "radix-ui";
 
 import { cn } from "../lib/utils.ts";
+import { DisabledTooltip } from "./disabled-tooltip.tsx";
 import { Spinner } from "./spinner.tsx";
 
 /** Shared appearance and size classes, also usable for link composition. */
 const buttonVariants = cva(
-  "max-[740px]:min-h-11 max-[740px]:data-[size^=icon]:min-w-11 inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "max-[740px]:min-h-11 max-[740px]:data-[size^=icon]:min-w-11 inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -46,21 +47,24 @@ function Button({
   asChild = false,
   loading = false,
   disabled,
+  disabledReason,
   children,
   ...props
 }: ButtonProps) {
   const Comp = asChild ? Slot.Root : "button";
   const showLoading = loading && !asChild;
 
-  return (
+  const button = (
     <Comp
       data-slot="button"
       data-variant={variant}
       data-size={size}
       data-loading={showLoading ? "" : undefined}
       className={cn(buttonVariants({ variant, size, className }), showLoading && "relative")}
-      disabled={disabled || loading}
       {...props}
+      disabled={disabled || loading || disabledReason !== undefined}
+      aria-disabled={disabledReason !== undefined || props["aria-disabled"]}
+      tabIndex={disabledReason !== undefined ? -1 : props.tabIndex}
     >
       {showLoading ? (
         <>
@@ -75,6 +79,11 @@ function Button({
         children
       )}
     </Comp>
+  );
+  return disabledReason === undefined ? (
+    button
+  ) : (
+    <DisabledTooltip reason={disabledReason}>{button}</DisabledTooltip>
   );
 }
 

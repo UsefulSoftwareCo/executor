@@ -5,6 +5,7 @@ import { Exit } from "effect";
 import { useEffect, useId, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
+import { DisabledTooltip } from "@executor-js/ui/components/disabled-tooltip";
 import { Button } from "@executor-js/ui/components/button";
 import { Alert, AlertDescription, AlertTitle } from "@executor-js/ui/components/alert";
 import {
@@ -27,6 +28,7 @@ import { useOrganizationRoute } from "./organization.tsx";
 type AudienceInputProps = {
   readonly groups: readonly Group[];
   readonly disabled?: boolean;
+  readonly disabledReason?: string | undefined;
   readonly error?: string | undefined;
   readonly onBlur: () => void;
 } & (
@@ -49,7 +51,6 @@ export function AudienceInput(props: AudienceInputProps) {
   const value = props.value;
   return (
     <fieldset
-      disabled={props.disabled}
       className="space-y-3"
       aria-invalid={Boolean(props.error)}
       aria-describedby={props.error ? `${id}-error` : undefined}
@@ -60,7 +61,7 @@ export function AudienceInput(props: AudienceInputProps) {
       </label>
       <Select
         value={value.kind}
-        disabled={props.disabled === true}
+        disabled={props.disabled === true || props.disabledReason !== undefined}
         onValueChange={(kind) => {
           if (kind === "private" && props.mode === "app" && props.allowPrivate)
             props.onChange({ kind: "private" });
@@ -69,9 +70,11 @@ export function AudienceInput(props: AudienceInputProps) {
           else if (kind === "everyone") props.onChange({ kind: "everyone" });
         }}
       >
-        <SelectTrigger id={id} onBlur={props.onBlur} className="w-full">
-          <SelectValue />
-        </SelectTrigger>
+        <DisabledTooltip reason={props.disabledReason} className="w-full">
+          <SelectTrigger id={id} onBlur={props.onBlur} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+        </DisabledTooltip>
         <SelectContent>
           {props.mode === "app" && (
             <SelectItem value="private" disabled={!props.allowPrivate}>
@@ -85,40 +88,46 @@ export function AudienceInput(props: AudienceInputProps) {
       {value.kind === "groups" && (
         <div className="max-h-64 overflow-y-auto rounded-lg border divide-y">
           {props.groups.map((group) => (
-            <label key={group.id} className="flex items-center gap-3 p-3 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                className="size-4 accent-foreground"
-                checked={value.groups.includes(group.id)}
-                onBlur={props.onBlur}
-                onChange={(event) =>
-                  props.onChange({
-                    kind: "groups",
-                    groups: event.target.checked
-                      ? [...value.groups, group.id]
-                      : value.groups.filter((id) => id !== group.id),
-                  })
-                }
-              />
-              {group.name}
-            </label>
+            <DisabledTooltip key={group.id} reason={props.disabledReason} className="w-full">
+              <label className="flex items-center gap-3 p-3 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={props.disabled || props.disabledReason !== undefined}
+                  className="size-4 accent-foreground"
+                  checked={value.groups.includes(group.id)}
+                  onBlur={props.onBlur}
+                  onChange={(event) =>
+                    props.onChange({
+                      kind: "groups",
+                      groups: event.target.checked
+                        ? [...value.groups, group.id]
+                        : value.groups.filter((id) => id !== group.id),
+                    })
+                  }
+                />
+                {group.name}
+              </label>
+            </DisabledTooltip>
           ))}
           {value.groups
             .filter((id) => !props.groups.some((group) => group.id === id))
             .map((removed) => (
-              <label key={removed} className="flex items-center gap-3 p-3 text-sm text-destructive">
-                <input
-                  type="checkbox"
-                  checked
-                  onChange={() =>
-                    props.onChange({
-                      kind: "groups",
-                      groups: value.groups.filter((id) => id !== removed),
-                    })
-                  }
-                />
-                Unavailable group
-              </label>
+              <DisabledTooltip key={removed} reason={props.disabledReason} className="w-full">
+                <label className="flex items-center gap-3 p-3 text-sm text-destructive">
+                  <input
+                    type="checkbox"
+                    disabled={props.disabled || props.disabledReason !== undefined}
+                    checked
+                    onChange={() =>
+                      props.onChange({
+                        kind: "groups",
+                        groups: value.groups.filter((id) => id !== removed),
+                      })
+                    }
+                  />
+                  Unavailable group
+                </label>
+              </DisabledTooltip>
             ))}
           {!props.groups.length && <GroupSetup />}
         </div>
@@ -140,18 +149,23 @@ function GroupSetup() {
       className="px-3 md:px-3"
       title="No groups available"
       action={
-        canCreate ? (
-          <Button asChild variant="outline" size="sm">
-            <Link
-              to="/org/$organizationSlug/groups"
-              params={{ organizationSlug }}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open Groups
-            </Link>
-          </Button>
-        ) : undefined
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          disabledReason={
+            canCreate ? undefined : "Only organization owners and admins can create groups."
+          }
+        >
+          <Link
+            to="/org/$organizationSlug/groups"
+            params={{ organizationSlug }}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open Groups
+          </Link>
+        </Button>
       }
     >
       {canCreate
@@ -186,6 +200,7 @@ export function SharingFailure({
   );
 }
 type SharingProps = {
+  readonly disabledReason?: string | undefined;
   readonly groups: readonly Group[];
   readonly revision: typeof AccessRevision.Type;
 } & (
@@ -220,6 +235,7 @@ export function SharingEditor(props: SharingProps) {
       focusInvalid.current = true;
     },
     onSubmit: async ({ value, formApi }) => {
+      if (props.disabledReason !== undefined) return;
       setError(undefined);
       setSaved(false);
       let result: Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>;
@@ -268,6 +284,7 @@ export function SharingEditor(props: SharingProps) {
           const common = {
             groups: props.groups,
             disabled: pending,
+            disabledReason: props.disabledReason,
             onBlur: field.handleBlur,
             error: field.state.meta.isTouched
               ? field.state.meta.errors.filter((message) => typeof message === "string").join(" ")
@@ -300,13 +317,14 @@ export function SharingEditor(props: SharingProps) {
       </form.Field>
       {error && <SharingFailure message={error} />}
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" loading={pending}>
+        <Button type="submit" loading={pending} disabledReason={props.disabledReason}>
           Save access
         </Button>
         <Button
           type="button"
           variant="outline"
           disabled={pending}
+          disabledReason={props.disabledReason}
           onClick={() => {
             form.reset({ audience: props.value, revision: props.revision });
             setError(undefined);

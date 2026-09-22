@@ -69,22 +69,24 @@ function OrganizationSettings({
   return (
     <PageFrame>
       <PageHeader title={organization.name} />
-      {organization.role !== "member" && (
-        <div className="organization-settings flex flex-col gap-3">
-          <OrganizationName disabled={pending} />
-          <OrganizationIcon disabled={pending} />
-          <OrganizationUrl disabled={pending} />
-          {children}
-        </div>
-      )}
+      <div className="organization-settings flex flex-col gap-3">
+        <OrganizationName disabled={pending} />
+        <OrganizationIcon disabled={pending} />
+        <OrganizationUrl disabled={pending} />
+        {children}
+      </div>
       <OrganizationMembers emailInvitations={emailInvitations} />
-      {organization.role !== "member" && footer && <div className="mt-6">{footer}</div>}
+      {footer && <div className="mt-6">{footer}</div>}
     </PageFrame>
   );
 }
 
 function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
   const organization = useOrganization();
+  const disabledReason =
+    organization.role === "member"
+      ? "Only organization owners and admins can change organization settings."
+      : undefined;
   const save = useAtomSet(changeOrganizationLogoAtom(organization.organization), {
     mode: "promiseExit",
   });
@@ -100,7 +102,7 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
   >();
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
-  const pending = disabled || selection.waiting;
+  const pending = disabled || selection.waiting || disabledReason !== undefined;
   const preview =
     draft === undefined
       ? (organization.logo ?? null)
@@ -134,6 +136,7 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
             name={organization.name}
             preview={preview}
             label="Upload organization icon"
+            disabledReason={disabledReason}
             disabled={pending}
             onRemove={() => {
               setDraft({ kind: "removed", logo: null });
@@ -174,6 +177,7 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
               variant="outline"
               loading={state.waiting}
               disabled={pending || draft === undefined}
+              disabledReason={disabledReason}
             >
               Save
             </Button>
@@ -186,6 +190,10 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
 
 function OrganizationName({ disabled }: { readonly disabled: boolean }) {
   const organization = useOrganization();
+  const disabledReason =
+    organization.role === "member"
+      ? "Only organization owners and admins can change organization settings."
+      : undefined;
   const rename = useAtomSet(renameOrganizationAtom(organization.organization), {
     mode: "promiseExit",
   });
@@ -202,7 +210,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
       <form
         onSubmit={async (event) => {
           event.preventDefault();
-          if (disabled) return;
+          if (disabled || disabledReason !== undefined) return;
           setError(undefined);
           setSaved(false);
           const result = await rename(name.trim());
@@ -234,6 +242,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
             pattern=".*\S.*"
             maxLength={120}
             disabled={disabled}
+            disabledReason={disabledReason}
           />
           {error && (
             <p role="alert" className="auth-error mt-3 text-destructive text-[13px]">
@@ -249,6 +258,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
               variant="outline"
               loading={state.waiting}
               disabled={disabled || !name.trim() || name.trim() === organization.name}
+              disabledReason={disabledReason}
             >
               Save
             </Button>
@@ -261,6 +271,10 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
 
 function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
   const organization = useOrganization();
+  const disabledReason =
+    organization.role === "member"
+      ? "Only organization owners and admins can change organization settings."
+      : undefined;
   const changeSlug = useAtomSet(changeOrganizationSlugAtom(organization.organization), {
     mode: "promiseExit",
   });
@@ -277,7 +291,7 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
       <form
         onSubmit={async (event) => {
           event.preventDefault();
-          if (disabled) return;
+          if (disabled || disabledReason !== undefined) return;
           setError(undefined);
           setSaved(false);
           const result = await changeSlug(slug);
@@ -318,6 +332,7 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
               autoCorrect="off"
               spellCheck={false}
               disabled={disabled}
+              disabledReason={disabledReason}
             />
           </label>
           {error && (
@@ -336,6 +351,7 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
               variant="outline"
               loading={state.waiting}
               disabled={disabled || slug === organization.slug}
+              disabledReason={disabledReason}
             >
               Save
             </Button>

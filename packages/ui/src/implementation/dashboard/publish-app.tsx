@@ -137,7 +137,13 @@ export function PublishApp<E>({
       }
     >
       {(metadata) =>
-        metadata.canPublish && <PublishAction app={app} atoms={atoms} Failure={Failure} />
+        metadata.canPublish ? (
+          <PublishAction app={app} atoms={atoms} Failure={Failure} />
+        ) : (
+          <Button variant="outline" disabledReason="Publishing is not available on this server.">
+            Publish
+          </Button>
+        )
       }
     </QueryView>
   );

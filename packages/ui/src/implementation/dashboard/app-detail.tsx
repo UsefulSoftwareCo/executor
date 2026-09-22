@@ -13,6 +13,7 @@ import {
   PackageIcon,
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
+import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import type { AppLinkProps } from "../../contracts/dashboard.ts";
 import type { AppView } from "../../contracts/dashboard.ts";
@@ -54,6 +55,7 @@ export function AppDetailLayout({
   app,
   view,
   canInspectSource,
+  sourceDisabledReason,
   back,
   actions,
   setupPicker,
@@ -62,6 +64,7 @@ export function AppDetailLayout({
   readonly app: App | undefined;
   readonly view: AppView;
   readonly canInspectSource: boolean;
+  readonly sourceDisabledReason?: string | undefined;
   readonly back: ReactNode;
   readonly actions?: ReactNode;
   readonly setupPicker?: ReactNode;
@@ -121,43 +124,49 @@ export function AppDetailLayout({
           aria-label="App navigation"
           className="-mb-px flex gap-1 overflow-x-auto px-7 max-[740px]:px-4"
         >
-          {sections
-            .filter(
-              (section) =>
-                (section.view !== "source" && section.view !== "deployments") || canInspectSource,
-            )
-            .map((section) => {
-              const classes = cn(
-                "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
-                (view === section.view || (view === "history" && section.view === "source")) &&
-                  "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
-              );
-              const content = (
-                <>
-                  <HugeiconsIcon icon={section.icon} size={16} strokeWidth={1.7} aria-hidden />
-                  {section.label}
-                </>
-              );
-              return app ? (
-                <BoundAppLink
+          {sections.map((section) => {
+            const classes = cn(
+              "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
+              (view === section.view || (view === "history" && section.view === "source")) &&
+                "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
+            );
+            const content = (
+              <>
+                <HugeiconsIcon icon={section.icon} size={16} strokeWidth={1.7} aria-hidden />
+                {section.label}
+              </>
+            );
+            if (!canInspectSource && (section.view === "source" || section.view === "deployments"))
+              return (
+                <DisabledTooltip
                   key={section.view}
-                  app={app.id}
-                  view={section.view}
-                  className={classes}
-                  aria-current={
-                    view === section.view || (view === "history" && section.view === "source")
-                      ? "page"
-                      : undefined
-                  }
+                  reason={sourceDisabledReason ?? "Checking app access…"}
                 >
-                  {content}
-                </BoundAppLink>
-              ) : (
-                <span key={section.view} className={classes}>
-                  {content}
-                </span>
+                  <button type="button" disabled className={cn(classes, "opacity-50")}>
+                    {content}
+                  </button>
+                </DisabledTooltip>
               );
-            })}
+            return app ? (
+              <BoundAppLink
+                key={section.view}
+                app={app.id}
+                view={section.view}
+                className={classes}
+                aria-current={
+                  view === section.view || (view === "history" && section.view === "source")
+                    ? "page"
+                    : undefined
+                }
+              >
+                {content}
+              </BoundAppLink>
+            ) : (
+              <span key={section.view} className={classes}>
+                {content}
+              </span>
+            );
+          })}
         </nav>
       </div>
       <div className={contentClasses[view]}>{children}</div>

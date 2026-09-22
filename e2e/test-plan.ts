@@ -26,6 +26,15 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  memberControls: {
+    file: "member-controls.spec.ts",
+    title: "Member restrictions keep controls visible and the app overview stable",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization member roles."),
+    },
+  },
   emptyStateRecovery: {
     file: "empty-state-recovery.spec.ts",
     title: "Empty states preserve drafts and respect app permissions",

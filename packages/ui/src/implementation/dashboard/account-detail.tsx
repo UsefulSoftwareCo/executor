@@ -27,7 +27,7 @@ export function AccountDetails<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly signInAction: ReactNode;
   readonly disconnectAction: ReactNode;
-  readonly readOnlyMessage: ReactNode;
+  readonly readOnlyMessage: string;
   readonly children?: ReactNode;
 }) {
   const { account, provider, apps, canManage } = data;
@@ -40,7 +40,7 @@ export function AccountDetails<E>({
   const oauth = provider.definition.auth[account.method]?.type === "oauth2";
   return (
     <>
-      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
+      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:flex-col max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
         <div className="account-heading flex items-center gap-3.75 min-w-0 [&_>_div]:min-w-0 [&_h1]:wrap-anywhere">
           <ProviderIcon
             name={provider.definition.name}
@@ -56,57 +56,58 @@ export function AccountDetails<E>({
             </p>
           </div>
         </div>
-        {canManage && <div className="shrink-0">{signInAction}</div>}
+        <div className="shrink-0">{signInAction}</div>
       </div>
       <div className="account-detail max-w-145">
-        {canManage ? (
-          <form
-            className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25"
-            onSubmit={async (event) => {
-              event.preventDefault();
-              if (pending || !label.trim()) return;
-              setPending(true);
-              setError(undefined);
-              setSaved(false);
-              const exit = await rename(label.trim());
-              setPending(false);
-              if (Exit.isFailure(exit)) {
-                setError(exit.cause);
-                return;
-              }
-              setLabel(undefined);
-              setSaved(true);
-            }}
-          >
-            <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-              Account name
-              <Input
-                value={label}
-                onChange={(event) => {
-                  setLabel(event.target.value);
-                  setSaved(false);
-                }}
-                required
-                pattern=".*\S.*"
-                maxLength={120}
-                disabled={pending}
-              />
-            </label>
-            {error && <Failure cause={error} />}
-            <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px]">
-              <Button type="submit" loading={pending}>
-                Save name
-              </Button>
-              {saved && (
-                <span className="muted text-muted-foreground" role="status">
-                  Saved
-                </span>
-              )}
-            </div>
-          </form>
-        ) : (
-          <p className="muted text-muted-foreground">{readOnlyMessage}</p>
-        )}
+        <form
+          className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!canManage || pending || !label.trim()) return;
+            setPending(true);
+            setError(undefined);
+            setSaved(false);
+            const exit = await rename(label.trim());
+            setPending(false);
+            if (Exit.isFailure(exit)) {
+              setError(exit.cause);
+              return;
+            }
+            setLabel(undefined);
+            setSaved(true);
+          }}
+        >
+          <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+            Account name
+            <Input
+              value={label}
+              onChange={(event) => {
+                setLabel(event.target.value);
+                setSaved(false);
+              }}
+              required
+              pattern=".*\S.*"
+              maxLength={120}
+              disabled={pending}
+              disabledReason={canManage ? undefined : readOnlyMessage}
+            />
+          </label>
+          {error && <Failure cause={error} />}
+          <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px]">
+            <Button
+              type="submit"
+              loading={pending}
+              disabledReason={canManage ? undefined : readOnlyMessage}
+            >
+              Save name
+            </Button>
+            {saved && (
+              <span className="muted text-muted-foreground" role="status">
+                Saved
+              </span>
+            )}
+          </div>
+        </form>
         <section className="account-section border-t border-t-border mt-7.5 pt-5.5">
           <SectionHeading>
             Used by <span className="muted text-muted-foreground">{apps.length}</span>
@@ -114,11 +115,9 @@ export function AccountDetails<E>({
           <AccountApps apps={apps} />
         </section>
         {children}
-        {canManage && (
-          <div className="account-disconnect mt-6.5 border-t border-t-border pt-4.5 [&_a]:text-destructive">
-            {disconnectAction}
-          </div>
-        )}
+        <div className="account-disconnect mt-6.5 border-t border-t-border pt-4.5">
+          {disconnectAction}
+        </div>
       </div>
     </>
   );
@@ -149,7 +148,7 @@ export function DisconnectAccount<E>({
   const [error, setError] = useState<Cause.Cause<E>>();
   return (
     <>
-      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
+      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:flex-col max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           {title}
         </h1>

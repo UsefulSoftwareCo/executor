@@ -31,7 +31,15 @@ function BillingSettings() {
         <CardDescription>Manage your plan and payment details.</CardDescription>
       </CardHeader>
       <CardFooter className="px-4 pb-4">
-        <Button asChild variant="outline">
+        <Button
+          asChild
+          variant="outline"
+          disabledReason={
+            organization.role === "member"
+              ? "Only organization owners and admins can manage billing."
+              : undefined
+          }
+        >
           <Link
             to="/org/$organizationSlug/billing"
             params={{ organizationSlug: organization.slug }}

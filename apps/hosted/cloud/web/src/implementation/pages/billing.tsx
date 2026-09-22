@@ -209,6 +209,17 @@ export function BillingPage({ returned }: { readonly returned: ReturnType<typeof
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           Billing
         </h1>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Button
+            variant="outline"
+            disabledReason="Only organization owners and admins can manage billing."
+          >
+            Manage billing
+          </Button>
+          <Button disabledReason="Only organization owners and admins can change the billing plan.">
+            Change plan
+          </Button>
+        </div>
         <EmptyState title="Billing access">
           An organization owner or admin can manage billing.
         </EmptyState>

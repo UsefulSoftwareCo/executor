@@ -24,6 +24,7 @@ import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option } from "effect";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
 import { AppId, type App, type Profile, type ProfileId } from "@executor-js/sdk";
@@ -89,6 +90,21 @@ export function AppDetailPage({
   const access = Option.getOrUndefined(authority.data);
   const canManage = access?.canManage === true,
     canUse = access?.canUse === true;
+  const accessPendingReason = AsyncResult.isFailure(authority.result)
+    ? "App access could not be checked. Retry the access request."
+    : "Checking app access…";
+  const manageReason =
+    access === undefined
+      ? accessPendingReason
+      : canManage
+        ? undefined
+        : "Only the app creator and organization admins can manage this app.";
+  const sourceReason =
+    access === undefined
+      ? accessPendingReason
+      : canManage
+        ? undefined
+        : "Only the app creator and organization admins can view app source and deployments.";
   const [setupRequest, setSetupRequest] = useState<string>();
   const inventoryData = Option.isSome(inventory.data) ? inventory.data.value : undefined;
   const choices =
@@ -154,20 +170,14 @@ export function AppDetailPage({
       )}
     />
   );
-  const pending = (
-    <AppDetailLoading
-      view={selectedView}
-      app={app}
-      canInspectSource={canManage}
-      selectedTool={tool}
-    />
-  );
+  const pending = <AppDetailLoading view={selectedView} app={app} selectedTool={tool} />;
   return (
     <AppDetailLayout
       key={appId}
       app={app}
       view={selectedView}
       canInspectSource={canManage}
+      sourceDisabledReason={sourceReason}
       back={
         <Link
           to="/org/$organizationSlug/apps"
@@ -212,8 +222,22 @@ export function AppDetailPage({
         ) : (
           <>
             {canUse && selected !== undefined && openApp?.(app, selected.profile)}
-            {canManage && (role === "owner" || role === "admin") && (
+            {canManage && (role === "owner" || role === "admin") ? (
               <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabledReason={
+                  role === undefined
+                    ? "Checking organization access…"
+                    : role === "owner" || role === "admin"
+                      ? manageReason
+                      : "Only organization owners and admins can publish apps."
+                }
+              >
+                Publish
+              </Button>
             )}
           </>
         )
@@ -261,7 +285,7 @@ export function AppDetailPage({
                   <AppSettings
                     app={current}
                     copyAction={
-                      canManage && (
+                      canManage ? (
                         <CopyApp
                           key={current.id}
                           Failure={HostedFailure}
@@ -276,13 +300,29 @@ export function AppDetailPage({
                             })
                           }
                         />
+                      ) : (
+                        <Button variant="outline" size="sm" disabledReason={manageReason}>
+                          Make a copy
+                        </Button>
                       )
                     }
-                    renameAction={canManage && <AppRename app={current} />}
-                    deleteAction={canManage && <DeleteApp app={current} />}
-                    notice={
-                      !canManage &&
-                      "The app creator and organization admins can rename or delete this app."
+                    renameAction={
+                      canManage ? (
+                        <AppRename app={current} />
+                      ) : (
+                        <Button variant="outline" size="sm" disabledReason={manageReason}>
+                          Rename
+                        </Button>
+                      )
+                    }
+                    deleteAction={
+                      canManage ? (
+                        <DeleteApp app={current} />
+                      ) : (
+                        <Button variant="destructive" size="sm" disabledReason={manageReason}>
+                          Delete app
+                        </Button>
+                      )
                     }
                   >
                     <section className="rounded-lg border p-5">
@@ -435,8 +475,9 @@ export function AppDetailPage({
                                   }))}
                                 />
                               }
+                              sourceDisabledReason={sourceReason}
                               source={
-                                canManage && (
+                                canManage ? (
                                   <QueryView
                                     query={appManagement(organization).authoring(current.id)}
                                     Failure={HostedFailure}
@@ -444,6 +485,10 @@ export function AppDetailPage({
                                   >
                                     {(source) => <AppOverviewSource source={source} />}
                                   </QueryView>
+                                ) : (
+                                  <p className="py-5 text-sm text-muted-foreground">
+                                    Source is restricted.
+                                  </p>
                                 )
                               }
                             />

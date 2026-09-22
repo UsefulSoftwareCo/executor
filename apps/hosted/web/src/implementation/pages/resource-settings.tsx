@@ -15,7 +15,7 @@ import { sessionAtom } from "../../contracts/auth.ts";
 import { groupsAtom } from "../../contracts/groups.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
-import { SharingEditor, SharingSummary } from "../components/sharing.tsx";
+import { SharingEditor } from "../components/sharing.tsx";
 /** Apps retain one fixed configuration; these controls change access only. */
 export function AppAccessSettings({ app }: { readonly app: AppId }) {
   const { organization } = useOrganizationRoute();
@@ -36,21 +36,22 @@ export function AppAccessSettings({ app }: { readonly app: AppId }) {
             Failure={HostedFailure}
             pending={<DetailSkeleton label="Loading groups" />}
           >
-            {(data) =>
-              access.canManage ? (
-                <SharingEditor
-                  mode="app"
-                  value={access.audience}
-                  revision={access.revision}
-                  allowPrivate={access.creator !== null}
-                  privateLabel={access.creator === user ? "Only me" : "Only the creator"}
-                  groups={data.groups}
-                  save={(audience, revision) => save({ audience, revision })}
-                />
-              ) : (
-                <SharingSummary value={access.audience} groups={data.groups} />
-              )
-            }
+            {(data) => (
+              <SharingEditor
+                disabledReason={
+                  access.canManage
+                    ? undefined
+                    : "Only the app creator and organization admins can change app access."
+                }
+                mode="app"
+                value={access.audience}
+                revision={access.revision}
+                allowPrivate={access.creator !== null}
+                privateLabel={access.creator === user ? "Only me" : "Only the creator"}
+                groups={data.groups}
+                save={(audience, revision) => save({ audience, revision })}
+              />
+            )}
           </QueryView>
         )}
       </QueryView>
@@ -79,18 +80,20 @@ export function AccountAccessSettings({ account }: { readonly account: AccountId
               pending={<DetailSkeleton label="Loading groups" />}
             >
               {(data) =>
-                access.ownership.kind === "shared" &&
-                (access.canManage ? (
+                access.ownership.kind === "shared" && (
                   <SharingEditor
+                    disabledReason={
+                      access.canManage
+                        ? undefined
+                        : "Only the account creator and organization admins can change account access."
+                    }
                     mode="account"
                     value={access.ownership.audience}
                     revision={access.revision}
                     groups={data.groups}
                     save={(audience, revision) => save({ audience, revision })}
                   />
-                ) : (
-                  <SharingSummary value={access.ownership.audience} groups={data.groups} />
-                ))
+                )
               }
             </QueryView>
           )

@@ -67,7 +67,7 @@ const contentBox = (
       }[view]
     : {
         overview: '[aria-label="App accounts"]',
-        accounts: ".accounts-section .empty-state",
+        accounts: ".empty-state",
         tools: ".tools-section",
         source: '[aria-label="Source browser"]',
         history: '[aria-label="Source history"] li:first-child',

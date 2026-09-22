@@ -406,11 +406,11 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) => 
           page.getByRole("heading", { name: renamed, exact: true }).waitFor({ state: "visible" }),
         );
         expect(
-          yield* browser.use("Member has no edit action", (page) =>
-            page.getByRole("button", { name: "Edit group", exact: true }).count(),
+          yield* browser.use("Member edit action explains its restriction", (page) =>
+            page.getByRole("button", { name: "Edit group", exact: true }).isDisabled(),
           ),
-        ).toBe(0);
-        yield* browser.checkpoint("Member sees group membership without management controls");
+        ).toBe(true);
+        yield* browser.checkpoint("Member sees group membership with disabled management controls");
         yield* browser.login(actors.owner);
         yield* browser.use("Owner opens group for deletion", (page) =>
           page.goto(`/org/${actors.organization.slug}/groups/${group.id}`),

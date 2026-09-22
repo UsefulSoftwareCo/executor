@@ -78,6 +78,7 @@ function GroupContent({
   const deletion = useAtomValue(removeGroupAtom(organization));
   const mutation = useAtomValue(saveGroupAtom(organization));
   const admin = data.canManage && (role === "admin" || role === "owner");
+  const groupReason = admin ? undefined : "Only organization owners and admins can manage groups.";
   const selected = data.groups.find((group) => group.id === id);
   const filtered = data.groups
     .filter((group) => group.name.toLowerCase().includes(search.toLowerCase()))
@@ -102,42 +103,45 @@ function GroupContent({
                   <p className="mt-1 text-sm text-muted-foreground">{selected.description}</p>
                 )}
               </div>
-              {admin && (
-                <Button variant="outline" onClick={() => setEdit(selected)}>
-                  Edit group
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                disabledReason={groupReason}
+                onClick={() => setEdit(selected)}
+              >
+                Edit group
+              </Button>
             </div>
             <h3 className="mb-3 text-sm font-medium">Members · {selected.memberIds.length}</h3>
             <Members
               members={data.members.filter((member) => selected.memberIds.includes(member.id))}
               action={
-                admin ? (
-                  <Button variant="outline" onClick={() => setEdit(selected)}>
-                    Add members
-                  </Button>
-                ) : undefined
+                <Button
+                  variant="outline"
+                  disabledReason={groupReason}
+                  onClick={() => setEdit(selected)}
+                >
+                  Add members
+                </Button>
               }
             />
             <GroupApps group={selected.id} />
-            {admin && (
-              <div className="mt-8 border-t pt-5">
-                <h3 className="text-sm font-medium text-destructive">Delete group</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Organization members and apps are kept.
-                </p>
-                <Button
-                  variant="destructive"
-                  className="mt-3"
-                  onClick={() => {
-                    setRemoving(selected);
-                    setRemoveError(undefined);
-                  }}
-                >
-                  Delete group
-                </Button>
-              </div>
-            )}
+            <div className="mt-8 border-t pt-5">
+              <h3 className="text-sm font-medium text-destructive">Delete group</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Organization members and apps are kept.
+              </p>
+              <Button
+                variant="destructive"
+                disabledReason={groupReason}
+                className="mt-3"
+                onClick={() => {
+                  setRemoving(selected);
+                  setRemoveError(undefined);
+                }}
+              >
+                Delete group
+              </Button>
+            </div>
           </>
         ) : (
           <div className="rounded-lg border border-dashed p-8 text-center">
@@ -161,12 +165,14 @@ function GroupContent({
                   onChange={(event) => setSearch(event.target.value)}
                 />
               </label>
-              {admin && (
-                <Button onClick={() => setEdit("new")} disabled={mutation.waiting}>
-                  <HugeiconsIcon icon={Add01Icon} size={16} />
-                  Create group
-                </Button>
-              )}
+              <Button
+                onClick={() => setEdit("new")}
+                disabled={mutation.waiting}
+                disabledReason={groupReason}
+              >
+                <HugeiconsIcon icon={Add01Icon} size={16} />
+                Create group
+              </Button>
             </div>
           )}
           {filtered.length ? (
@@ -214,12 +220,16 @@ function GroupContent({
                   <Button variant="outline" onClick={() => setSearch("")}>
                     Clear search
                   </Button>
-                ) : admin ? (
-                  <Button onClick={() => setEdit("new")} disabled={mutation.waiting}>
+                ) : (
+                  <Button
+                    onClick={() => setEdit("new")}
+                    disabled={mutation.waiting}
+                    disabledReason={groupReason}
+                  >
                     <HugeiconsIcon icon={Add01Icon} size={16} />
                     Create group
                   </Button>
-                ) : undefined
+                )
               }
             >
               {search
