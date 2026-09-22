@@ -134,6 +134,9 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
         yield* browser.use("Open the member app list", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
+        yield* browser.use("Open app filters", (page) =>
+          page.getByRole("button", { name: "Filters", exact: true }).click(),
+        );
         yield* browser.use("Open group filter", (page) =>
           page.getByRole("combobox", { name: "Filter apps by group" }).click(),
         );

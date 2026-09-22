@@ -137,11 +137,20 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
         yield* browser.use("Open filtered Apps", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
+        yield* browser.use("Open app filters", (page) =>
+          page.getByRole("button", { name: "Filters", exact: true }).click(),
+        );
         yield* browser.use("Open group filter", (page) =>
           page.getByRole("combobox", { name: "Filter apps by group", exact: true }).click(),
         );
         yield* browser.use("Choose private apps", (page) =>
           page.getByRole("option", { name: "Private apps", exact: true }).click(),
+        );
+        yield* browser.use("The group menu has closed", (page) =>
+          page.getByRole("listbox").waitFor({ state: "hidden" }),
+        );
+        yield* browser.use("Close the filters to use the empty-state action", (page) =>
+          page.keyboard.press("Escape"),
         );
         yield* browser.use("Filtered absence has a distinct message", (page) =>
           page.getByRole("heading", { name: "No apps match these filters", exact: true }).waitFor(),

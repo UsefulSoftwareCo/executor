@@ -39,11 +39,19 @@ export function AppsPage<E>({
       >
         {(!Option.isSome(data) || data.value.apps.length > 0) && action}
       </PageHeader>
-      <div className="list-toolbar apps-toolbar mb-4 grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
+      {/* Controls above cards should use half-card or full-card widths. Search uses a full
+          card and Filters uses half a card at each grid breakpoint. */}
+      <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4">
         {(!Option.isSome(data) || data.value.apps.length > 0 || search.length > 0) && (
-          <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
+          <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-full">
+            <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
+          </div>
         )}
-        {filters}
+        {filters && (
+          <div className="w-[calc((100%_-_2rem)/6)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/4)] max-[600px]:w-1/2">
+            {filters}
+          </div>
+        )}
       </div>
       <QueryResult result={result} Failure={Failure} retry={refresh} pending={<AppCardsSkeleton />}>
         {(data) => (

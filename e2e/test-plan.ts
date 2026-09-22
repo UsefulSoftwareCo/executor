@@ -80,6 +80,15 @@ export const scenarios = {
       local: na("The shared source browser is exercised through hosted organization routes."),
     },
   },
+  appFilters: {
+    file: "app-filters.spec.ts",
+    title: "App filters retain cards through loading, failure and retry",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no group or access filters."),
+    },
+  },
   sdkQueryBudgets: {
     file: "sdk-query-budgets.spec.ts",
     title: "SDK batches invocation accounts and finished workflow history",

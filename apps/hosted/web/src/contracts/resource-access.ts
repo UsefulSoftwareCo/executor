@@ -156,3 +156,23 @@ export const resourceInventoryAtom = (
   view: "available" | "managed" = "available",
   group = "all",
 ) => inventory(new ListKey({ organization, view, group }));
+
+/** Page-local filters share one result lifetime within a single organization. */
+export function createAppListAtoms(organization: OrganizationReference) {
+  const filters = Atom.make<{
+    readonly view: "available" | "managed";
+    readonly group: string;
+  }>({ view: "available", group: "all" });
+  const selected = Atom.readable(
+    (get) => {
+      const { view, group } = get(filters);
+      return get(resourceInventoryAtom(organization, view, group));
+    },
+    (refresh) => {
+      refresh(resourceDirectoryAtom(organization));
+      refresh(resourceDirectoryAtom(organization, "managed"));
+    },
+  );
+  // Retain cards while another filter loads, but clear them on access denial.
+  return { filters, query: protectedQuery(selected) };
+}
