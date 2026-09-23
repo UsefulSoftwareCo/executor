@@ -14,6 +14,10 @@ import { defineComponents } from "blume";
 // Every other slot is Blume's, and so is the MDX component set, the table of
 // contents and all the agent-facing output.
 export default defineComponents({
+  mdx: {
+    ReleaseCommand: "./components/ReleaseCommand.astro",
+    ReleaseDesktopLink: "./components/ReleaseDesktopLink.astro",
+  },
   layout: {
     Footer: "../marketing/src/components/SiteFooter.astro",
     Header: "./components/DocsRail.astro",
