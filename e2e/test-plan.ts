@@ -6,7 +6,7 @@ import type { Target } from "./report-model.ts";
 export const TargetPlan = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("scheduled"),
-    runtime: Schema.optional(Schema.Literal("managed")),
+    runtime: Schema.optional(Schema.Literals(["managed", "attached"])),
   }),
   Schema.Struct({ status: Schema.Literal("not-applicable"), reason: Schema.NonEmptyString }),
   Schema.Struct({ status: Schema.Literal("not-run"), reason: Schema.NonEmptyString }),
@@ -443,6 +443,15 @@ export const scenarios = {
       cloud: scheduled,
       "self-host": na("This scenario exercises the Cloud compiler dependency resolver."),
       local: na("This scenario exercises the Cloud compiler dependency resolver."),
+    },
+  },
+  cloudCompilerMemory: {
+    file: "cloud-compiler.spec.ts",
+    title: "Cloud compiler memory failures preserve the active deployment",
+    targets: {
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("This scenario requires Cloudflare's compiler Worker memory limit."),
+      local: na("This scenario requires Cloudflare's compiler Worker memory limit."),
     },
   },
   requestTiming: {
@@ -1345,14 +1354,16 @@ export const scenariosForSuite = (
           scenario.targets.cloud.status === "scheduled"),
     )
     .map((scenario) =>
-      cloudMode === "attached" &&
-      "runtime" in scenario.targets.cloud &&
-      scenario.targets.cloud.runtime === "managed"
+      "runtime" in scenario.targets.cloud && scenario.targets.cloud.runtime !== cloudMode
         ? {
             ...scenario,
             targets: {
               ...scenario.targets,
-              cloud: na("Requires the managed local Cloud target and its local collectors."),
+              cloud: na(
+                scenario.targets.cloud.runtime === "managed"
+                  ? "Requires the managed local Cloud target and its local collectors."
+                  : "Requires a deployed Cloud target with Cloudflare's memory limit.",
+              ),
             },
           }
         : scenario,

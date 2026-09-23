@@ -10,7 +10,7 @@ import {
   type WebhookCommand,
   type WorkflowCommand,
 } from "apps/contracts";
-import { SourceFiles } from "./deployment.ts";
+import { SourceFiles, type BuildMemoryExceeded } from "./deployment.ts";
 import { BuildId, Json } from "./shared.ts";
 
 /** Retained compiled output and declarations obtained without running the app factory. */
@@ -61,7 +61,7 @@ export interface Runtime<Requirements = never> {
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
   readonly build: (input: {
     readonly files: SourceFiles;
-  }) => Effect.Effect<BuiltApp, RuntimeBuildFailed, Requirements>;
+  }) => Effect.Effect<BuiltApp, RuntimeBuildFailed | BuildMemoryExceeded, Requirements>;
   readonly asset?: (input: {
     readonly build: BuildId;
     readonly path: string;

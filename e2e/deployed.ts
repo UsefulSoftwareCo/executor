@@ -9,7 +9,9 @@ const command = Command.make(
   "e2e-deployed",
   {
     database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.withDefault("neon")),
-    name: Flag.String("test-name").pipe(Flag.withDefault("^(?!.*Claude Code connects)")),
+    name: Flag.String("test-name").pipe(
+      Flag.withDefault("^(?!.*(?:Claude Code connects|Cloud compiler memory failures))"),
+    ),
     workers: Flag.Int("workers").pipe(Flag.withDefault(4)),
   },
   runDeployedSuite,

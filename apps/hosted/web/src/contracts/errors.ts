@@ -72,6 +72,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     SkillDefinitionInvalid: ({ file }) => `Fix the skill definition in ${file} and deploy again.`,
     DeploymentBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
+    BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: () =>
       "The app could not be imported. Check its source or try a different catalog entry.",
     AccountRequired: () => "Connect an account to load this app’s tools.",

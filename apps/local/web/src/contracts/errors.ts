@@ -198,6 +198,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
           ? "Check its source and dependencies, then try again. The running version is unchanged."
           : error.reason,
       ),
+    BuildMemoryExceeded: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,
     SchemaError: () =>

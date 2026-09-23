@@ -80,3 +80,19 @@ export class DeploymentBuildFailed extends Schema.TaggedError<DeploymentBuildFai
       "The build failed: no deployment was retained, no new app was created, and an existing app's active deployment is unchanged. Identified by (owner, name) because a first deploy has no app id yet. `reason` is a safe summary without source or secrets.",
   },
 ) {}
+
+/** The compiler exhausted its memory before a new deployment could be activated. */
+export const BuildMemoryExceeded = UserFacingError.define({
+  tag: "BuildMemoryExceeded",
+  status: 422,
+  title: "App build ran out of memory",
+  description:
+    "Executor ran out of memory while building the app. No new deployment was activated.",
+  recovery: {
+    action: "Review the build's dependencies and memory use before deploying again.",
+    instructions:
+      "Inspect dependency installation and compiler memory use for this build. This failure occurred during compilation, not while running the app. Reduce unnecessary build allocations or prepare large dependencies ahead of time, then verify deployment. Do not remove app features or dependencies without the user's agreement.",
+  },
+});
+/** A confirmed compiler memory failure with safe recovery details. */
+export type BuildMemoryExceeded = typeof BuildMemoryExceeded.Type;

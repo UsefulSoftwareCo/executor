@@ -22,6 +22,7 @@ import {
   Deployment,
   DeploymentMetadata,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
   DeploymentNotFound,
   DeploymentSummary,
   SourceFiles,
@@ -228,16 +229,17 @@ export const makeApps = (
       );
       yield* prepareAppSkills(files);
       const built = yield* runtime.build({ files }).pipe(
-        Effect.mapError(
-          (error) =>
-            new DeploymentBuildFailed({
-              owner: input.owner,
-              name: deployName,
-              reason:
-                Schema.is(RuntimeBuildFailed)(error) && error.dependency !== undefined
-                  ? `Add ${error.dependency} to package.json dependencies.`
-                  : "App build failed",
-            }),
+        Effect.mapError((error) =>
+          Schema.is(BuildMemoryExceeded)(error)
+            ? error
+            : new DeploymentBuildFailed({
+                owner: input.owner,
+                name: deployName,
+                reason:
+                  Schema.is(RuntimeBuildFailed)(error) && error.dependency !== undefined
+                    ? `Add ${error.dependency} to package.json dependencies.`
+                    : "App build failed",
+              }),
         ),
       );
       const entries = yield* Effect.forEach(

@@ -13,6 +13,7 @@ import {
   Json,
   type RuntimeBuildUnavailable,
   RuntimeBuildFailed,
+  BuildMemoryExceeded,
   RuntimeProtocolFailed,
   runtimeAdapter,
 } from "@executor-js/sdk/core";
@@ -353,6 +354,15 @@ export const cloudRuntime = Effect.fn(function* (
         Effect.gen(function* () {
           const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
           const { bundle, ui } = yield* compiler.compile(files, headers).pipe(
+            Effect.catchTag("RpcCallError", (error) => {
+              const cause = error.cause;
+              const failure =
+                cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
+                  ? new BuildMemoryExceeded()
+                  : new RuntimeBuildFailed({ stage: "compile" });
+              causes.set(failure, describe(error));
+              return Effect.fail(failure);
+            }),
             Effect.flatMap(Schema.decodeUnknownEffect(CompiledCloudApp)),
             Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
             Effect.withSpan("runtime.cloud.compiler.request"),
@@ -383,7 +393,7 @@ export const cloudRuntime = Effect.fn(function* (
           // The failing stage and its cause belong on the span; the public error stays small.
           Effect.tapError((error) =>
             Effect.annotateCurrentSpan({
-              "build.stage": error.stage,
+              "build.stage": Schema.is(BuildMemoryExceeded)(error) ? "compile" : error.stage,
               "build.cause": causeOf(error),
             }),
           ),

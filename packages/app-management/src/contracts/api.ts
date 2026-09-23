@@ -11,6 +11,7 @@ import {
   AccountNotFound,
   AccountSelectionInvalid,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
   SkillDefinitionInvalid,
   sourceErrors,
   SourceSnapshot,
@@ -39,6 +40,7 @@ export const appOperationErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
   SkillDefinitionInvalid,
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
