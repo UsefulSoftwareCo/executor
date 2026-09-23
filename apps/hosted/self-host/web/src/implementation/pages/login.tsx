@@ -146,7 +146,7 @@ export function SelfHostLoginPage({
               name="password"
               type="password"
               required
-              minLength={registration ? 12 : undefined}
+              minLength={registration ? 8 : undefined}
               maxLength={128}
               autoComplete={registration ? "new-password" : "current-password"}
             />

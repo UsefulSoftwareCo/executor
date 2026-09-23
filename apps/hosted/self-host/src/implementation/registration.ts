@@ -34,7 +34,7 @@ const Invitation = Schema.Struct({
 const credentials = z.object({
   name: z.string().trim().min(1).max(100),
   email: z.email(),
-  password: z.string().min(12).max(128),
+  password: z.string().min(8).max(128),
 });
 const call = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({

@@ -25,8 +25,16 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           page.getByLabel("Email", { exact: true }).fill("alex@example.test"),
         );
         yield* browser.use("Enter administrator password", (page) =>
-          page.getByLabel("Password", { exact: true }).fill("password1234"),
+          page.getByLabel("Password", { exact: true }).fill("password"),
         );
+        expect(
+          yield* browser.use("An eight-character password can be submitted", (page) =>
+            page
+              .locator("form")
+              .evaluate((form) => form instanceof HTMLFormElement && form.checkValidity()),
+          ),
+        ).toBe(true);
+        yield* browser.checkpoint("Administrator setup with an eight-character password");
         yield* browser.use("Create the administrator", (page) =>
           page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
         );
@@ -90,7 +98,7 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           page.getByLabel("Email", { exact: true }).fill("alex@example.test"),
         );
         yield* browser.use("Enter returning administrator password", (page) =>
-          page.getByLabel("Password", { exact: true }).fill("password1234"),
+          page.getByLabel("Password", { exact: true }).fill("password"),
         );
         yield* browser.use("Sign in again", (page) =>
           page.getByRole("button", { name: "Sign in", exact: true }).click(),
