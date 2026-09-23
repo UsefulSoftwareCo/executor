@@ -101,10 +101,12 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
           );
           yield* evidence.json("warm-runtime-query.json", warm);
-          expect(
-            warm.data.filter((row) => row.span.operationName === "runtime.cloud.build.cached"),
-            "A warm API runtime does not load its retained server build again",
-          ).toHaveLength(0);
+          // Real Cloudflare requests may enter different isolates. A new isolate
+          // may decode the cached build, but must not download it from R2 again.
+          for (const row of warm.data.filter(
+            (row) => row.span.operationName === "runtime.cloud.build.cached",
+          ))
+            expect(row.span.tags["executor.build.cache"]).toBe("hit");
           expect(warm.data.some((row) => row.span.operationName === "storage.blob.get")).toBe(
             false,
           );

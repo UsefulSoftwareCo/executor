@@ -36,13 +36,14 @@ live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs only on manual dispatch.
-It has read-only repository permissions, uses no secrets, and cancels an
-earlier run on the same ref. The jobs live in `.github/workflows/checks.yml`,
+`.github/workflows/ci.yml` runs on pull requests and manual dispatch.
+Its local checks use no secrets. The deployed Cloud job uses the staging
+environment on same-repository PRs and provisions a disposable Neon branch.
+An earlier run on the same ref is cancelled. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
 
-Continuous deployment runs separately on every push to `main`; it does not
-wait for the CI workflow.
+Every push to `main` runs the same deployed suite on PlanetScale. Production
+deployment depends on that job passing for the exact candidate commit.
 
 Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
 
@@ -58,8 +59,8 @@ Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
 The check job also verifies bounded OTLP export, partial rejection, privacy,
 seven-day local retrieval, Sentry and usage receivers. Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
-These checks remain manually invoked. Deployment gating and automatic CI
-enforcement remain deferred as recorded in `notes/deferred.md`.
+Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
+and teardown. Docker builds remain separate and run only for manual publication.
 
 A failed e2e job uploads its `.local/e2e` evidence directory as an artifact.
 Private `actors.json` session files are excluded.

@@ -132,7 +132,8 @@ const command = Command.make("e2e", {
           (yield* processes.string(ChildProcess.make("git", ["status", "--porcelain"]))).trim()
             .length > 0;
         const startedAt = new Date().toISOString();
-        const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all");
+        const cloudMode = Option.isSome(cloud) ? "attached" : "managed";
+        const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
         const captures = yield* Effect.forEach(
           targets,
           (target) =>
@@ -223,7 +224,12 @@ const command = Command.make("e2e", {
                           "--config",
                           "e2e/vitest.config.ts",
                           "--testNamePattern",
-                          patternForTarget(target, selected === "hosted" ? "hosted" : "all", name),
+                          patternForTarget(
+                            target,
+                            selected === "hosted" ? "hosted" : "all",
+                            name,
+                            cloudMode,
+                          ),
                         ],
                         {
                           extendEnv: target !== "cloud",
@@ -248,6 +254,7 @@ const command = Command.make("e2e", {
                               ? {}
                               : { E2E_WORKFLOW_HOLD_MS: process.env.E2E_WORKFLOW_HOLD_MS }),
                             E2E_TARGET: target,
+                            E2E_CLOUD_MODE: cloudMode,
                             EXECUTOR_E2E_RUN: directory,
                             EXECUTOR_E2E_API_KEY: Redacted.value(apiKey),
                             EXECUTOR_E2E_CONTROL_ORIGIN: controlOrigin ?? "",
@@ -320,6 +327,10 @@ const command = Command.make("e2e", {
         };
         yield* writeEvidenceReport(output, report);
         yield* Console.log(`Test evidence: ${output}/index.html`);
+        if (results.some((result) => result.report.entries.length === 0))
+          return yield* new RunFailed({
+            message: "No scenarios produced evidence for a selected target. Check the test filter.",
+          });
         if (results.some((result) => result.code !== 0))
           return yield* new RunFailed({
             message: "One or more targets failed. Their evidence is retained.",

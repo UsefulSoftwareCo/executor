@@ -4,14 +4,15 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Axiom from "alchemy/Axiom";
 import * as Planetscale from "alchemy/Planetscale";
+import * as Neon from "alchemy/Neon";
 import { Effect, Layer, Schema } from "effect";
 import { Stage } from "alchemy/Stage";
-import { AppDomainLifecycleProvider } from "./src/infrastructure/app-domain-lifecycle.ts";
 import { TestStageSlug } from "./src/infrastructure/stage.ts";
 import { PreviousTestDatabaseCleanup } from "./src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,
   TestStageBucketCleanup,
+  TestStageDomainCleanup,
 } from "./src/infrastructure/test-stage-cleanup-providers.ts";
 
 const cleanupState = Layer.unwrap(
@@ -33,7 +34,8 @@ export default Alchemy.Stack(
       TestStageBucketCleanup(),
       Axiom.providers(),
       Planetscale.providers(),
-      AppDomainLifecycleProvider().pipe(Layer.provide(cleanupState)),
+      Neon.providers(),
+      TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
       PreviousTestDatabaseCleanup(),
     ),
     state: cleanupState,

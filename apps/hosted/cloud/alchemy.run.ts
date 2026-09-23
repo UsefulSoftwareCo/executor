@@ -4,6 +4,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Axiom from "alchemy/Axiom";
 import * as Planetscale from "alchemy/Planetscale";
+import * as Neon from "alchemy/Neon";
 import * as Docker from "alchemy/Docker";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Effect, Layer } from "effect";
@@ -37,7 +38,9 @@ export default Alchemy.Stack(
       Layer.unwrap(
         AlchemyContext.pipe(
           Effect.map(({ dev }) =>
-            dev ? Layer.empty : Layer.mergeAll(Planetscale.providers(), Axiom.providers()),
+            dev
+              ? Layer.empty
+              : Layer.mergeAll(Planetscale.providers(), Neon.providers(), Axiom.providers()),
           ),
         ),
       ),

@@ -330,7 +330,7 @@ export const checkAppBrowser = (input: {
     expect(cards.some((card) => card.empty)).toBe(true);
     expect(cards.some((card) => !card.empty)).toBe(true);
     for (const card of cards) {
-      expect(card.height).toBe(320);
+      expect(card.height).toBe(240);
     }
     yield* browser.checkpoint("Overview with skills and workflows");
     yield* browser.use("Open Skills from its Overview card", (page) =>

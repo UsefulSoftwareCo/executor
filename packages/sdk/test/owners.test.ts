@@ -91,7 +91,7 @@ const populate = (executor: Effect.Success<ReturnType<typeof createExecutor>>, o
       app: app.id,
       owner,
       subject: owner,
-      idempotencyKey: "test",
+      idempotencyKey: "owner-purge-fixture",
       accounts: { service: account.id },
     });
     yield* executor.accountConnections.create({ owner, provider: requirement.provider });

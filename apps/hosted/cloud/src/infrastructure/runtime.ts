@@ -34,11 +34,12 @@ import { facetIdentity, FacetResult } from "@executor-js/app-data/cloudflare";
 import type { AppDataSupervisor } from "./app-data.ts";
 import { dataChanges } from "../implementation/data-changes.ts";
 import { cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+import type { DurableObjectNamespace, Fetcher } from "@cloudflare/workers-types";
 import { workerModules } from "@executor-js/app-data/worker-bundle";
 import type { CloudBundle } from "../contracts/builds.ts";
 import { CompiledCloudApp } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
+import { AppOutbound } from "./app-outbound.ts";
 import {
   loadCloudBuild,
   retainCloudBuild,
@@ -68,6 +69,13 @@ const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) => {
   );
   return error;
 };
+const NativeFetcher = Schema.declare(
+  (value): value is Fetcher =>
+    typeof value === "object" &&
+    value !== null &&
+    "fetch" in value &&
+    typeof value.fetch === "function",
+);
 
 /** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
 export const cloudRuntime = Effect.fn(function* (
@@ -76,8 +84,16 @@ export const cloudRuntime = Effect.fn(function* (
 ) {
   const loader = yield* Cloudflare.WorkerLoader("AppLoader");
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
+  const network = yield* AppOutbound;
+  const worker = yield* Cloudflare.Worker;
+  yield* worker.bind`${network}`({
+    bindings: [{ type: "service", name: "AppOutbound", service: network.workerName }],
+  });
   const environment = yield* Cloudflare.WorkerEnvironment;
   return Effect.gen(function* () {
+    const outbound = Cloudflare.fromCloudflareFetcher(
+      yield* Schema.decodeUnknownEffect(NativeFetcher)(environment.AppOutbound).pipe(Effect.orDie),
+    );
     const forward = yield* makeTelemetryForwarder;
     const collect = (body: unknown, build?: BuildId) =>
       Effect.gen(function* () {
@@ -118,10 +134,17 @@ export const cloudRuntime = Effect.fn(function* (
                     "__executor_rpc.js": appRpcBridge(bundle.mainModule),
                   },
                   compatibilityDate: "2026-07-30",
-                  // Same-zone URLs must use their public Worker routes, not the underlying origin.
-                  compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
-                  // Declarations are static. Workflows cannot lend their implicit outbound binding.
-                  ...(command.operation === "requirements" ? { globalOutbound: null } : {}),
+                  compatibilityFlags:
+                    context.workflow === undefined
+                      ? ["nodejs_compat", "global_fetch_strictly_public"]
+                      : ["nodejs_compat"],
+                  // The private outbound service follows public Worker routes.
+                  // Supplying it explicitly also works inside native Workflows.
+                  ...(command.operation === "requirements"
+                    ? { globalOutbound: null }
+                    : context.workflow === undefined
+                      ? {}
+                      : { globalOutbound: outbound }),
                 })),
               ),
             )

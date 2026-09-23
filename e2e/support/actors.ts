@@ -3,6 +3,7 @@ import { Clock, Effect, Context, FileSystem, Layer, Redacted, Schema } from "eff
 import { SessionClients, body, BrowserCookies, type Session } from "./api.ts";
 import { Target } from "./platform.ts";
 import { Organization, Resource } from "./contracts.ts";
+import { Emulators } from "./emulators.ts";
 
 /** Synthetic password is confined to the isolated self-host setup. */
 export const password = "Synthetic-e2e-password-2026";
@@ -60,10 +61,31 @@ export const freshOwnerSession = Effect.gen(function* () {
   const clients = yield* SessionClients;
   const session = yield* clients.session();
   if (target.metadata.target === "cloud" && target.metadata.mode === "attached")
-    return yield* new ActorsUnavailable({
-      message:
-        "Session lifecycle checks require managed Cloud sign-in or self-host password sign-in",
-    });
+    return yield* Effect.gen(function* () {
+      const actors = yield* Actors;
+      const emulators = yield* Emulators;
+      const identity = yield* clients.request(actors.owner, "GET", "/api/auth/get-session");
+      yield* ready(identity.status);
+      const { user } = yield* body(
+        Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
+        identity,
+      );
+      const received = yield* emulators.received(user.email);
+      yield* ready(
+        (yield* clients.request(session, "POST", "/api/auth/email-otp/send-verification-otp", {
+          email: user.email,
+          type: "sign-in",
+        })).status,
+      );
+      const otp = yield* emulators.mail(user.email, received);
+      yield* ready(
+        (yield* clients.request(session, "POST", "/api/auth/sign-in/email-otp", {
+          email: user.email,
+          otp: Redacted.value(otp),
+        })).status,
+      );
+      return session;
+    }).pipe(Effect.provide(Emulators.layer));
   const response = yield* target.metadata.target === "cloud"
     ? signInDevelopmentFixture(session, "owner")
     : clients.request(session, "POST", "/api/auth/sign-in/email", {
@@ -224,6 +246,9 @@ const cloudActors = Effect.gen(function* () {
       );
       if (current.role !== role || current.organization !== config.organization.id)
         return yield* new ActorsUnavailable({ message: "Cloud fixture authority changed" });
+      // Fixture inserts bypass HTTP. Follow the normal sign-in landing request so
+      // the host dispatches its outbox without waiting for cron propagation.
+      yield* ready((yield* api.request(session, "POST", "/api/onboarding/prepare")).status);
       return session;
     });
   return {

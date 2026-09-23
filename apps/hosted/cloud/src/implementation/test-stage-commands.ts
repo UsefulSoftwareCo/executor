@@ -1,11 +1,12 @@
-/** Deploy previews with isolated database branches and a fixed three-hour lease. */
+/** Deploy isolated previews with explicit database, retention and background policies. */
 import { Clock, Config, Console, Effect, Option, Result, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { TestStageSlug, testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,
-  testStageCleanupAt,
+  isTestStageDue,
+  TestStageLease,
   testStageDeployMilliseconds,
   testStageLifetimeMilliseconds,
   TestStageFailed,
@@ -49,7 +50,7 @@ const destroy = (stageSlug: string, automatic: boolean) =>
       const lease = yield* admin.get(stageSlug);
       if (
         automatic &&
-        (lease === undefined || (yield* Clock.currentTimeMillis) < testStageCleanupAt(lease))
+        (lease === undefined || !isTestStageDue(lease, yield* Clock.currentTimeMillis))
       )
         return;
       yield* Console.log(`Removing test-${stageSlug} and its database branch.`);
@@ -75,6 +76,9 @@ const operation = (name: "deploy" | "plan") =>
     {
       slug,
       owner,
+      database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.optional),
+      retention: Flag.Literals("retention", ["retained", "temporary"]).pipe(Flag.optional),
+      background: Flag.Literals("background", ["active", "paused"]).pipe(Flag.optional),
       noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
       yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
     },
@@ -88,18 +92,33 @@ const operation = (name: "deploy" | "plan") =>
           }
           const source = yield* revision;
           const now = yield* Clock.currentTimeMillis;
+          const existing = yield* admin.get(input.slug);
           const metadata = {
             slug: input.slug,
             owner: yield* ownerName(input.owner),
+            database: Option.getOrElse(input.database, () => existing?.database ?? "neon"),
+            retention: Option.getOrElse(input.retention, () => existing?.retention ?? "retained"),
+            background: Option.getOrElse(input.background, () => existing?.background ?? "active"),
           };
+          if (metadata.retention === "temporary" && metadata.background !== "active")
+            return yield* failure("Disposable test environments must run all background work.");
+          if (
+            existing !== undefined &&
+            (metadata.database !== existing.database || metadata.retention !== existing.retention)
+          )
+            return yield* failure(
+              "A preview's database and retention cannot change on redeploy. Use a new slug.",
+            );
           const lease =
             name === "deploy"
               ? yield* admin.reserve(metadata)
-              : ((yield* admin.get(input.slug)) ?? {
+              : (existing ??
+                (yield* Schema.decodeUnknownEffect(TestStageLease)({
                   ...metadata,
                   createdAt: now,
-                  expiresAt: now + testStageLifetimeMilliseconds,
-                });
+                  expiresAt:
+                    metadata.retention === "retained" ? null : now + testStageLifetimeMilliseconds,
+                })));
           if (!canDeployTestStage(lease, now))
             return yield* failure(
               "This preview is nearing its three-hour deadline. Use a new slug; redeployment cannot extend its lifetime.",
@@ -108,10 +127,16 @@ const operation = (name: "deploy" | "plan") =>
           const env = {
             ALCHEMY_STAGE: `${testStagePrefix}${input.slug}`,
             EXECUTOR_BUILD_VERSION: Option.isSome(version) ? version.value : source,
-            TEST_STAGE_EXPIRES_AT: String(Math.floor(lease.expiresAt)),
+            TEST_STAGE_DATABASE_PROVIDER: lease.database,
+            TEST_STAGE_RETENTION: lease.retention,
+            TEST_STAGE_BACKGROUND: metadata.background,
+            TEST_STAGE_EXPIRES_AT:
+              lease.expiresAt === null ? "" : String(Math.floor(lease.expiresAt)),
           };
           yield* Console.log(
-            `Preview expires at ${new Date(lease.expiresAt).toISOString()}. Cleanup starts at ${new Date(testStageCleanupAt(lease)).toISOString()}.`,
+            lease.expiresAt === null
+              ? `Retained ${lease.database} preview. Background work: ${metadata.background}. Destroy it explicitly when finished.`
+              : `Preview expires at ${new Date(lease.expiresAt).toISOString()}.`,
           );
           yield* Effect.gen(function* () {
             if (name === "deploy")
@@ -151,19 +176,30 @@ const inspect = (name: "list" | "check") =>
         const report = stages.map((lease) => ({
           ...lease,
           createdAt: new Date(lease.createdAt).toISOString(),
-          expiresAt: new Date(lease.expiresAt).toISOString(),
+          expiresAt: lease.expiresAt === null ? null : new Date(lease.expiresAt).toISOString(),
           status:
-            now >= lease.expiresAt
-              ? "overdue"
-              : now >= testStageCleanupAt(lease)
-                ? "cleanup"
-                : "temporary",
+            lease.expiresAt === null
+              ? "retained"
+              : now >= lease.expiresAt
+                ? "overdue"
+                : isTestStageDue(lease, now)
+                  ? "cleanup"
+                  : "temporary",
         }));
         if (json) yield* Console.log(JSON.stringify({ stages: report }, null, 2));
         else {
-          yield* Console.log("STAGE\tOWNER\tEXPIRES\tSTATUS");
+          yield* Console.log("STAGE\tOWNER\tDATABASE\tEXPIRES\tBACKGROUND\tSTATUS");
           for (const stage of report)
-            yield* Console.log([stage.slug, stage.owner, stage.expiresAt, stage.status].join("\t"));
+            yield* Console.log(
+              [
+                stage.slug,
+                stage.owner,
+                stage.database,
+                stage.expiresAt ?? "retained",
+                stage.background,
+                stage.status,
+              ].join("\t"),
+            );
         }
         if (name === "check" && report.some((stage) => stage.status === "overdue"))
           return yield* failure(
@@ -191,7 +227,7 @@ const cleanup = Command.make("cleanup", {}, () =>
     );
     const now = yield* Clock.currentTimeMillis;
     const results = yield* Effect.forEach(
-      stages.filter((stage) => now >= testStageCleanupAt(stage)),
+      stages.filter((stage) => isTestStageDue(stage, now)),
       (stage) =>
         destroy(stage.slug, true).pipe(
           Effect.as(true),
@@ -212,9 +248,11 @@ const cleanup = Command.make("cleanup", {}, () =>
     yield* Console.log("Preview cleanup complete.");
   }),
 );
-/** Every staging deployment is disposable. There is no keep or lifetime extension command. */
+/** Ordinary previews use Neon and remain until deleted; CI explicitly requests a temporary lease. */
 export const testStageCommand = Command.make("test-stage").pipe(
-  Command.withDescription("Deploy isolated PlanetScale previews for at most three hours."),
+  Command.withDescription(
+    "Deploy isolated Neon previews or disposable PlanetScale release checks.",
+  ),
   Command.withSubcommands([
     inspect("list"),
     inspect("check"),

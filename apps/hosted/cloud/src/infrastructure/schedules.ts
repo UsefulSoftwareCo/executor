@@ -120,7 +120,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
       wake: () =>
         alarms.withPermits(1)(
           Effect.gen(function* () {
-            if (yield* lifetime.isExpired) {
+            if (yield* lifetime.isBackgroundStopped) {
               yield* state.storage.deleteAlarm();
               return;
             }
@@ -131,7 +131,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
-          if (yield* lifetime.isExpired) {
+          if (yield* lifetime.isBackgroundStopped) {
             yield* state.storage.deleteAlarm();
             return;
           }

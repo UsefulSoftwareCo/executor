@@ -4,7 +4,10 @@ import type { Target } from "./report-model.ts";
 
 /** Scheduled tests need a real result; other dispositions explain why none is expected. */
 export const TargetPlan = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("scheduled") }),
+  Schema.Struct({
+    status: Schema.Literal("scheduled"),
+    runtime: Schema.optional(Schema.Literal("managed")),
+  }),
   Schema.Struct({ status: Schema.Literal("not-applicable"), reason: Schema.NonEmptyString }),
   Schema.Struct({ status: Schema.Literal("not-run"), reason: Schema.NonEmptyString }),
 ]);
@@ -15,6 +18,7 @@ export const TestPlan = Schema.Struct({
   targets: Schema.Struct({ "self-host": TargetPlan, local: TargetPlan, cloud: TargetPlan }),
 });
 const scheduled = { status: "scheduled" } as const;
+const managedCloud = { status: "scheduled", runtime: "managed" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -57,7 +61,7 @@ export const scenarios = {
     file: "browser-observability.spec.ts",
     title: "browser decode and startup failures reach correlated error collectors",
     targets: {
-      cloud: scheduled,
+      cloud: managedCloud,
       "self-host": na("Cloud Sentry receiver"),
       local: na("Cloud Sentry receiver"),
     },
@@ -285,7 +289,7 @@ export const scenarios = {
     file: "product-analytics.spec.ts",
     title: "Cloud product events preserve identity and dashboard replay masks private data",
     targets: {
-      cloud: scheduled,
+      cloud: managedCloud,
       "self-host": na("Self-host does not export product analytics or replay."),
       local: na("Local does not export product analytics or replay."),
     },
@@ -294,7 +298,7 @@ export const scenarios = {
     file: "feedback.spec.ts",
     title: "Cloud feedback enforces its API contract and reaches the local ingestion service",
     targets: {
-      cloud: scheduled,
+      cloud: managedCloud,
       "self-host": na("PostHog feedback belongs to Cloud."),
       local: na("PostHog feedback belongs to Cloud."),
     },
@@ -726,7 +730,7 @@ export const scenarios = {
     title: "observability retains logical failures, large app traces and unsampled requests",
     targets: {
       "self-host": scheduled,
-      cloud: scheduled,
+      cloud: managedCloud,
       local: na("This scenario uses hosted APIs; the runtime and collector are shared with Local."),
     },
   },
@@ -1158,18 +1162,39 @@ export const scenarios = {
 } as const satisfies Record<string, typeof TestPlan.Type>;
 
 /** Hosted parity includes every scenario scheduled on both hosted products. */
-export const scenariosForSuite = (suite: "all" | "hosted") =>
-  Object.values(scenarios).filter(
-    (scenario) =>
-      suite === "all" ||
-      (scenario.targets["self-host"].status === "scheduled" &&
-        scenario.targets.cloud.status === "scheduled"),
-  );
+export const scenariosForSuite = (
+  suite: "all" | "hosted",
+  cloudMode: "managed" | "attached" = "managed",
+) =>
+  Object.values(scenarios)
+    .filter(
+      (scenario) =>
+        suite === "all" ||
+        (scenario.targets["self-host"].status === "scheduled" &&
+          scenario.targets.cloud.status === "scheduled"),
+    )
+    .map((scenario) =>
+      cloudMode === "attached" &&
+      "runtime" in scenario.targets.cloud &&
+      scenario.targets.cloud.runtime === "managed"
+        ? {
+            ...scenario,
+            targets: {
+              ...scenario.targets,
+              cloud: na("Requires the managed local Cloud target and its local collectors."),
+            },
+          }
+        : scenario,
+    );
 
 /** Select only explicitly scheduled files for a target; cloud scale stays disabled. */
-export const filesForTarget = (target: typeof Target.Type, suite: "all" | "hosted") => [
+export const filesForTarget = (
+  target: typeof Target.Type,
+  suite: "all" | "hosted",
+  cloudMode: "managed" | "attached" = "managed",
+) => [
   ...new Set(
-    scenariosForSuite(suite)
+    scenariosForSuite(suite, cloudMode)
       .filter((scenario) => scenario.targets[target].status === "scheduled")
       .map((scenario) => `e2e/tests/${scenario.file}`),
   ),
@@ -1180,8 +1205,9 @@ export const patternForTarget = (
   target: typeof Target.Type,
   suite: "all" | "hosted",
   filter: string,
+  cloudMode: "managed" | "attached" = "managed",
 ): string => {
-  const titles = scenariosForSuite(suite)
+  const titles = scenariosForSuite(suite, cloudMode)
     .filter((scenario) => scenario.targets[target].status === "scheduled")
     .map((scenario) => scenario.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (titles.length === 0) return "(?!)";

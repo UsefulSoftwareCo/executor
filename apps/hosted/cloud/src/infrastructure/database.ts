@@ -10,6 +10,7 @@ import { retain } from "alchemy/RemovalPolicy";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { developmentDatabase } from "./development.ts";
 import { cloudOrigin, testStage } from "./stage.ts";
+import { previewDatabase } from "./preview-database.ts";
 import { testStageConnectionLimit } from "../contracts/test-stage-lifetime.ts";
 
 /**
@@ -81,27 +82,11 @@ export const DatabaseConnection = Effect.gen(function* () {
       });
       const stage = yield* testStage;
       if (Option.isSome(stage)) {
-        const database = yield* Config.String("TEST_STAGE_DATABASE");
-        // A development branch has its own compute and connection budget. No backup or production data is copied.
-        const branch = yield* Planetscale.PostgresBranch("PreviewDatabase", {
-          database,
-          name: stage.value.name,
-          parentBranch: "main",
-        });
-        const role = yield* Planetscale.PostgresRole("RuntimeRole", {
-          database,
-          branch,
-          inheritedRoles: ["pg_read_all_data", "pg_write_all_data"],
-        });
-        const migrationRole = yield* Planetscale.PostgresRole("MigrationRole", {
-          database,
-          branch,
-          inheritedRoles: ["postgres"],
-        });
+        const preview = yield* previewDatabase(stage.value);
         const migrations = yield* Command.Exec("Migrations", {
           command: "node src/migrate.ts",
           env: {
-            DATABASE_URL: migrationRole.origin.pipe(Output.map(migrationUrl)),
+            DATABASE_URL: preview.migrationUrl,
             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
             BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
             BETTER_AUTH_URL: stage.value.origin,
@@ -127,13 +112,14 @@ export const DatabaseConnection = Effect.gen(function* () {
               BETTER_AUTH_URL: stage.value.origin,
               BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
               TEST_STAGE_ACCOUNTS_OUTPUT: fixtureOutput.value,
-              TEST_STAGE_DATABASE_BRANCH: branch.name,
-              TEST_STAGE_DATABASE_USERNAME: migrationRole.username,
+              TEST_STAGE_DATABASE_BRANCH: preview.branchName,
+              TEST_STAGE_DATABASE_USERNAME: preview.username,
+              TEST_STAGE_DATABASE_NAME: preview.databaseName,
               ...(Option.isSome(fixtureOrganization)
                 ? { TEST_STAGE_APP_ORGANIZATION: fixtureOrganization.value }
                 : {}),
-              DATABASE_URL: Output.all(migrationRole.origin, migrations.hash).pipe(
-                Output.map(([origin]) => migrationUrl(origin)),
+              DATABASE_URL: Output.all(preview.migrationUrl, migrations.hash).pipe(
+                Output.map(([url]) => url),
               ),
             },
             memo: false,
@@ -143,7 +129,9 @@ export const DatabaseConnection = Effect.gen(function* () {
         const authority = yield* certificateAuthority;
         return {
           // Depending on the migration hash keeps the Worker from serving an empty schema.
-          origin: Output.all(role.origin, migrations.hash).pipe(Output.map(([origin]) => origin)),
+          origin: Output.all(preview.origin, migrations.hash).pipe(
+            Output.map(([origin]) => origin),
+          ),
           originConnectionLimit: testStageConnectionLimit,
           caching: { disabled: true },
           mtls: { sslmode: "verify-full" as const, caCertificateId: authority.mtlsCertificateId },

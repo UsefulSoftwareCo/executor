@@ -160,6 +160,9 @@ export default Api.make(
     const schedules = yield* cloudSchedules;
     const dispatch = dispatchProvisioning.pipe(
       Effect.provide(executor),
+      // A request finalizer runs after its SQL pool closes. The outbox dispatch
+      // owns a fresh scope so execution memos cannot reuse that closed pool.
+      Effect.scoped,
       Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
     );
     yield* Cloudflare.Workers.cron("* * * * *", () => dispatch.pipe(lifetime.background));
@@ -301,7 +304,7 @@ export default Api.make(
         // Cron recovers dispatch if the request ends before this finalizer runs.
         if (!["GET", "HEAD", "OPTIONS"].includes(request.method))
           yield* Effect.addFinalizer(() =>
-            dispatch.pipe(Effect.timeoutOption("10 seconds"), Effect.asVoid),
+            dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
           );
         return yield* handle;
       }).pipe(

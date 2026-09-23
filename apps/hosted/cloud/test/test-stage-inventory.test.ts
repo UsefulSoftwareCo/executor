@@ -12,7 +12,7 @@ import { withStageAdmin } from "../src/implementation/test-stage-inventory.ts";
 import { testStageLifetimeMilliseconds } from "../src/contracts/test-stage-lifetime.ts";
 
 const connectionString =
-  "postgresql://admin.fixture:synthetic-test-password@127.0.0.1:5432/postgres";
+  "postgresql://admin.fixture:synthetic-test-password@127.0.0.1:55432/postgres";
 const config = ConfigProvider.fromUnknown({
   TEST_STAGE_DATABASE_ADMIN_URL: connectionString,
   CLOUDFLARE_ACCOUNT_ID: "fixture",
@@ -24,6 +24,11 @@ const run = <A, E>(effect: Effect.Effect<A, E>) =>
 before(async () => {
   await client.connect();
   await client.query("drop table if exists executor_test_stage_leases");
+  // Exercise the actual schema upgrade from the previously deployed registry.
+  await client.query(`create table executor_test_stage_leases (
+    slug text primary key, owner text not null, created_at timestamptz not null,
+    expires_at timestamptz not null, check (expires_at = created_at + interval '3 hours')
+  ); insert into executor_test_stage_leases values ('legacy', 'fixture', '2026-09-23 00:00:00+00', '2026-09-23 03:00:00+00')`);
 });
 after(async () => {
   await client.query("drop table if exists executor_test_stage_leases");
@@ -66,7 +71,17 @@ const runCommand = (
   return { result, commands };
 };
 const reserve = (slug: string) =>
-  run(withStageAdmin((admin) => admin.reserve({ slug, owner: "fixture" })));
+  run(
+    withStageAdmin((admin) =>
+      admin.reserve({
+        slug,
+        owner: "fixture",
+        database: "neon",
+        retention: "temporary",
+        background: "active",
+      }),
+    ),
+  );
 const age = async (slug: string, minutes: number) =>
   client.query(
     "update executor_test_stage_leases set created_at = now() - $2 * interval '1 minute', expires_at = now() - $2 * interval '1 minute' + interval '3 hours' where slug = $1",
@@ -77,7 +92,14 @@ test("leases are durable before provisioning and cannot be renewed by redeployme
   const first = await reserve("fixed");
   const second = await reserve("fixed");
   assert.deepEqual(second, first);
+  assert.notEqual(first.expiresAt, null);
+  if (first.expiresAt === null) throw new Error("Expected a temporary lease");
   assert.equal(first.expiresAt - first.createdAt, testStageLifetimeMilliseconds);
+  const legacy = await run(withStageAdmin((admin) => admin.get("legacy")));
+  assert.equal(legacy?.database, "planetscale");
+  assert.equal(legacy?.retention, "temporary");
+  assert.equal(legacy?.expiresAt, Date.parse("2026-09-23T03:00:00Z"));
+  await run(withStageAdmin((admin) => admin.remove("legacy")));
 });
 
 test("same-stage operations exclude each other; separate previews can deploy concurrently", async () => {
@@ -135,15 +157,19 @@ test("losing the control connection interrupts the operation and releases its lo
 
 test("an eleventh independent preview is allowed and receives the persisted deadline", async () => {
   for (let i = 0; i < 10; i++) await reserve(`parallel-${i}`);
-  const attempt = runCommand(["deploy", "eleventh", "--owner", "fixture", "--no-input", "--yes"], {
-    build: 0,
-    alchemy: () => 0,
-  });
+  const attempt = runCommand(
+    ["deploy", "eleventh", "--retention", "temporary", "--owner", "fixture", "--no-input", "--yes"],
+    {
+      build: 0,
+      alchemy: () => 0,
+    },
+  );
   await attempt.result;
   const deployed = attempt.commands.find((command) => command.command === "alchemy");
   assert.equal(deployed?.options.env?.ALCHEMY_STAGE, "test-eleventh");
   const lease = await run(withStageAdmin((admin) => admin.get("eleventh")));
   assert.ok(lease);
+  if (lease.expiresAt === null) throw new Error("Expected a temporary lease");
   assert.equal(deployed?.options.env?.TEST_STAGE_EXPIRES_AT, String(Math.floor(lease.expiresAt)));
 });
 
@@ -180,15 +206,77 @@ test("cleanup skips recent stages, retains failed deletion, processes other stag
   assert.equal(await run(withStageAdmin((admin) => admin.get("cleanup-fails"))), undefined);
 });
 
-test("caller cannot extend expiry, keep a stage, or override the Alchemy stage", async () => {
+test("caller cannot change an existing retention policy, extend expiry, or override the Alchemy stage", async () => {
   for (const args of [
-    ["keep", "fixed"],
-    ["deploy", "fixed", "--days", "2"],
-    ["deploy", "fixed", "--", "--stage", "v2"],
+    ["deploy", "fixed", "--owner", "fixture", "--retention", "retained"],
+    ["deploy", "fixed", "--owner", "fixture", "--days", "2"],
+    ["deploy", "fixed", "--owner", "fixture", "--", "--stage", "v2"],
   ]) {
     const attempt = runCommand(args, { build: 0, alchemy: () => 0 });
     await assert.rejects(attempt.result);
-    assert.equal(attempt.commands.length, 0);
+    assert.ok(
+      !attempt.commands.some(
+        (command) => command.command === "alchemy" || command.command === "bun",
+      ),
+    );
+  }
+});
+
+test("retained Neon previews survive cleanup and persist pause/resume choices", async () => {
+  await runCommand(["deploy", "long-lived", "--owner", "fixture", "--background", "paused"], {
+    build: 0,
+    alchemy: () => 0,
+  }).result;
+  const first = await run(withStageAdmin((admin) => admin.get("long-lived")));
+  assert.equal(first?.database, "neon");
+  assert.equal(first?.retention, "retained");
+  assert.equal(first?.expiresAt, null);
+  assert.equal(first?.background, "paused");
+  const cleanup = runCommand(["cleanup"], { build: 0, alchemy: () => 0 });
+  await cleanup.result;
+  assert.ok(
+    !cleanup.commands.some((command) => command.options.env?.ALCHEMY_STAGE === "test-long-lived"),
+  );
+  const resumed = runCommand(
+    ["deploy", "long-lived", "--owner", "fixture", "--background", "active"],
+    {
+      build: 0,
+      alchemy: () => 0,
+    },
+  );
+  await resumed.result;
+  assert.equal(
+    resumed.commands.find((command) => command.command === "alchemy")?.options.env
+      ?.TEST_STAGE_BACKGROUND,
+    "active",
+  );
+  assert.equal(
+    (await run(withStageAdmin((admin) => admin.get("long-lived"))))?.background,
+    "active",
+  );
+});
+
+test("test runs cannot pause jobs or switch an existing database provider", async () => {
+  for (const args of [
+    [
+      "deploy",
+      "ci-paused",
+      "--owner",
+      "fixture",
+      "--retention",
+      "temporary",
+      "--background",
+      "paused",
+    ],
+    ["deploy", "fixed", "--owner", "fixture", "--database", "planetscale"],
+  ]) {
+    const attempt = runCommand(args, { build: 0, alchemy: () => 0 });
+    await assert.rejects(attempt.result);
+    assert.ok(
+      !attempt.commands.some(
+        (command) => command.command === "alchemy" || command.command === "bun",
+      ),
+    );
   }
 });
 

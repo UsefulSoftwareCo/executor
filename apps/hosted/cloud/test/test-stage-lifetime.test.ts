@@ -15,6 +15,9 @@ const lease = {
   owner: "fixture",
   createdAt: 0,
   expiresAt: testStageLifetimeMilliseconds,
+  database: "neon" as const,
+  retention: "temporary" as const,
+  background: "active" as const,
 };
 test("the deadline has a cleanup window and cannot be prolonged by a deploy", () => {
   assert.equal(testStageCleanupAt(lease), 165 * 60 * 1000);
@@ -71,4 +74,35 @@ test("production has no staging deadline; active previews continue normally", as
     status: 204,
     ran: true,
   });
+});
+
+test("retained previews survive the temporary deadline and can pause background work", async () => {
+  const retained = (background: "active" | "paused") =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const lifetime = yield* previewLifetime;
+        let ran = false;
+        yield* lifetime.background(
+          Effect.sync(() => {
+            ran = true;
+          }),
+        );
+        return {
+          expired: yield* lifetime.isExpired,
+          stopped: yield* lifetime.isBackgroundStopped,
+          ran,
+        };
+      }).pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            ALCHEMY_STAGE: "test-retained",
+            TEST_STAGE_RETENTION: "retained",
+            TEST_STAGE_BACKGROUND: background,
+          }),
+        ),
+      ),
+    );
+  assert.deepEqual(await retained("active"), { expired: false, stopped: false, ran: true });
+  assert.deepEqual(await retained("paused"), { expired: false, stopped: true, ran: false });
 });

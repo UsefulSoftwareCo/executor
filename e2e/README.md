@@ -105,7 +105,7 @@ Setting `E2E_CLOUD_URL` explicitly attaches to that server instead. A failed
 attached target stays failed; it does not fall back to a local instance. The
 report identifies the origin, managed/attached mode and local Worker runtime.
 Deployed-stage role tests use `E2E_CLOUD_ACTORS`; attached onboarding uses the
-stage's generated emulator fixture. Deployment is separate from running tests.
+stage's generated emulator fixture. Use `bun run e2e:deployed` to let the runner own deployment and teardown automatically.
 
 `tests/hosted-shared.spec.ts` contains one Effect program with no target branches
 in its assertions or UI steps: signed-out rejection, owner/admin/member permissions,
@@ -360,10 +360,10 @@ its model-endpoint configuration documented above; onboarding does not need it.
 Deploy to a dedicated stage whose slug starts with `e2e-`, using the normal Alchemy
 stack. Set `TEST_STAGE_ACCOUNTS_OUTPUT` to a new absolute path under ignored `.local/`.
 The separate fixture job runs after migrations, checks the exact stage origin,
-isolated branch name, and branch-qualified migration username, and creates three
-one-hour sessions using that branch's migration role. The database inside the
-isolated branch is named `postgres`; production branch credentials cannot pass
-the required stage-branch identity supplied by Alchemy.
+isolated branch name, database name, and migration username. It creates three
+synthetic sessions valid for three hours, covering the deployed job's two-hour
+budget. Alchemy supplies the exact database name and migration role. Production
+branch credentials cannot pass the required stage-branch identity check.
 It writes mode 0600 and refuses to overwrite an existing file. A later deploy with a
 new output path refreshes the sessions. No fixture auth plugin or provisioning route
 is added to the Worker. Fixture setup is not a login test.
@@ -405,7 +405,7 @@ before and after each sleep. Record native workflow IDs separately: the
 workflow `versionId` stayed unchanged across the verified Worker redeployment
 and cannot be used as its Worker code version.
 
-The suite does not deploy infrastructure itself. A passing sleep scenario alone
+The ordinary attached suite does not redeploy its host during a scenario. A passing sleep scenario alone
 does not prove a host deployment overlapped it; retain the provider timestamps
 and version evidence with the report. The runner only forwards the bounded
 hold duration, never deployment credentials, into the test process.
@@ -469,3 +469,19 @@ checks the native close-tab warning for active and queued writes, dismissal,
 failure cleanup, and safe closing after the last acknowledgement. Read-only
 reconciliation must not retain the warning. The final API read verifies that
 all three deletions persisted after the tab closed.
+
+### Real Cloudflare environments
+
+`bun run e2e:deployed` creates one disposable Neon-backed Cloudflare environment,
+runs the ordinary Cloud scenarios, and destroys it even on failure. Supply the
+staging credentials through the approved launcher. Use `--database planetscale`
+for the release checks, or `--test-name '<scenario>'` for focused verification.
+The same tests run on both providers. Add new Cloud scenarios normally in
+`test-plan.ts`; no deployment fixture belongs in a scenario.
+
+Only scenarios declaring `runtime: "managed"` require the local Cloud target
+(for example, local telemetry collectors). Their deployed report says N/A with
+the reason. They remain in local CI. Claude Code's model-dependent scenario is
+excluded by the deployed runner's default filter. A filter that executes no
+scenarios is a failure. See [test stages](../notes/test-stages.md) for retained
+previews, shared infrastructure, background pause/resume, and cleanup.

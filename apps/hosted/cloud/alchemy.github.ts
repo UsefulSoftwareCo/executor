@@ -91,6 +91,7 @@ const requiredStatusChecks = [
   "checks / e2e-local",
   "checks / e2e-self-host",
   "checks / e2e-cloud",
+  "deployed-cloud / test",
 ] as const;
 
 export default Alchemy.Stack(

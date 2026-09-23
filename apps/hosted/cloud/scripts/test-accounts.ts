@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { authOptions } from "@executor-js/hosted-server";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
+import { testStageLifetimeMilliseconds } from "../src/contracts/test-stage-lifetime.ts";
 
 class FixtureFailed extends Schema.TaggedError<FixtureFailed>()("FixtureFailed", {
   phase: Schema.Literals(["configuration", "database", "accounts", "output"]),
@@ -35,7 +36,7 @@ const provision = Effect.scoped(
       !path.isAbsolute(output)
     )
       return yield* new FixtureFailed({ phase: "configuration" });
-    const databaseName = "postgres";
+    const databaseName = yield* Config.NonEmptyString("TEST_STAGE_DATABASE_NAME");
     const url = new URL(Redacted.value(databaseUrl));
     if (
       decodeURIComponent(url.pathname.slice(1)) !== databaseName ||
@@ -73,7 +74,8 @@ const provision = Effect.scoped(
         database: pool,
         secret: Redacted.value(secret),
         advanced: { ...base.advanced, cookiePrefix: cloudSessionCookiePrefix(origin) },
-        session: { ...base.session, expiresIn: 3600 },
+        // A full deployed suite may outlive the old one-hour fixture window.
+        session: { ...base.session, expiresIn: testStageLifetimeMilliseconds / 1000 },
         plugins: [
           ...base.plugins,
           {
@@ -137,7 +139,7 @@ const provision = Effect.scoped(
       new TextEncoder().encode(JSON.stringify(Redacted.value(sessions), null, 2)),
     );
     complete = true;
-    yield* Console.log("Created one-hour synthetic sessions for the dedicated test stage.");
+    yield* Console.log("Created three-hour synthetic sessions for the dedicated test stage.");
   }),
 );
 NodeRuntime.runMain(provision.pipe(Effect.provide(NodeServices.layer)));

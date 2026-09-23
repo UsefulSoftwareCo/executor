@@ -82,7 +82,8 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
     const lock = yield* Semaphore.make(1);
     const arm = (milliseconds: number) =>
       Effect.gen(function* () {
-        if ((yield* lifetime.isExpired) || (yield* state.storage.get<boolean>("stopped"))) return;
+        if ((yield* lifetime.isBackgroundStopped) || (yield* state.storage.get<boolean>("stopped")))
+          return;
         const due = (yield* Clock.currentTimeMillis) + milliseconds;
         const existing = yield* state.storage.getAlarm();
         if (existing === null || existing > due) yield* state.storage.setAlarm(due);
@@ -227,7 +228,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         ),
       alarm: () =>
         Effect.gen(function* () {
-          if (yield* lifetime.isExpired) {
+          if (yield* lifetime.isBackgroundStopped) {
             yield* state.storage.deleteAlarm();
             return;
           }
