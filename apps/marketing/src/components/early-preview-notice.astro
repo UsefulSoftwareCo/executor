@@ -1,5 +1,6 @@
 ---
 import rhysAvatar from "../assets/rhys-sullivan.jpg";
+import { earlyPreview } from "@executor-js/ui/contracts/early-preview";
 ---
 
 <dialog
@@ -9,25 +10,9 @@ import rhysAvatar from "../assets/rhys-sullivan.jpg";
   class="fixed inset-0 m-auto max-h-[calc(100dvh_-_2rem)] w-[calc(100%_-_2rem)] max-w-[520px] overflow-y-auto overscroll-contain rounded-2xl border border-rule bg-surface p-6 text-ink shadow-[0_24px_100px_#00000026] backdrop:bg-black/25 backdrop:backdrop-blur-sm sm:p-8"
 >
   <p class="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ink-3">Early preview</p>
-  <h2 id="early-preview-title" class="text-[26px] font-semibold leading-tight tracking-[-0.035em]">An early look at Executor v2</h2>
+  <h2 id="early-preview-title" class="text-[26px] font-semibold leading-tight tracking-[-0.035em]">{earlyPreview.title}</h2>
   <div id="early-preview-description" class="mt-5 space-y-4 text-[15px] leading-[1.65] text-ink-2">
-    <p>
-      For now, Executor v2 is only available on the cloud. Desktop and self-hosted
-      versions are coming.
-    </p>
-    <p>
-      Migration from v1 to v2 will happen automatically. I’m aiming for the full
-      launch late this week or early next week.
-    </p>
-    <p>
-      Expect bugs. If you find one or have an idea, ask your agent to submit
-      feedback through the Executor app.
-    </p>
-    <p>
-      I’ll do my best to avoid breaking changes, but there may be some before the
-      full launch. This preview is a chance to get hands-on with the product early
-      and help shape it with your feedback.
-    </p>
+    {earlyPreview.paragraphs.map((paragraph) => <p>{paragraph}</p>)}
   </div>
   <form method="dialog" class="mt-7 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
     <div class="flex items-center gap-3">
@@ -45,30 +30,21 @@ import rhysAvatar from "../assets/rhys-sullivan.jpg";
   </form>
 </dialog>
 
-<!-- Resolve the saved choice immediately, without waiting for a client bundle. -->
+<!-- The banner opens the same dialog on demand, without waiting for a client bundle. -->
 <script is:inline>
   {
     const dialog = document.getElementById("early-preview-notice");
-    const storageKey = "executor-v2-early-preview-dismissed";
-    let dismissed = false;
-    try {
-      dismissed = localStorage.getItem(storageKey) === "true";
-    } catch {
-      // If storage is blocked, the notice still works for this visit.
-    }
-
-    if (dialog instanceof HTMLDialogElement && !dismissed) {
+    if (dialog instanceof HTMLDialogElement) {
       const previousOverflow = document.documentElement.style.overflow;
       dialog.addEventListener("close", () => {
         document.documentElement.style.overflow = previousOverflow;
-        try {
-          localStorage.setItem(storageKey, "true");
-        } catch {
-          // Dismissal must still work when the browser cannot save it.
-        }
       });
-      dialog.showModal();
-      document.documentElement.style.overflow = "hidden";
+      const openDialog = () => {
+        if (dialog.open) return;
+        dialog.showModal();
+        document.documentElement.style.overflow = "hidden";
+      };
+      document.querySelector("[data-early-preview-open]")?.addEventListener("click", openDialog);
     }
   }
 </script>

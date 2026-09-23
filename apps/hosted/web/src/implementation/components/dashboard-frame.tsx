@@ -112,12 +112,14 @@ export function DashboardFrame({
   organizationSlug,
   organization,
   navigation,
+  banner,
   pendingPage = "apps",
   children,
 }: {
   readonly organizationSlug?: string;
   readonly organization: ReactNode;
   readonly navigation: ReactNode;
+  readonly banner?: ReactNode;
   readonly pendingPage?: string;
   readonly children: ReactNode;
 }) {
@@ -137,6 +139,7 @@ export function DashboardFrame({
         )
       }
       identity={organization}
+      banner={banner}
       navigation={
         <>
           {navigation}

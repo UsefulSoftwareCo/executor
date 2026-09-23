@@ -18,6 +18,7 @@ const stars = await getStars();
 ---
 
 <main class:list={[scroll === "content" && "h-dvh overflow-hidden"]} class="min-h-dvh relative antialiased bg-surface isolate">
+  <slot name="banner" />
   <div class:list={[scroll === "content" && "h-full flex flex-col"]} class="relative z-10 page min-[1024px]:[&:has(>_.page\_\_rail)]:grid min-[1024px]:[&:has(>_.page\_\_rail)]:grid-cols-[var(--site-rail-width)_minmax(0,_1fr)] min-[1024px]:[&:has(>_.page\_\_rail)]:items-start min-[1024px]:[&:has(>_.page\_\_rail)]:max-w-[var(--site-frame-width)] min-[1024px]:[&:has(>_.page\_\_rail)]:[margin-inline:auto]">
     <div class:list={[scroll === "content" && "shrink-0"]} class="page__rail page__rail--b min-[1024px]:sticky min-[1024px]:top-0 min-[1024px]:h-dvh min-[1024px]:[overflow:hidden_auto] min-[1024px]:border-r min-[1024px]:border-r-rule max-[1023.98px]:sticky max-[1023.98px]:top-0 max-[1023.98px]:z-30 max-[1023.98px]:bg-surface">
       <RailB stars={stars != null ? formatStars(stars) : null} current={current}>

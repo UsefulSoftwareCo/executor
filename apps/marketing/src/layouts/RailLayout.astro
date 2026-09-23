@@ -16,6 +16,7 @@ const { title, description, current = "home", scroll = "page" } = Astro.props;
 
 <Layout title={title} description={description}>
   <RailFrame current={current} scroll={scroll}>
+    <slot name="banner" slot="banner" />
     <slot name="sidebar" slot="sidebar" />
     <slot />
   </RailFrame>

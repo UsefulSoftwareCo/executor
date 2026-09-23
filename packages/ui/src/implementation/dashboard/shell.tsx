@@ -63,6 +63,7 @@ export function DashboardShell({
   brand,
   navigation,
   identity,
+  banner,
   footer,
   children,
 }: {
@@ -72,6 +73,8 @@ export function DashboardShell({
   readonly navigation: ReactNode;
   /** Centered in the phone top bar in place of the brand, for example an organization switcher. */
   readonly identity?: ReactNode;
+  /** A full-width notice above the navigation and page content. */
+  readonly banner?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
@@ -81,7 +84,7 @@ export function DashboardShell({
   const collapsed = medium && mediumCollapsed;
   return (
     <div
-      className={`shell grid h-dvh max-[740px]:grid-cols-1 max-[740px]:grid-rows-[auto_minmax(0,_1fr)] ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
+      className={`shell grid h-dvh max-[740px]:grid-cols-1 ${banner ? "grid-rows-[auto_minmax(0,_1fr)] max-[740px]:grid-rows-[auto_auto_minmax(0,_1fr)]" : "max-[740px]:grid-rows-[auto_minmax(0,_1fr)]"} ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
     >
       <a
         className="skip-link fixed z-10 top-2 left-2 py-[8px] px-[12px] bg-background border border-border rounded-[6px] [transform:translateY(-150%)] focus:[transform:none]"
@@ -89,6 +92,7 @@ export function DashboardShell({
       >
         Skip to content
       </a>
+      {banner && <div className="col-span-full">{banner}</div>}
       <aside
         className={`sidebar flex flex-col border-r border-r-border py-0 px-[8px] min-h-0 overflow-y-auto overflow-x-hidden max-[740px]:hidden ${navigationClass} ${collapsed ? collapsedClass : ""}`}
       >

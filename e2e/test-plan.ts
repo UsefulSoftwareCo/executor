@@ -408,6 +408,15 @@ export const scenarios = {
     title: "Hero experiments render stable HTML and isolate previews",
     targets: cloudOnboarding,
   },
+  betaNotice: {
+    file: "beta-notice.spec.ts",
+    title: "Beta banners open the preview notice and stay dismissed across homepage and dashboard",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("The cloud beta notice is not shown on self-host."),
+      local: na("The cloud beta notice is not shown in the local dashboard."),
+    },
+  },
   deploymentLinks: {
     file: "deployment-links.spec.ts",
     title: "Cloud product links follow the deployment origin",

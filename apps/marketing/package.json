@@ -18,6 +18,7 @@
     "@astrojs/react": "^6.0.5",
     "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@executor-js/app-registry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
     "@sentry/browser": "10.75.0",
     "@tailwindcss/vite": "^4.2.2",
     "astro": "^7.3.2",
