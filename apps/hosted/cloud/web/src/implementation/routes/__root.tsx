@@ -1,6 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { clearSessionDisplay, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
+import { ExecutorDevtools } from "@executor-js/devtools";
 import { ErrorReportingIdentity } from "../error-reporting.tsx";
 import { AnalyticsIdentity } from "../analytics.tsx";
-import { ExecutorDevtools } from "@executor-js/devtools";
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
 import { AuthBoundary } from "@executor-js/hosted-web/auth";
@@ -18,12 +21,9 @@ export const Route = createRootRoute({
 });
 
 function Root() {
-  const { pathname, searchStr } = useLocation();
+  const session = useAtomValue(sessionAtom);
+  const { pathname } = useLocation();
   const ssoSignIn = pathname === "/login/sso";
-  const devtoolsPath =
-    pathname === "/login" || ssoSignIn
-      ? (new URLSearchParams(searchStr).get("redirect") ?? pathname)
-      : pathname;
   if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
     return (
       <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
@@ -54,7 +54,8 @@ function Root() {
         </AuthBoundary>
       )}
       <ExecutorDevtools
-        organization={devtoolsPath.startsWith("/org/") ? devtoolsPath.split(/[/?#]/)[2] : undefined}
+        onSessionChange={clearSessionDisplay}
+        identity={AsyncResult.isSuccess(session) && !session.waiting ? session.value : null}
       />
     </DocumentTitleProvider>
   );

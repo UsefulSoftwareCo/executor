@@ -2,7 +2,7 @@
 import { authSettings } from "@executor-js/hosted-server";
 import { Config, Effect, Schema } from "effect";
 import { AuthDatabase } from "../self-host/src/contracts/database.ts";
-import { DevtoolsOperatorId, TestAccountFailed, TestOrigin, testAccountAuth } from "./accounts.ts";
+import { TestAccountFailed, TestOrigin, testAccountAuth } from "./accounts.ts";
 import { hostedDevtools } from "./hosted-tools.ts";
 
 /** Validate the local HTTP listener before acquiring storage. */
@@ -32,7 +32,6 @@ export const developmentSignIn = (
       host: "self-host",
       organization,
       auth: testAccountAuth({
-        adminUserIds: [DevtoolsOperatorId],
         origin: target.origin,
         secret: settings.secret,
         database,

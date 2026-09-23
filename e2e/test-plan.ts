@@ -30,6 +30,15 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  cloudImpersonation: {
+    file: "cloud-impersonation.spec.ts",
+    title: "Platform admin impersonation uses the shared widget and restores the original session",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud platform operator controls"),
+      local: na("Local has browser pairing instead of hosted identities"),
+    },
+  },
   mcpMemoryBurst: {
     file: "mcp-memory.spec.ts",
     title: "MCP subscriptions survive a reconnect burst",
@@ -271,7 +280,7 @@ export const scenarios = {
   },
   devtoolsMembers: {
     file: "devtools-members.spec.ts",
-    title: "Dev tools list and switch to actual organization members",
+    title: "Local dev tools bootstrap an operator and use native impersonation",
     targets: {
       "self-host": scheduled,
       cloud: na(

@@ -1,6 +1,5 @@
 /** Privileged fixture helpers. Imported only by local test tooling, never a host entry point. */
 import { betterAuth, type BetterAuthOptions } from "better-auth";
-import { admin } from "better-auth/plugins/admin";
 import { testUtils } from "better-auth/plugins";
 import { authOptions } from "@executor-js/hosted-server";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -19,7 +18,7 @@ export class TestAccountFailed extends Schema.TaggedError<TestAccountFailed>()(
   },
 ) {}
 
-/** Only local dev auth grants this operator admin-plugin authority; it has no organization membership. */
+/** Synthetic platform admin used only by the loopback development bootstrap. */
 export const DevtoolsOperatorId = "executor-devtools-operator";
 
 const Organization = Schema.Struct({ id: Schema.String, slug: Schema.String });
@@ -33,7 +32,6 @@ export const testAccountAuth = (settings: {
   readonly secret: Redacted.Redacted<string>;
   readonly cookiePrefix: string;
   readonly database: BetterAuthOptions["database"];
-  readonly adminUserIds?: readonly string[];
 }) => {
   const base = authOptions({ url: settings.origin, oauthRedirectUri: Option.none() }, []);
   const helpers = testUtils();
@@ -44,10 +42,7 @@ export const testAccountAuth = (settings: {
     advanced: { ...base.advanced, cookiePrefix: settings.cookiePrefix },
     session: { ...base.session, expiresIn: 3600 },
     plugins: [
-      ...base.plugins.filter((plugin) => plugin.id !== "admin"),
-      admin({
-        adminUserIds: settings.adminUserIds === undefined ? [] : [...settings.adminUserIds],
-      }),
+      ...base.plugins,
       {
         ...helpers,
         // Better Auth 1.7.5 emits options: undefined; omit it for exact optional property types.

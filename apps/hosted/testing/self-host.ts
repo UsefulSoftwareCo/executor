@@ -23,7 +23,7 @@ const command = Command.make("test-self-host", {
           const product = yield* selfHostRoutes;
           const routes = Layer.mergeAll(
             HttpRouter.add("GET", "/api/devtools", development.status),
-            HttpRouter.add("POST", "/api/devtools/account", development.signIn),
+            HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
             product,
           );
           return HttpRouter.serve(routes, { disableLogger: true }).pipe(

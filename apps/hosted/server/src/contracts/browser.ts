@@ -8,7 +8,11 @@ export const BrowserSession = Schema.NullOr(
       name: Schema.String,
       email: Schema.String,
       image: Schema.NullOr(Schema.String),
+      role: Schema.optionalKey(Schema.NullOr(Schema.String)),
     }),
+    session: Schema.optionalKey(
+      Schema.Struct({ impersonatedBy: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
+    ),
   }),
 );
 export type BrowserSession = typeof BrowserSession.Type;

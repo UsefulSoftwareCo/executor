@@ -160,6 +160,34 @@ const main = Effect.gen(function* () {
     if (scenario === undefined) return yield* new TestAccountFailed({ stage: "fixture" });
     return yield* scenario.gate.withPermits(1)(actor(input.id, input.role));
   });
+  // Only this process's synthetic owner can receive platform authority.
+  const operator = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const { id } = yield* request.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ id: Id }))),
+    );
+    const scenario = owned.get(id),
+      current = auth;
+    if (scenario === undefined || current === undefined)
+      return yield* new TestAccountFailed({ stage: "fixture" });
+    return yield* scenario.gate.withPermits(1)(
+      Effect.gen(function* () {
+        const value = yield* actor(id, "owner");
+        yield* Effect.tryPromise({
+          try: async () => {
+            const ctx = await current.$context;
+            await ctx.adapter.update({
+              model: "user",
+              where: [{ field: "id", value: value.userId }],
+              update: { role: "admin" },
+            });
+          },
+          catch: () => new TestAccountFailed({ stage: "fixture" }),
+        });
+        return { ready: true };
+      }),
+    );
+  });
   const remove = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -244,6 +272,7 @@ const main = Effect.gen(function* () {
     HttpRouter.add("POST", "/configure", endpoint(configure)),
     HttpRouter.add("POST", "/actors", endpoint(provision)),
     HttpRouter.add("POST", "/session", endpoint(session)),
+    HttpRouter.add("POST", "/operator", endpoint(operator)),
     HttpRouter.add("POST", "/remove", endpoint(remove)),
     HttpRouter.add(
       "GET",
