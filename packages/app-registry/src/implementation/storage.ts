@@ -1,5 +1,5 @@
 /** Catalog rows point to retained Git source. Installed copies do not depend on these rows. */
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
@@ -63,6 +63,12 @@ export const makeRegistryStorage = Effect.gen(function* () {
     migrate: run(
       Effect.gen(function* () {
         const migrator = yield* client.createMigrator;
+        const version = yield* migrator.version;
+        if (Option.isSome(version)) {
+          if (version.value !== layout.version)
+            return yield* new RegistryError({ reason: "storage" });
+          return;
+        }
         yield* (yield* migrator.migrateToLatest()).execute;
       }),
     ),

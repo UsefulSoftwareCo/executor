@@ -1,7 +1,7 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
-/** Retained version 3 layout for upgrading existing databases. Do not change this schema. */
-import { Effect, Schema } from "effect";
+/** Current application schema. Upgrade history is registered separately. */
+import { Schema } from "effect";
 import { SourceCommit } from "../contracts/source.ts";
 import {
   AccountId,
@@ -18,39 +18,9 @@ import {
 import { AccountConnectionId, ApprovalRequestId } from "../contracts/shared.ts";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 
-/** The deployed version 3 schema, including app-level selections. Migration input only. */
-export const storageSchemaV3 = schema({
-  version: "3.0.0",
-  up: ({ auto }) =>
-    auto.pipe(
-      Effect.map((operations) => [
-        ...operations,
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_workflow_runs_context_key ON executor_workflow_runs (app, COALESCE(installation, ''), start_key)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_webhooks_context_key ON executor_webhooks (app, COALESCE(installation, ''), subscription_key)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_schedules_context_name ON executor_schedules (app, COALESCE(installation, ''), name)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_schedules_due ON executor_schedules (enabled, active_run, next_at)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_scheduled_runs_pending ON executor_scheduled_runs (status, expires_at)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_scheduled_runs_owner ON executor_scheduled_runs (owner, started_at)",
-        },
-      ]),
-    ),
+/** Current ORM layout. Profiles own account selections; apps declare requirements. */
+export const storageSchema = schema({
+  version: "4.0.0",
   tables: {
     profiles: table("executor_installations", {
       id: idColumn("id", ProfileId, { type: "varchar(255)" }),
@@ -166,7 +136,6 @@ export const storageSchemaV3 = schema({
       activeDeployment: column("active_deployment", Schema.NullOr(DeploymentId), {
         type: "varchar(255)",
       }),
-      accounts: column("accounts", Schema.Json),
       copiedFrom: column("copied_from", Schema.NullOr(Schema.Json)),
       createdAt: column("created_at", Schema.Date),
       slug: column("slug", AppSlug, { type: "varchar(63)" }),

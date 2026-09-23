@@ -1,9 +1,10 @@
 import { makeRegistryStorage } from "@executor-js/app-registry";
 /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
-import { PgClient } from "@effect/sql-pg";
+import { PgClient, PgTypes } from "@effect/sql-pg";
 import {
   HostedMigrationFailed,
   migrateHostedDatabase,
+  migrateProductSteps,
 } from "@executor-js/hosted-server/migrations";
 import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -92,11 +93,24 @@ export const migrateWelcomeEmails = Effect.gen(function* () {
 export const migrateCloudDatabase = Effect.scoped(
   Effect.gen(function* () {
     const setup = yield* cloudAuthSetup;
-    yield* migrateHostedDatabase(setup.options).pipe(
-      Effect.andThen(Effect.flatMap(makeRegistryStorage, (storage) => storage.migrate)),
-      Effect.andThen(migrateOnboarding),
-      Effect.andThen(migrateWelcomeEmails),
-      Effect.provide(PgClient.layer({ url: setup.url, maxConnections: 1 })),
+    // The pinned driver does not include regclass (OID 2205), which Effect's
+    // migrator uses to find its journal. Its binary representation is an OID.
+    const types = PgTypes.makeRegistry();
+    types.register(2205, {
+      decode: (bytes) => PgTypes.decode(bytes, PgTypes.OID.oid, 1),
+      encode: (value) => PgTypes.encode(value, PgTypes.OID.oid),
+    });
+    const cloudMigrations = Effect.gen(function* () {
+      const registry = yield* makeRegistryStorage;
+      yield* registry.migrate.pipe(
+        Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
+      );
+      yield* migrateProductSteps("private_cloud_migrations", {
+        "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
+      });
+    });
+    yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(
+      Effect.provide(PgClient.layer({ url: setup.url, maxConnections: 1, types })),
     );
     yield* setup.provision;
     yield* Effect.log("Hosted Postgres schemas are current");

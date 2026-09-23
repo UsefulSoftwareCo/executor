@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { migrateProvisioning } from "../../server/src/implementation/provisioning-schema.ts";
-import { migrateLifecycleProvisioning } from "../../server/src/implementation/provisioning-lifecycle-schema.ts";
 import { test } from "node:test";
 import { betterAuth } from "better-auth";
 import { Effect, Option, Redacted } from "effect";
@@ -70,10 +68,8 @@ test("lifecycle jobs commit with auth changes, survive retry, and respect curren
         );
         const before = (yield* sql`select id from hosted_provisioning`).length;
         yield* migrateHostedSchemas(options);
-        const repaired = (yield* sql`select id from hosted_provisioning`).length;
         yield* migrateHostedSchemas(options);
-        assert.equal((yield* sql`select id from hosted_provisioning`).length, repaired);
-        assert.ok(repaired >= before);
+        assert.equal((yield* sql`select id from hosted_provisioning`).length, before);
         yield* sql`update "user" set "emailVerified" = true where id = 'unverified'`;
         assert.equal(
           (yield* sql`select id from hosted_provisioning where kind = 'user'`).length,
@@ -81,13 +77,17 @@ test("lifecycle jobs commit with auth changes, survive retry, and respect curren
         );
         // A removed or downgraded member's queued job cannot mint an account.
         yield* sql`update member set role = 'member' where id = 'owner'`;
-        yield* provision("member-owner", selfHostProvisioningServices).pipe(
+        const [job] = yield* sql<{
+          id: string;
+        }>`select id from hosted_provisioning where kind = 'member' and user_id = 'owner' order by id limit 1`;
+        assert.ok(job);
+        yield* provision(job.id, selfHostProvisioningServices).pipe(
           Effect.provideService(OrganizationDefaults, () =>
             Effect.die("Revoked member must not be provisioned"),
           ),
         );
         assert.equal(
-          (yield* sql`select status from hosted_provisioning where id = 'member-owner'`)[0]?.status,
+          (yield* sql`select status from hosted_provisioning where id = ${job.id}`)[0]?.status,
           "succeeded",
         );
         yield* sql`delete from "user" where id = 'owner'`;
@@ -184,57 +184,58 @@ test("self-host recovers interrupted jobs and backs off failed attempts independ
     ).pipe(Effect.provide(pgliteLayer())),
   ));
 
-test("lifecycle migration upgrades the default-app queue without losing jobs or emailing existing users", () =>
+test("adopting the current baseline preserves completed jobs and does not backfill emails", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const { options, sql, user, team, member } = yield* fixture;
-        // This database is disposable. Start with the actual lower-layer migration.
-        yield* sql`drop table hosted_provisioning`;
-        yield* migrateProvisioning;
         yield* user("existing");
         yield* team("team");
         yield* member("existing");
         yield* sql`update hosted_provisioning set status = 'succeeded' where kind = 'team'`;
-        const before = yield* sql`select id, kind, status from hosted_provisioning order by id`;
-        assert.equal(before.length, 2);
-        yield* migrateLifecycleProvisioning;
+        const before = yield* sql`select * from hosted_provisioning order by id`;
+        // Model the current deployed database: all tables exist, with no journal yet.
+        yield* sql`drop table private_hosted_migrations`;
+        yield* migrateHostedSchemas(options);
+        assert.deepEqual(yield* sql`select * from hosted_provisioning order by id`, before);
+        const constraints =
+          yield* sql`select oid from pg_constraint where conrelid = 'hosted_provisioning'::regclass order by oid`;
+        const triggers =
+          yield* sql`select oid from pg_trigger where tgname like 'hosted_provision_%' order by oid`;
+        yield* migrateHostedSchemas(options);
         assert.deepEqual(
-          yield* sql`select id, kind, status from hosted_provisioning order by id`,
-          before,
+          yield* sql`select oid from pg_constraint where conrelid = 'hosted_provisioning'::regclass order by oid`,
+          constraints,
         );
+        assert.deepEqual(
+          yield* sql`select oid from pg_trigger where tgname like 'hosted_provision_%' order by oid`,
+          triggers,
+        );
+        assert.deepEqual(yield* sql`select * from hosted_provisioning order by id`, before);
         yield* user("new");
         yield* team("later");
         yield* member("new");
         assert.equal(
           (yield* sql`select id from hosted_provisioning where kind = 'user'`).length,
-          1,
-        );
-        assert.equal(
-          (yield* sql`select id from hosted_provisioning where kind = 'billing'`).length,
           2,
         );
         assert.equal(
+          (yield* sql`select id from hosted_provisioning where kind = 'billing'`).length,
+          4,
+        );
+        assert.equal(
           (yield* sql`select id from hosted_provisioning where kind = 'domain'`).length,
-          1,
+          2,
         );
         yield* sql`update organization set slug = 'renamed' where id = 'team'`;
         yield* sql`delete from member where id = 'new'`;
         assert.equal(
           (yield* sql`select id from hosted_provisioning where kind = 'billing'`).length,
-          3,
+          5,
         );
         assert.equal(
           (yield* sql`select id from hosted_provisioning where kind = 'domain'`).length,
-          2,
-        );
-        yield* migrateHostedSchemas(options);
-        const repaired = (yield* sql`select id from hosted_provisioning`).length;
-        yield* migrateHostedSchemas(options);
-        assert.equal((yield* sql`select id from hosted_provisioning`).length, repaired);
-        assert.equal(
-          (yield* sql`select id from hosted_provisioning where kind = 'user'`).length,
-          1,
+          3,
         );
         assert.equal(
           (yield* sql`select status from hosted_provisioning where id = 'team-team'`)[0]?.status,

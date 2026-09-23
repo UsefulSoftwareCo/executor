@@ -20,7 +20,7 @@ import {
   type Runtime,
 } from "@executor-js/sdk/core";
 import { aesGcmCredentials as credentials } from "@executor-js/sdk/core";
-import { storageSchema } from "../src/implementation/storage.ts";
+import { storageSchema } from "../src/implementation/storage-schema.ts";
 
 const alice = OwnerId.make("organization:alice");
 const bob = OwnerId.make("organization:bob");

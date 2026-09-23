@@ -635,7 +635,7 @@ test("one session service isolates app access, persists sessions, and follows pa
   );
 });
 
-test("upgrading the session store preserves existing dashboard logins and their expiry", async () => {
+test("opening the current session baseline preserves dashboard logins and their expiry", async () => {
   await withDirectory((directory) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
@@ -644,24 +644,27 @@ test("upgrading the session store preserves existing dashboard logins and their 
         crypto.subtle.digest("SHA-256", new TextEncoder().encode(credential)),
       );
       const hash = SessionHash.make(Buffer.from(digest).toString("hex"));
-      // Create the actual pre-app-auth layout through its original migrator.
-      const legacySchema = schema({
-        version: "1.0.0",
+      // Seed the supported baseline independently, then open it through local auth.
+      const baselineSchema = schema({
+        version: "1.1.0",
         tables: {
           sessions: table("browser_sessions", {
             hash: idColumn("hash", Schema.String, { type: "varchar(64)" }),
             expiresAt: column("expires_at", Schema.Date),
+            access: column("access", Schema.Json).default("dashboard"),
           }),
         },
       });
-      const legacy = fumadb({ namespace: "local-auth", schemas: [legacySchema] }).client(
+      const baseline = fumadb({ namespace: "local-auth", schemas: [baselineSchema] }).client(
         sqlAdapter({ provider: "postgresql" }),
       );
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const migrator = yield* legacy.createMigrator;
+          const migrator = yield* baseline.createMigrator;
           yield* (yield* migrator.migrateToLatest()).execute;
-          yield* legacy.orm("1.0.0").create("sessions", { hash, expiresAt: new Date(60_000) });
+          yield* baseline
+            .orm("1.1.0")
+            .create("sessions", { hash, expiresAt: new Date(60_000), access: "dashboard" });
         }).pipe(
           Effect.provide(pgliteLayer({ dataDir: path.join(directory, "browser-auth.pglite") })),
         ),

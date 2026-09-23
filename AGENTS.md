@@ -20,6 +20,29 @@ without forcing hosted organizations into local. Use public SDK surfaces and
 the existing shared UI. See the coding note for details and the pinned Effect
 reference.
 
+## Migrations must keep the app online
+
+Cloud migrations run before the replacement server deploys. Every migration
+must leave the currently deployed server able to serve requests. A later deploy
+failure does not undo committed SQL; the old server must still work afterward.
+
+Add schema first, deploy code that uses it, then remove obsolete fields in a
+later release after no running code needs them. Never drop or rename a required
+column before deploying its replacement. Do not install a maintenance Worker,
+change production routes, or stop traffic to make a migration work. If an online
+path is not available, stop and explain the blocker before changing production.
+
+Only our own installs currently need upgrades. Use the supported current baseline
+and preserve their data; do not keep obsolete upgrade paths for hypothetical
+installs. Never reset data or relabel a schema version to bypass an upgrade.
+Record completed steps, keep them immutable, and make repeat runs safe. Do not
+replay backfills or rebuild constraints and triggers on every deploy. Bound lock
+waits and review write blocking, including index builds.
+
+Verify fresh setup, retained data, repeat runs, rollback/retry, and compatibility
+with the running server before release. Use the real database adapter for each
+affected product. See [storage migrations](notes/storage.md#current-baseline-and-migrations).
+
 ## Checks
 
 For application features, fixes, and behavior-preserving refactors, use the

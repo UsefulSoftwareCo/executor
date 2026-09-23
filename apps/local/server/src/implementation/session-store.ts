@@ -1,32 +1,23 @@
 /** Local product sessions survive host restarts without entering the SDK schema. */
 import { pgliteLayer } from "fumadb-effect/pglite";
-import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { AuthStorageError, StoredBrowserSession, type BrowserSessions } from "../contracts/auth.ts";
 
-const initialSchema = schema({
-  version: "1.0.0",
-  tables: {
-    sessions: table("browser_sessions", {
-      hash: idColumn("hash", Schema.String, { type: "varchar(64)" }),
-      expiresAt: column("expires_at", Schema.Date),
-    }),
-  },
-});
-// All pre-existing rows are dashboard sessions. The migration records that once.
 const sessionSchema = schema({
   version: "1.1.0",
   tables: {
     sessions: table("browser_sessions", {
-      ...initialSchema.tables.sessions.columns,
+      hash: idColumn("hash", Schema.String, { type: "varchar(64)" }),
+      expiresAt: column("expires_at", Schema.Date),
       access: column("access", Schema.Json).default("dashboard"),
     }),
   },
 });
-const database = fumadb({ namespace: "local-auth", schemas: [initialSchema, sessionSchema] });
+const database = fumadb({ namespace: "local-auth", schemas: [sessionSchema] });
 
 /** Store token digests, expiry dates and access restrictions for all browser sessions. */
 export const openBrowserSessions = (directory: string) =>
@@ -48,8 +39,12 @@ export const openBrowserSessions = (directory: string) =>
     yield* query(
       Effect.gen(function* () {
         const migrator = yield* storage.createMigrator;
-        const migration = yield* migrator.migrateToLatest();
-        yield* migration.execute;
+        const version = yield* migrator.version;
+        if (Option.isSome(version)) {
+          if (version.value !== sessionSchema.version) return yield* new AuthStorageError();
+          return;
+        }
+        yield* (yield* migrator.migrateToLatest()).execute;
       }),
     );
     const orm = storage.orm("1.1.0");

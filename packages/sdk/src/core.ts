@@ -11,11 +11,8 @@ export {
   type AppRuntime,
   type ResolvedAppRuntime,
 } from "./implementation/runtime.ts";
-export {
-  executorDatabase,
-  makeExecutorStorage,
-  type ExecutorDatabase,
-} from "./implementation/storage.ts";
+export { executorDatabase } from "./implementation/storage-migrations.ts";
+export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
 
 /** Optional Web Crypto adapter; callers retain signing-key custody. */
 export { aesGcmCredentials } from "./implementation/credentials.ts";
