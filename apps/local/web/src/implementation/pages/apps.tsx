@@ -9,6 +9,11 @@ export function AppsPage() {
     <SharedPage
       query={dashboardAtoms.inventory}
       Failure={Failure}
+      connect={
+        <Button asChild>
+          <Link to="/connect">Connect an agent</Link>
+        </Button>
+      }
       action={
         <Button asChild>
           <Link to="/apps/add">Add app</Link>

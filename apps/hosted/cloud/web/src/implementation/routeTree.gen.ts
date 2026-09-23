@@ -14,6 +14,7 @@ import { Route as AppAuthRouteImport } from './routes/app-auth'
 import { Route as CreateRouteImport } from './routes/create'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as CreateAgentRouteImport } from './routes/create_.agent'
 import { Route as EmailUnsubscribeRouteImport } from './routes/email.unsubscribe'
 import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
@@ -63,6 +64,11 @@ const InviteRoute = InviteRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreateAgentRoute = CreateAgentRouteImport.update({
+  id: '/create_/agent',
+  path: '/create/agent',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EmailUnsubscribeRoute = EmailUnsubscribeRouteImport.update({
@@ -217,6 +223,7 @@ export interface FileRoutesByFullPath {
   '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/create/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
@@ -249,6 +256,7 @@ export interface FileRoutesByTo {
   '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/create/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
@@ -281,6 +289,7 @@ export interface FileRoutesById {
   '/create': typeof CreateRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/create_/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
@@ -315,6 +324,7 @@ export interface FileRouteTypes {
     | '/create'
     | '/invite'
     | '/login'
+    | '/create/agent'
     | '/email/unsubscribe'
     | '/mcp/authorize'
     | '/oauth/callback'
@@ -347,6 +357,7 @@ export interface FileRouteTypes {
     | '/create'
     | '/invite'
     | '/login'
+    | '/create/agent'
     | '/email/unsubscribe'
     | '/mcp/authorize'
     | '/oauth/callback'
@@ -378,6 +389,7 @@ export interface FileRouteTypes {
     | '/create'
     | '/invite'
     | '/login'
+    | '/create_/agent'
     | '/email/unsubscribe'
     | '/mcp/authorize'
     | '/oauth/callback'
@@ -411,6 +423,7 @@ export interface RootRouteChildren {
   CreateRoute: typeof CreateRoute
   InviteRoute: typeof InviteRoute
   LoginRoute: typeof LoginRoute
+  CreateAgentRoute: typeof CreateAgentRoute
   EmailUnsubscribeRoute: typeof EmailUnsubscribeRoute
   McpAuthorizeRoute: typeof McpAuthorizeRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
@@ -453,6 +466,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/create_/agent': {
+      id: '/create_/agent'
+      path: '/create/agent'
+      fullPath: '/create/agent'
+      preLoaderRoute: typeof CreateAgentRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/email/unsubscribe': {
@@ -695,6 +715,7 @@ const rootRouteChildren: RootRouteChildren = {
   CreateRoute: CreateRoute,
   InviteRoute: InviteRoute,
   LoginRoute: LoginRoute,
+  CreateAgentRoute: CreateAgentRoute,
   EmailUnsubscribeRoute: EmailUnsubscribeRoute,
   McpAuthorizeRoute: McpAuthorizeRoute,
   OauthCallbackRoute: OauthCallbackRoute,

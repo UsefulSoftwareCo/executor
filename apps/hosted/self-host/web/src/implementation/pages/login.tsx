@@ -31,7 +31,7 @@ export function SelfHostLoginPage({
   const submit = useAtomSet(selfHostSignInAtom, { mode: "promiseExit" });
   const [error, setError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
-  const [registered, setRegistered] = useState(false);
+  const [submittedKind, setSubmittedKind] = useState<SelfHostSignIn["kind"] | null>(null);
   const lastSession = AsyncResult.value(session);
   // A background check must not unmount a form shown after confirmed sign-out.
   const signedOut = Option.isSome(lastSession) && lastSession.value === null;
@@ -47,7 +47,17 @@ export function SelfHostLoginPage({
     );
   if (signedIn)
     return (
-      <ContinueAfterSignIn redirect={registered ? "/" : redirect} userId={session.value.user.id} />
+      <ContinueAfterSignIn
+        redirect={
+          submittedKind === "setup" &&
+          new URL(redirect, window.location.origin).pathname !== "/mcp/authorize"
+            ? "/setup/agent"
+            : submittedKind === "invite"
+              ? "/"
+              : redirect
+        }
+        userId={session.value.user.id}
+      />
     );
   if (
     (session.waiting && !signedOut) ||
@@ -70,7 +80,8 @@ export function SelfHostLoginPage({
   const registration = setup || (joining && invitation !== null);
   const complete = async (input: SelfHostSignIn) => {
     setError(null);
-    setRegistered(input.kind === "setup" || input.kind === "invite");
+    // Select the destination before the successful write refreshes the session.
+    setSubmittedKind(input.kind);
     const result = await submit(input);
     if (Exit.isFailure(result)) {
       const failure = Cause.squash(result.cause);

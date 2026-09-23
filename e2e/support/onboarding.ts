@@ -238,17 +238,58 @@ const make = Effect.gen(function* () {
         yield* browser.use("Confirm team creation", (page) =>
           page.getByRole("button", { name: "Continue", exact: true }).click(),
         );
-        yield* browser.use("The new team opens Apps", (page) =>
-          page.waitForURL(
-            (url) =>
-              url.origin === target.metadata.origin && /^\/org\/[^/]+\/apps$/.test(url.pathname),
-          ),
+        yield* browser.use("Team creation opens agent setup", (page) =>
+          page.waitForURL(`${target.metadata.origin}/create/agent`),
         );
         const teams = yield* organizations;
         if (teams.length !== 1 || teams[0]?.name !== name)
           return yield* new OnboardingFailed({
             operation: "Confirmation must create exactly the chosen team",
           });
+        yield* browser.use("The MCP handoff is visible", (page) =>
+          page.getByRole("heading", { name: "Continue in your agent", exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Continue in your agent after team creation");
+        yield* browser.use("Reload the MCP handoff", (page) => page.reload());
+        yield* browser.use("Reload keeps the agent instructions open", (page) =>
+          page.getByRole("heading", { name: "Continue in your agent", exact: true }).waitFor(),
+        );
+        const endpoint = `${target.metadata.origin}/mcp`;
+        yield* browser.use("The public MCP URL is visible", (page) =>
+          page.getByText(endpoint, { exact: true }).waitFor(),
+        );
+        yield* browser.use("Allow clipboard access in the isolated browser", (page) =>
+          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
+        );
+        yield* browser.use("Copy the MCP URL", (page) =>
+          page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
+        );
+        const copiedUrl = yield* browser.use("Read the copied MCP URL", (page) =>
+          page.evaluate(() => navigator.clipboard.readText()),
+        );
+        if (copiedUrl !== endpoint)
+          return yield* new OnboardingFailed({ operation: "Copy the exact public MCP URL" });
+        yield* browser.use("Copy the starter prompt", (page) =>
+          page.getByRole("button", { name: "Copy starter prompt", exact: true }).click(),
+        );
+        const prompt = yield* browser.use("Read the copied starter prompt", (page) =>
+          page.evaluate(() => navigator.clipboard.readText()),
+        );
+        if (
+          !prompt.includes(endpoint) ||
+          !prompt.includes(`${target.metadata.origin}/docs/`) ||
+          !prompt.includes("help me get my first app set up")
+        )
+          return yield* new OnboardingFailed({
+            operation: "The starter prompt includes MCP, documentation, and first-app setup",
+          });
+        const team = teams[0];
+        yield* browser.use("Open the dashboard when ready", (page) =>
+          page.getByRole("link", { name: "Open dashboard", exact: false }).click(),
+        );
+        yield* browser.use("The new team opens Apps", (page) =>
+          page.waitForURL(`${target.metadata.origin}/org/${team.slug}/apps`),
+        );
         yield* browser.use("The confirmed team stays open", (page) =>
           page
             .getByRole("link", { name: "Add app", exact: true })

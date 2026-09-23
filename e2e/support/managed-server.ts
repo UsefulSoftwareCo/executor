@@ -171,8 +171,7 @@ export const startManagedServer = (
     return `http://127.0.0.1:${server.address.port}`;
   });
 
-/** Start the complete self-host development entry point beside the production test target. */
-export const startDevelopmentServer = (target: typeof Target.Service) =>
+const startIsolatedSelfHost = (target: typeof Target.Service, entry: "product" | "development") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const port = yield* Effect.scoped(
@@ -182,16 +181,23 @@ export const startDevelopmentServer = (target: typeof Target.Service) =>
         );
         const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
         if (!("port" in server.address))
-          return yield* new ServerFailed({ message: "Development listener must use TCP" });
+          return yield* new ServerFailed({ message: "Isolated self-host listener must use TCP" });
         return server.address.port;
       }),
     );
-    const directory = `${target.directory}/devtools`;
-    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+    const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
     yield* startManagedServer(
       { ...target, directory, metadata: { ...target.metadata, origin, target: "self-host" } },
-      "development",
+      entry,
     );
     return origin;
   });
+
+/** Start the complete self-host development entry point beside the production test target. */
+export const startDevelopmentServer = (target: typeof Target.Service) =>
+  startIsolatedSelfHost(target, "development");
+
+/** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
+export const startFreshSelfHost = (target: typeof Target.Service) =>
+  startIsolatedSelfHost(target, "product");

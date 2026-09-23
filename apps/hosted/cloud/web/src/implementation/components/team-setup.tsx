@@ -1,7 +1,7 @@
 import { useAtomRefresh, useAtomSet, useAtomValue, useAtomMount } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { OrganizationEntry } from "@executor-js/hosted-web/organization";
-import { SessionMenu } from "@executor-js/hosted-web/auth";
+import { SetupPageFrame } from "@executor-js/hosted-web/pages/agent-setup";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { HostedEntry, HostedEntryLoading } from "@executor-js/hosted-web/entry";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
@@ -91,17 +91,6 @@ function OrganizationEntryGate({
     .exhaustive();
 }
 
-function TeamSetupPage({ children }: { readonly children: ReactNode }) {
-  return (
-    <main className="flex min-h-dvh flex-col items-center justify-center p-6">
-      {children}
-      <div className="mt-[18px] w-full max-w-[560px]">
-        <SessionMenu signOutLabel="Sign out" />
-      </div>
-    </main>
-  );
-}
-
 function TeamEntry({
   userId,
   mcp,
@@ -142,18 +131,18 @@ function TeamEntry({
     );
   if (AsyncResult.isFailure(prepared))
     return (
-      <TeamSetupPage>
+      <SetupPageFrame>
         <div className="flex min-h-[200px] flex-col items-center justify-center gap-4">
           <p role="alert">Unable to open your workspace. Try again.</p>
           <Button onClick={retry}>Try again</Button>
         </div>
-      </TeamSetupPage>
+      </SetupPageFrame>
     );
   const entry = AsyncResult.isSuccess(created) ? created.value : prepared.value;
   if (Schema.is(OnboardingInvitation)(entry)) {
     if (mcp)
       return (
-        <TeamSetupPage>
+        <SetupPageFrame>
           <div className="flex min-h-[200px] flex-col items-center justify-center gap-4">
             <p>Accept your invitation, then return here to connect.</p>
             <Button asChild>
@@ -165,12 +154,15 @@ function TeamEntry({
               Continue
             </Button>
           </div>
-        </TeamSetupPage>
+        </SetupPageFrame>
       );
     return <Navigate to="/invite" search={{ invitation: entry.invitation }} replace />;
   }
   if (Schema.is(OnboardingDraft)(entry))
     return <TeamForm userId={userId} suggestion={entry.suggestion} />;
+  // The confirmed entry can publish before the mutation settles; both states go to agent setup.
+  if (!mcp && (created.waiting || AsyncResult.isSuccess(created)))
+    return <Navigate to="/create/agent" replace />;
   return children;
 }
 
@@ -193,12 +185,12 @@ function TeamForm({
   const pending = state.waiting || selection.waiting;
   const [error, setError] = useState<string | null>(null);
   return (
-    <TeamSetupPage>
+    <SetupPageFrame>
       <section
         className="w-full max-w-[560px] rounded-2xl border bg-card p-10 max-[600px]:p-6"
         aria-labelledby="team-setup-title"
       >
-        <header className="mb-9 flex items-center gap-3.5 [&_h1]:text-2xl [&_h1]:font-medium [&_h1]:tracking-[-0.04em]">
+        <header className="mb-5 flex items-center gap-3.5 [&_h1]:text-2xl [&_h1]:font-medium [&_h1]:tracking-[-0.04em]">
           <IconPicker
             name={suggestion.name}
             preview={icon.kind === "file" ? icon.preview : icon.logo}
@@ -221,6 +213,10 @@ function TeamForm({
           />
           <h1 id="team-setup-title">Create your team</h1>
         </header>
+        <p className="mb-8 text-sm leading-6 text-muted-foreground">
+          You use Executor through your AI agent. Connect your agent over MCP to build apps and use
+          your tools. Your team keeps your apps, accounts, and access together.
+        </p>
         <form
           className="flex flex-col gap-2.5 [&_label]:text-sm [&_label]:text-muted-foreground [&_input]:h-12 [&_input]:px-3.5 [&_input]:text-base"
           onSubmit={async (event) => {
@@ -271,6 +267,6 @@ function TeamForm({
           </Button>
         </form>
       </section>
-    </TeamSetupPage>
+    </SetupPageFrame>
   );
 }

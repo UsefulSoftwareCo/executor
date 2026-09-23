@@ -145,7 +145,9 @@ export function CopyButton({
           aria-hidden
           size={14}
         />
-        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : text}
+        <span className={text === "" ? "sr-only" : undefined}>
+          {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : text}
+        </span>
       </Button>
     </div>
   );

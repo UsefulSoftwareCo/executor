@@ -19,7 +19,11 @@ function Root() {
   const devtoolsPath =
     pathname === "/login" ? (new URLSearchParams(searchStr).get("redirect") ?? pathname) : pathname;
   return (
-    <DocumentTitleProvider fallbackTitle={productTitle(hostedPageTitle(pathname))}>
+    <DocumentTitleProvider
+      fallbackTitle={productTitle(
+        pathname === "/setup/agent" ? "Continue in your agent" : hostedPageTitle(pathname),
+      )}
+    >
       <AuthBoundary>
         <OrganizationResumeBoundary>
           <Outlet />

@@ -40,6 +40,13 @@ export function AppsPage() {
           </div>
         ) : undefined
       }
+      connect={
+        <Button asChild>
+          <Link to="/org/$organizationSlug/connect" params={{ organizationSlug }}>
+            Connect an agent
+          </Link>
+        </Button>
+      }
       empty={
         <EmptyState
           title={

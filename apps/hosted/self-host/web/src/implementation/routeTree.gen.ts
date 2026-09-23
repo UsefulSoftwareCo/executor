@@ -16,6 +16,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 import { Route as OrgOrganizationSlugRouteImport } from './routes/org.$organizationSlug'
+import { Route as SetupAgentRouteImport } from './routes/setup.agent'
 import { Route as McpApproveRequestIdRouteImport } from './routes/mcp.approve.$requestId'
 import { Route as OrgOrganizationSlugIndexRouteImport } from './routes/org.$organizationSlug.index'
 import { Route as OrgOrganizationSlugApiKeysRouteImport } from './routes/org.$organizationSlug.api-keys'
@@ -70,6 +71,11 @@ const OauthCallbackRoute = OauthCallbackRouteImport.update({
 const OrgOrganizationSlugRoute = OrgOrganizationSlugRouteImport.update({
   id: '/org/$organizationSlug',
   path: '/org/$organizationSlug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupAgentRoute = SetupAgentRouteImport.update({
+  id: '/setup/agent',
+  path: '/setup/agent',
   getParentRoute: () => rootRouteImport,
 } as any)
 const McpApproveRequestIdRoute = McpApproveRequestIdRouteImport.update({
@@ -200,6 +206,7 @@ export interface FileRoutesByFullPath {
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
+  '/setup/agent': typeof SetupAgentRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -228,6 +235,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
+  '/setup/agent': typeof SetupAgentRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -258,6 +266,7 @@ export interface FileRoutesById {
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
+  '/setup/agent': typeof SetupAgentRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -289,6 +298,7 @@ export interface FileRouteTypes {
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
+    | '/setup/agent'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -317,6 +327,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/mcp/authorize'
     | '/oauth/callback'
+    | '/setup/agent'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -346,6 +357,7 @@ export interface FileRouteTypes {
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
+    | '/setup/agent'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -376,6 +388,7 @@ export interface RootRouteChildren {
   McpAuthorizeRoute: typeof McpAuthorizeRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
   OrgOrganizationSlugRoute: typeof OrgOrganizationSlugRouteWithChildren
+  SetupAgentRoute: typeof SetupAgentRoute
   McpApproveRequestIdRoute: typeof McpApproveRequestIdRoute
 }
 
@@ -428,6 +441,13 @@ declare module '@tanstack/react-router' {
       path: '/org/$organizationSlug'
       fullPath: '/org/$organizationSlug'
       preLoaderRoute: typeof OrgOrganizationSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup/agent': {
+      id: '/setup/agent'
+      path: '/setup/agent'
+      fullPath: '/setup/agent'
+      preLoaderRoute: typeof SetupAgentRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/mcp/approve/$requestId': {
@@ -635,6 +655,7 @@ const rootRouteChildren: RootRouteChildren = {
   McpAuthorizeRoute: McpAuthorizeRoute,
   OauthCallbackRoute: OauthCallbackRoute,
   OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,
+  SetupAgentRoute: SetupAgentRoute,
   McpApproveRequestIdRoute: McpApproveRequestIdRoute,
 }
 export const routeTree = rootRouteImport

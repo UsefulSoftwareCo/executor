@@ -900,6 +900,15 @@ export const scenarios = {
       local: na("This scenario uses hosted account and webhook management routes."),
     },
   },
+  selfHostOnboarding: {
+    file: "self-host-onboarding.spec.ts",
+    title: "Self-host administrator setup opens the agent handoff before Apps",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud has its own team creation journey."),
+      local: na("Local uses device pairing instead of administrator setup."),
+    },
+  },
   onboardingGoogle: {
     file: "cloud-onboarding.spec.ts",
     title: "Cloud onboarding with Google opens prepared team confirmation",
