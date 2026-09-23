@@ -9,6 +9,7 @@ import { migrateProvisioning } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
 import { migrateResourceAccess } from "./resource-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
+import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 
 /** Migration failures stop startup; callers must not log the driver's secret-bearing cause. */
 export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFailed>()(
@@ -52,6 +53,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
     yield* migrateProvisioning;
     yield* migrateOrganizationRemovals;
   }),
+  "2_api_key_memberships": migrateApiKeyMemberships,
 });
 
 /**

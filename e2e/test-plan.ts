@@ -834,6 +834,24 @@ export const scenarios = {
       local: na("Local uses its instance key."),
     },
   },
+  organizationApiKeys: {
+    file: "organization-api-keys.spec.ts",
+    title: "Deleting an organization revokes its managed and personal API keys",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host does not expose organization deletion."),
+      local: na("Local has no organizations."),
+    },
+  },
+  memberApiKeys: {
+    file: "member-api-keys.spec.ts",
+    title: "Organization membership removal permanently revokes pinned API keys",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization memberships."),
+    },
+  },
   userApiKey: {
     file: "user-api-key.spec.ts",
     title: "User API keys are private and independent of dashboard sessions",
