@@ -15,6 +15,29 @@ type BillingSession = {
   readonly userId: string;
 };
 
+const ATTACH_PATH = "/api/billing/attach";
+
+// Stripe Checkout hides the VAT / tax ID field unless the session asks for it.
+// Autumn always passes an existing Stripe customer, and Stripe then requires
+// `customer_update.name = "auto"` so it can save the business name. Set on the
+// server so every checkout gets it, whatever the client sends.
+export const CHECKOUT_TAX_ID_PARAMS = {
+  tax_id_collection: { enabled: true },
+  billing_address_collection: "required",
+  customer_update: { name: "auto", address: "auto" },
+} as const;
+
+export const withCheckoutTaxIdCollection = (pathname: string, body: unknown): unknown => {
+  if (pathname !== ATTACH_PATH || typeof body !== "object" || body === null) return body;
+  const { checkoutSessionParams, ...rest } = body as {
+    readonly checkoutSessionParams?: Record<string, unknown>;
+  };
+  return {
+    ...rest,
+    checkoutSessionParams: { ...checkoutSessionParams, ...CHECKOUT_TAX_ID_PARAMS },
+  };
+};
+
 export const resolveBillingOrganization = (request: Request, session: BillingSession) =>
   Effect.gen(function* () {
     // FAIL CLOSED: no header, no org. The AutumnProvider always sends the
@@ -84,7 +107,7 @@ const handler = Effect.gen(function* () {
       request: {
         url: url.pathname,
         method: request.method,
-        body,
+        body: withCheckoutTaxIdCollection(url.pathname, body),
       },
       customerId: org.id,
       customerData: {
