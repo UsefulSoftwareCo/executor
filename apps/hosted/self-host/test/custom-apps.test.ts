@@ -270,8 +270,22 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
               assert.equal(JSON.stringify(body).includes("synthetic-private-policy"), false);
             }
 
+            const mcpProfile = yield* executor.apps.profiles.create({
+              app: mcp.id,
+              owner: mcp.owner,
+              subject: "fixture",
+              idempotencyKey: "test",
+              accounts: {},
+            });
+            const graphqlProfile = yield* executor.apps.profiles.create({
+              app: graphql.id,
+              owner: graphql.owner,
+              subject: "fixture",
+              idempotencyKey: "test",
+              accounts: {},
+            });
             const connectionResponse = yield* post(
-              { requirement: "service" },
+              { requirement: "service", profile: mcpProfile.id },
               `/apps/${mcp.id}/connections`,
             );
             assert.equal(connectionResponse.status, 200);
@@ -287,11 +301,15 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
               Effect.flatMap(Schema.decodeUnknownEffect(Schema.toCodecJson(Account))),
             );
             assert.equal(saved.owner, "organization:alpha");
-            assert.equal((yield* executor.apps.get({ app: mcp.id })).accounts.service, saved.id);
+            assert.equal(
+              (yield* executor.apps.profiles.get({ app: mcp.id, profile: mcpProfile.id })).accounts
+                .service,
+              saved.id,
+            );
 
             // The same errors reach the dashboard with their discriminants and safe details intact.
             const oauthConnectionResponse = yield* post(
-              { requirement: "service" },
+              { requirement: "service", profile: graphqlProfile.id },
               `/apps/${graphql.id}/connections`,
             );
             assert.equal(oauthConnectionResponse.status, 200);

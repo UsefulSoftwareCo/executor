@@ -1,3 +1,4 @@
+import type { SelectedAccounts } from "@executor-js/sdk";
 import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { profileMutations } from "../../contracts/profiles.ts";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -22,6 +23,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 interface AppToolsProps {
   readonly app: App;
+  readonly selection: SelectedAccounts;
   readonly accounts: ReadonlyArray<DashboardAccount>;
   readonly selected: string | undefined;
   readonly profile?: ProfileId | undefined;
@@ -55,7 +57,7 @@ function AccountSetup({
 
 /** Incomplete account setup is a product state; do not start tool discovery until it is resolved. */
 function SingleAppTools(props: AppToolsProps) {
-  const readiness = appToolReadiness(props.app, props.accounts);
+  const readiness = appToolReadiness(props.app, props.selection, props.accounts);
   switch (readiness.state) {
     case "not-deployed":
       return (
@@ -114,14 +116,14 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
 }
 
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
-function LiveAppTools({ app, accounts, selected, profile, revision }: AppToolsProps) {
+function LiveAppTools({ app, accounts, selected, profile, revision, selection }: AppToolsProps) {
   const navigate = useNavigate();
   const atom = toolsAtom({
     app: app.id,
     profile,
     revision,
     deployment: app.activeDeployment,
-    accounts: JSON.stringify(app.accounts),
+    accounts: JSON.stringify(selection),
   });
   const result = useAtomValue(atom);
   const setup = AsyncResult.isFailure(result) ? accountSetupFailure(result.cause) : Option.none();
@@ -147,13 +149,13 @@ function LiveAppTools({ app, accounts, selected, profile, revision }: AppToolsPr
   return (
     <ToolBrowser
       Failure={Failure}
-      key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(app.accounts)}`}
+      key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(selection)}`}
       query={toolListAtom({
         app: app.id,
         profile,
         revision,
         deployment: app.activeDeployment,
-        accounts: JSON.stringify(app.accounts),
+        accounts: JSON.stringify(selection),
       })}
       selected={selected}
       onSelect={(tool) => {
@@ -182,7 +184,7 @@ function LiveAppTools({ app, accounts, selected, profile, revision }: AppToolsPr
 export function AppTools({
   profile,
   ...props
-}: Omit<AppToolsProps, "profile" | "revision"> & {
+}: Omit<AppToolsProps, "profile" | "revision" | "selection"> & {
   readonly profile: Profile | undefined;
 }) {
   if (profile?.enabled === false || profile?.status === "removing")
@@ -200,7 +202,12 @@ export function AppTools({
           Failure={Failure}
         />
       )}
-      <SingleAppTools {...props} profile={profile?.id} revision={profile?.revision} />
+      <SingleAppTools
+        {...props}
+        selection={profile?.accounts ?? {}}
+        profile={profile?.id}
+        revision={profile?.revision}
+      />
     </>
   );
 }

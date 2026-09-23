@@ -2,7 +2,7 @@
 import { Clock, Effect, Schema, type Crypto } from "effect";
 import { Profile, ProfileConflict, ProfileNotFound } from "../contracts/profiles.ts";
 import { ProfileId, StorageError, type AppId, type OwnerId } from "../contracts/shared.ts";
-import { AccountSelectionInvalid, type SelectedAccounts } from "../contracts/apps.ts";
+import { AccountSelectionInvalid } from "../contracts/apps.ts";
 import type { Executor } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, storedDeployment, lockApp } from "./apps.ts";
@@ -34,16 +34,6 @@ export const storedProfile = (
     );
   });
 
-/** Fixed bindings and profile bindings have disjoint slots; there is no override or fallback. */
-export function profileAccounts(
-  app: { readonly id: AppId; readonly accounts: SelectedAccounts },
-  profile: Profile,
-) {
-  if (Object.keys(profile.accounts).some((slot) => Object.hasOwn(app.accounts, slot)))
-    return Effect.fail(new ProfileConflict({ profile: profile.id, reason: "fixed-binding" }));
-  return Effect.succeed({ ...app.accounts, ...profile.accounts });
-}
-
 /** Configuration writes only validate and persist intent; network setup belongs to reconciliation. */
 export const makeProfiles = (db: Query, crypto: Crypto.Crypto) => {
   const validate = (
@@ -52,7 +42,7 @@ export const makeProfiles = (db: Query, crypto: Crypto.Crypto) => {
     profile: Profile,
   ) =>
     Effect.gen(function* () {
-      const accounts = yield* profileAccounts(app, profile);
+      const accounts = profile.accounts;
       if (app.activeDeployment === null) {
         if (Object.keys(accounts).length > 0)
           return yield* new AccountSelectionInvalid({

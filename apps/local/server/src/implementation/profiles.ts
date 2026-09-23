@@ -1,5 +1,6 @@
 /** Local setup has the paired dashboard's authority and one fixed local subject. */
-import { OwnerId, type Executor } from "@executor-js/sdk/core";
+import type { Executor } from "@executor-js/sdk/core";
+import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { DashboardApi } from "../contracts/dashboard.ts";
 /** All execution mechanisms use these same durable account bindings. */
@@ -10,19 +11,19 @@ export const localProfileHandlers = (executor: Executor) =>
       .handle("list", ({ params }) =>
         executor.apps.profiles.list({
           ...params,
-          owner: OwnerId.make("local"),
           subject: "local",
         }),
       )
-      .handle("get", ({ params }) =>
-        executor.apps.profiles.get({ ...params, owner: OwnerId.make("local") }),
-      )
+      .handle("get", ({ params }) => executor.apps.profiles.get(params))
       .handle("create", ({ params, payload }) =>
-        executor.apps.profiles.create({
-          ...params,
-          ...payload,
-          owner: OwnerId.make("local"),
-          subject: "local",
+        Effect.gen(function* () {
+          const app = yield* executor.apps.get(params);
+          return yield* executor.apps.profiles.create({
+            ...params,
+            ...payload,
+            owner: app.owner,
+            subject: "local",
+          });
         }),
       )
       .handle("update", ({ params, payload }) =>

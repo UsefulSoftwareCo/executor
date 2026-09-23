@@ -39,7 +39,6 @@ export const makeAppAuthoring = (
         slug: appSlug(input.name),
         activeDeployment: null,
         copiedFrom,
-        accounts: {},
         createdAt: new Date(yield* Clock.currentTimeMillis),
       };
       yield* transaction(db, (tx) =>

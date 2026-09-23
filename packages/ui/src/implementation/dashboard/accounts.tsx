@@ -108,7 +108,12 @@ function AccountsList({
             <span>Apps</span>
           </div>
           {accounts.map((account) => {
-            const apps = data.apps.filter((app) => selectedIds(app).includes(account.id));
+            const apps = data.apps.filter((app) =>
+              data.profiles.some(
+                (profile) =>
+                  profile.app === app.id && selectedIds(profile.accounts).includes(account.id),
+              ),
+            );
             return (
               <div
                 className="inventory-row accounts-grid grid grid-cols-[minmax(200px,_1.5fr)_minmax(130px,_0.8fr)_minmax(170px,_1fr)] gap-6.25 items-center py-[12px] px-[16px] border-t border-t-border min-h-16 [a&:hover]:bg-muted max-[1000px]:grid-cols-[minmax(0,_1.3fr)_minmax(0,_1fr)] max-[1000px]:gap-4 max-[1000px]:[.inventory-header&_>_span:nth-child(2)]:hidden max-[740px]:grid-cols-1 max-[740px]:gap-3 max-[740px]:py-[12px] max-[740px]:px-[16px] max-[740px]:[&:first-of-type]:border-t-0 max-[740px]:[.inventory-header_+_&]:border-t-0"

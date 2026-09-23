@@ -75,7 +75,7 @@ export const dashboard = (
 ) => {
   const owner = OwnerId.make("local");
   const appCatalog = createCatalog(egress, catalog);
-  const db = storage.orm("3.0.0");
+  const db = storage.orm("4.0.0");
   const signIn = accountSignIn(storage, credentials);
   const query = <A, E>(work: () => Effect.Effect<A, E>) =>
     Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
@@ -107,7 +107,12 @@ export const dashboard = (
         signIn: yield* signIn(account, definition),
       });
     }
-    return { apps, accounts: display };
+    const profiles = (yield* Effect.forEach(apps, (app) =>
+      executor.apps.profiles
+        .list({ app: app.id, subject: "local" })
+        .pipe(Effect.mapError(() => new StorageError())),
+    )).flat();
+    return { apps, accounts: display, profiles };
   });
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {
@@ -212,7 +217,7 @@ export const dashboard = (
         profile === undefined
           ? undefined
           : yield* executor.apps.profiles.get({ app: appId, profile });
-      const bindings = { ...app.accounts, ...selected?.accounts };
+      const bindings = selected?.accounts ?? {};
       const ids = [
         ...new Set(
           Object.values(bindings).flatMap((selection) =>
@@ -423,9 +428,6 @@ export const dashboard = (
         }),
       )
       .handle("completeOAuth", ({ payload }) => executor.accountConnections.completeOAuth(payload))
-      .handle("selectAccounts", ({ params, payload }) =>
-        executor.apps.update({ ...params, ...payload }),
-      )
       .handle("tools", ({ params, query }) =>
         executor.tools.list({ ...params, ...query }).pipe(
           Effect.timeoutOrElse({

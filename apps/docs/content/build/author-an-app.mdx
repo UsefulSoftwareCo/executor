@@ -247,7 +247,7 @@ MCP endpoint.
 <CodeGroup>
 
 ```js Hosted
-return await tools.executor.mutations.apps_deploy({
+return await tools.executor.profiles["<management-profile-id>"].mutations.apps_deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
@@ -257,7 +257,7 @@ return await tools.executor.mutations.apps_deploy({
 ```
 
 ```js Local
-return await tools.executor.mutations.apps_deploy({
+return await tools.executor.profiles["<management-profile-id>"].mutations.apps_deploy({
   body: {
     owner: "my-project",
     name: "Hello",
@@ -357,7 +357,7 @@ or `@plugin` files are not supported.
 For hosted apps, discover `appUi_location` through `tools.search` and call it:
 
 ```js
-return await tools.executor.queries.appUi_location({
+return await tools.executor.profiles["<management-profile-id>"].queries.appUi_location({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
 });
 ```

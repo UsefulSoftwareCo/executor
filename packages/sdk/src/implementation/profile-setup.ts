@@ -138,9 +138,7 @@ export const makeProfileSetup = (
         const definitions = yield* resources.webhooks.definitions(input);
         const desired = new Set<string>();
         for (const hook of definitions) {
-          const selected = Object.hasOwn(app.accounts, hook.account)
-            ? app.accounts[hook.account]
-            : current.accounts[hook.account];
+          const selected = current.accounts[hook.account];
           if (selected === undefined) {
             status = "needs-setup";
             failure = "accounts";
@@ -153,7 +151,7 @@ export const makeProfileSetup = (
               name: hook.name,
               account,
               config,
-              accounts: { ...app.accounts, ...current.accounts },
+              accounts: current.accounts,
               deployment: app.activeDeployment,
               revision: current.revision,
             });

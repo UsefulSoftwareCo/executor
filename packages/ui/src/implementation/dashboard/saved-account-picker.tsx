@@ -1,6 +1,6 @@
 import { useState, type ReactNode, type ComponentType } from "react";
 import { Exit, type Cause } from "effect";
-import type { AccountId, AccountRequirement, App, SelectedAccounts } from "@executor-js/sdk";
+import type { AccountId, AccountRequirement, SelectedAccounts } from "@executor-js/sdk";
 import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
 import {
   Dialog,
@@ -22,7 +22,7 @@ export interface SavedAccountEdit<Saved, E> {
 
 /** Select saved accounts in place. Single choices commit immediately; multiple choices commit together. */
 export function SavedAccountPicker<E, Saved>({
-  app,
+  selectedAccounts,
   slot,
   requirement,
   accounts,
@@ -33,7 +33,7 @@ export function SavedAccountPicker<E, Saved>({
   busy = false,
   trigger,
 }: {
-  readonly app: App;
+  readonly selectedAccounts: SelectedAccounts;
   readonly slot: string;
   readonly requirement: AccountRequirement;
   readonly accounts: readonly AccountSummary[];
@@ -52,7 +52,7 @@ export function SavedAccountPicker<E, Saved>({
   // Keep the bindings and revision captured when this editor opened.
   const [edit, setEdit] = useState<SavedAccountEdit<Saved, E>>();
   const [error, setError] = useState<Cause.Cause<E>>();
-  const selection = edit === undefined ? app.accounts[slot] : edit.accounts[slot];
+  const selection = edit === undefined ? selectedAccounts[slot] : edit.accounts[slot];
   const selected = typeof selection === "string" ? [selection] : (selection ?? []);
   const available = accounts.filter(
     (account) => account.provider === requirement.provider && !selected.includes(account.id),
@@ -124,7 +124,7 @@ export function SavedAccountPicker<E, Saved>({
           <>
             {connectForm(() => setOpen(false))}
             {error && <Failure cause={error} />}
-            {many && app.accounts[slot] === undefined && (
+            {many && selectedAccounts[slot] === undefined && (
               <Button
                 variant="ghost"
                 loading={pending}

@@ -282,10 +282,10 @@ test(
             subject: user.userId,
           }))[0];
           assert.ok(profile);
-          assert.deepEqual(app.accounts, {});
+          assert.equal(Object.hasOwn(app, "accounts"), false);
           const account = profile.accounts.service;
           assert.equal(typeof account, "string");
-          yield* storage.orm("3.0.0").transaction(
+          yield* storage.orm("4.0.0").transaction(
             Effect.gen(function* () {
               yield* sql`set transaction read only`;
               for (let i = 0; i < 3; i++) {

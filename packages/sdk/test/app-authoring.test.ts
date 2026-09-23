@@ -116,7 +116,7 @@ test("drafts deploy in place, edits stay inactive, and copies use running source
           name: "Draft",
           commit: deployed.deployment.sourceCommit,
         });
-        assert.deepEqual(fork.accounts, {});
+        assert.equal(Object.hasOwn(fork, "accounts"), false);
         assert.deepEqual(
           (yield* executor.apps.workspace({ owner, app: fork.id })).files,
           source("First"),

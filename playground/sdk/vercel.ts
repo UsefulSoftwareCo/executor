@@ -37,17 +37,21 @@ export async function vercelProjectsReport(executor: Executor) {
     fields: { token: "vercel_tok_synthetic_example_only" },
   });
 
-  const configured = await executor.apps.update({
+  const profile = await executor.apps.profiles.create({
+    owner: me,
+    subject: "me",
+    idempotencyKey: "work",
     app: app.id,
     accounts: { vercel: account.id },
   });
 
   const projects = await executor.tools.call({
-    app: configured.id,
+    app: app.id,
+    profile: profile.id,
     tool: ToolName.make("queries.listProjects"),
     input: {},
   });
-  return { app: configured, account, projects };
+  return { app, profile, account, projects };
 }
 
 /** Local/remote parity; neither function starts work until called. */

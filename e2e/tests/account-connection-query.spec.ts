@@ -153,7 +153,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         expect(selections[0]?.accounts.service).toBe(account);
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)).body,
-        ).toMatchObject({ accounts: {} });
+        ).not.toHaveProperty("accounts");
         yield* browser.use("Saving returns to the app without a document navigation", (page) =>
           page.waitForURL(
             (url) => url.pathname === `/org/${actors.organization.slug}/apps/${app.id}`,

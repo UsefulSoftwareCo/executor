@@ -2,7 +2,7 @@
 import type { RemoteCustomAppInput } from "@executor-js/catalog/contracts";
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import type { AppId, SelectedAccounts } from "@executor-js/sdk";
+import type { AppId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { providerDisplayUrl, type InstallApp } from "@executor-js/ui/contracts/dashboard";
 import { HostedClient, catalogAtom } from "./api.ts";
@@ -52,22 +52,5 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
     Effect.flatMap(HostedClient, (client) =>
       client.apps.importCustom({ params: { organization }, payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
-  ),
-  selectAccounts: Atom.family((app: AppId) =>
-    HostedClient.runtime.fn((accounts: SelectedAccounts, get) =>
-      Effect.flatMap(HostedClient, (client) =>
-        client.apps.selectAccounts({
-          params: { organization, app },
-          payload: { accounts },
-        }),
-      ).pipe(
-        Effect.tap((saved) =>
-          Effect.sync(() => {
-            acknowledgeApp(get, organization, saved);
-            get.refresh(toolsAtom({ organization, app }));
-          }),
-        ),
-      ),
-    ),
   ),
 }));

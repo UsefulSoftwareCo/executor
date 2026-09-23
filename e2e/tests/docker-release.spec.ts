@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Exit, Schema, Schedule } from "effect";
@@ -194,9 +195,18 @@ for (const mode of ["explicit", "local", "railway"] as const)
         const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
           yield* driver("deployment response", () => deployed.json()),
         );
+        const profileResponse = yield* request(
+          `${prefix}/apps/${app.id}/profiles`,
+          { accounts: {}, idempotencyKey: randomUUID() },
+          cookie,
+        );
+        expect(profileResponse.status).toBe(200);
+        const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+          yield* driver("profile response", () => profileResponse.json()),
+        );
         const connectionResponse = yield* request(
           `${prefix}/apps/${app.id}/connections`,
-          { requirement: "service" },
+          { requirement: "service", profile: profile.id },
           cookie,
         );
         expect(connectionResponse.status).toBe(200);
@@ -263,7 +273,7 @@ fetch(collector.url + "/api/traces/" + process.argv[1] + "/spans").then((r) => r
           );
           const called = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
-            { tool: "queries.check", input: {} },
+            { profile: profile.id, tool: "queries.check", input: {} },
             cookie,
           );
           expect(called.status).toBe(200);

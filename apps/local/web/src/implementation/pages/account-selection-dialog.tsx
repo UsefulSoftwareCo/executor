@@ -129,11 +129,7 @@ function SelectionForm({
         : { kind: "saved", id: working.id, revision: working.revision },
   });
   const save = useAtomSet(mutation, { mode: "promiseExit" });
-  const requirements = Object.fromEntries(
-    Object.entries(app.requirements.accounts).filter(
-      ([slot]) => !Object.hasOwn(app.accounts, slot),
-    ),
-  );
+  const requirements = app.requirements.accounts;
   let initial: SelectedAccounts =
     working?.accounts ??
     Object.fromEntries(
@@ -158,11 +154,7 @@ function SelectionForm({
         key={selectedAccount ?? "selection"}
         mutation={mutation}
         Failure={Failure}
-        app={{
-          ...app,
-          accounts: initial,
-          requirements: { ...app.requirements, accounts: requirements },
-        }}
+        app={app}
         available={data.accounts}
         initialAccounts={initial}
         addedAccounts={saved?.accounts}

@@ -1,3 +1,4 @@
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 /** Query budgets use SQL spans from real HTTP calls, including account and workflow results. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -86,9 +87,11 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
             Effect.timeout("25 seconds"),
           );
 
+        const profile = yield* createProfile(actors.owner, path);
         for (let index = 0; index < 10; index++) {
           const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
             requirement: "workspaces",
+            profile: profile.id,
           });
           expect(pending.status).toBe(200);
           const connection = yield* body(Resource, pending);
@@ -108,11 +111,11 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
         // Deliberately reverse creation order: the batch read must retain saved binding order.
         const selected = [...accounts].reverse();
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/accounts`, {
-            accounts: { workspaces: selected },
-          })).status,
+          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: selected }))
+            .status,
         ).toBe(200);
         const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+          profile: profile.id,
           tool: "queries.selected",
           input: {},
         });
@@ -129,21 +132,20 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
         expect
           .soft(
             invocationQueries.length,
-            "Ten accounts need one joined app read and one account batch",
+            "Ten accounts need one joined app read, one profile read and one account batch",
           )
-          .toBe(2);
+          .toBe(3);
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/accounts`, {
-            accounts: { workspaces: [...selected, ...selected] },
+          (yield* selectProfileAccounts(actors.owner, path, profile.id, {
+            workspaces: [...selected, ...selected],
           })).status,
         ).toBeGreaterThanOrEqual(400);
         // Explicit empty selections remain valid and let the workflow fixture run without account pins.
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/accounts`, {
-            accounts: { workspaces: [] },
-          })).status,
+          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: [] })).status,
         ).toBe(200);
         const empty = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+          profile: profile.id,
           tool: "queries.selected",
           input: {},
         });
@@ -152,6 +154,7 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
 
         for (let index = 0; index < 20; index++) {
           const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+            profile: profile.id,
             workflow: "quick",
             input: {},
             key: randomUUID(),

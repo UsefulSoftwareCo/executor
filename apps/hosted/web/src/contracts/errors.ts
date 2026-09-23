@@ -21,8 +21,6 @@ const errorMessage = Match.type<HostedError>().pipe(
         inactive: "This profile is disabled or has been removed. Check the profile menu.",
         "active-resources":
           "Background work is still stopping. Check profile status before trying again.",
-        "fixed-binding":
-          "The app fixes an account for this requirement. An app manager must change that binding.",
       })[reason],
     AccessConflict: ({ reason }) =>
       ({

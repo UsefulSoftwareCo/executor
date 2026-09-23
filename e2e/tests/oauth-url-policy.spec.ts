@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 /** Real hosted account setup, including host config parsing and the SDK's URL policy. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -44,11 +45,12 @@ export default defineApp({ accounts: { service } }, async () => ({  queries: {} 
               .request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)
               .pipe(Effect.asVoid, Effect.orDie),
           );
+          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const opened = yield* api.request(
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/connections`,
-            { requirement: "service" },
+            { requirement: "service", profile: profile.id },
           );
           expect(opened.status).toBe(200);
           const connection = yield* body(Resource, opened);

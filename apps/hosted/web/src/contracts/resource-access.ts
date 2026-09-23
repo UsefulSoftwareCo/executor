@@ -2,14 +2,14 @@
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
-import type { AccountId, AppId } from "@executor-js/sdk";
+import type { AccountId, AppId, Profile } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type {
   AppAudience,
   SharedAudience,
   AccessRevision,
 } from "@executor-js/hosted-server/resource-access";
-import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
+import { acknowledge, invalidate, upsert } from "@executor-js/ui/contracts/mutations";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
@@ -67,6 +67,28 @@ export const refreshResourceDirectory = (
   invalidate(get, resourceDirectoryAtom(organization));
   invalidate(get, resourceDirectoryAtom(organization, "managed"));
   get.refresh(inventoryAtom(organization));
+};
+/** Keep app cards in sync with a confirmed personal profile change before navigation. */
+export const acknowledgeResourceProfile = (
+  get: Atom.FnContext,
+  organization: OrganizationReference,
+  saved: Profile,
+) => {
+  for (const view of ["available", "managed"] as const)
+    acknowledge(get, resourceDirectoryAtom(organization, view), (data) => ({
+      ...data,
+      apps: data.apps.map((entry) =>
+        entry.app.id === saved.app && entry.access.canUse
+          ? {
+              ...entry,
+              profiles:
+                saved.status === "removed"
+                  ? entry.profiles.filter((profile) => profile.id !== saved.id)
+                  : upsert(entry.profiles, saved),
+            }
+          : entry,
+      ),
+    }));
 };
 const shareApp = Atom.family((key: AppKey) =>
   HostedClient.runtime.fn(
@@ -142,12 +164,15 @@ const inventory = Atom.family((key: ListKey) =>
                   access.audience.groups.some((id) => id === key.group))),
         )
         .map(({ app }) => app);
+      const profiles = data.apps
+        .filter(({ app }) => apps.some((item) => item.id === app.id))
+        .flatMap(({ profiles }) => profiles);
       const accounts = data.accounts.map(({ account, provider }) => ({
         ...account,
         providerName: provider.definition.name,
         providerUrl: providerDisplayUrl(provider.definition),
       }));
-      return { apps, accounts, pendingApp: key.group !== "private" && data.pendingApp };
+      return { apps, accounts, profiles, pendingApp: key.group !== "private" && data.pendingApp };
     }),
   ),
 );

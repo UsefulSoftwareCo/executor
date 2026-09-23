@@ -44,9 +44,7 @@ export const recordConnection = (
         : {
             app: connection.target.app,
             requirement: connection.target.requirement,
-            ...(connection.target.profile === undefined
-              ? {}
-              : { profile: connection.target.profile }),
+            profile: connection.target.profile,
           },
     );
     const target = encodedTarget === null ? null : JSON.stringify(encodedTarget);
@@ -73,8 +71,7 @@ export const connectionAccess = (connection: AccountConnectionId) =>
     const access = (yield* Schema.decodeUnknownEffect(Schema.Array(ConnectionAccess))(rows))[0];
     if (access === undefined) return yield* new OrganizationForbidden();
     if (access.target !== null) {
-      if (access.target.profile === undefined) yield* requireAppAccess(access.target.app, "manage");
-      else {
+      {
         yield* requireAppAccess(access.target.app, "use");
         yield* ownProfile(
           yield* Effect.flatten(HostedExecutor),

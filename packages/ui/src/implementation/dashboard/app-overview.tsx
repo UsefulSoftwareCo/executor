@@ -234,9 +234,9 @@ export function AppOverviewAccounts({
   readonly contexts: readonly AccountContext[];
 }) {
   const requirements = Object.entries(app.requirements.accounts);
-  const selections = contexts.length === 0 ? [app] : contexts.map((context) => context.app);
+  const selections = contexts.map((context) => context.accounts);
   const incomplete = contexts.filter(
-    (context) => accountSelectionIssues(context.app, accounts).length > 0,
+    (context) => accountSelectionIssues(context.app, context.accounts, accounts).length > 0,
   ).length;
   if (requirements.length === 0)
     return (
@@ -255,8 +255,8 @@ export function AppOverviewAccounts({
       <div className="divide-y">
         {requirements.map(([slot, requirement]) => {
           const ids = new Set(
-            [app, ...selections].flatMap((configured) => {
-              const selection = configured.accounts[slot];
+            selections.flatMap((configured) => {
+              const selection = configured[slot];
               return selection === undefined
                 ? []
                 : typeof selection === "string"

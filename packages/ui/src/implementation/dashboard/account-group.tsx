@@ -1,14 +1,15 @@
-import type { App, Profile, ProfileId } from "@executor-js/sdk";
+import type { App, Profile, ProfileId, SelectedAccounts } from "@executor-js/sdk";
 
 /** Setup names label an exact profile; account bindings never define its identity. */
 export interface AccountContext {
   readonly key: string;
   readonly label: string;
   readonly app: App;
+  readonly accounts: SelectedAccounts;
   readonly profile: Profile | undefined;
 }
 
-/** App-owned execution remains available when every provider is fixed, including zero providers. */
+/** Account-free apps can execute without a profile. */
 export function accountContexts(
   app: App,
   profiles: readonly Profile[],
@@ -25,11 +26,12 @@ export function accountContexts(
       label:
         profile.name ??
         (profiles.indexOf(profile) === 0 ? "Default" : `Profile ${profiles.indexOf(profile) + 1}`),
-      app: { ...app, accounts: { ...app.accounts, ...profile.accounts } },
+      app,
+      accounts: profile.accounts,
       profile,
     }));
-  if (Object.keys(app.requirements.accounts).every((slot) => Object.hasOwn(app.accounts, slot))) {
-    entries.unshift({ key: "app", label: "App", app, profile: undefined });
+  if (Object.keys(app.requirements.accounts).length === 0) {
+    entries.unshift({ key: "app", label: "App", app, accounts: {}, profile: undefined });
   }
   return entries;
 }

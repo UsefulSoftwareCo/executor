@@ -66,9 +66,16 @@ export default defineApp({accounts:{service}},async()=>({webhooks:{events:{accou
           label: "Default",
           fields: Redacted.make({ token: "synthetic" }),
         });
-        yield* executor.apps.update({ app: app.id, accounts: { service: account.id } });
+        const profile = yield* executor.apps.profiles.create({
+          app: app.id,
+          owner: app.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: { service: account.id },
+        });
         const subscription = yield* executor.webhooks.create({
           app: app.id,
+          profile: profile.id,
           key: "events",
           name: "events",
           config: {},

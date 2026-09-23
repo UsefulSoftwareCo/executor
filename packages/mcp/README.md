@@ -45,8 +45,8 @@ Executor OAuth account. It uses `apps/openapi` and the ordinary API handlers. It
 `skills/app-authoring/SKILL.md`; read it with `{app: "executor", name: "app-authoring"}`
 using the installed slug. Access to the guide follows access to that app, including
 when the grant excludes the Executor app or the user deletes it.
-Agent namespaces use name-derived app slugs, such as `tools.executor.queries` and
-`tools.executor.mutations`; identity and permissions still use immutable IDs.
+Agent namespaces use name-derived app slugs, such as `tools.executor.profiles["<management-profile-id>"].queries` and
+`tools.executor.profiles["<management-profile-id>"].mutations`; identity and permissions still use immutable IDs.
 
 The workerd build condition of codemode accepts JavaScript without loading the
 TypeScript compiler. Its Node build can also transpile TypeScript; `execute`

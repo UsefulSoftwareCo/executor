@@ -179,17 +179,22 @@ test(
             const first = yield* addAccount("first");
             const second = yield* addAccount("second");
             const other = yield* addAccount("other");
-            yield* executor.apps.update({
+            const profile = yield* executor.apps.profiles.create({
+              owner,
+              subject: "test",
+              idempotencyKey: "test",
               app: app.id,
               accounts: { source: [first.id, second.id], other: other.id },
             });
             assert.equal(
-              (yield* executor.webhooks.definitions({ app: app.id }))[0]?.account,
+              (yield* executor.webhooks.definitions({ app: app.id, profile: profile.id }))[0]
+                ?.account,
               "source",
             );
             assert.equal(remote.attempts(), 0);
             const invalid = yield* executor.webhooks
               .create({
+                profile: profile.id,
                 app: app.id,
                 name: "changed",
                 key: "invalid",
@@ -200,6 +205,7 @@ test(
             assert.ok(Schema.is(WebhookFailed)(invalid));
             assert.equal((yield* executor.webhooks.list({ app: app.id })).length, 0);
             const subscription = yield* executor.webhooks.create({
+              profile: profile.id,
               app: app.id,
               name: "changed",
               key: "primary",
@@ -212,7 +218,7 @@ test(
             const registration = remote.registrations.get(subscription.id);
             assert.ok(registration);
             const stored = yield* storage
-              .orm("3.0.0")
+              .orm("4.0.0")
               .findFirst("webhooks", { where: (b) => b("id", "=", subscription.id) });
             assert.ok(stored);
             assert.ok(!new TextDecoder().decode(stored.encrypted).includes(registration.secret));
@@ -294,6 +300,7 @@ test(
             assert.equal(remote.registrations.size, 1);
             assert.equal(
               (yield* executor.webhooks.create({
+                profile: profile.id,
                 app: app.id,
                 name: "changed",
                 key: "primary",
@@ -307,6 +314,7 @@ test(
               Schema.is(WebhookConflict)(
                 yield* executor.webhooks
                   .create({
+                    profile: profile.id,
                     app: app.id,
                     name: "changed",
                     key: "primary",
@@ -316,10 +324,6 @@ test(
                   .pipe(Effect.flip),
               ),
             );
-            yield* executor.apps.update({
-              app: app.id,
-              accounts: { source: [second.id], other: second.id },
-            });
             yield* executor.accounts.replaceCredentials({
               account: first.id,
               fields: Redacted.make({ token: "refreshed-first" }),
@@ -342,6 +346,13 @@ test(
               bytes: Array.from(body),
             });
             assert.equal((yield* deliver("0".repeat(64))).status, 401);
+            yield* executor.apps.profiles.update({
+              profile: profile.id,
+              expectedRevision: profile.revision,
+              app: app.id,
+              accounts: { source: [second.id], other: second.id },
+            });
+            assert.equal((yield* deliver()).status, 410);
             assert.ok(
               Schema.is(AppWebhooksActive)(
                 yield* executor.apps.remove({ app: app.id }).pipe(Effect.flip),
@@ -368,6 +379,7 @@ test(
             const paused = remote.pauseRegistration();
             const pending = yield* executor.webhooks
               .create({
+                profile: profile.id,
                 app: app.id,
                 key: "parallel",
                 name: "changed",

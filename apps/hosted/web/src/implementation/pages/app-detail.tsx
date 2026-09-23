@@ -114,9 +114,7 @@ export function AppDetailPage({
       : [];
   const selected = selectedAccountContext(choices, profile);
   const selectedId = selected?.profile?.id;
-  const personal =
-    app !== undefined &&
-    Object.keys(app.requirements.accounts).some((slot) => !Object.hasOwn(app.accounts, slot));
+  const personal = app !== undefined && Object.keys(app.requirements.accounts).length > 0;
   useEffect(() => {
     if (profile === undefined && selectedId !== undefined) {
       void navigate({
@@ -374,7 +372,11 @@ export function AppDetailPage({
                         const contexts = accountContexts(current, entries);
                         const previewContexts = contexts.filter(
                           (context) =>
-                            accountSelectionIssues(context.app, inventory.accounts).length === 0,
+                            accountSelectionIssues(
+                              context.app,
+                              context.accounts,
+                              inventory.accounts,
+                            ).length === 0,
                         );
                         const previewEmpty =
                           contexts.length > 0 ? (
@@ -476,7 +478,7 @@ export function AppDetailPage({
                                       profile: context.profile?.id,
                                       expectedProfileRevision: context.profile?.revision,
                                       deployment: current.activeDeployment ?? undefined,
-                                      accounts: JSON.stringify(current.accounts),
+                                      accounts: JSON.stringify(context.accounts),
                                     }),
                                   }))}
                                 />

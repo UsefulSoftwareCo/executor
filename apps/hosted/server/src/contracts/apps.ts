@@ -26,7 +26,6 @@ import {
   AppNotFound,
   DeploymentBuildFailed,
   SkillDefinitionInvalid,
-  SelectedAccounts,
   SourceFiles,
   sourceErrors,
   StorageError,
@@ -91,21 +90,6 @@ export const HostedApps = HttpApiGroup.make("apps")
       success: App,
       error: [StorageError, AppNotFound],
     }).annotate(RequiredAction, "discover"),
-  )
-  .add(
-    HttpApiEndpoint.patch("selectAccounts", `${prefix}/:app/accounts`, {
-      params: app,
-      payload: Schema.Struct({ accounts: SelectedAccounts }),
-      success: App,
-      error: [
-        StorageError,
-        AppNotFound,
-        AppNotDeployed,
-        AccountNotFound,
-        AccountSelectionInvalid,
-        OrganizationForbidden,
-      ],
-    }).annotate(RequiredAction, "manage"),
   )
   .add(
     HttpApiEndpoint.delete("remove", `${prefix}/:app`, {

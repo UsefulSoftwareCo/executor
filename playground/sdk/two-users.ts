@@ -55,19 +55,33 @@ export async function program() {
   // These owner IDs come from product auth, never end-user request fields.
   const aliceOwnedApp = await executor.apps.get({ app: aliceApp.id, owner: alice });
   const aliceOwnedAccount = await executor.accounts.get({ account: aliceAccount.id, owner: alice });
-  await executor.apps.update({ app: aliceOwnedApp.id, accounts: { vercel: aliceOwnedAccount.id } });
+  const aliceProfile = await executor.apps.profiles.create({
+    owner: alice,
+    subject: "alice",
+    idempotencyKey: "vercel",
+    app: aliceOwnedApp.id,
+    accounts: { vercel: aliceOwnedAccount.id },
+  });
 
   const bobOwnedApp = await executor.apps.get({ app: bobApp.id, owner: bob });
   const bobOwnedAccount = await executor.accounts.get({ account: bobAccount.id, owner: bob });
-  await executor.apps.update({ app: bobOwnedApp.id, accounts: { vercel: bobOwnedAccount.id } });
+  const bobProfile = await executor.apps.profiles.create({
+    owner: bob,
+    subject: "bob",
+    idempotencyKey: "vercel",
+    app: bobOwnedApp.id,
+    accounts: { vercel: bobOwnedAccount.id },
+  });
 
   const aliceProjects = await executor.tools.call({
     app: aliceOwnedApp.id,
+    profile: aliceProfile.id,
     tool: ToolName.make("queries.listProjects"),
     input: {},
   });
   const bobProjects = await executor.tools.call({
     app: bobOwnedApp.id,
+    profile: bobProfile.id,
     tool: ToolName.make("queries.listProjects"),
     input: {},
   });

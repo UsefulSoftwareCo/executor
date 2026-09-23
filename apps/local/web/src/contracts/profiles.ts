@@ -4,7 +4,7 @@ import { Atom } from "effect/unstable/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
 import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
-import { DashboardClient } from "./api.ts";
+import { DashboardClient, overviewAtom } from "./api.ts";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 class AppKey extends Data.Class<{ readonly app: AppId }> {}
 class Target extends Data.Class<{ readonly app: AppId; readonly profile: ProfileId }> {}
@@ -17,10 +17,12 @@ const source = Atom.family((key: AppKey) =>
 const query = Atom.family((key: AppKey) => pollingQuery(source(key)));
 /** Shared per-app metadata for the picker and setup form. */
 export const profilesAtom = (key: { app: AppId }) => query(new AppKey({ app: key.app }));
-const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) =>
-  acknowledge(get, source(new AppKey({ app: key.app })), (rows) =>
-    saved.status === "removed" ? rows.filter((row) => row.id !== saved.id) : upsert(rows, saved),
-  );
+const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) => {
+  const merge = (rows: readonly Profile[]) =>
+    saved.status === "removed" ? rows.filter((row) => row.id !== saved.id) : upsert(rows, saved);
+  acknowledge(get, source(new AppKey({ app: key.app })), merge);
+  acknowledge(get, overviewAtom, (data) => ({ ...data, profiles: merge(data.profiles) }));
+};
 /** Stable operation identities prevent edits on one setup from cancelling another. */
 export const profileMutations = (key: { app: AppId; profile: ProfileId }) =>
   mutations(new Target(key));

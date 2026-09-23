@@ -42,7 +42,7 @@ import { type Credentials, StoredApp, StoredDeployment } from "../contracts/stor
 import { makeToolApprovals } from "./tool-approvals.ts";
 import { storedDeployment } from "./apps.ts";
 import { database, query, transaction, type Query } from "./database.ts";
-import { storedProfile, profileAccounts } from "./profiles.ts";
+import { storedProfile } from "./profiles.ts";
 import { CurrentProfile, ProfileConflict } from "../contracts/profiles.ts";
 import type { ProfileId } from "../contracts/shared.ts";
 import { validateSelection } from "./selection.ts";
@@ -109,9 +109,7 @@ export function snapshot(
             reason: "revision",
           });
       }
-      const bindings =
-        savedAccounts ??
-        (profile === undefined ? app.accounts : yield* profileAccounts(app, profile));
+      const bindings = profile === undefined ? {} : (savedAccounts ?? profile.accounts);
       const validated = yield* validateSelection(tx, app.id, deployment.requirements, bindings);
       const selections = yield* Effect.forEach(
         Object.keys(deployment.requirements.accounts),

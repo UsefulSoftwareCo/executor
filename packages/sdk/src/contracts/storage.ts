@@ -42,7 +42,7 @@ export const StoredDeployment = Schema.Struct({
 export type StoredDeployment = typeof StoredDeployment.Type;
 
 /**
- * A configured app stores its own account selections and active deployment.
+ * An app stores its source identity and active deployment; profiles store selections.
  * Public App.requirements is read from that deployment rather than duplicated.
  */
 export const StoredApp = Schema.Struct({

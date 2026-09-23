@@ -1,3 +1,4 @@
+import { accountContexts, selectedAccountContext } from "./account-group.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
 import { AppCardsSkeleton } from "./loading.tsx";
@@ -126,8 +127,17 @@ function AppsList({
         <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
           {pending}
           {apps.map((app) => {
-            const ids = selectedIds(app);
-            const issues = accountSelectionIssues(app, data.accounts);
+            const context = selectedAccountContext(
+              accountContexts(
+                app,
+                data.profiles.filter((profile) => profile.app === app.id),
+                true,
+              ),
+              undefined,
+            );
+            const selection = context?.accounts ?? {};
+            const ids = selectedIds(selection);
+            const issues = accountSelectionIssues(app, selection, data.accounts);
             const selected = data.accounts.filter((account) => ids.includes(account.id));
             const needsSignIn = selected.some((account) => accountNeedsSignIn(account));
             const unavailable = selected.some((account) => account.signIn?.state === "unavailable");

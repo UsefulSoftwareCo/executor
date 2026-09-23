@@ -287,7 +287,13 @@ test(
             label: "Default",
             fields: Redacted.make({ token: "synthetic" }),
           });
-          yield* executor.apps.update({ app: first.id, accounts: { service: account.id } });
+          const profile = yield* executor.apps.profiles.create({
+            app: first.id,
+            owner: first.owner,
+            subject: "fixture",
+            idempotencyKey: "test",
+            accounts: { service: account.id },
+          });
           const appPath = `/apps/${first.id}`;
           const before = yield* read(
             yield* request(`${appPath}/source`),
@@ -302,7 +308,10 @@ test(
           )).app;
           assert.equal(updated.id, first.id);
           assert.equal(updated.code, first.code);
-          assert.deepEqual(updated.accounts, { service: account.id });
+          assert.deepEqual(
+            (yield* executor.apps.profiles.get({ app: first.id, profile: profile.id })).accounts,
+            { service: account.id },
+          );
           const history = yield* read(
             yield* request(`${appPath}/deployments`),
             Schema.toCodecJson(Schema.Array(DeploymentSummary)),
@@ -319,7 +328,11 @@ test(
           const resultSchema = Schema.Struct({ version: Schema.String, account: Schema.String });
           assert.deepEqual(
             yield* read(
-              yield* request(`${appPath}/tools/call`, { tool: "mutations.version", input: {} }),
+              yield* request(`${appPath}/tools/call`, {
+                profile: profile.id,
+                tool: "mutations.version",
+                input: {},
+              }),
               resultSchema,
             ),
             { version: "two", account: account.id },
@@ -360,10 +373,14 @@ test(
             Schema.toCodecJson(App),
           );
           assert.equal(rolled.activeDeployment, before.id);
-          assert.deepEqual(rolled.accounts, updated.accounts);
+          assert.equal(Object.hasOwn(rolled, "accounts"), false);
           assert.deepEqual(
             yield* read(
-              yield* request(`${appPath}/tools/call`, { tool: "mutations.version", input: {} }),
+              yield* request(`${appPath}/tools/call`, {
+                profile: profile.id,
+                tool: "mutations.version",
+                input: {},
+              }),
               resultSchema,
             ),
             { version: "one", account: account.id },

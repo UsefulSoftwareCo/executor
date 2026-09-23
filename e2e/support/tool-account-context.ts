@@ -27,13 +27,12 @@ export const checkToolAccountContext = <E, R>(input: {
   Effect.gen(function* () {
     const browser = yield* Browser;
     yield* input.select([input.work]);
-    yield* browser.use("Open work tools", (page) => page.goto(`${input.url}?view=tools`));
-    yield* browser.use("Work context is explicit", (page) =>
-      page
-        .getByLabel("Tool account context")
-        .getByRole("link", { name: "Work GitHub", exact: true })
-        .waitFor({ state: "visible" }),
+    const url = (view: string) => `${input.url}${input.url.includes("?") ? "&" : "?"}view=${view}`;
+    yield* browser.use("Open the selected profile accounts", (page) => page.goto(url("accounts")));
+    yield* browser.use("Work account is shown in the selected profile", (page) =>
+      page.getByText("Work GitHub", { exact: true }).waitFor({ state: "visible" }),
     );
+    yield* browser.use("Open work tools", (page) => page.goto(url("tools")));
     yield* browser.use("Work account exposes its own tools", (page) =>
       page
         .getByRole("navigation", { name: "App tools" })
@@ -55,10 +54,9 @@ export const checkToolAccountContext = <E, R>(input: {
         yield* input.select([input.personal]);
         yield* refreshVisiblePage;
         yield* held.requested;
-        yield* browser.use("The new account context is visible during discovery", (page) =>
+        yield* browser.use("The replacement catalog is loading", (page) =>
           page
-            .getByLabel("Tool account context")
-            .getByRole("link", { name: "Personal GitHub", exact: true })
+            .getByRole("status", { name: "Loading tools", exact: true })
             .waitFor({ state: "visible" }),
         );
         expect(
@@ -98,12 +96,20 @@ export const checkToolAccountContext = <E, R>(input: {
           .count(),
       ),
     ).toBe(0);
-    yield* browser.use("Account details stay in the Accounts card", (page) =>
+    yield* browser.use("Overview counts the selected account", (page) =>
       page
         .getByRole("region", { name: "App accounts", exact: true })
-        .getByRole("link", { name: "Personal GitHub", exact: true })
+        .getByText("1 account", { exact: true })
         .waitFor({ state: "visible" }),
     );
+    expect(
+      yield* browser.use("Configured profile has no missing-account warning", (page) =>
+        page
+          .getByRole("region", { name: "App accounts", exact: true })
+          .getByText(/needs accounts/)
+          .count(),
+      ),
+    ).toBe(0);
     yield* input.select([input.work, input.personal]);
     yield* refreshVisiblePage;
     for (const name of ["queries.work", "queries.admin", "queries.personal"])
@@ -119,12 +125,6 @@ export const checkToolAccountContext = <E, R>(input: {
         .getByRole("link", { name: "Tools", exact: true })
         .click(),
     );
-    yield* browser.use("The catalog is labeled as combined", (page) =>
-      page
-        .getByLabel("Tool account context")
-        .getByText("· Combined catalog", { exact: true })
-        .waitFor({ state: "visible" }),
-    );
     for (const name of ["queries.work", "queries.admin", "queries.personal"])
       yield* browser.use(`Combined catalog includes ${name}`, (page) =>
         page
@@ -134,7 +134,10 @@ export const checkToolAccountContext = <E, R>(input: {
       );
     yield* browser.checkpoint("Combined account tool catalog");
     yield* browser.use("Use the existing account controls", (page) =>
-      page.getByRole("link", { name: "Manage accounts", exact: true }).click(),
+      page
+        .getByRole("navigation", { name: "App navigation" })
+        .getByRole("link", { name: "Accounts", exact: true })
+        .click(),
     );
     yield* browser.use("Account management is selected", (page) =>
       page

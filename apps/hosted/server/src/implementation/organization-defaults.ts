@@ -97,7 +97,6 @@ export const organizationDefaults = (
           const source = yield* defaultExecutorAppSource(origin, skills, document);
           if (!sourceFilesEqual(deployment.files, source.files)) {
             // Upgrade only the untouched, unconfigured catalog version. Preserve user edits and connections.
-            if (Object.keys(app.accounts).length > 0) return;
             const catalog = yield* executorAppSource(origin, skills, document);
             if (!sourceFilesEqual(deployment.files, catalog.files)) return;
             const workspace = yield* executor.apps.workspace({ owner, app: app.id });
@@ -119,10 +118,8 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        // A deliberate fixed binding is not a per-user setup slot.
-        if (current.accounts.service !== undefined) return;
         const existingProfile = yield* storage
-          .orm("3.0.0")
+          .orm("4.0.0")
           .findFirst("profiles", {
             where: (b) =>
               b.and(
@@ -151,7 +148,7 @@ export const organizationDefaults = (
           return;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
         yield* storage
-          .orm("3.0.0")
+          .orm("4.0.0")
           .transaction(
             Effect.gen(function* () {
               const rows =
@@ -182,7 +179,7 @@ export const organizationDefaults = (
                 where member."organizationId" = ${organization} and member."userId" = ${user.userId}
                 and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
                 for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
-              if (eligible.length === 0 || locked.accounts.service !== undefined) return;
+              if (eligible.length === 0) return;
               const token =
                 saved === undefined
                   ? yield* managedAccountKey(organization, user.userId).pipe(
@@ -204,7 +201,6 @@ export const organizationDefaults = (
                         .pipe(personalAccountCreation(user.userId))
                     : yield* new StorageError();
               // One durable personal profile follows the common Executor deployment.
-              if (locked.accounts.service !== undefined) return;
               yield* executor.apps.profiles.create({
                 app: app.id,
                 owner,

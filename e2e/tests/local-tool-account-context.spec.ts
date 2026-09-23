@@ -1,7 +1,8 @@
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
@@ -19,6 +20,13 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           browser = yield* Browser,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
         const response = yield* session.send(
           "POST",
           "/v1/apps/deploy",
@@ -40,6 +48,12 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
             }),
           }),
           response,
+        );
+        const profile = yield* createProfile(
+          agent,
+          `/v1/apps/${app.id}`,
+          { owner: "local", subject: "local" },
+          headers,
         );
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
@@ -77,14 +91,18 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
         );
         yield* checkToolAccountContext({
-          url: `/apps/${app.id}`,
+          url: `/apps/${app.id}?profile=${profile.id}`,
           work,
           personal,
           catalogs: [`/dashboard/api/live/apps/${app.id}/tools`],
           select: (ids) =>
-            session
-              .send("PATCH", `/v1/apps/${app.id}`, { accounts: { workspaces: ids } }, headers)
-              .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
+            selectProfileAccounts(
+              agent,
+              `/v1/apps/${app.id}`,
+              profile.id,
+              { workspaces: ids },
+              headers,
+            ).pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
         });
       }),
     ),

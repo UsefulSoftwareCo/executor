@@ -215,6 +215,15 @@ test("deleting an app keeps reusable accounts and independent copies", async () 
     const first = await Effect.runPromise(
       client.dashboard.importApp({ payload: { entry: entry.id, name: "Delete fixture" } }),
     );
+    const firstProfile = await Effect.runPromise(
+      executor.apps.profiles.create({
+        app: first.id,
+        owner: first.owner,
+        subject: "local",
+        idempotencyKey: "test",
+        accounts: {},
+      }),
+    );
     const requirement = first.requirements.accounts.service;
     assert.ok(requirement);
     const account = await Effect.runPromise(
@@ -228,13 +237,40 @@ test("deleting an app keeps reusable accounts and independent copies", async () 
       }),
     );
     await Effect.runPromise(
-      executor.apps.update({ app: first.id, accounts: { service: account.id } }),
+      executor.apps.profiles.update({
+        app: first.id,
+        profile: firstProfile.id,
+        accounts: { service: account.id },
+        expectedRevision: (
+          await Effect.runPromise(
+            executor.apps.profiles.get({ app: first.id, profile: firstProfile.id }),
+          )
+        ).revision,
+      }),
     );
     const second = await Effect.runPromise(
       executor.apps.copy({ from: first.id, owner: OwnerId.make("local"), name: "Kept copy" }),
     );
+    const secondProfile = await Effect.runPromise(
+      executor.apps.profiles.create({
+        app: second.id,
+        owner: second.owner,
+        subject: "local",
+        idempotencyKey: "test",
+        accounts: {},
+      }),
+    );
     await Effect.runPromise(
-      executor.apps.update({ app: second.id, accounts: { service: account.id } }),
+      executor.apps.profiles.update({
+        app: second.id,
+        profile: secondProfile.id,
+        accounts: { service: account.id },
+        expectedRevision: (
+          await Effect.runPromise(
+            executor.apps.profiles.get({ app: second.id, profile: secondProfile.id }),
+          )
+        ).revision,
+      }),
     );
 
     await Effect.runPromise(
@@ -262,14 +298,25 @@ test("deleting an app keeps reusable accounts and independent copies", async () 
       account.provider,
     );
     assert.equal(
-      (await Effect.runPromise(Effect.flip(executor.tools.list({ app: first.id }))))._tag,
+      (
+        await Effect.runPromise(
+          Effect.flip(executor.tools.list({ profile: firstProfile.id, app: first.id })),
+        )
+      )._tag,
       "AppNotFound",
     );
     assert.equal(
-      (await Effect.runPromise(executor.apps.get({ app: second.id }))).accounts.service,
+      (
+        await Effect.runPromise(
+          executor.apps.profiles.get({ profile: secondProfile.id, app: second.id }),
+        )
+      ).accounts.service,
       account.id,
     );
-    assert.ok((await Effect.runPromise(executor.tools.list({ app: second.id }))).items.length > 0);
+    assert.ok(
+      (await Effect.runPromise(executor.tools.list({ profile: secondProfile.id, app: second.id })))
+        .items.length > 0,
+    );
     assert.ok(second.activeDeployment);
     assert.notEqual(second.activeDeployment, first.activeDeployment);
     assert.ok(
@@ -303,11 +350,29 @@ test("account management preserves shared identity, updates live tools, and sepa
         const first = await Effect.runPromise(
           client.dashboard.importApp({ payload: { entry: remote.id, name: "Shared first" } }),
         );
+        const firstProfile = await Effect.runPromise(
+          executor.apps.profiles.create({
+            app: first.id,
+            owner: first.owner,
+            subject: "local",
+            idempotencyKey: "test",
+            accounts: {},
+          }),
+        );
         const second = await Effect.runPromise(
           executor.apps.copy({
             from: first.id,
             owner: OwnerId.make("local"),
             name: "Shared second",
+          }),
+        );
+        const secondProfile = await Effect.runPromise(
+          executor.apps.profiles.create({
+            app: second.id,
+            owner: second.owner,
+            subject: "local",
+            idempotencyKey: "test",
+            accounts: {},
           }),
         );
         const provider = first.requirements.accounts.service?.provider;
@@ -324,9 +389,22 @@ test("account management preserves shared identity, updates live tools, and sepa
         );
         for (const app of [first, second])
           await Effect.runPromise(
-            client.dashboard.selectAccounts({
-              params: { app: app.id },
-              payload: { accounts: { service: account.id } },
+            client.profiles.update({
+              params: {
+                app: app.id,
+                profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+              },
+              payload: {
+                accounts: { service: account.id },
+                expectedRevision: (
+                  await Effect.runPromise(
+                    executor.apps.profiles.get({
+                      app: app.id,
+                      profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                    }),
+                  )
+                ).revision,
+              },
             }),
           );
         const params = { account: account.id };
@@ -379,7 +457,11 @@ test("account management preserves shared identity, updates live tools, and sepa
           "AccountFieldsInvalid",
         );
         assert.equal(
-          (await Effect.runPromise(executor.tools.list({ app: first.id }))).items[1]?.name,
+          (
+            await Effect.runPromise(
+              executor.tools.list({ profile: firstProfile.id, app: first.id }),
+            )
+          ).items[1]?.name,
           "queries.alpha",
         );
 
@@ -396,15 +478,30 @@ test("account management preserves shared identity, updates live tools, and sepa
         );
         for (const app of [first, second]) {
           assert.equal(
-            (await Effect.runPromise(executor.apps.get({ app: app.id }))).accounts.service,
+            (
+              await Effect.runPromise(
+                executor.apps.profiles.get({
+                  profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                  app: app.id,
+                }),
+              )
+            ).accounts.service,
             account.id,
           );
           assert.equal(
-            (await Effect.runPromise(executor.tools.list({ app: app.id }))).items[1]?.name,
+            (
+              await Effect.runPromise(
+                executor.tools.list({
+                  profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                  app: app.id,
+                }),
+              )
+            ).items[1]?.name,
             "queries.beta",
           );
           const called = await Effect.runPromise(
             executor.tools.call({
+              profile: app.id === first.id ? firstProfile.id : secondProfile.id,
               app: app.id,
               tool: ToolName.make("queries.beta"),
               input: { value: "test" },
@@ -413,7 +510,17 @@ test("account management preserves shared identity, updates live tools, and sepa
           assert.ok(JSON.stringify(called).includes('"account":"beta"'));
         }
         await Effect.runPromise(
-          client.dashboard.selectAccounts({ params: { app: first.id }, payload: { accounts: {} } }),
+          client.profiles.update({
+            params: { app: first.id, profile: firstProfile.id },
+            payload: {
+              accounts: {},
+              expectedRevision: (
+                await Effect.runPromise(
+                  executor.apps.profiles.get({ app: first.id, profile: firstProfile.id }),
+                )
+              ).revision,
+            },
+          }),
         );
         assert.equal((await Effect.runPromise(executor.accounts.get(params))).id, account.id);
         assert.deepEqual(
@@ -421,7 +528,11 @@ test("account management preserves shared identity, updates live tools, and sepa
           [second.id],
         );
         assert.equal(
-          (await Effect.runPromise(Effect.flip(executor.tools.list({ app: first.id }))))._tag,
+          (
+            await Effect.runPromise(
+              Effect.flip(executor.tools.list({ profile: firstProfile.id, app: first.id })),
+            )
+          )._tag,
           "AccountRequired",
         );
 
@@ -447,11 +558,19 @@ test("account management preserves shared identity, updates live tools, and sepa
           "AccountNotFound",
         );
         assert.equal(
-          (await Effect.runPromise(executor.apps.get({ app: second.id }))).accounts.service,
+          (
+            await Effect.runPromise(
+              executor.apps.profiles.get({ profile: secondProfile.id, app: second.id }),
+            )
+          ).accounts.service,
           account.id,
         );
         assert.equal(
-          (await Effect.runPromise(Effect.flip(executor.tools.list({ app: second.id }))))._tag,
+          (
+            await Effect.runPromise(
+              Effect.flip(executor.tools.list({ profile: secondProfile.id, app: second.id })),
+            )
+          )._tag,
           "AccountNotFound",
         );
         assert.equal(
@@ -459,9 +578,16 @@ test("account management preserves shared identity, updates live tools, and sepa
           alternative.id,
         );
         await Effect.runPromise(
-          client.dashboard.selectAccounts({
-            params: { app: second.id },
-            payload: { accounts: {} },
+          client.profiles.update({
+            params: { app: second.id, profile: secondProfile.id },
+            payload: {
+              accounts: {},
+              expectedRevision: (
+                await Effect.runPromise(
+                  executor.apps.profiles.get({ app: second.id, profile: secondProfile.id }),
+                )
+              ).revision,
+            },
           }),
         );
         await Effect.runPromise(client.dashboard.deleteApp({ params: { app: first.id } }));
@@ -502,6 +628,15 @@ test("import, account creation, selection and generated requests use the normal 
       const app = await Effect.runPromise(
         client.dashboard.importApp({ payload: { entry: entry.id, name: "Imported" } }),
       );
+      const appProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: app.id,
+          owner: app.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
+        }),
+      );
       const requirement = app.requirements.accounts.service;
       assert.ok(requirement);
       assert.equal(requirement.definition.auth.oauth?.type, "oauth2");
@@ -517,12 +652,21 @@ test("import, account creation, selection and generated requests use the normal 
       );
       assert.ok(!JSON.stringify(account).includes("synthetic-key"));
       await Effect.runPromise(
-        client.dashboard.selectAccounts({
-          params: { app: app.id },
-          payload: { accounts: { service: account.id } },
+        client.profiles.update({
+          params: { app: app.id, profile: appProfile.id },
+          payload: {
+            accounts: { service: account.id },
+            expectedRevision: (
+              await Effect.runPromise(
+                executor.apps.profiles.get({ app: app.id, profile: appProfile.id }),
+              )
+            ).revision,
+          },
         }),
       );
-      const page = await Effect.runPromise(executor.tools.list({ app: app.id }));
+      const page = await Effect.runPromise(
+        executor.tools.list({ profile: appProfile.id, app: app.id }),
+      );
       assert.equal(page.items.length, 4);
       const tool = page.items.find((tool) => tool.name === "mutations.createItem");
       assert.ok(tool);
@@ -535,6 +679,7 @@ test("import, account creation, selection and generated requests use the normal 
       ] as const)
         await Effect.runPromise(
           executor.tools.call({
+            profile: appProfile.id,
             app: app.id,
             tool: ToolName.make(
               `${["getItem", "publicInfo"].includes(tool) ? "queries" : "mutations"}.${tool}`,
@@ -551,6 +696,7 @@ test("import, account creation, selection and generated requests use the normal 
       await assert.rejects(() =>
         Effect.runPromise(
           executor.tools.call({
+            profile: appProfile.id,
             app: app.id,
             tool: ToolName.make("mutations.createItem"),
             input: { body: { name: "x" } },
@@ -569,11 +715,27 @@ test("import, account creation, selection and generated requests use the normal 
       const second = await Effect.runPromise(
         client.dashboard.importApp({ payload: { entry: entry.id, name: "Second" } }),
       );
+      const secondProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: second.id,
+          owner: second.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
+        }),
+      );
       assert.equal(second.requirements.accounts.service?.provider, requirement.provider);
       await Effect.runPromise(
-        client.dashboard.selectAccounts({
-          params: { app: second.id },
-          payload: { accounts: { service: account.id } },
+        client.profiles.update({
+          params: { app: second.id, profile: secondProfile.id },
+          payload: {
+            accounts: { service: account.id },
+            expectedRevision: (
+              await Effect.runPromise(
+                executor.apps.profiles.get({ app: second.id, profile: secondProfile.id }),
+              )
+            ).revision,
+          },
         }),
       );
       assert.equal((await Effect.runPromise(client.dashboard.overview({}))).accounts.length, 1);
@@ -613,8 +775,26 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
         const first = await Effect.runPromise(
           client.dashboard.importApp({ payload: { entry: remote.id, name: "First MCP" } }),
         );
+        const firstProfile = await Effect.runPromise(
+          executor.apps.profiles.create({
+            app: first.id,
+            owner: first.owner,
+            subject: "local",
+            idempotencyKey: "test",
+            accounts: {},
+          }),
+        );
         const second = await Effect.runPromise(
           client.dashboard.importApp({ payload: { entry: remote.id, name: "Second MCP" } }),
+        );
+        const secondProfile = await Effect.runPromise(
+          executor.apps.profiles.create({
+            app: second.id,
+            owner: second.owner,
+            subject: "local",
+            idempotencyKey: "test",
+            accounts: {},
+          }),
         );
         const provider = first.requirements.accounts.service?.provider;
         assert.ok(provider);
@@ -634,14 +814,34 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
             }),
           );
           await Effect.runPromise(
-            client.dashboard.selectAccounts({
-              params: { app: app.id },
-              payload: { accounts: { service: account.id } },
+            client.profiles.update({
+              params: {
+                app: app.id,
+                profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+              },
+              payload: {
+                accounts: { service: account.id },
+                expectedRevision: (
+                  await Effect.runPromise(
+                    executor.apps.profiles.get({
+                      app: app.id,
+                      profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                    }),
+                  )
+                ).revision,
+              },
             }),
           );
         }
         const pages = await Promise.all(
-          [first, second].map((app) => Effect.runPromise(executor.tools.list({ app: app.id }))),
+          [first, second].map((app) =>
+            Effect.runPromise(
+              executor.tools.list({
+                profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                app: app.id,
+              }),
+            ),
+          ),
         );
         assert.deepEqual(
           pages.map((page) => page.items.map((tool) => tool.name)),
@@ -664,6 +864,7 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
           [second, "beta"],
         ] as const) {
           const result = await completedCall(executor, {
+            profile: app.id === first.id ? firstProfile.id : secondProfile.id,
             app: app.id,
             tool: ToolName.make(`queries.${name}`),
             input: { value: "hello" },
@@ -675,6 +876,7 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
           });
         }
         const failure = await completedCall(executor, {
+          profile: firstProfile.id,
           app: first.id,
           tool: ToolName.make("mutations.failure"),
           input: {},
@@ -686,6 +888,7 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
         await assert.rejects(() =>
           Effect.runPromise(
             executor.tools.call({
+              profile: firstProfile.id,
               app: first.id,
               tool: ToolName.make("queries.alpha"),
               input: {},
@@ -695,6 +898,7 @@ test("MCP catalog imports build normal apps and keep each account's live tools a
         await assert.rejects(() =>
           Effect.runPromise(
             executor.tools.call({
+              profile: firstProfile.id,
               app: first.id,
               tool: ToolName.make("queries.beta"),
               input: { value: "hello" },
@@ -900,6 +1104,15 @@ test("custom MCP URLs deploy source and connect through the same account flow", 
           },
         }),
       );
+      const appProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: app.id,
+          owner: app.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
+        }),
+      );
       const provider = app.requirements.accounts.service?.provider;
       assert.ok(provider);
       const account = await Effect.runPromise(
@@ -913,15 +1126,25 @@ test("custom MCP URLs deploy source and connect through the same account flow", 
         }),
       );
       await Effect.runPromise(
-        client.dashboard.selectAccounts({
-          params: { app: app.id },
-          payload: { accounts: { service: account.id } },
+        client.profiles.update({
+          params: { app: app.id, profile: appProfile.id },
+          payload: {
+            accounts: { service: account.id },
+            expectedRevision: (
+              await Effect.runPromise(
+                executor.apps.profiles.get({ app: app.id, profile: appProfile.id }),
+              )
+            ).revision,
+          },
         }),
       );
-      const tools = await Effect.runPromise(executor.tools.list({ app: app.id }));
+      const tools = await Effect.runPromise(
+        executor.tools.list({ profile: appProfile.id, app: app.id }),
+      );
       assert.ok(tools.items.some((tool) => tool.name === "queries.alpha"));
       await Effect.runPromise(
         executor.tools.call({
+          profile: appProfile.id,
           app: app.id,
           tool: ToolName.make("queries.alpha"),
           input: { value: "custom" },
@@ -1063,6 +1286,15 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
           },
         }),
       );
+      const firstProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: first.id,
+          owner: first.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
+        }),
+      );
       const provider = first.requirements.accounts.service?.provider;
       assert.ok(provider);
       const second = await Effect.runPromise(
@@ -1070,6 +1302,15 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
           from: first.id,
           owner: OwnerId.make("local"),
           name: "Second GraphQL",
+        }),
+      );
+      const secondProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: second.id,
+          owner: second.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
         }),
       );
       for (const [app, token] of [
@@ -1087,12 +1328,30 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
           }),
         );
         await Effect.runPromise(
-          client.dashboard.selectAccounts({
-            params: { app: app.id },
-            payload: { accounts: { service: account.id } },
+          client.profiles.update({
+            params: {
+              app: app.id,
+              profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+            },
+            payload: {
+              accounts: { service: account.id },
+              expectedRevision: (
+                await Effect.runPromise(
+                  executor.apps.profiles.get({
+                    app: app.id,
+                    profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+                  }),
+                )
+              ).revision,
+            },
           }),
         );
-        const tools = await Effect.runPromise(executor.tools.list({ app: app.id }));
+        const tools = await Effect.runPromise(
+          executor.tools.list({
+            profile: app.id === first.id ? firstProfile.id : secondProfile.id,
+            app: app.id,
+          }),
+        );
         assert.equal(tools.items.length, 4);
         assert.equal(
           tools.items.find((tool) => tool.name === "queries.query_viewer")?.readOnly,
@@ -1104,6 +1363,7 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
         );
         assert.deepEqual(
           await completedCall(executor, {
+            profile: app.id === first.id ? firstProfile.id : secondProfile.id,
             app: app.id,
             tool: ToolName.make("queries.query_viewer"),
             input: {},
@@ -1113,6 +1373,7 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
       }
       const invoke = (tool: string, input: Schema.Json) =>
         completedCall(executor, {
+          profile: firstProfile.id,
           app: first.id,
           tool: ToolName.make(`${tool.startsWith("query_") ? "queries" : "mutations"}.${tool}`),
           input,
@@ -1222,6 +1483,13 @@ test(
                   const first = yield* client.dashboard.importApp({
                     payload: { entry: remote.id, name: "Live app" },
                   });
+                  const firstProfile = yield* executor.apps.profiles.create({
+                    app: first.id,
+                    owner: first.owner,
+                    subject: "local",
+                    idempotencyKey: "test",
+                    accounts: {},
+                  });
                   const provider = first.requirements.accounts.service?.provider;
                   assert.ok(provider);
                   const account = yield* executor.accounts.add({
@@ -1231,7 +1499,15 @@ test(
                     label: "First",
                     fields: Redacted.make({ token: "alpha" }),
                   });
-                  yield* executor.apps.update({ app: first.id, accounts: { service: account.id } });
+                  yield* executor.apps.profiles.update({
+                    app: first.id,
+                    profile: firstProfile.id,
+                    accounts: { service: account.id },
+                    expectedRevision: (yield* executor.apps.profiles.get({
+                      app: first.id,
+                      profile: firstProfile.id,
+                    })).revision,
+                  });
                   const overview = yield* observe(yield* client.dashboard.liveOverview());
                   const app = yield* observe(
                     yield* client.dashboard.liveApp({ params: { app: first.id } }),
@@ -1240,7 +1516,10 @@ test(
                     yield* client.dashboard.liveAccount({ params: { account: account.id } }),
                   );
                   const tools = yield* observe(
-                    yield* client.dashboard.liveTools({ query: {}, params: { app: first.id } }),
+                    yield* client.dashboard.liveTools({
+                      query: { profile: firstProfile.id },
+                      params: { app: first.id },
+                    }),
                   );
                   assert.equal((yield* overview()).apps.length, 1);
                   assert.equal((yield* app()).app.activeDeployment, first.activeDeployment);
@@ -1364,15 +1643,25 @@ test(
       const first = await Effect.runPromise(
         client.dashboard.importApp({ payload: { entry: entry.id, name: "Recovery fixture" } }),
       );
+      const firstProfile = await Effect.runPromise(
+        executor.apps.profiles.create({
+          app: first.id,
+          owner: first.owner,
+          subject: "local",
+          idempotencyKey: "test",
+          accounts: {},
+        }),
+      );
       const provider = first.requirements.accounts.service?.provider;
       assert.ok(provider);
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
             const next = yield* observeValues(
-              (yield* client.dashboard.liveTools({ query: {}, params: { app: first.id } })).pipe(
-                Stream.filter((frame) => frame.type !== "heartbeat"),
-              ),
+              (yield* client.dashboard.liveTools({
+                query: { profile: firstProfile.id },
+                params: { app: first.id },
+              })).pipe(Stream.filter((frame) => frame.type !== "heartbeat")),
             );
             const failed = yield* next();
             assert.equal(failed.type, "failure");
@@ -1384,14 +1673,38 @@ test(
               label: "Connected elsewhere",
               fields: Redacted.make({ token: "synthetic" }),
             });
-            yield* executor.apps.update({ app: first.id, accounts: { service: account.id } });
+            yield* executor.apps.profiles.update({
+              app: first.id,
+              profile: firstProfile.id,
+              accounts: { service: account.id },
+              expectedRevision: (yield* executor.apps.profiles.get({
+                app: first.id,
+                profile: firstProfile.id,
+              })).revision,
+            });
             const recovered = yield* next((frame) => frame.type === "snapshot");
             assert.equal(recovered.type, "snapshot");
             if (recovered.type === "snapshot") assert.ok(recovered.value.tools.length > 0);
-            yield* executor.apps.update({ app: first.id, accounts: {} });
+            yield* executor.apps.profiles.update({
+              app: first.id,
+              profile: firstProfile.id,
+              accounts: {},
+              expectedRevision: (yield* executor.apps.profiles.get({
+                app: first.id,
+                profile: firstProfile.id,
+              })).revision,
+            });
             const disconnected = yield* next((frame) => frame.type === "failure");
             assert.equal(disconnected.type, "failure");
-            yield* executor.apps.update({ app: first.id, accounts: { service: account.id } });
+            yield* executor.apps.profiles.update({
+              app: first.id,
+              profile: firstProfile.id,
+              accounts: { service: account.id },
+              expectedRevision: (yield* executor.apps.profiles.get({
+                app: first.id,
+                profile: firstProfile.id,
+              })).revision,
+            });
             assert.equal((yield* next((frame) => frame.type === "snapshot")).type, "snapshot");
           }),
         ),

@@ -5,6 +5,7 @@ import type {
   App,
   AppId,
   ProfileId,
+  Profile,
   Deployment,
   DeploymentId,
   Provider,
@@ -34,6 +35,7 @@ export interface AccountDetail {
 /** The common inventory contains no product permission or organization fields. */
 export interface Inventory {
   readonly apps: readonly App[];
+  readonly profiles: readonly Profile[];
   readonly accounts: readonly AccountSummary[];
 }
 /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
@@ -119,14 +121,17 @@ export interface DashboardBindings {
 }
 
 /** Resolve selected identities without inferring account ownership or permission. */
-export const selectedIds = (app: App): readonly AccountId[] => [
+export const selectedIds = (selection: SelectedAccounts): readonly AccountId[] => [
   ...new Set(
-    Object.values(app.accounts).flatMap((value) => (typeof value === "string" ? [value] : value)),
+    Object.values(selection).flatMap((value) => (typeof value === "string" ? [value] : value)),
   ),
 ];
 /** Display saved account identities without mistaking an empty label for unavailable account metadata. */
-export const selectedAccountLabels = (app: App, accounts: readonly AccountSummary[]) =>
-  selectedIds(app).map((id) => {
+export const selectedAccountLabels = (
+  selection: SelectedAccounts,
+  accounts: readonly AccountSummary[],
+) =>
+  selectedIds(selection).map((id) => {
     const account = accounts.find((item) => item.id === id);
     return {
       id,
@@ -147,17 +152,18 @@ export interface AccountSelectionIssue {
 /** Check saved selections against available metadata, without asserting upstream access. */
 export function accountSelectionIssues(
   app: App,
+  selection: SelectedAccounts,
   accounts: readonly AccountSummary[],
 ): readonly AccountSelectionIssue[] {
   return Object.entries(app.requirements.accounts).flatMap(
     ([slot, requirement]): AccountSelectionIssue[] => {
-      const selection = app.accounts[slot];
-      if (selection === undefined) return [{ slot, reason: "missing" }];
-      const ids = typeof selection === "string" ? [selection] : selection;
+      const selected = selection[slot];
+      if (selected === undefined) return [{ slot, reason: "missing" }];
+      const ids = typeof selected === "string" ? [selected] : selected;
       if (ids.some((id) => !accounts.some((account) => account.id === id)))
         return [{ slot, reason: "disconnected" }];
       if (
-        (requirement.cardinality === "one") !== (typeof selection === "string") ||
+        (requirement.cardinality === "one") !== (typeof selected === "string") ||
         ids.some(
           (id) =>
             !accounts.some(
@@ -173,6 +179,7 @@ export function accountSelectionIssues(
 /** Account metadata can block tool discovery; missing credential-health metadata makes no claim. */
 export function appToolReadiness<A extends AccountSummary>(
   app: App,
+  selection: SelectedAccounts,
   accounts: readonly A[],
 ):
   | { readonly state: "not-deployed" }
@@ -181,9 +188,9 @@ export function appToolReadiness<A extends AccountSummary>(
   | { readonly state: "unavailable"; readonly accounts: readonly A[] }
   | { readonly state: "ready" } {
   if (app.activeDeployment === null) return { state: "not-deployed" };
-  const issues = accountSelectionIssues(app, accounts);
+  const issues = accountSelectionIssues(app, selection, accounts);
   if (issues.length > 0) return { state: "selection", issues };
-  const ids = selectedIds(app);
+  const ids = selectedIds(selection);
   const selected = accounts.filter((account) => ids.includes(account.id));
   const unavailable = selected.filter((account) => account.signIn?.state === "unavailable");
   if (unavailable.length > 0) return { state: "unavailable", accounts: unavailable };

@@ -344,6 +344,13 @@ async function setup(
     name: "OAuth test",
     files: [{ path: "index.ts", content: "// Test runtime seam" }],
   });
+  const profile = await executor.apps.profiles.create({
+    app: app.id,
+    owner: app.owner,
+    subject: "alice",
+    idempotencyKey: "test",
+    accounts: {},
+  });
   const provider = app.requirements.accounts.service?.provider;
   assert.ok(provider);
   // The product retains the connection ID across the provider redirect.
@@ -416,6 +423,7 @@ async function setup(
   return {
     executor,
     secondExecutor,
+    profile,
     storage,
     service,
     app,
@@ -499,7 +507,7 @@ test("dashboard reports expired sign-ins before tool discovery without refreshin
       state: "saved",
       reconnectAt: null,
     });
-    const db = f.storage.orm("3.0.0");
+    const db = f.storage.orm("4.0.0");
     const row = await Effect.runPromise(
       db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
     );
@@ -528,8 +536,15 @@ test("dashboard reports expired sign-ins before tool discovery without refreshin
     }
     assert.equal(f.service.refreshes, 0);
     assert.equal(f.seen.length, 0);
-    await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
-    await assert.rejects(f.executor.tools.list({ app: f.app.id }), {
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
+      app: f.app.id,
+      accounts: { service: account.id },
+    });
+    await assert.rejects(f.executor.tools.list({ profile: f.profile.id, app: f.app.id }), {
       _tag: "OAuthReconnectRequired",
     });
     const callbackUrl = f.service.callback(
@@ -556,8 +571,15 @@ for (const offlineAccess of [false, true])
       const account = await f.complete({
         callbackUrl: f.service.callback(signIn.authorizationUrl),
       });
-      await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
-      await f.executor.tools.list({ app: f.app.id });
+      await f.executor.apps.profiles.update({
+        profile: f.profile.id,
+        expectedRevision: (
+          await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+        ).revision,
+        app: f.app.id,
+        accounts: { service: account.id },
+      });
+      await f.executor.tools.list({ profile: f.profile.id, app: f.app.id });
       assert.equal(f.service.refreshes, 1);
       assert.equal(f.seen.length, 1);
       const reconnected = await f.reconnect({ account: account.id, redirectUri });
@@ -596,10 +618,18 @@ test("DCR, one-time callback, two owners, and coordinated refresh preserve reusa
       ),
       [alice.id],
     );
-    await f.executor.apps.update({ app: f.app.id, accounts: { service: alice.id } });
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
+      app: f.app.id,
+      accounts: { service: alice.id },
+    });
     await Promise.all(
       Array.from({ length: 8 }, (_, index) =>
         (index % 2 ? f.executor : f.secondExecutor).tools.call({
+          profile: f.profile.id,
           app: f.app.id,
           tool: ToolName.make("inspect"),
         }),
@@ -625,7 +655,7 @@ test("DCR, one-time callback, two owners, and coordinated refresh preserve reusa
     });
     const accounts = await f.executor.accounts.list();
     assert.ok(!JSON.stringify(accounts).includes("refresh-"));
-    for (const row of await Effect.runPromise(f.storage.orm("3.0.0").findMany("oauthGrants", {})))
+    for (const row of await Effect.runPromise(f.storage.orm("4.0.0").findMany("oauthGrants", {})))
       assert.ok(!new TextDecoder().decode(row.encrypted).includes("refresh-"));
   } finally {
     await f.close();
@@ -667,14 +697,21 @@ for (const mode of ["cimd", "manual"] as const)
         new URL(reused.authorizationUrl).searchParams.get("client_id"),
         f.service.requestClients[0],
       );
-      await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
+      await f.executor.apps.profiles.update({
+        profile: f.profile.id,
+        expectedRevision: (
+          await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+        ).revision,
+        app: f.app.id,
+        accounts: { service: account.id },
+      });
       f.service.rejectRefresh();
-      await assert.rejects(f.executor.tools.list({ app: f.app.id }), {
+      await assert.rejects(f.executor.tools.list({ profile: f.profile.id, app: f.app.id }), {
         _tag: "OAuthReconnectRequired",
         account: account.id,
       });
       assert.equal((await f.executor.accounts.get({ account: account.id })).id, account.id);
-      await assert.rejects(f.executor.tools.list({ app: f.app.id }), {
+      await assert.rejects(f.executor.tools.list({ profile: f.profile.id, app: f.app.id }), {
         _tag: "OAuthReconnectRequired",
       });
       assert.equal(f.service.refreshes, 1);
@@ -699,7 +736,7 @@ test("denied, expired and modified callbacks never create an account", async () 
     });
     const expiring = f.service.callback((await f.start()).authorizationUrl);
     await Effect.runPromise(
-      f.storage.orm("3.0.0").updateMany("oauthAttempts", { set: { expiresAt: new Date(0) } }),
+      f.storage.orm("4.0.0").updateMany("oauthAttempts", { set: { expiresAt: new Date(0) } }),
     );
     await assert.rejects(f.complete({ callbackUrl: expiring }), {
       _tag: "OAuthCompletionFailed",
@@ -741,8 +778,15 @@ for (const discovery of ["challenge", "origin"] as const)
       const account = await f.complete({
         callbackUrl: f.service.callback(signIn.authorizationUrl),
       });
-      await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
-      await f.executor.tools.list({ app: f.app.id });
+      await f.executor.apps.profiles.update({
+        profile: f.profile.id,
+        expectedRevision: (
+          await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+        ).revision,
+        app: f.app.id,
+        accounts: { service: account.id },
+      });
+      await f.executor.tools.list({ profile: f.profile.id, app: f.app.id });
       assert.equal(f.service.exchanges, 1);
       assert.equal(f.service.refreshes, 1);
     } finally {
@@ -761,8 +805,25 @@ test("OAuth reconnect keeps identity, current name and all app selections; denia
       owner: OwnerId.make("project"),
       name: "Second",
     });
-    for (const app of [f.app, second])
-      await f.executor.apps.update({ app: app.id, accounts: { service: account.id } });
+    const secondProfile = await f.executor.apps.profiles.create({
+      app: second.id,
+      owner: second.owner,
+      subject: "alice",
+      idempotencyKey: "test",
+      accounts: {},
+    });
+    const configured = [
+      { app: f.app, profile: f.profile },
+      { app: second, profile: secondProfile },
+    ];
+    for (const { app, profile } of configured)
+      await f.executor.apps.profiles.update({
+        profile: profile.id,
+        expectedRevision: (await f.executor.apps.profiles.get({ app: app.id, profile: profile.id }))
+          .revision,
+        app: app.id,
+        accounts: { service: account.id },
+      });
     await assert.rejects(
       f.reconnect({ account: account.id, owner: OwnerId.make("bob"), redirectUri }),
       { _tag: "AccountNotFound" },
@@ -775,7 +836,7 @@ test("OAuth reconnect keeps identity, current name and all app selections; denia
       { _tag: "AuthMethodInvalid" },
     );
     const before = await Effect.runPromise(
-      f.storage.orm("3.0.0").findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
+      f.storage.orm("4.0.0").findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
     );
     const denied = new URL(
       f.service.callback(
@@ -790,7 +851,7 @@ test("OAuth reconnect keeps identity, current name and all app selections; denia
     });
     assert.deepEqual(
       await Effect.runPromise(
-        f.storage.orm("3.0.0").findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
+        f.storage.orm("4.0.0").findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
       ),
       before,
     );
@@ -802,9 +863,12 @@ test("OAuth reconnect keeps identity, current name and all app selections; denia
     assert.deepEqual(connected, { ...account, label: "Renamed during consent" });
     assert.equal((await f.executor.accounts.list()).length, 1);
     assert.equal(f.service.registrations, 1);
-    for (const app of [f.app, second]) {
-      assert.equal((await f.executor.apps.get({ app: app.id })).accounts.service, account.id);
-      await f.executor.tools.list({ app: app.id });
+    for (const { app, profile } of configured) {
+      assert.equal(
+        (await f.executor.apps.profiles.get({ app: app.id, profile: profile.id })).accounts.service,
+        account.id,
+      );
+      await f.executor.tools.list({ profile: profile.id, app: app.id });
     }
     assert.ok(f.seen.every((seen) => JSON.stringify(seen).includes("fresh-refresh-2")));
     assert.deepEqual(await f.complete({ callbackUrl }), connected);
@@ -823,7 +887,14 @@ for (const phase of ["consent", "exchange"] as const)
         const account = await f.complete({
           callbackUrl: f.service.callback((await f.start()).authorizationUrl),
         });
-        await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
+        await f.executor.apps.profiles.update({
+          profile: f.profile.id,
+          expectedRevision: (
+            await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+          ).revision,
+          app: f.app.id,
+          accounts: { service: account.id },
+        });
         const callbackUrl = f.service.callback(
           (await f.reconnect({ account: account.id, redirectUri })).authorizationUrl,
         );
@@ -847,11 +918,17 @@ for (const phase of ["consent", "exchange"] as const)
         await f.executor.accounts.remove({ account: account.id });
         assert.deepEqual(await f.executor.accounts.list(), []);
         assert.deepEqual(
-          await Effect.runPromise(f.storage.orm("3.0.0").findMany("oauthGrants", {})),
+          await Effect.runPromise(f.storage.orm("4.0.0").findMany("oauthGrants", {})),
           [],
         );
-        assert.equal((await f.executor.apps.get({ app: f.app.id })).accounts.service, account.id);
-        await assert.rejects(f.executor.tools.list({ app: f.app.id }), { _tag: "AccountNotFound" });
+        assert.equal(
+          (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts
+            .service,
+          account.id,
+        );
+        await assert.rejects(f.executor.tools.list({ profile: f.profile.id, app: f.app.id }), {
+          _tag: "AccountNotFound",
+        });
       } finally {
         await f.close();
       }
@@ -868,10 +945,17 @@ for (const failed of [false, true])
         const account = await f.complete({
           callbackUrl: f.service.callback((await f.start()).authorizationUrl),
         });
-        await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
+        await f.executor.apps.profiles.update({
+          profile: f.profile.id,
+          expectedRevision: (
+            await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+          ).revision,
+          app: f.app.id,
+          accounts: { service: account.id },
+        });
         if (failed) f.service.rejectRefresh();
         const paused = f.service.pauseNext("refresh");
-        const listing = f.executor.tools.list({ app: f.app.id });
+        const listing = f.executor.tools.list({ profile: f.profile.id, app: f.app.id });
         await paused.started;
         const callbackUrl = f.service.callback(
           (await f.reconnect({ account: account.id, redirectUri }, f.secondExecutor))
@@ -884,7 +968,7 @@ for (const failed of [false, true])
         assert.equal(f.seen.length, 1);
         assert.ok(JSON.stringify(f.seen[0]).includes("fresh-refresh-2"));
         assert.equal(f.service.refreshes, 2);
-        await f.secondExecutor.tools.list({ app: f.app.id });
+        await f.secondExecutor.tools.list({ profile: f.profile.id, app: f.app.id });
         assert.equal(f.service.refreshes, 2, "the newly refreshed grant remains saved");
       } finally {
         await f.close();
@@ -901,18 +985,28 @@ test(
       const account = await f.complete({
         callbackUrl: f.service.callback((await f.start()).authorizationUrl),
       });
-      await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
-      const paused = f.service.pauseNext("refresh");
-      const listing = assert.rejects(f.executor.tools.list({ app: f.app.id }), {
-        _tag: "OAuthReconnectRequired",
+      await f.executor.apps.profiles.update({
+        profile: f.profile.id,
+        expectedRevision: (
+          await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+        ).revision,
+        app: f.app.id,
+        accounts: { service: account.id },
       });
+      const paused = f.service.pauseNext("refresh");
+      const listing = assert.rejects(
+        f.executor.tools.list({ profile: f.profile.id, app: f.app.id }),
+        {
+          _tag: "OAuthReconnectRequired",
+        },
+      );
       await paused.started;
       await f.secondExecutor.accounts.remove({ account: account.id });
       await paused.release();
       await listing;
       assert.deepEqual(await f.executor.accounts.list(), []);
       assert.deepEqual(
-        await Effect.runPromise(f.storage.orm("3.0.0").findMany("oauthGrants", {})),
+        await Effect.runPromise(f.storage.orm("4.0.0").findMany("oauthGrants", {})),
         [],
       );
       assert.deepEqual(f.seen, []);
@@ -968,7 +1062,10 @@ test("connection requests save secrets once, survive a new SDK instance, and exp
     assert.equal((await f.executor.accounts.list()).length, 1);
     const result = await f.secondExecutor.accountConnections.get({ connection: request.id });
     assert.deepEqual(result.state, { status: "completed", account: saved[0] });
-    assert.deepEqual((await f.executor.apps.get({ app: f.app.id })).accounts, {});
+    assert.deepEqual(
+      (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts,
+      {},
+    );
     assert.equal(JSON.stringify(result).includes("synthetic-connection-secret"), false);
     assert.deepEqual(
       (await f.executor.accountConnections.cancel({ connection: request.id })).state,
@@ -991,7 +1088,7 @@ test("connection requests save secrets once, survive a new SDK instance, and exp
       provider: f.provider,
     });
     await Effect.runPromise(
-      f.storage.orm("3.0.0").updateMany("accountConnections", {
+      f.storage.orm("4.0.0").updateMany("accountConnections", {
         where: (b) => b("id", "=", expired.id),
         set: { expiresAt: new Date(0) },
       }),
@@ -1057,11 +1154,15 @@ test("targeted secrets replace an unchanged deleted selection, preserve other sl
       label: "Previous",
       fields: { token: "synthetic-old" },
     });
-    await f.executor.apps.update({
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
       app: f.app.id,
       accounts: { service: previous.id, other: previous.id },
     });
-    const target = { app: f.app.id, requirement: "service" };
+    const target = { profile: f.profile.id, app: f.app.id, requirement: "service" };
     const request = await f.executor.accountConnections.create({
       owner: OwnerId.make("alice"),
       target,
@@ -1075,7 +1176,11 @@ test("targeted secrets replace an unchanged deleted selection, preserve other sl
       label: "Other",
       fields: { token: "synthetic-other" },
     });
-    await f.executor.apps.update({
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
       app: f.app.id,
       accounts: { service: previous.id, other: other.id },
     });
@@ -1089,17 +1194,25 @@ test("targeted secrets replace an unchanged deleted selection, preserve other sl
     const account = await f.executor.accountConnections.submit(input);
     assert.equal(account.owner, "alice");
     assert.equal(f.app.owner, "project");
-    assert.deepEqual((await f.executor.apps.get({ app: f.app.id })).accounts, {
-      service: account.id,
-      other: other.id,
-    });
-    await f.executor.apps.update({
+    assert.deepEqual(
+      (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts,
+      {
+        service: account.id,
+        other: other.id,
+      },
+    );
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
       app: f.app.id,
       accounts: { service: other.id, other: other.id },
     });
     assert.deepEqual(await f.secondExecutor.accountConnections.submit(input), account);
     assert.equal(
-      (await f.executor.apps.get({ app: f.app.id })).accounts.service,
+      (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts
+        .service,
       other.id,
       "retry must not reapply selection",
     );
@@ -1122,11 +1235,18 @@ test("a changed single selection rolls back a targeted reconnect's credential wr
     const request = await f.executor.accountConnections.create({
       owner: original.owner,
       account: original.id,
-      target: { app: f.app.id, requirement: "service" },
+      target: { profile: f.profile.id, app: f.app.id, requirement: "service" },
     });
-    const db = f.storage.orm("3.0.0");
+    const db = f.storage.orm("4.0.0");
     const before = await Effect.runPromise(db.findMany("accounts", {}));
-    await f.executor.apps.update({ app: f.app.id, accounts: { service: original.id } });
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
+      app: f.app.id,
+      accounts: { service: original.id },
+    });
     await assert.rejects(
       f.executor.accountConnections.submit({
         connection: request.id,
@@ -1137,7 +1257,11 @@ test("a changed single selection rolls back a targeted reconnect's credential wr
       { _tag: "AccountConnectionTargetChanged" },
     );
     assert.deepEqual(await Effect.runPromise(db.findMany("accounts", {})), before);
-    assert.equal((await f.executor.apps.get({ app: f.app.id })).accounts.service, original.id);
+    assert.equal(
+      (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts
+        .service,
+      original.id,
+    );
     assert.equal(
       (await f.executor.accountConnections.get({ connection: request.id })).state.status,
       "pending",
@@ -1168,11 +1292,25 @@ test("many targets append to current selections across concurrent requests witho
       label: "Existing",
       fields: { token: "synthetic-existing" },
     });
-    await f.executor.apps.update({ app: f.app.id, accounts: { service: [], other: existing.id } });
-    const input = { owner: existing.owner, target: { app: f.app.id, requirement: "service" } };
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
+      app: f.app.id,
+      accounts: { service: [], other: existing.id },
+    });
+    const input = {
+      owner: existing.owner,
+      target: { profile: f.profile.id, app: f.app.id, requirement: "service" },
+    };
     const first = await f.executor.accountConnections.create(input);
     const second = await f.secondExecutor.accountConnections.create(input);
-    await f.executor.apps.update({
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
       app: f.app.id,
       accounts: { service: [existing.id], other: existing.id },
     });
@@ -1191,7 +1329,8 @@ test("many targets append to current selections across concurrent requests witho
       }),
     ]);
     const expected = [existing.id, ...accounts.map((account) => account.id)];
-    const selected = (await f.executor.apps.get({ app: f.app.id })).accounts;
+    const selected = (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id }))
+      .accounts;
     assert.ok(Array.isArray(selected.service));
     assert.deepEqual([...selected.service].sort(), expected.sort());
     assert.equal(selected.other, existing.id);
@@ -1205,7 +1344,10 @@ test("many targets append to current selections across concurrent requests witho
       label: "Existing",
       fields: { token: "synthetic-reconnect" },
     });
-    assert.deepEqual((await f.executor.apps.get({ app: f.app.id })).accounts, selected);
+    assert.deepEqual(
+      (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts,
+      selected,
+    );
   } finally {
     await f.close();
   }
@@ -1218,13 +1360,13 @@ for (const change of ["removed", "slot", "provider", "cardinality"] as const)
       await assert.rejects(
         f.executor.accountConnections.create({
           owner: OwnerId.make("alice"),
-          target: { app: f.app.id, requirement: "absent" },
+          target: { profile: f.profile.id, app: f.app.id, requirement: "absent" },
         }),
         { _tag: "AccountSelectionInvalid" },
       );
       const request = await f.executor.accountConnections.create({
         owner: OwnerId.make("alice"),
-        target: { app: f.app.id, requirement: "service" },
+        target: { profile: f.profile.id, app: f.app.id, requirement: "service" },
       });
       if (change === "removed") await f.executor.apps.remove({ app: f.app.id });
       else {
@@ -1273,7 +1415,7 @@ for (const changed of [false, true])
     try {
       const request = await f.executor.accountConnections.create({
         owner: OwnerId.make("alice"),
-        target: { app: f.app.id, requirement: "service" },
+        target: { profile: f.profile.id, app: f.app.id, requirement: "service" },
       });
       const signIn = await f.executor.accountConnections.startOAuth({
         connection: request.id,
@@ -1297,15 +1439,26 @@ for (const changed of [false, true])
           label: "Other",
           fields: { token: "synthetic-other" },
         });
-        await f.secondExecutor.apps.update({ app: f.app.id, accounts: { service: other.id } });
+        await f.secondExecutor.apps.profiles.update({
+          profile: f.profile.id,
+          expectedRevision: (
+            await f.secondExecutor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+          ).revision,
+          app: f.app.id,
+          accounts: { service: other.id },
+        });
         await paused.release();
         await completion;
         assert.deepEqual(await f.executor.accounts.list(), [other]);
         assert.deepEqual(
-          await Effect.runPromise(f.storage.orm("3.0.0").findMany("oauthGrants", {})),
+          await Effect.runPromise(f.storage.orm("4.0.0").findMany("oauthGrants", {})),
           [],
         );
-        assert.equal((await f.executor.apps.get({ app: f.app.id })).accounts.service, other.id);
+        assert.equal(
+          (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts
+            .service,
+          other.id,
+        );
         assert.equal(
           (await f.executor.accountConnections.get({ connection: request.id })).state.status,
           "pending",
@@ -1315,9 +1468,12 @@ for (const changed of [false, true])
           connection: request.id,
           callbackUrl,
         });
-        assert.deepEqual((await f.executor.apps.get({ app: f.app.id })).accounts, {
-          service: account.id,
-        });
+        assert.deepEqual(
+          (await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })).accounts,
+          {
+            service: account.id,
+          },
+        );
         assert.deepEqual(
           (await f.executor.accountConnections.get({ connection: request.id })).state,
           { status: "completed", account },
@@ -1380,8 +1536,15 @@ test("configured HTTP origins cover discovery, registration, callbacks, exchange
     const started = await f.start();
     const account = await f.complete({ callbackUrl: f.service.callback(started.authorizationUrl) });
     assert.equal(f.service.exchanges, 1);
-    await f.executor.apps.update({ app: f.app.id, accounts: { service: account.id } });
-    await f.executor.tools.list({ app: f.app.id });
+    await f.executor.apps.profiles.update({
+      profile: f.profile.id,
+      expectedRevision: (
+        await f.executor.apps.profiles.get({ app: f.app.id, profile: f.profile.id })
+      ).revision,
+      app: f.app.id,
+      accounts: { service: account.id },
+    });
+    await f.executor.tools.list({ profile: f.profile.id, app: f.app.id });
     assert.equal(f.service.refreshes, 1);
   } finally {
     await f.close();

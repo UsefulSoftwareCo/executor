@@ -88,11 +88,13 @@ export function accountCredentialsChanged(get: Atom.FnContext | Atom.AtomContext
 function refreshCredentialDependents(get: Atom.FnContext | Atom.AtomContext, account: AccountId) {
   const inventory = AsyncResult.value(get.registry.get(overviewAtom));
   if (Option.isSome(inventory))
-    for (const app of inventory.value.apps)
+    for (const profile of inventory.value.profiles)
       if (
-        Object.values(app.accounts).some((selection) =>
+        Object.values(profile.accounts).some((selection) =>
           typeof selection === "string" ? selection === account : selection.includes(account),
         )
       )
-        get.registry.refresh(toolsAtom({ app: app.id }));
+        get.registry.refresh(
+          toolsAtom({ app: profile.app, profile: profile.id, revision: profile.revision }),
+        );
 }

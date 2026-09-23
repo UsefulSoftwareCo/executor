@@ -912,7 +912,13 @@ test(
             assert.equal(conflict.status, 409);
             assert.equal((yield* json(conflict, AppNameTaken)).name, collision.name);
             // Account reconnect is targetless but stays tied to one owner and saved identity.
-            yield* executor.apps.update({ app: app.app.id, accounts: { service: alpha.id } });
+            const profile = yield* executor.apps.profiles.create({
+              app: app.app.id,
+              owner: app.app.owner,
+              subject: user.id,
+              idempotencyKey: "test",
+              accounts: { service: alpha.id },
+            });
             const accountPath = `/api/organizations/${a.id}/accounts/${alpha.id}`;
             const detail = yield* json(
               yield* request(accountPath),
@@ -970,7 +976,8 @@ test(
             assert.equal(reconnected.id, alpha.id);
             assert.equal((yield* executor.accounts.list({ owner: alpha.owner })).length, 1);
             assert.equal(
-              (yield* executor.apps.get({ app: app.app.id })).accounts.service,
+              (yield* executor.apps.profiles.get({ app: app.app.id, profile: profile.id })).accounts
+                .service,
               alpha.id,
             );
             assert.equal(
@@ -987,9 +994,10 @@ test(
               beta.id,
             );
             assert.equal(
-              (yield* executor.apps.get({ app: app.app.id })).accounts.service,
-              alpha.id,
-              "disconnect leaves a visible unresolved selection",
+              (yield* executor.apps.profiles.get({ app: app.app.id, profile: profile.id })).accounts
+                .service,
+              undefined,
+              "disconnect removes the profile selection without choosing a replacement",
             );
             yield* notFound(yield* request(accountPath));
             assert.equal(

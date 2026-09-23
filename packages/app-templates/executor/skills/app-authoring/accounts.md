@@ -45,13 +45,18 @@ const listProjects = query(
 export default defineApp(requirements, { queries: { listProjects } });
 ```
 
-Deploy the source, then request a connection for its account requirement:
+Deploy the source, create a profile, then request a connection for its account requirement.
+Discover the management profile path with `tools.search` before calling it:
 
 ```js
-const executor = tools.executor;
+const executor = tools.executor.profiles["<management-profile-id>"];
 const app = await executor.queries.apps_get({ path: { app: "<vercel-app-id>" } });
+const profile = await executor.mutations.appProfiles_create({
+  path: { app: app.id },
+  body: { owner: "alice", subject: "alice", accounts: {}, idempotencyKey: "vercel-setup" },
+});
 return await executor.mutations.accountConnect_issue({
-  body: { owner: "alice", target: { app: app.id, requirement: "vercel" } },
+  body: { owner: "alice", target: { app: app.id, profile: profile.id, requirement: "vercel" } },
 });
 ```
 
@@ -61,23 +66,23 @@ files for tokens, or put credentials in app source or execute code.
 After the user finishes, check the request in a new execute call:
 
 ```js
-const executor = tools.executor;
+const executor = tools.executor.profiles["<management-profile-id>"];
 const connection = await executor.queries.accountConnections_get({
   path: { connection: "<connection-id>" },
 });
-return connection.state; // Completed means the account is saved and selected for the app.
+return connection.state; // Completed means the account is saved and selected for the profile.
 ```
 
-Completing a targeted request saves the account and selects it for the app in
+Completing a targeted request saves the account and selects it for the named profile in
 one transaction. A `.many()` target appends without duplicates. Other selections
 are kept. If a single-account selection or the requirement changed during sign-in,
 completion returns `AccountConnectionTargetChanged` without saving credentials;
-inspect the app and request a new link.
+inspect the profile and request a new link.
 
 To save an account without selecting it for any app, pass `provider` instead:
 
 ```js
-return await tools.executor.mutations.accountConnect_issue({
+return await tools.executor.profiles["<management-profile-id>"].mutations.accountConnect_issue({
   body: { owner: "alice", provider: "<provider-reference>" },
 });
 ```
@@ -87,10 +92,11 @@ minutes. Cancelled or expired requests need a new link. Do not wait or busy-poll
 inside execute.
 
 Use `accounts_list({ query: { provider } })` to find compatible saved accounts first when
-appropriate. `apps_update({ path: { app }, body: { accounts } })` replaces the whole selection map. Include every
-slot you want to keep. A missing required slot prevents tool discovery and calls;
-`execute` reports that app under `unavailableApps` with `AccountRequired`.
-Connect the account, then start a new execution to discover or call the app.
+appropriate. `appProfiles_update({ path: { app, profile }, body: { expectedRevision, accounts } })`
+replaces the whole profile selection map. Include every slot you want to keep.
+A missing required slot prevents tool discovery and calls for that profile.
+Account-dependent apps without profiles expose no direct MCP tools.
+Connect the account, then start a new execution to discover or call its profile.
 
 An account has `id`, `method`, and typed `fields` inside app code. It exists
 independently of the app and can be selected by several apps with the same
@@ -104,18 +110,22 @@ allows access to the entire local instance.
 To use the same app with a second account, call:
 
 ```js
-const executor = tools.executor;
-const second = await executor.mutations.appManagement_copy({
-  body: { from: { app: "<vercel-app-id>" }, name: "Personal Vercel" },
-});
-return await executor.mutations.apps_update({
-  path: { app: second.id },
-  body: { accounts: { vercel: "<second-compatible-account-id>" } },
+const executor = tools.executor.profiles["<management-profile-id>"];
+return await executor.mutations.appProfiles_create({
+  path: { app: "<vercel-app-id>" },
+  body: {
+    owner: "alice",
+    subject: "alice",
+    name: "Personal Vercel",
+    idempotencyKey: "vercel-personal",
+    accounts: { vercel: "<second-compatible-account-id>" },
+  },
 });
 ```
 
-The new copy has its own code, deployment, Git history, and app data. It starts with no accounts selected. Each copy has an app ID
-and exposes tools under its name-derived slug. In a new execute, use `Promise.all` to call both.
+Profiles share the app's code, deployment and data. Each has its own account
+selections and appears under `tools[appSlug].profiles[profileId]`. Use `apps.copy`
+only when you need an independent app with its own source, Git history and data.
 
 For an app that needs several accounts together, declare a collection slot:
 `const accounts = { mailboxes: gmail.many() }`. Select it with

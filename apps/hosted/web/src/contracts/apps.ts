@@ -131,14 +131,17 @@ const removeApp = Atom.family((key: AppKey) =>
     Effect.flatMap(HostedClient, (client) => client.apps.remove({ params: key })).pipe(
       Effect.tap(() =>
         Effect.sync(() => {
-          const current = AsyncResult.value(get(appAtom(key)));
+          const current = AsyncResult.value(get(inventoryAtom(key.organization)));
           refreshResourceDirectory(get, key.organization);
           acknowledge(get, inventoryAtom(key.organization), (data) => ({
             ...data,
             apps: data.apps.filter((app) => app.id !== key.app),
+            profiles: data.profiles.filter((profile) => profile.app !== key.app),
           }));
           if (Option.isSome(current))
-            for (const account of selectedIds(current.value))
+            for (const account of current.value.profiles
+              .filter((profile) => profile.app === key.app)
+              .flatMap((profile) => selectedIds(profile.accounts)))
               acknowledge(
                 get,
                 accountAtom({ organization: key.organization, account }),
@@ -400,19 +403,20 @@ export function acknowledgeApp(
   saved: App,
 ) {
   refreshResourceDirectory(get, organization);
-  get.refresh(
-    toolsAtom({
-      organization,
-      app: saved.id,
-      deployment: saved.activeDeployment ?? undefined,
-      accounts: JSON.stringify(saved.accounts),
-    }),
-  );
-  const previous = AsyncResult.value(get(appAtom({ organization, app: saved.id })));
-  const accounts = new Set([
-    ...selectedIds(saved),
-    ...(Option.isSome(previous) ? selectedIds(previous.value) : []),
-  ]);
+  const inventory = AsyncResult.value(get(inventoryAtom(organization)));
+  const profiles = Option.isSome(inventory)
+    ? inventory.value.profiles.filter((profile) => profile.app === saved.id)
+    : [];
+  for (const profile of profiles)
+    get.refresh(
+      toolsAtom({
+        organization,
+        app: saved.id,
+        profile: profile.id,
+        expectedProfileRevision: profile.revision,
+      }),
+    );
+  const accounts = new Set(profiles.flatMap((profile) => selectedIds(profile.accounts)));
   acknowledge(get, appAtom({ organization, app: saved.id }), () => saved);
   acknowledge(get, inventoryAtom(organization), (data) => ({
     ...data,
@@ -421,9 +425,7 @@ export function acknowledgeApp(
   for (const account of accounts)
     acknowledge(get, accountAtom({ organization, account }), (data) => ({
       ...data,
-      apps: selectedIds(saved).includes(account)
-        ? upsert(data.apps, saved)
-        : data.apps.filter((app) => app.id !== saved.id),
+      apps: upsert(data.apps, saved),
     }));
 }
 

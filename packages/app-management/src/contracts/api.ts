@@ -76,7 +76,6 @@ import {
   OwnerId,
   SourceCommit,
   SourceFiles,
-  type SelectedAccounts,
 } from "@executor-js/sdk/core";
 import {
   Publication,
@@ -110,7 +109,6 @@ export interface AppCapabilities {
   readonly visible: boolean;
   readonly manage: boolean;
   readonly edit: boolean;
-  readonly accounts: SelectedAccounts;
 }
 /** App UI and API access reuse the host's current pairing or organization boundary. */
 export class AppAccess extends HttpApiMiddleware.Service<AppAccess, { provides: AppIdentity }>()(

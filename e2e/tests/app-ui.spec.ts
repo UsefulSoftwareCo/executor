@@ -141,7 +141,6 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               Schema.Struct({
                 id: Schema.String,
                 slug: Schema.String,
-                accounts: Schema.Record(Schema.String, Schema.Unknown),
               }),
             ),
           }),
@@ -149,7 +148,6 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         );
         const management = inventory.apps.find((item) => item.slug === "executor");
         if (management === undefined) return yield* Effect.die("Executor app was not installed");
-        expect(management.accounts).toEqual({});
         const profiles = yield* body(
           Schema.Array(
             Schema.Struct({

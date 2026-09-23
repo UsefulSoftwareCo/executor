@@ -145,7 +145,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       params: app,
       payload: Schema.Struct({
         requirement: Schema.NonEmptyString,
-        profile: Schema.optional(ProfileId),
+        profile: ProfileId,
         destination: Schema.optional(ConnectionDestination),
       }),
       success: BrowserAccountConnection,

@@ -15,7 +15,6 @@ const App = Schema.Struct({
   name: Schema.String,
   code: Schema.String,
   activeDeployment: Schema.NullOr(Schema.String),
-  accounts: Schema.Record(Schema.String, Schema.Unknown),
   copiedFrom: Schema.NullOr(
     Schema.Struct({
       reference: Schema.String,
@@ -79,7 +78,7 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
         expect(copy.code).not.toBe(original.code);
         expect(copy.activeDeployment).not.toBeNull();
         expect(copy.activeDeployment).not.toBe(original.activeDeployment);
-        expect(copy.accounts).toEqual({});
+        expect(copied.body).not.toHaveProperty("accounts");
         expect(copy.copiedFrom?.reference).toBe(`app:${original.id}`);
         expect(copy.copiedFrom?.name).toBe(original.name);
         const copyPath = `${prefix}/apps/${copy.id}`;

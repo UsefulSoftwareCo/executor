@@ -159,7 +159,8 @@ return await tools.search({ query: "Executor" });
 
 Search returns exact callable paths and signatures. The Executor app exposes
 `deployApp`, `addApp`, `listApps`, `getApp`, `addAccount`, `listAccounts`,
-`getAccount`, `selectAccounts`, `activateDeployment` and `listTools`.
+`getAccount`, `activateDeployment` and `listTools`. Account selections use
+`apps.profiles` with an explicit profile and expected revision.
 It calls this server's API through an ordinary selected account. The host uses
 the existing configured bearer key; it does not create a separate admin key.
 The persisted host-owned app is named `Executor`, with owner `executor-local`.

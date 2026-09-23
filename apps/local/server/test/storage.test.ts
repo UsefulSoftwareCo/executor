@@ -28,7 +28,7 @@ test("PGlite persists exact account data across close/reopen and leaves the old 
         yield* Effect.scoped(
           Effect.gen(function* () {
             const storage = yield* openStorage(directory);
-            const orm = storage.orm("3.0.0");
+            const orm = storage.orm("4.0.0");
             yield* orm.create("providers", { id: provider, definition: {} });
             yield* orm.create("accounts", account);
           }),
@@ -36,7 +36,7 @@ test("PGlite persists exact account data across close/reopen and leaves the old 
         yield* Effect.scoped(
           Effect.gen(function* () {
             const storage = yield* openStorage(directory);
-            assert.deepEqual(yield* storage.orm("3.0.0").findMany("accounts"), [account]);
+            assert.deepEqual(yield* storage.orm("4.0.0").findMany("accounts"), [account]);
           }),
         );
         assert.equal(yield* fs.readFileString(oldPath), "untouched legacy fixture");

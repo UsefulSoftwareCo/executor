@@ -1,271 +1,91 @@
-import { WorkflowRunId } from "../contracts/workflows.ts";
-import { AppSlug } from "../contracts/app-slug.ts";
-/** FumaDB schema and client factory. Importing this module performs no I/O. */
+/** Current storage and the guarded upgrade from the deployed version 3 layout. */
 import { fumadb } from "fumadb-effect";
-import { Effect, Schema } from "effect";
-import { SourceCommit } from "../contracts/source.ts";
+import type { MigrationOperation } from "fumadb-effect/migration";
+import { schema, table } from "fumadb-effect/schema";
+import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
 import type { Provider as SqlProvider } from "fumadb-effect";
 import { makeReactiveStore } from "@executor-js/reactivity";
-import { bindOrm } from "./reactive-orm.ts";
-import {
-  AccountId,
-  WebhookId,
-  AppId,
-  ProfileId,
-  AppCodeId,
-  DeploymentId,
-  BuildId,
-  OwnerId,
-  ProviderId,
-  JsonObject,
-} from "../contracts/shared.ts";
 import { StorageError } from "../contracts/shared.ts";
-import { AccountConnectionId, ApprovalRequestId } from "../contracts/shared.ts";
-import { column, idColumn, schema, table } from "fumadb-effect/schema";
+import { bindOrm } from "./reactive-orm.ts";
+import { storageSchemaV3 } from "./storage-schema-v3.ts";
 
-/** Current storage layout. Deployments contain Git and build references, never source files. */
+// These checks and the column removal execute in the migrator's single transaction.
+// PostgreSQL and PGlite are the storage engines used by the hosted and local products.
+const upgrade: readonly MigrationOperation[] = [
+  {
+    type: "custom",
+    sql: "LOCK TABLE executor_apps, executor_deployments, executor_workflow_runs, executor_webhooks, executor_schedules, executor_scheduled_runs, executor_account_connections IN ACCESS EXCLUSIVE MODE",
+  },
+  {
+    type: "custom",
+    sql: `DO $upgrade$
+BEGIN
+  IF EXISTS (SELECT 1 FROM executor_apps WHERE accounts::jsonb IS DISTINCT FROM '{}'::jsonb) THEN
+    RAISE EXCEPTION 'Executor upgrade blocked: move app account selections into explicit profiles before upgrading';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM executor_workflow_runs WHERE installation IS NULL
+      AND status NOT IN ('complete', 'errored', 'terminated') AND accounts::jsonb <> '{}'::jsonb
+  ) OR EXISTS (
+    SELECT 1 FROM executor_webhooks WHERE installation IS NULL AND accounts::jsonb <> '{}'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'Executor upgrade blocked: finish account-dependent workflows and remove webhooks without profiles before upgrading';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM executor_schedules s
+      JOIN executor_apps a ON a.id = s.app
+      JOIN executor_deployments d ON d.id = a.active_deployment
+    WHERE s.installation IS NULL AND d.requirements::jsonb -> 'accounts' <> '{}'::jsonb
+  ) OR EXISTS (
+    SELECT 1 FROM executor_scheduled_runs r
+      JOIN executor_apps a ON a.id = r.app
+      JOIN executor_deployments d ON d.id = a.active_deployment
+    WHERE r.installation IS NULL AND r.status IN ('running', 'awaiting-approval', 'ready')
+      AND d.requirements::jsonb -> 'accounts' <> '{}'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'Executor upgrade blocked: recreate account-dependent schedules without profiles and finish their pending runs before upgrading';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM executor_account_connections
+    WHERE target IS NOT NULL AND target::jsonb ->> 'installation' IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Executor upgrade blocked: resolve stored account connection targets without profiles before upgrading';
+  END IF;
+END
+$upgrade$`,
+  },
+  {
+    type: "update-table",
+    name: "executor_apps",
+    value: [{ type: "drop-column", name: "accounts" }],
+  },
+];
+
+const { accounts: _legacyAccounts, ...appColumns } = storageSchemaV3.tables.apps.columns;
+/** Profiles alone store selections. Version 3 is retained only as an upgrade source. */
 export const storageSchema = schema({
-  version: "3.0.0",
-  up: ({ auto }) =>
-    auto.pipe(
-      Effect.map((operations) => [
-        ...operations,
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_workflow_runs_context_key ON executor_workflow_runs (app, COALESCE(installation, ''), start_key)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_webhooks_context_key ON executor_webhooks (app, COALESCE(installation, ''), subscription_key)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE UNIQUE INDEX executor_schedules_context_name ON executor_schedules (app, COALESCE(installation, ''), name)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_schedules_due ON executor_schedules (enabled, active_run, next_at)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_scheduled_runs_pending ON executor_scheduled_runs (status, expires_at)",
-        },
-        {
-          type: "custom" as const,
-          sql: "CREATE INDEX executor_scheduled_runs_owner ON executor_scheduled_runs (owner, started_at)",
-        },
-      ]),
-    ),
+  version: "4.0.0",
+  up: () => Effect.succeed(upgrade),
   tables: {
-    profiles: table("executor_installations", {
-      id: idColumn("id", ProfileId, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      subject: column("subject", Schema.String, { type: "varchar(255)" }),
-      name: column("name", Schema.NullOr(Schema.String), { type: "varchar(128)" }),
-      idempotencyKey: column("idempotency_key", Schema.String, { type: "varchar(128)" }),
-      accounts: column("accounts", Schema.Json),
-      webhookConfig: column("webhook_config", Schema.Json),
-      revision: column("revision", Schema.Int),
-      enabled: column("enabled", Schema.Boolean),
-      status: column("status", Schema.String, { type: "varchar(32)" }),
-      failure: column("failure", Schema.NullOr(Schema.String)),
-      reconciledDeployment: column("reconciled_deployment", Schema.NullOr(DeploymentId), {
-        type: "varchar(255)",
-      }),
-      reconciledRevision: column("reconciled_revision", Schema.NullOr(Schema.Int)),
-      request: column("request", Schema.Json),
-      lease: column("lease", Schema.NullOr(Schema.String)),
-      leaseUntil: column("lease_until", Schema.Date),
-      createdAt: column("created_at", Schema.Date),
-    }).unique("executor_installations_request", ["app", "subject", "idempotencyKey"]),
-    workflowRuns: table("executor_workflow_runs", {
-      id: idColumn("id", WorkflowRunId, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      profile: column("installation", Schema.NullOr(ProfileId), {
-        type: "varchar(255)",
-      }).default(null),
-      profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      key: column("start_key", Schema.String, { type: "varchar(128)" }),
-      deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
-      name: column("name", Schema.String),
-      accounts: column("accounts", Schema.Json),
-      status: column("status", Schema.String),
-      failure: column("failure", Schema.NullOr(Schema.String)),
-      encrypted: column("encrypted", Schema.Uint8Array),
-      createdAt: column("created_at", Schema.Date),
-    }),
-    workflowAccounts: table("executor_workflow_accounts", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      account: column("account", AccountId, { type: "varchar(255)" }),
-      run: column("run", WorkflowRunId, { type: "varchar(255)" }),
-    }).unique("executor_workflow_accounts_account_run", ["account", "run"]),
-    schedules: table("executor_schedules", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      profile: column("installation", Schema.NullOr(ProfileId), {
-        type: "varchar(255)",
-      }).default(null),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      name: column("name", Schema.String, { type: "varchar(255)" }),
-      actor: column("actor", Schema.String, { type: "varchar(255)" }),
-      timing: column("timing", Schema.Json),
-      enabled: column("enabled", Schema.Boolean),
-      approvalMode: column("approval_mode", Schema.String, { type: "varchar(32)" }),
-      nextAt: column("next_at", Schema.NullOr(Schema.Date)),
-      activeRun: column("active_run", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
-      revision: column("revision", Schema.String, { type: "varchar(255)" }),
-    }),
-    scheduledRuns: table("executor_scheduled_runs", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      scheduleId: column("schedule_id", Schema.String, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      profile: column("installation", Schema.NullOr(ProfileId), {
-        type: "varchar(255)",
-      }).default(null),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      name: column("name", Schema.String),
-      status: column("status", Schema.String, { type: "varchar(32)" }),
-      scheduledAt: column("scheduled_at", Schema.Date),
-      startedAt: column("started_at", Schema.Date),
-      finishedAt: column("finished_at", Schema.NullOr(Schema.Date)),
-      requestId: column("request_id", Schema.NullOr(ApprovalRequestId), { type: "varchar(255)" }),
-      expiresAt: column("expires_at", Schema.NullOr(Schema.Date)),
-      failure: column("failure", Schema.NullOr(Schema.String)),
-      runner: column("runner", Schema.String, { type: "varchar(255)" }),
-      revision: column("revision", Schema.String, { type: "varchar(255)" }),
-      answer: column("answer", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
-    }),
-    providers: table("executor_providers", {
-      id: idColumn("id", ProviderId, { type: "varchar(255)" }),
-      definition: column("definition", Schema.Json),
-    }),
-    accounts: table("executor_accounts", {
-      id: idColumn("id", AccountId, { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      provider: column("provider", ProviderId, { type: "varchar(255)" }),
-      method: column("method", Schema.String),
-      label: column("label", Schema.String),
-      encryptedCredentials: column("encrypted_credentials", Schema.Uint8Array),
-      createdAt: column("created_at", Schema.Date),
-    }),
-    deployments: table("executor_deployments", {
-      id: idColumn("id", DeploymentId, { type: "varchar(255)" }),
-      code: column("code", AppCodeId, { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      build: column("build", BuildId, { type: "varchar(255)" }),
-      requirements: column("requirements", Schema.Json),
-      createdAt: column("created_at", Schema.Date),
-      sourceCommit: column("source_commit", Schema.NullOr(SourceCommit), { type: "varchar(40)" }),
-      fileCount: column("file_count", Schema.Int),
-    }).unique("executor_deployments_id_code", ["id", "code"]),
-    apps: table("executor_apps", {
-      deploySequence: column("deploy_sequence", Schema.Int).default(0),
-      activatedSequence: column("activated_sequence", Schema.Int).default(0),
-      id: idColumn("id", AppId, { type: "varchar(255)" }),
-      code: column("code", AppCodeId, { type: "varchar(255)" }),
-      repository: column("repository", Schema.NullOr(AppCodeId), { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      name: column("name", Schema.String, { type: "varchar(255)" }),
-      activeDeployment: column("active_deployment", Schema.NullOr(DeploymentId), {
-        type: "varchar(255)",
-      }),
-      accounts: column("accounts", Schema.Json),
-      copiedFrom: column("copied_from", Schema.NullOr(Schema.Json)),
-      createdAt: column("created_at", Schema.Date),
-      slug: column("slug", AppSlug, { type: "varchar(63)" }),
-    })
+    ...storageSchemaV3.tables,
+    apps: table("executor_apps", appColumns)
       .unique("executor_apps_owner_name", ["owner", "name"])
       .unique("executor_apps_owner_slug", ["owner", "slug"]),
-    oauthClients: table("executor_oauth_clients", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      encrypted: column("encrypted", Schema.Uint8Array),
-    }),
-    oauthAttempts: table("executor_oauth_attempts", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      encrypted: column("encrypted", Schema.Uint8Array),
-      expiresAt: column("expires_at", Schema.Date),
-      status: column("status", Schema.String),
-    }),
-    oauthGrants: table("executor_oauth_grants", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      encrypted: column("encrypted", Schema.Uint8Array),
-      status: column("status", Schema.String),
-      updatedAt: column("updated_at", Schema.Date),
-    }),
-    appRecords: table("executor_app_records", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      table: column("table_name", Schema.String, { type: "varchar(255)" }),
-      key: column("record_key", Schema.String, { type: "varchar(255)" }),
-      value: column("value", JsonObject),
-    }).unique("executor_app_records_app_table_key", ["app", "table", "key"]),
-    accountConnections: table("executor_account_connections", {
-      id: idColumn("id", AccountConnectionId, { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      provider: column("provider", ProviderId, { type: "varchar(255)" }),
-      reconnectAccount: column("reconnect_account", Schema.NullOr(AccountId), {
-        type: "varchar(255)",
-      }),
-      state: column("state", Schema.Json),
-      revision: column("revision", Schema.String, { type: "varchar(255)" }),
-      oauthAttempt: column("oauth_attempt", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
-      createdAt: column("created_at", Schema.Date),
-      expiresAt: column("expires_at", Schema.Date),
-      target: column("target", Schema.NullOr(Schema.Json)).default(null),
-    }),
-    toolApprovals: table("executor_tool_approvals", {
-      id: idColumn("id", ApprovalRequestId, { type: "varchar(255)" }),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      status: column("status", Schema.String, { type: "varchar(255)" }),
-      revision: column("revision", Schema.String, { type: "varchar(255)" }),
-      encrypted: column("encrypted", Schema.Uint8Array),
-      expiresAt: column("expires_at", Schema.Date),
-    }),
-    webhookAccounts: table("executor_webhook_accounts", {
-      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
-      account: column("account", AccountId, { type: "varchar(255)" }),
-      subscription: column("subscription", WebhookId, { type: "varchar(255)" }),
-    })
-      .unique("executor_webhook_accounts_account_subscription", ["account", "subscription"])
-      .unique("executor_webhook_accounts_subscription_account", ["subscription", "account"]),
-    webhooks: table("executor_webhooks", {
-      id: idColumn("id", WebhookId, { type: "varchar(255)" }),
-      app: column("app", AppId, { type: "varchar(255)" }),
-      profile: column("installation", Schema.NullOr(ProfileId), {
-        type: "varchar(255)",
-      }).default(null),
-      profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
-      owner: column("owner", OwnerId, { type: "varchar(255)" }),
-      key: column("subscription_key", Schema.String, { type: "varchar(128)" }),
-      deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
-      name: column("name", Schema.String),
-      sourceAccount: column("source_account", AccountId, { type: "varchar(255)" }),
-      callbackUrl: column("callback_url", Schema.String),
-      accounts: column("accounts", Schema.Json),
-      status: column("status", Schema.String, { type: "varchar(32)" }),
-      revision: column("revision", Schema.String, { type: "varchar(255)" }),
-      leaseUntil: column("lease_until", Schema.Date),
-      failure: column("failure", Schema.NullOr(Schema.String)),
-      encrypted: column("encrypted", Schema.Uint8Array),
-      createdAt: column("created_at", Schema.Date),
-    }),
   },
   relations: {
-    accounts: ({ one }) => ({
-      providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
-    }),
     apps: ({ one }) => ({
       deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
     }),
   },
 });
 
-/** One current schema for fresh databases; historical layouts are not supported. */
-export const executorDatabase = fumadb({ namespace: "executor", schemas: [storageSchema] });
+/** Fresh initialization and the guarded version 3 to 4 upgrade share the same migrator. */
+export const executorDatabase = fumadb({
+  namespace: "executor",
+  schemas: [storageSchemaV3, storageSchema],
+});
 
 /** Capture caller-owned SQL and initialize the current schema when the host starts. */
 export const makeExecutorStorage = (options: { readonly provider: SqlProvider }) =>
@@ -273,7 +93,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("3.0.0"), sql, reactivity);
+    const db = bindOrm(client.orm("4.0.0"), sql, reactivity);
     const migrate = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       yield* (yield* migrator.migrateToLatest()).execute;
@@ -282,7 +102,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(() => new StorageError()),
     );
-    return { orm: (_version: "3.0.0") => db, reactivity, migrate };
+    return { orm: (_version: "4.0.0") => db, reactivity, migrate };
   });
 /** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
 export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;

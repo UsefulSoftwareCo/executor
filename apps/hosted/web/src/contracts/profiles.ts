@@ -1,3 +1,4 @@
+import { inventoryAtom } from "./organization.ts";
 /** Personal setup metadata is acknowledged before navigation; catalogs key on saved revisions. */
 import { Data, Effect } from "effect";
 import { Atom } from "effect/unstable/reactivity";
@@ -7,6 +8,7 @@ import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutat
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
+import { acknowledgeResourceProfile } from "./resource-access.ts";
 class AppKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
@@ -31,10 +33,19 @@ export const refreshProfiles = (
   get: Atom.FnContext,
   key: { organization: OrganizationReference; app: AppId },
 ) => invalidate(get, source(new AppKey({ organization: key.organization, app: key.app })));
-const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) =>
+const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) => {
   acknowledge(get, source(new AppKey({ organization: key.organization, app: key.app })), (rows) =>
     saved.status === "removed" ? rows.filter((row) => row.id !== saved.id) : upsert(rows, saved),
   );
+  acknowledgeResourceProfile(get, key.organization, saved);
+  acknowledge(get, inventoryAtom(key.organization), (data) => ({
+    ...data,
+    profiles:
+      saved.status === "removed"
+        ? data.profiles.filter((row) => row.id !== saved.id)
+        : upsert(data.profiles, saved),
+  }));
+};
 /** Stable operation identities prevent edits on one setup from cancelling another. */
 export const profileMutations = (key: {
   organization: OrganizationReference;

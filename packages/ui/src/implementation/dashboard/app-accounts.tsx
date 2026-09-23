@@ -152,6 +152,7 @@ export function RemoveAccountBinding<E>({
 /** Provider rows show the account bindings inside one profile or its editor. */
 export function AppAccounts({
   app,
+  selection,
   accounts,
   chooseAction,
   reconnectAction,
@@ -160,6 +161,7 @@ export function AppAccounts({
   onCreateProfile,
 }: {
   readonly app: App;
+  readonly selection: SelectedAccounts;
   readonly accounts: readonly AccountSummary[];
   readonly chooseAction?: ReactNode;
   readonly reconnectAction?: (account: AccountSummary) => ReactNode;
@@ -178,7 +180,7 @@ export function AppAccounts({
   return (
     <div className="accounts-section space-y-5">
       {requirements.map(([slot, requirement]) => {
-        const selected = app.accounts[slot];
+        const selected = selection[slot];
         const ids = typeof selected === "string" ? [selected] : (selected ?? []);
         const action = accountActions?.(slot, requirement) ?? chooseAction;
         const showSlot = requirements.some(

@@ -37,13 +37,16 @@ export const deleteAppAtom = Atom.family((app: AppId) =>
     ).pipe(
       Effect.tap(() =>
         Effect.sync(() => {
-          const current = AsyncResult.value(get(appAtom(app)));
+          const current = AsyncResult.value(get(overviewAtom));
           acknowledge(get, overviewAtom, (data) => ({
             ...data,
             apps: data.apps.filter((current) => current.id !== app),
+            profiles: data.profiles.filter((profile) => profile.app !== app),
           }));
           if (Option.isSome(current))
-            for (const account of selectedIds(current.value.app))
+            for (const account of current.value.profiles
+              .filter((profile) => profile.app === app)
+              .flatMap((profile) => selectedIds(profile.accounts)))
               acknowledge(get, accountAtom(account), (data) => ({
                 ...data,
                 apps: data.apps.filter((current) => current.id !== app),

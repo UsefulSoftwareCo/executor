@@ -69,7 +69,7 @@ export const Tool = Schema.Struct({
 
 export type Tool = typeof Tool.Type;
 
-/** One page of a live catalog, evaluated using the app's current saved selections. */
+/** One page of a live catalog, evaluated using the named profile's saved selections. */
 export const ToolPage = Schema.Struct({
   profile: Schema.optional(ProfileId),
   profileRevision: Schema.optional(ProfileRevision),

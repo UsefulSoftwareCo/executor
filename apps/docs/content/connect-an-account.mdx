@@ -62,7 +62,7 @@ multiple accounts, check the accounts you want and choose **Use selected account
 An empty selection can be saved with **Use without accounts** when the app allows
 multiple accounts.
 
-**Stop using this account** removes the app's selection. It keeps the saved account
+**Stop using this account** removes the profile's selection. It keeps the saved account
 available to other apps. The global **Accounts** page lists saved accounts and the
 apps that use them.
 
@@ -75,27 +75,31 @@ link and gives you the link; you finish in your browser.
 <CodeGroup>
 
 ```js Hosted
-return await tools.executor.mutations.accounts_connect({
+return await tools.executor.profiles["<management-profile-id>"].mutations.accounts_connect({
   path: { organization: "<organization-id>", app: "<app-id>" },
-  body: { requirement: "vercel" },
+  body: { profile: "<profile-id>", requirement: "vercel" },
 });
 ```
 
 ```js Local
-return await tools.executor.mutations.accountConnect_issue({
-  body: { owner: "alice", target: { app: "<app-id>", requirement: "vercel" } },
+return await tools.executor.profiles["<management-profile-id>"].mutations.accountConnect_issue({
+  body: { owner: "alice", target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" } },
 });
 ```
 
 </CodeGroup>
 
-Supply either `target`, to fill a specific requirement, or `provider`, to save
+Create a profile first, or use the ID of your existing profile. Hosted uses
+`profiles_create`; local uses `appProfiles_create`. Read their discovered schemas
+for the required fields.
+
+Supply either `target`, to fill a specific profile requirement, or `provider`, to save
 an account without selecting it anywhere. Not both.
 
 Check whether you finished:
 
 ```js
-const connection = await tools.executor.queries.accountConnections_get({
+const connection = await tools.executor.profiles["<management-profile-id>"].queries.accountConnections_get({
   path: { connection: "<connection-id>" },
 });
 return connection.state;

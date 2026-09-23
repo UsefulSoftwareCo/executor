@@ -30,7 +30,6 @@ import {
   accountAccess,
   requireAppAccess,
   requireAccountAccess,
-  safeAppMetadata,
 } from "./resource-policy.ts";
 
 const lockActor = Effect.gen(function* () {
@@ -49,25 +48,35 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     const { owner } = yield* CurrentOrganization;
     const policy = yield* CurrentAuthorization;
     const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
-    const selected = new Set(
-      apps.flatMap((app) =>
-        Object.values(app.accounts).flatMap((value) =>
-          typeof value === "string" ? [value] : value,
-        ),
-      ),
-    );
-    const accounts = (yield* executor.accounts.list({ owner })).filter(
-      (account) => policy.tools.kind === "all" || selected.has(account.id),
-    );
     const appEntries = yield* Effect.forEach(apps, (app) =>
       applicationAccess(app.id, actor).pipe(
         Effect.flatMap((access) =>
-          (view === "managed" ? access.canManage : access.canUse)
-            ? safeAppMetadata(app, actor).pipe(Effect.map((app) => [{ app, access }]))
-            : Effect.succeed([]),
+          Effect.gen(function* () {
+            if (!(view === "managed" ? access.canManage : access.canUse)) return [];
+            const profiles = access.canUse
+              ? yield* executor.apps.profiles.list({ app: app.id, owner, subject: actor.user })
+              : [];
+            return [{ app, access, profiles }];
+          }),
         ),
         Effect.catchTag("OrganizationForbidden", () => Effect.succeed([])),
       ),
+    );
+    const selected = new Set(
+      appEntries
+        .flat()
+        .flatMap(({ profiles }) =>
+          profiles
+            .map((profile) => profile.accounts)
+            .flatMap((accounts) =>
+              Object.values(accounts).flatMap((value) =>
+                typeof value === "string" ? [value] : value,
+              ),
+            ),
+        ),
+    );
+    const accounts = (yield* executor.accounts.list({ owner })).filter(
+      (account) => policy.tools.kind === "all" || selected.has(account.id),
     );
     const providers = new Map<ProviderId, Provider>();
     const accountEntries = yield* Effect.forEach(accounts, (account) =>

@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -65,10 +66,12 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         expect((yield* api.request(actors.member, "GET", setupPath(provider))).status).toBe(403);
         const start = (target: typeof AppProvider.Type) =>
           Effect.gen(function* () {
+            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${target.id}`);
             const connection = yield* body(
               Resource,
               yield* api.request(actors.owner, "POST", `${prefix}/apps/${target.id}/connections`, {
                 requirement: "service",
+                profile: profile.id,
               }),
             );
             return yield* api.request(

@@ -34,10 +34,7 @@ export function SetupDialog<E>({
   }, []);
   const accounts = Object.fromEntries(
     Object.entries(app.requirements.accounts)
-      .filter(
-        ([slot, requirement]) =>
-          !Object.hasOwn(app.accounts, slot) && requirement.cardinality === "many",
-      )
+      .filter(([, requirement]) => requirement.cardinality === "many")
       .map(([slot]) => [slot, []]),
   );
   return (

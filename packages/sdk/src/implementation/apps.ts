@@ -39,7 +39,6 @@ import {
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
-import { validateSelection, assertFixedSlotsAvailable } from "./selection.ts";
 import { prepareAppSkills } from "./skill-source.ts";
 import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
 
@@ -299,9 +298,7 @@ export const makeApps = (
               `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
             );
           const createdAt = new Date(yield* Clock.currentTimeMillis);
-          const accounts = existing === undefined ? {} : existing.accounts;
           const promote = existing === undefined || sequence > existing.activatedSequence;
-          if (promote) yield* validateSelection(tx, appId, requirements, accounts);
           for (const { provider } of entries) {
             const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
               provider.definition,
@@ -331,7 +328,6 @@ export const makeApps = (
             owner: input.owner,
             name: existing?.name ?? deployName,
             slug: appSlug(existing?.name ?? deployName),
-            accounts,
             activeDeployment: promote ? deployment.id : existing.activeDeployment,
             copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
             createdAt: existing === undefined ? createdAt : existing.createdAt,
@@ -464,13 +460,10 @@ export const makeApps = (
                 input.slug === undefined ? true : b("slug", "=", input.slug),
                 account === undefined
                   ? true
-                  : b.or(
-                      b("accounts", "json contains", account),
-                      b(
-                        "id",
-                        "in",
-                        installed.map((item) => item.app),
-                      ),
+                  : b(
+                      "id",
+                      "in",
+                      installed.map((item) => item.app),
                     ),
               ),
             orderBy: ["id", "asc"],
@@ -502,33 +495,6 @@ export const makeApps = (
           return yield* project(tx, renamed);
         }),
       ).pipe(Effect.withSpan("sdk.apps.rename")),
-    update: (input: Parameters<Executor["apps"]["update"]>[0]) =>
-      transaction(db, (tx) =>
-        Effect.gen(function* () {
-          const app = yield* lockApp(tx, input);
-          const current = yield* project(tx, app);
-          yield* validateSelection(tx, app.id, current.requirements, input.accounts);
-          yield* assertFixedSlotsAvailable(tx, app.id, Object.keys(input.accounts));
-          yield* query(() =>
-            tx.updateMany("apps", {
-              where: (b) => b("id", "=", app.id),
-              set: { accounts: input.accounts },
-            }),
-          );
-          yield* query(() =>
-            tx.updateMany("profiles", {
-              where: (b) =>
-                b.and(
-                  b("app", "=", current.id),
-                  b("status", "!=", "removed"),
-                  b("status", "!=", "removing"),
-                ),
-              set: { status: "pending", failure: null },
-            }),
-          );
-          return { ...current, accounts: input.accounts };
-        }),
-      ).pipe(Effect.withSpan("sdk.apps.update")),
     remove: (input: Parameters<Executor["apps"]["remove"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -598,7 +564,6 @@ export const makeApps = (
             );
           }
           const deployment = yield* storedDeployment(tx, app, input.deployment);
-          yield* validateSelection(tx, app.id, deployment.requirements, app.accounts);
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),

@@ -175,10 +175,10 @@ layer(TestLive, { excludeTestServices: true })("Local profile picker", (it) => {
         );
         expect(profiles).toHaveLength(2);
         const saved = yield* body(
-          Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.Json) }),
+          Schema.Record(Schema.String, Schema.Json),
           yield* session.send("GET", `/v1/apps/${app.id}`, undefined, headers),
         );
-        expect(saved.accounts).toEqual({});
+        expect(saved).not.toHaveProperty("accounts");
         yield* browser.checkpoint("Local profiles use one app and separate selections");
       }),
     ),

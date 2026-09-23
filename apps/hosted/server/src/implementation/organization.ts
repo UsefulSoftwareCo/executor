@@ -1,3 +1,4 @@
+import { StorageError } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
@@ -200,15 +201,21 @@ export const inventory = (owner: OwnerId) =>
     const accounts = permitsAction(policy, "read")
       ? yield* executor.accounts.list({ owner }).pipe(Effect.flatMap(visibleAccounts))
       : [];
-    if (policy.tools.kind === "all") return { apps, accounts };
+    const user = yield* CurrentUserId;
+    const profiles = (yield* Effect.forEach(apps, (app) =>
+      executor.apps.profiles
+        .list({ app: app.id, owner, subject: user })
+        .pipe(Effect.mapError(() => new StorageError())),
+    )).flat();
+    if (policy.tools.kind === "all") return { apps, accounts, profiles };
     const selected = new Set(
-      apps.flatMap((app) =>
-        Object.values(app.accounts).flatMap((value) =>
+      profiles.flatMap((profile) =>
+        Object.values(profile.accounts).flatMap((value) =>
           typeof value === "string" ? [value] : value,
         ),
       ),
     );
-    return { apps, accounts: accounts.filter((account) => selected.has(account.id)) };
+    return { apps, accounts: accounts.filter((account) => selected.has(account.id)), profiles };
   });
 /** Organization routes do not own app/account operations. */
 export const hostedOrganizationHandlers = HttpApiBuilder.group(

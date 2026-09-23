@@ -50,7 +50,6 @@ export const selectedApp = (executor: Executor, owner: OwnerId, app: AppId, prof
   Effect.gen(function* () {
     yield* requireAppAccess(app, "use");
     const current = yield* executor.apps.get({ owner, app });
-    yield* checkAccounts(executor, owner, current.accounts);
     if (profile !== undefined) {
       const selected = yield* ownProfile(executor, owner, app, profile);
       yield* checkAccounts(executor, owner, selected.accounts);
@@ -71,7 +70,7 @@ export const ownProfile = (executor: Executor, owner: OwnerId, app: AppId, profi
     if (selected.subject !== actor.user) return yield* new OrganizationForbidden();
     return selected;
   });
-/** Fixed service resources require app management; personal resources require their subject. */
+/** App-only resources require app management; profile resources require their subject. */
 export const executionManagerOwner = (executor: Executor, app: AppId, profile?: ProfileId) =>
   Effect.gen(function* () {
     const owner = yield* currentOwner;

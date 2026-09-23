@@ -8,6 +8,8 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import {
   AccountId,
   AppId,
+  ProfileId,
+  type Profile,
   AppSlug,
   AppCodeId,
   DeploymentId,
@@ -43,11 +45,12 @@ const firstAccount: Account = {
 const firstApp: App = {
   id: appId,
   code: AppCodeId.make("code_fixture"),
+  repository: null,
+  copiedFrom: null,
   owner: firstAccount.owner,
   name: "Original app",
   slug: AppSlug.make("original-app"),
   activeDeployment: DeploymentId.make("dpl_one"),
-  accounts: { service: accountId },
   requirements: {
     accounts: {
       service: { provider: provider.id, definition: provider.definition, cardinality: "one" },
@@ -55,6 +58,23 @@ const firstApp: App = {
   },
   createdAt: firstAccount.createdAt,
 };
+const firstProfile: Profile = {
+  id: ProfileId.make("ins_fixture"),
+  app: appId,
+  owner: firstAccount.owner,
+  subject: "user_fixture",
+  name: null,
+  accounts: { service: accountId },
+  webhookConfig: {},
+  revision: 1,
+  enabled: true,
+  status: "ready",
+  failure: null,
+  reconciledDeployment: firstApp.activeDeployment,
+  reconciledRevision: 1,
+  createdAt: firstAccount.createdAt,
+};
+let profile = firstProfile;
 let account = firstAccount,
   app = firstApp,
   accountDeleted = false,
@@ -92,6 +112,7 @@ const release = () => {
 const overview = () => ({
   apps: appDeleted ? [] : [app],
   accounts: accountDeleted ? [] : [localAccount()],
+  profiles: appDeleted ? [] : [profile],
 });
 const localAccount = () => ({
   ...account,
@@ -140,6 +161,8 @@ const server = createServer(async (request, response) => {
       return read(() => ({
         apps: appDeleted ? [] : [app],
         accounts: accountDeleted ? [] : [account],
+        profiles: appDeleted ? [] : [profile],
+        accountSetup: { redirectUri: `${origin}/api/oauth/callback` },
       }));
     if (path.includes("/dashboard/api/live/")) {
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
@@ -174,6 +197,7 @@ const server = createServer(async (request, response) => {
         deployment: app.activeDeployment,
         nextCursor: null,
       }));
+    if (path.endsWith(`/apps/${appId}/profiles`)) return read(() => [profile]);
     if (path.endsWith(`/apps/${appId}`)) return read(() => app);
     if (path.endsWith(`/accounts/${accountId}`))
       return read(() => ({ account, provider, apps: appDeleted ? [] : [app], canManage: true }));
@@ -184,7 +208,7 @@ const server = createServer(async (request, response) => {
         owner: firstAccount.owner,
         provider,
         reconnectAccount: account,
-        target: { app: appId, requirement: "service", name: app.name },
+        target: { app: appId, profile: profile.id, requirement: "service", name: app.name },
         createdAt: firstAccount.createdAt,
         expiresAt: new Date("2027-01-01"),
         state: { status: "pending" },
@@ -255,16 +279,21 @@ const server = createServer(async (request, response) => {
     app = { ...app, name: String(body.name) };
     return send(app);
   }
-  if (path.endsWith(`/apps/${appId}/accounts`)) {
-    app = { ...app, accounts: Schema.decodeUnknownSync(SelectedAccounts)(body.accounts) };
-    return send(app);
+  if (path.endsWith(`/apps/${appId}/profiles/${profile.id}`) && request.method === "PATCH") {
+    assert.equal(body.expectedRevision, profile.revision);
+    profile = {
+      ...profile,
+      revision: profile.revision + 1,
+      accounts: Schema.decodeUnknownSync(SelectedAccounts)(body.accounts),
+    };
+    return send(profile);
   }
   if (path.endsWith(`/apps/${appId}/activate`)) {
     app = { ...app, activeDeployment: DeploymentId.make(String(body.deployment)) };
     return send(app);
   }
   if (path.endsWith("/connections/con_fixture/submit")) {
-    app = { ...app, accounts: { service: accountId } };
+    profile = { ...profile, revision: profile.revision + 1, accounts: { service: accountId } };
     return send(account);
   }
   send({ message: `Unhandled ${request.method} ${path}` }, 404);
@@ -283,7 +312,7 @@ Object.defineProperty(globalThis, "fetch", {
 const hosted = await import("../src/contracts/apps.ts");
 const hostedAccounts = await import("../src/contracts/accounts.ts");
 const organization = await import("../src/contracts/organization.ts");
-const hostedDashboard = await import("../src/contracts/dashboard-bindings.ts");
+const profiles = await import("../src/contracts/profiles.ts");
 const local = await import("../../../local/web/src/contracts/api.ts");
 const localApps = await import("../../../local/web/src/contracts/apps.ts");
 const localAccounts = await import("../../../local/web/src/contracts/accounts.ts");
@@ -318,6 +347,7 @@ beforeEach(() => {
   release();
   account = firstAccount;
   app = firstApp;
+  profile = firstProfile;
   appDeleted = false;
   accountDeleted = false;
   rejectWrite = false;
@@ -398,11 +428,12 @@ test("hosted app/account saves and deletes acknowledge shared rows before held r
   }
 });
 
-test("account selection, activation and targeted connection completion discard unknown cached catalogs", async () => {
+test("profile selection is acknowledged and connection completion waits for confirmed profile metadata", async () => {
   const registry = AtomRegistry.make();
   const connection = { organization: org, connection: AccountConnectionId.make("con_fixture") };
   const queries = [
     hosted.appAtom(key),
+    profiles.profilesAtom(key),
     organization.inventoryAtom(org),
     hosted.toolsAtom(key),
     hosted.connectionAtom(connection),
@@ -415,12 +446,19 @@ test("account selection, activation and targeted connection completion discard u
       ),
     );
     holdReads = true;
-    await mutate(registry, hostedDashboard.dashboardAtoms(org).selectAccounts, {
-      app: appId,
+    await mutate(registry, profiles.profileMutations({ ...key, profile: firstProfile.id }).update, {
+      expectedRevision: firstProfile.revision,
       accounts: {},
     });
-    assert.deepEqual(value(registry, hosted.appAtom(key)).accounts, {});
-    assert.ok(AsyncResult.isInitial(registry.get(hosted.toolsAtom(key))));
+    assert.deepEqual(value(registry, profiles.profilesAtom(key))[0]?.accounts, {});
+    assert.deepEqual(value(registry, organization.inventoryAtom(org)).profiles[0]?.accounts, {});
+    const catalog = hosted.toolsAtom({
+      ...key,
+      profile: firstProfile.id,
+      expectedProfileRevision: firstProfile.revision + 1,
+    });
+    stops.push(registry.mount(catalog));
+    assert.ok(AsyncResult.isInitial(registry.get(catalog)));
     await mutate(registry, hosted.activateAppAtom(key), {
       deployment: DeploymentId.make("dpl_two"),
       expectedDeployment: firstApp.activeDeployment,
@@ -437,9 +475,12 @@ test("account selection, activation and targeted connection completion discard u
     );
     assert.ok(AsyncResult.isInitial(registry.get(hosted.toolsAtom(key))));
     assert.ok(AsyncResult.isInitial(registry.get(organization.inventoryAtom(org))));
+    assert.ok(AsyncResult.isInitial(registry.get(profiles.profilesAtom(key))));
     release();
-    await read(registry, hosted.appAtom(key));
-    assert.deepEqual(value(registry, hosted.appAtom(key)).accounts, { service: accountId });
+    await read(registry, profiles.profilesAtom(key));
+    assert.deepEqual(value(registry, profiles.profilesAtom(key))[0]?.accounts, {
+      service: accountId,
+    });
   } finally {
     stops.forEach((stop) => stop());
     registry.dispose();
@@ -481,7 +522,11 @@ test(
       assert.equal(value(registry, local.overviewAtom).accounts.length, 0);
       release();
       await read(registry, local.overviewAtom);
-      assert.deepEqual(value(registry, local.overviewAtom), { apps: [], accounts: [] });
+      assert.deepEqual(value(registry, local.overviewAtom), {
+        apps: [],
+        profiles: [],
+        accounts: [],
+      });
     } finally {
       stops.forEach((stop) => stop());
       registry.dispose();

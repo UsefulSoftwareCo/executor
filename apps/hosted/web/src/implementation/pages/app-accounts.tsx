@@ -57,13 +57,13 @@ export function AppAccounts({
   const canUse = Option.isSome(data) && data.value.canUse;
   return (
     <SharedAccounts
-      app={{ ...app, accounts: { ...app.accounts, ...profile?.accounts } }}
+      app={app}
+      selection={profile?.accounts ?? {}}
       accounts={accounts}
       onCreateProfile={canUse ? onCreateProfile : undefined}
       removeAccountAction={(slot, account, label) =>
         canUse &&
-        profile !== undefined &&
-        !Object.hasOwn(app.accounts, slot) && (
+        profile !== undefined && (
           <RemoveAccountBinding
             profile={profile}
             slot={slot}
@@ -76,25 +76,24 @@ export function AppAccounts({
       }
       {...(canUse
         ? {
-            accountActions: (slot: string, requirement: AccountRequirement) =>
-              !Object.hasOwn(app.accounts, slot) && (
-                <AppAccountActions
-                  key={slot}
-                  app={app}
-                  slot={slot}
-                  requirement={requirement}
-                  accounts={accounts}
-                  redirectUri={redirectUri}
-                  profile={profile}
-                  onSelected={onSelected}
-                  trigger={
-                    <AccountSelectionTrigger
-                      requirement={requirement}
-                      selection={profile?.accounts[slot]}
-                    />
-                  }
-                />
-              ),
+            accountActions: (slot: string, requirement: AccountRequirement) => (
+              <AppAccountActions
+                key={slot}
+                app={app}
+                slot={slot}
+                requirement={requirement}
+                accounts={accounts}
+                redirectUri={redirectUri}
+                profile={profile}
+                onSelected={onSelected}
+                trigger={
+                  <AccountSelectionTrigger
+                    requirement={requirement}
+                    selection={profile?.accounts[slot]}
+                  />
+                }
+              />
+            ),
           }
         : {})}
     />
@@ -127,13 +126,13 @@ export function AppAccountActions({
   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
   const canUse = Option.isSome(data) && data.value.canUse;
   const registry = useContext(RegistryContext);
-  if (app.activeDeployment === null || !canUse || Object.hasOwn(app.accounts, slot)) return null;
+  if (app.activeDeployment === null || !canUse) return null;
   const defaults = Object.fromEntries(
     Object.entries(app.requirements.accounts)
-      .filter(([name, value]) => !Object.hasOwn(app.accounts, name) && value.cardinality === "many")
+      .filter(([, value]) => value.cardinality === "many")
       .map(([name]) => [name, []]),
   );
-  const selectedApp = { ...app, accounts: profile?.accounts ?? defaults };
+  const selection = profile?.accounts ?? defaults;
   return (
     <>
       {Object.entries(requirement.definition.auth)
@@ -142,7 +141,8 @@ export function AppAccountActions({
           <PrefetchOAuthSetup key={method} provider={requirement.provider} method={method} />
         ))}
       <ConnectAppAccount
-        app={selectedApp}
+        app={app}
+        selection={selection}
         profile={profile?.id}
         onSelected={onSelected}
         slot={slot}
@@ -206,6 +206,7 @@ type ConnectionDialog = {
 
 function ConnectAppAccount({
   app,
+  selection,
   slot,
   requirement,
   accounts,
@@ -220,6 +221,7 @@ function ConnectAppAccount({
   readonly profile?: ProfileId | undefined;
   readonly onSelected: (id: ProfileId) => void;
   readonly app: App;
+  readonly selection: SelectedAccounts;
   readonly slot: string;
   readonly requirement: AccountRequirement;
   readonly accounts: readonly AccountSummary[];
@@ -233,7 +235,7 @@ function ConnectAppAccount({
     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
   );
   const preferred = methods[0];
-  const selected = app.accounts[slot];
+  const selected = selection[slot];
   const inUse = typeof selected === "string" || (selected !== undefined && selected.length > 0);
   const buttons = (close?: () => void, appearance: "button" | "row" = "button") => (
     <Button
@@ -268,6 +270,7 @@ function ConnectAppAccount({
     preferred && (
       <AppConnectionDialogContent
         app={app}
+        selection={selection}
         slot={slot}
         requirement={requirement}
         accounts={accounts}
@@ -281,7 +284,7 @@ function ConnectAppAccount({
     );
   const picker = (
     <SavedAccountPicker<HostedError, Profile>
-      app={app}
+      selectedAccounts={selection}
       slot={slot}
       requirement={requirement}
       accounts={accounts}
@@ -315,6 +318,7 @@ function ConnectAppAccount({
 /** Keep one provider snapshot and draft from the first dialog through submission. */
 function AppConnectionDialogContent({
   app,
+  selection,
   slot,
   requirement,
   accounts,
@@ -326,6 +330,7 @@ function AppConnectionDialogContent({
   onSaved,
 }: {
   readonly app: App;
+  readonly selection: SelectedAccounts;
   readonly slot: string;
   readonly requirement: AccountRequirement;
   readonly accounts: readonly AccountSummary[];
@@ -351,7 +356,7 @@ function AppConnectionDialogContent({
       redirectUri,
     };
   });
-  const selected = app.accounts[slot];
+  const selected = selection[slot];
   const currentAccount =
     typeof selected === "string" ? accounts.find((account) => account.id === selected) : undefined;
   return (
@@ -363,7 +368,7 @@ function AppConnectionDialogContent({
       />
       <AppConnectionFields
         app={app.id}
-        accounts={app.accounts}
+        accounts={selection}
         profile={profile}
         onSelected={onSelected}
         slot={slot}

@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import type { RemoteCustomAppInput } from "@executor-js/catalog/contracts";
 import type { InstallApp } from "@executor-js/ui/contracts/dashboard";
-import type { AppId, SelectedAccounts } from "@executor-js/sdk";
+import type { AppId } from "@executor-js/sdk";
 import { DashboardClient, overviewAtom, toolsAtom } from "./api.ts";
 import { acknowledgeApp } from "./apps.ts";
 import { catalogAtom } from "./onboarding.ts";
@@ -27,21 +27,5 @@ export const dashboardAtoms = {
     Effect.flatMap(DashboardClient, (client) =>
       client.dashboard.importCustomApp({ payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, saved)))),
-  ),
-  selectAccounts: DashboardClient.runtime.fn(
-    (input: { readonly app: AppId; readonly accounts: SelectedAccounts }, get) =>
-      Effect.flatMap(DashboardClient, (client) =>
-        client.dashboard.selectAccounts({
-          params: { app: input.app },
-          payload: { accounts: input.accounts },
-        }),
-      ).pipe(
-        Effect.tap((saved) =>
-          Effect.sync(() => {
-            acknowledgeApp(get, saved);
-            get.refresh(toolsAtom({ app: input.app }));
-          }),
-        ),
-      ),
   ),
 };

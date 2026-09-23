@@ -17,18 +17,16 @@ export const renameAppAtom = Atom.family((app: AppId) =>
 
 /** Saved app metadata is shared immediately while stream snapshots reconcile it. */
 export function acknowledgeApp(get: Atom.FnContext, saved: App) {
-  const previous = AsyncResult.value(get(appAtom(saved.id)));
-  const accounts = new Set([
-    ...selectedIds(saved),
-    ...(Option.isSome(previous) ? selectedIds(previous.value.app) : []),
-  ]);
+  const inventory = AsyncResult.value(get(overviewAtom));
+  const profiles = Option.isSome(inventory)
+    ? inventory.value.profiles.filter((profile) => profile.app === saved.id)
+    : [];
+  const accounts = new Set(profiles.flatMap((profile) => selectedIds(profile.accounts)));
   acknowledge(get, appAtom(saved.id), (data) => ({ ...data, app: saved }));
   acknowledge(get, overviewAtom, (data) => ({ ...data, apps: upsert(data.apps, saved) }));
   for (const account of accounts)
     acknowledge(get, accountAtom(account), (data) => ({
       ...data,
-      apps: selectedIds(saved).includes(account)
-        ? upsert(data.apps, saved)
-        : data.apps.filter((app) => app.id !== saved.id),
+      apps: upsert(data.apps, saved),
     }));
 }

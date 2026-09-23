@@ -1,3 +1,4 @@
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -188,10 +189,12 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
+          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
               requirement: "service",
+              profile: profile.id,
               ...(authMethod === "client_secret_post"
                 ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
                 : {}),
@@ -255,14 +258,18 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
           expect(
             (yield* body(
               Selection,
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
+              yield* api.request(
+                actors.owner,
+                "GET",
+                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+              ),
             )).accounts.service,
           ).toBe(completed.account.id);
           const read = yield* api.request(
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { tool: "queries.read", input: {} },
+            { profile: profile.id, tool: "queries.read", input: {} },
           );
           expect(read.status).toBe(200);
           const value = yield* body(Read, read);
@@ -274,7 +281,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { tool: "queries.read", input: {} },
+            { profile: profile.id, tool: "queries.read", input: {} },
           );
           expect(failed.status).not.toBe(200);
           yield* issuer.configure({ rejected: false, expiresIn: 120 });
@@ -305,6 +312,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
             Resource,
             yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
               requirement: "service",
+              profile: profile.id,
             }),
           );
           const exchange = yield* api
@@ -312,16 +320,19 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
             .pipe(Effect.forkChild);
           yield* pause.entered;
           expect(
-            (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/accounts`, {
-              accounts: {},
-            })).status,
+            (yield* selectProfileAccounts(actors.owner, `${prefix}/apps/${app.id}`, profile.id, {}))
+              .status,
           ).toBe(200);
           yield* pause.release;
           expect((yield* Fiber.join(exchange)).status).toBe(409);
           expect(
             (yield* body(
               Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.Unknown) }),
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
+              yield* api.request(
+                actors.owner,
+                "GET",
+                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+              ),
             )).accounts,
           ).toEqual({});
           const after = yield* body(

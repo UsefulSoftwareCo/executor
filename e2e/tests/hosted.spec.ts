@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 import { expect, layer } from "@effect/vitest";
@@ -99,11 +100,12 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             (row) =>
               Effect.gen(function* () {
                 const actor = row % 2 === 0 ? actors.owner : actors.admin;
+                const profile = yield* createProfile(actor, `${prefix}/apps/${app.id}`);
                 const connection = yield* api.request(
                   actor,
                   "POST",
                   `${prefix}/apps/${app.id}/connections`,
-                  { requirement: "service" },
+                  { requirement: "service", profile: profile.id },
                 );
                 expect(connection.status).toBe(200);
                 const { id } = yield* body(Resource, connection);

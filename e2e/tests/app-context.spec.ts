@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 /** Real hosted HTTP checks for separately declared handlers and their invocation-owned context. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -127,11 +128,12 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         expect(deployed.status).toBe(200);
         const app = (yield* body(App, deployed)).id;
         created.app = app;
+        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
         const connection = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${app}/connections`,
-          { requirement: "service" },
+          { requirement: "service", profile: profile.id },
         );
         expect(connection.status).toBe(200);
         const submit = (id: string, token: string) =>
@@ -144,7 +146,11 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         expect(saved.status).toBe(200);
         created.account = (yield* body(Resource, saved)).id;
         const call = (tool: string, input: Record<string, string> = {}) =>
-          api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, { tool, input });
+          api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
+            profile: profile.id,
+            tool,
+            input,
+          });
         expect((yield* call("mutations.save", { body: "before" })).status).toBe(200);
         const reconnected = yield* api.request(
           actors.owner,

@@ -1,12 +1,7 @@
-import { requireAppAccess, currentResourceAuthority, safeAppMetadata } from "./resource-policy.ts";
+import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
-import {
-  type AppId,
-  type DeploymentId,
-  type OwnerId,
-  type SelectedAccounts,
-} from "@executor-js/sdk/core";
+import { type AppId, type DeploymentId, type OwnerId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { scopeGeneratedPackage } from "@executor-js/app-registry";
 import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
@@ -15,7 +10,7 @@ import { HostedApi } from "../contracts/api.ts";
 import type { DeployApp, InstallApp } from "../contracts/apps.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { appManagerOwner, checkAccounts, currentOwner } from "./access.ts";
+import { appManagerOwner, currentOwner } from "./access.ts";
 
 /** Prepare ordinary source and create an app without replacing an existing name. */
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
@@ -67,19 +62,7 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "read");
     const app = yield* executor.apps.get({ ...input, owner });
-    return yield* safeAppMetadata(app, yield* currentResourceAuthority);
-  });
-/** Validate organization ownership before saving reusable account selections. */
-export const selectAccounts = (
-  owner: OwnerId,
-  input: { readonly app: AppId; readonly accounts: SelectedAccounts },
-) =>
-  Effect.gen(function* () {
-    const executor = yield* Effect.flatten(HostedExecutor);
-    yield* executor.apps.get({ owner, app: input.app });
-    yield* checkAccounts(executor, owner, input.accounts);
-    const saved = yield* executor.apps.update(input);
-    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
+    return app;
   });
 /** Retained source is administrative data; deployments from other owners stay private. */
 export const appDeployments = (owner: OwnerId, app: AppId) =>
@@ -109,10 +92,8 @@ export const activateApp = (
     yield* appSource(owner, app, deployment);
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(app, "manage");
-    const current = yield* executor.apps.get({ owner, app });
-    yield* checkAccounts(executor, owner, current.accounts);
     const saved = yield* executor.apps.activate({ owner, app, deployment, expectedDeployment });
-    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
+    return saved;
   });
 /** Keep the configured identity and selections while changing its organization-local name. */
 export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
@@ -123,7 +104,7 @@ export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
       app,
       name,
     });
-    return yield* safeAppMetadata(saved, yield* currentResourceAuthority);
+    return saved;
   });
 /** Delete one configured copy while preserving its reusable accounts. */
 export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
@@ -145,11 +126,6 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
       Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
     )
     .handle("get", ({ params }) => Effect.flatMap(currentOwner, (owner) => getApp(owner, params)))
-    .handle("selectAccounts", ({ params, payload }) =>
-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        selectAccounts(owner, { app: params.app, ...payload }),
-      ),
-    )
     .handle("deployments", ({ params }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) => appDeployments(owner, params.app)),
     )

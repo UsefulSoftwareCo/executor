@@ -168,7 +168,7 @@ export const WebhooksGroup = HttpApiGroup.make("webhooks")
       error: WebhookErrors,
     }).annotate(
       OpenApi.Description,
-      "Register a webhook with a stable key and saved app accounts. For collection slots, specify sourceAccount. Config follows the definition schema. Check status in the result; setup-required needs the product browser setup link.",
+      "Register a webhook with a stable key and the named profile's selected accounts. For collection slots, specify sourceAccount. Config follows the definition schema. Check status in the result; setup-required needs the product browser setup link.",
     ),
   )
   .add(

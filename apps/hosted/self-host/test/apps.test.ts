@@ -1,3 +1,5 @@
+import { checkAccounts } from "../../server/src/implementation/access.ts";
+import { ProfileId } from "@executor-js/sdk/core";
 import { CurrentAuthorization } from "../../server/src/contracts/authorization.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { memorySourceStorage } from "@executor-js/sdk/testing";
@@ -28,8 +30,8 @@ import * as Tools from "../../server/src/implementation/tools.ts";
 import { inventory } from "../../server/src/implementation/organization.ts";
 import {
   AccountRequired,
-  AppNotFound,
   AccountNotFound,
+  AppNotFound,
   AccountConnectionNotFound,
   AppNameTaken,
   OwnerId,
@@ -99,12 +101,22 @@ test(
               );
               assert.ok(
                 Schema.is(AppNotFound)(
-                  yield* Accounts.connectAccount(b, { app: app.id, requirement: "service" }).pipe(
-                    Effect.flip,
-                  ),
+                  yield* Accounts.connectAccount(b, {
+                    app: app.id,
+                    profile: ProfileId.make("ins_missing"),
+                    requirement: "service",
+                  }).pipe(Effect.flip),
                 ),
               );
+              const profile = yield* executor.apps.profiles.create({
+                app: app.id,
+                owner: a,
+                subject: "fixture-admin",
+                idempotencyKey: "test",
+                accounts: {},
+              });
               const connection = yield* Accounts.connectAccount(a, {
+                profile: profile.id,
                 app: app.id,
                 requirement: "service",
               });
@@ -119,14 +131,19 @@ test(
                 label: "Default",
                 fields: Redacted.make({ token: "synthetic-token" }),
               });
-              assert.equal((yield* Apps.getApp(a, { app: app.id })).accounts.service, account.id);
-              const catalog = yield* Tools.listTools({ app: app.id });
+              assert.equal(
+                (yield* executor.apps.profiles.get({ app: app.id, profile: profile.id })).accounts
+                  .service,
+                account.id,
+              );
+              const catalog = yield* Tools.listTools({ app: app.id, profile: profile.id });
               assert.deepEqual(
                 catalog.items.map((tool) => tool.name),
                 ["mutations.greeting"],
               );
               assert.deepEqual(
                 yield* Tools.callTool({
+                  profile: profile.id,
                   app: app.id,
                   tool: ToolName.make("mutations.greeting"),
                   input: { name: "Ada" },
@@ -139,10 +156,7 @@ test(
               });
               assert.ok(
                 Schema.is(AccountNotFound)(
-                  yield* Apps.selectAccounts(b, {
-                    app: other.id,
-                    accounts: { service: account.id },
-                  }).pipe(Effect.flip),
+                  yield* checkAccounts(executor, b, { service: account.id }).pipe(Effect.flip),
                 ),
               );
               assert.ok(
@@ -182,6 +196,7 @@ test(
                 [other.id],
               );
               const input = {
+                profile: profile.id,
                 app: app.id,
                 tool: ToolName.make("mutations.greeting"),
                 input: { name: "Ada" },
@@ -212,8 +227,11 @@ test(
                 search.execution.value,
               ).items.map((item) => item.path);
               assert.equal(paths.length, 1);
-              assert.equal(paths[0], `tools.${app.slug}.mutations.greeting`);
-              const code = `return await tools[${JSON.stringify(app.slug)}].mutations.greeting({ name: "Ada" })`;
+              assert.equal(
+                paths[0],
+                `tools.${app.slug}.profiles[${JSON.stringify(profile.id)}].mutations.greeting`,
+              );
+              const code = `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].mutations.greeting({ name: "Ada" })`;
               const called = yield* execute(alpha, defaultMcpLimits, code);
               assert.ok(called.execution.ok);
               assert.deepEqual(called.execution.value, { hello: "Ada", connected: true });
@@ -222,20 +240,30 @@ test(
               assert.equal(invisible.execution.toolCalls.length, 0);
               assert.deepEqual(
                 invisible.unavailableApps.map((app) => app.app),
-                [other.id],
+                [],
               );
               assert.equal((yield* execute(member, defaultMcpLimits, code)).execution.ok, false);
 
               // Defense at execution too: even an SDK-written cross-org selection is rejected.
-              yield* executor.apps.update({ app: other.id, accounts: { service: account.id } });
+              const foreignProfile = yield* executor.apps.profiles.create({
+                app: other.id,
+                owner: other.owner,
+                subject: "fixture-admin",
+                idempotencyKey: "test",
+                accounts: { service: account.id },
+              });
               assert.ok(
                 Schema.is(OrganizationForbidden)(
-                  yield* beta.listTools({ app: other.id }).pipe(Effect.flip),
+                  yield* beta
+                    .listTools({ app: other.id, profile: foreignProfile.id })
+                    .pipe(Effect.flip),
                 ),
               );
               assert.ok(
                 Schema.is(OrganizationForbidden)(
-                  yield* beta.callTool({ ...input, app: other.id }).pipe(Effect.flip),
+                  yield* beta
+                    .callTool({ ...input, app: other.id, profile: foreignProfile.id })
+                    .pipe(Effect.flip),
                 ),
               );
               yield* Apps.removeApp(a, { app: app.id });

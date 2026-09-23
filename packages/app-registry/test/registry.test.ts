@@ -176,7 +176,7 @@ test(
           assert.equal(installed.name, "My copy");
           assert.equal(installed.owner, recipient);
           assert.notEqual(installed.code, app.code);
-          assert.deepEqual(installed.accounts, {});
+          assert.equal(Object.hasOwn(installed, "accounts"), false);
           assert.deepEqual((yield* executor.apps.workspace({ app: installed.id })).files, source);
           assert.equal(installed.copiedFrom?.name, publication.name);
           assert.equal(installed.copiedFrom?.commit, publication.commit);

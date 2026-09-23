@@ -36,7 +36,7 @@ export function AccountSelectionForm<A, E>({
 }: MutationProps<SelectAccounts, A, E> & {
   readonly app: App;
   readonly available: readonly AccountSummary[];
-  readonly initialAccounts?: SelectedAccounts;
+  readonly initialAccounts: SelectedAccounts;
   readonly addedAccounts?: SelectedAccounts | undefined;
   readonly notice?: ReactNode;
   readonly connectAction: (
@@ -49,7 +49,7 @@ export function AccountSelectionForm<A, E>({
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
 }) {
   const [draftAccounts, setAccounts] = useState<SelectedAccounts>();
-  const accounts = draftAccounts ?? initialAccounts ?? app.accounts;
+  const accounts = draftAccounts ?? initialAccounts;
   const [pending, setPending] = useState(false);
   const result = useAtomValue(mutation);
   const save = useAtomSet(mutation, { mode: "promiseExit" });

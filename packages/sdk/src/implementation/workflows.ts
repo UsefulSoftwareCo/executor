@@ -409,9 +409,8 @@ export const makeWorkflowRuns = (
             }
             const currentApp = yield* storedApp(db, { app: state.app.id });
             if (
-              (inherited === undefined &&
-                currentApp.activeDeployment !== state.app.activeDeployment) ||
-              !Schema.toEquivalence(Schema.Json)(currentApp.accounts, state.app.accounts)
+              inherited === undefined &&
+              currentApp.activeDeployment !== state.app.activeDeployment
             )
               return yield* failure("conflict");
             const accountIds = [...new Set(Object.values(state.accounts).flat())].sort();

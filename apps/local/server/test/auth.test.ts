@@ -14,7 +14,7 @@ import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { ServerConfig } from "../src/contracts/config.ts";
-import { McpInstallation } from "../src/contracts/dashboard.ts";
+import { DashboardApi, McpInstallation } from "../src/contracts/dashboard.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { makeLocalAuth, sessionCookie } from "../src/implementation/auth.ts";
@@ -263,6 +263,46 @@ const sdkClient = (url: string, apiKey: Redacted.Redacted<string>) =>
 const serverLink = (server: Effect.Success<ReturnType<typeof startLocalServer>>) =>
   Effect.runPromise(server.issuePairingLink).then((link) => Redacted.value(link.url));
 
+test("the local dashboard creates profiles for the bundled Executor app", async () => {
+  await withDirectory((directory) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = settings(directory);
+        const server = yield* startLocalServer(config);
+        const sdk = yield* sdkClient(server.url, config.apiKey);
+        const managed = (yield* sdk.apps.list({
+          query: { owner: OwnerId.make("executor-local") },
+        }))[0];
+        assert.ok(managed);
+        const dashboard = yield* HttpApiClient.make(DashboardApi, {
+          baseUrl: server.url,
+          transformClient: (http) =>
+            http.pipe(
+              HttpClient.mapRequest(
+                HttpClientRequest.setHeader(
+                  "authorization",
+                  `Bearer ${Redacted.value(config.apiKey)}`,
+                ),
+              ),
+            ),
+        }).pipe(Effect.provide(FetchHttpClient.layer));
+        const profile = yield* dashboard.profiles.create({
+          params: { app: managed.id },
+          payload: { idempotencyKey: "additional-profile", name: "Additional", accounts: {} },
+        });
+        assert.equal(profile.owner, managed.owner);
+        assert.equal(profile.subject, "local");
+        assert.equal(profile.app, managed.id);
+        assert.deepEqual(profile.accounts, {});
+        assert.deepEqual(
+          yield* dashboard.profiles.get({ params: { app: managed.id, profile: profile.id } }),
+          profile,
+        );
+      }),
+    ),
+  );
+});
+
 test(
   "a browser cookie survives server restart and logout remains revoked after another restart",
   { timeout: 15_000 },
@@ -301,7 +341,18 @@ test(
                 ]),
               },
             });
-            return { url: server.url, cookie, unused, managed, deployment: deployed.deployment.id };
+            const profiles = yield* sdk.appProfiles.list({
+              params: { app: managed.id },
+              query: {},
+            });
+            return {
+              url: server.url,
+              cookie,
+              unused,
+              managed,
+              profiles,
+              deployment: deployed.deployment.id,
+            };
           }),
         );
         const port = Number(new URL(first.url).port);
@@ -311,7 +362,14 @@ test(
             const sdk = yield* sdkClient(server.url, settings(directory).apiKey);
             const managed = yield* sdk.apps.get({ params: { app: first.managed.id }, query: {} });
             assert.notEqual(managed.activeDeployment, first.deployment);
-            assert.deepEqual(managed.accounts, first.managed.accounts);
+            const profiles = yield* sdk.appProfiles.list({
+              params: { app: managed.id },
+              query: {},
+            });
+            assert.deepEqual(
+              profiles.map((profile) => ({ id: profile.id, accounts: profile.accounts })),
+              first.profiles.map((profile) => ({ id: profile.id, accounts: profile.accounts })),
+            );
             const source = yield* sdk.apps.workspace({ params: { app: managed.id }, query: {} });
             assert.equal(
               source.files.some((file) => file.path === "old-bundled-guide.md"),
@@ -337,6 +395,12 @@ test(
               ))._tag,
               "PairingRejected",
             );
+            const profile = profiles[0];
+            assert.ok(profile);
+            yield* sdk.appProfiles.update({
+              params: { app: managed.id, profile: profile.id },
+              payload: { expectedRevision: profile.revision, accounts: {} },
+            });
             yield* browser.auth.logout();
           }),
         );
@@ -347,6 +411,15 @@ test(
               client(server.url, { cookie: first.cookie, origin: server.url }),
             );
             assert.deepEqual(yield* browser.auth.session(), { authenticated: false });
+            const sdk = yield* sdkClient(server.url, settings(directory).apiKey);
+            const profiles = yield* sdk.appProfiles.list({
+              params: { app: first.managed.id },
+              query: {},
+            });
+            assert.deepEqual(
+              profiles.map((profile) => ({ id: profile.id, accounts: profile.accounts })),
+              first.profiles.map((profile) => ({ id: profile.id, accounts: {} })),
+            );
           }),
         );
         const path = yield* Path.Path;

@@ -24,7 +24,7 @@ export function AppLaunch({
   readonly manage: ReactNode;
 }) {
   const available = contexts.filter(
-    (context) => appToolReadiness(context.app, accounts).state === "ready",
+    (context) => appToolReadiness(context.app, context.accounts, accounts).state === "ready",
   );
   return (
     <section className="mx-auto w-full max-w-lg px-6 py-10">

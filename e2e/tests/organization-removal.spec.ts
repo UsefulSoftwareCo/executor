@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 /** Cloud-only removal: a throwaway organization with real state is deleted by its owner alone. */
 import { expect, layer } from "@effect/vitest";
@@ -143,11 +144,12 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             });
             expect(deployed.status).toBe(200);
             const application = yield* body(App, deployed);
+            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${application.id}`);
             const connection = yield* api.request(
               actors.owner,
               "POST",
               `${prefix}/apps/${application.id}/connections`,
-              { requirement: "service" },
+              { requirement: "service", profile: profile.id },
             );
             expect(connection.status).toBe(200);
             const requirement = yield* body(Resource, connection);
@@ -162,7 +164,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             const selected = yield* api.request(
               actors.owner,
               "GET",
-              `${prefix}/apps/${application.id}`,
+              `${prefix}/apps/${application.id}/profiles/${profile.id}`,
             );
             expect(selected.status).toBe(200);
             expect(

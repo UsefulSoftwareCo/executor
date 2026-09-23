@@ -86,16 +86,13 @@ const capabilities = (
   identity: Context.Service.Shape<typeof AppIdentity>,
 ) =>
   host.access === undefined
-    ? Effect.succeed({ visible: true, manage: true, edit: true, accounts: app.accounts })
+    ? Effect.succeed({ visible: true, manage: true, edit: true })
     : host.access(app, identity);
 const projectApp = <A extends App>(
   host: ManagementHost,
   app: A,
   identity: Context.Service.Shape<typeof AppIdentity>,
-) =>
-  capabilities(host, app, identity).pipe(
-    Effect.map((access) => ({ ...app, accounts: access.accounts })),
-  );
+) => capabilities(host, app, identity).pipe(Effect.as(app));
 const ownedSource = (
   host: ManagementHost,
   identity: Context.Service.Shape<typeof AppIdentity>,
@@ -155,9 +152,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           });
           return (yield* Effect.forEach(apps, (app) =>
             capabilities(host, app, identity).pipe(
-              Effect.map((access) =>
-                access.visible ? [{ ...app, accounts: access.accounts }] : [],
-              ),
+              Effect.map((access) => (access.visible ? [app] : [])),
             ),
           )).flat();
         }),

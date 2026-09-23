@@ -766,6 +766,15 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorAppCardAccount: {
+    file: "executor-key-account.spec.ts",
+    title: "Executor app card shows the current user's profile account",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
   sharedAuthorization: {
     file: "shared-authorization.spec.ts",
     title: "MCP and API authorization share exact tool selection and live grant restrictions",

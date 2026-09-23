@@ -1,3 +1,4 @@
+import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Effect, Schema } from "effect";
@@ -136,6 +137,7 @@ export class OrganizationIcons extends Context.Service<
 
 /** Organization-owned inventory. Saved credentials never appear in these records. */
 export const Inventory = Schema.Struct({
+  profiles: Schema.Array(Profile),
   apps: Schema.Array(App),
   accounts: Schema.Array(Account),
   accountSetup: Schema.Struct({ redirectUri: HttpUrl }),

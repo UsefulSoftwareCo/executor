@@ -1,7 +1,7 @@
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
-/** Configured apps: deployed code, declared requirements and saved account selections. */
+/** Apps own deployed code and declared requirements. Profiles hold account selections. */
 import { Schema } from "effect";
 import { SkillDefinitionInvalid } from "./skill-source.ts";
 import { StorageError } from "./shared.ts";
@@ -69,7 +69,7 @@ export const AppCopySnapshot = Schema.Struct({
   activation: Schema.Literals(["deploy", "save"]),
 });
 export type AppCopySnapshot = typeof AppCopySnapshot.Type;
-/** One independent app, its source repository, selected accounts, and optional active deployment. */
+/** One independent app, its source repository and optional active deployment. */
 export const App = Schema.Struct({
   id: AppId,
   slug: AppSlug,
@@ -80,7 +80,6 @@ export const App = Schema.Struct({
   activeDeployment: Schema.NullOr(DeploymentId),
   copiedFrom: Schema.NullOr(AppCopyOrigin),
   requirements: AppRequirements,
-  accounts: SelectedAccounts,
   createdAt: Schema.Date,
 });
 
@@ -166,7 +165,6 @@ export class AccountSelectionInvalid extends Schema.TaggedError<AccountSelection
       "expected_many",
       "provider_mismatch",
       "duplicate_account",
-      "profile_bound",
     ]),
   },
   { httpApiStatus: 422, description: "Select accounts that match the app requirement." },
@@ -225,7 +223,6 @@ export const AppInputs = {
     slug: Schema.optional(AppSlug),
     account: Schema.optional(AccountId),
   }),
-  update: Schema.Struct({ app: AppId, accounts: SelectedAccounts }),
   activate: Schema.Struct({
     app: AppId,
     deployment: DeploymentId,
@@ -322,7 +319,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError, AppNotFound],
     }).annotate(
       OpenApi.Description,
-      "Inspect a configured app, its account requirements and saved selections.",
+      "Inspect an app and its account requirements. Read profiles for saved selections.",
     ),
   )
   .add(
@@ -339,7 +336,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError],
     }).annotate(
       OpenApi.Description,
-      "List configured apps, requirements and saved selections. Owner is an optional lookup filter.",
+      "List apps and their requirements. Owner is an optional lookup filter.",
     ),
   )
   // Idempotent removal of one configured copy; accounts and retained code are independent.
@@ -351,7 +348,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError, AppWebhooksActive, AppWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete one configured app and its selections. Saved accounts, retained deployments and other copies are kept. Repeating removal is safe.",
+      "Delete one app and its profiles. Saved accounts, retained deployments and other copies are kept. Repeating removal is safe.",
     ),
   )
   .add(
@@ -369,19 +366,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
     ),
   )
   .add(
-    HttpApiEndpoint.patch("update", "/v1/apps/:app", {
-      params: appParams,
-      payload: Schema.Struct({ accounts: AppInputs.update.fields.accounts }),
-      success: App,
-      // Validate all supplied slots/accounts before replacing the map. Missing
-      // selections are allowed during setup; tools fail AccountRequired until ready.
-      error: [StorageError, AppNotFound, AppNotDeployed, AccountNotFound, AccountSelectionInvalid],
-    }).annotate(
-      OpenApi.Description,
-      "Replace the whole account selection map. Include every slot to keep. Each value is an account ID, or an array of IDs for a many requirement. Omitted slots become unconfigured.",
-    ),
-  )
-  .add(
     HttpApiEndpoint.post("activate", "/v1/apps/:app/activate", {
       params: appParams,
       query: ownerQuery,
@@ -390,8 +374,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         expectedDeployment: AppInputs.activate.fields.expectedDeployment,
       }),
       success: App,
-      // Same code lineage only. Validate saved selections against the candidate
-      // requirements before changing the pointer; no migration or auto-rebinding.
+      // Same code lineage only. Profile setup becomes pending; selections remain unchanged.
       error: [
         StorageError,
         AppNotFound,
@@ -403,7 +386,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Activate a retained deployment in the same code lineage. Existing account selections must remain compatible. expectedDeployment rejects a concurrent activation.",
+      "Activate a retained deployment in the same code lineage. Profile setup becomes pending; calls validate selections against the active requirements. expectedDeployment rejects a concurrent activation.",
     ),
   )
   .add(

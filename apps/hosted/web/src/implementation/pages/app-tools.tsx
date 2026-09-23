@@ -36,7 +36,7 @@ export function AppTools({
         This profile is disabled. Enable it from the profile menu to use its tools.
       </p>
     );
-  const readiness = appToolReadiness(app, accounts);
+  const readiness = appToolReadiness(app, profile?.accounts ?? {}, accounts);
   if (readiness.state === "not-deployed")
     return <p className="p-5 text-sm text-muted-foreground">Deploy this app to load its tools.</p>;
   if (readiness.state !== "ready")
@@ -63,14 +63,14 @@ export function AppTools({
         />
       )}
       <ToolBrowser
-        key={`${app.id}:${app.activeDeployment}:${profile?.id}:${profile?.revision}:${JSON.stringify(app.accounts)}`}
+        key={`${app.id}:${app.activeDeployment}:${profile?.id}:${profile?.revision}:${JSON.stringify(profile?.accounts ?? {})}`}
         query={toolListAtom({
           organization,
           app: app.id,
           profile: profile?.id,
           expectedProfileRevision: profile?.revision,
           deployment: app.activeDeployment ?? undefined,
-          accounts: JSON.stringify(app.accounts),
+          accounts: JSON.stringify(profile?.accounts ?? {}),
         })}
         Failure={HostedFailure}
         selected={selected}

@@ -82,14 +82,25 @@ const fixture = Effect.gen(function* () {
     label: "First",
     fields: Redacted.make({ token: "synthetic-secret" }),
   });
-  yield* executor.apps.update({ app: app.id, accounts: { service: account.id } });
-  return { options, executor, app, account };
+  const profile = yield* executor.apps.profiles.create({
+    app: app.id,
+    owner,
+    subject: "alice",
+    idempotencyKey: "test",
+    accounts: { service: account.id },
+  });
+  return { options, executor, app, account, profile };
 });
 const services = Layer.mergeAll(NodeServices.layer, BrowserCrypto.layer, pgliteLayer());
 
 const pending = (f: Effect.Success<typeof fixture>, name = "write") =>
   f.executor.tools
-    .call({ app: f.app.id, tool: ToolName.make(`mutations.${name}`), input: {} })
+    .call({
+      profile: f.profile.id,
+      app: f.app.id,
+      tool: ToolName.make(`mutations.${name}`),
+      input: {},
+    })
     .pipe(
       Effect.map((result) => {
         assert.equal(result.status, "approval-required");
@@ -117,10 +128,14 @@ test(
 
           assert.equal(JSON.stringify(request).includes("synthetic-secret"), false);
           assert.deepEqual(
-            yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+            yield* f.executor.tools.call({
+              profile: f.profile.id,
+              app: f.app.id,
+              tool: ToolName.make("mutations.count"),
+            }),
             { status: "completed", value: 0 },
           );
-          const rows = yield* f.options.storage.orm("3.0.0").findMany("toolApprovals", {});
+          const rows = yield* f.options.storage.orm("4.0.0").findMany("toolApprovals", {});
           assert.equal(rows.length, 1);
           assert.ok(rows[0]);
           assert.equal(
@@ -152,7 +167,7 @@ test(
             },
           });
           const marker = yield* f.options.storage
-            .orm("3.0.0")
+            .orm("4.0.0")
             .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
           assert.ok(marker);
           assert.equal(marker.status, "consumed");
@@ -177,6 +192,7 @@ test(
           );
           assert.deepEqual(
             yield* f.executor.tools.call({
+              profile: f.profile.id,
               app: f.app.id,
               deployment: request.invocation.deployment,
               tool: ToolName.make("mutations.count"),
@@ -203,7 +219,7 @@ test(
           });
           assert.deepEqual(denied, { status: "denied", requestId: request.requestId });
           const marker = yield* f.options.storage
-            .orm("3.0.0")
+            .orm("4.0.0")
             .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
           assert.ok(marker);
           assert.equal(marker.encrypted.byteLength, 0);
@@ -258,12 +274,16 @@ test(
           });
           assert.equal(
             yield* f.options.storage
-              .orm("3.0.0")
+              .orm("4.0.0")
               .findFirst("toolApprovals", { where: (b) => b("id", "=", expired.requestId) }),
             null,
           );
           assert.deepEqual(
-            yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+            yield* f.executor.tools.call({
+              profile: f.profile.id,
+              app: f.app.id,
+              tool: ToolName.make("mutations.count"),
+            }),
             { status: "completed", value: 0 },
           );
         }).pipe(Effect.provide(services)),
@@ -286,7 +306,12 @@ for (const change of ["selection", "account-removed", "app-removed"] as const) {
               label: "Other",
               fields: Redacted.make({ token: "other" }),
             });
-            yield* f.executor.apps.update({ app: f.app.id, accounts: { service: other.id } });
+            yield* f.executor.apps.profiles.update({
+              app: f.app.id,
+              profile: f.profile.id,
+              expectedRevision: f.profile.revision,
+              accounts: { service: other.id },
+            });
           } else if (change === "account-removed")
             yield* f.executor.accounts.remove({ account: f.account.id });
           else yield* f.executor.apps.remove({ app: f.app.id });
@@ -339,7 +364,7 @@ test("concurrent resumes from independent SDK handles dispatch once", { timeout:
           .pipe(Effect.forkChild);
         yield* Deferred.await(entered);
         const marker = yield* f.options.storage
-          .orm("3.0.0")
+          .orm("4.0.0")
           .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
         assert.ok(marker);
         assert.equal(marker.status, "consumed");
@@ -395,7 +420,11 @@ test(
             { status: "already-consumed", requestId: failedRequest.requestId },
           );
           assert.deepEqual(
-            yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+            yield* f.executor.tools.call({
+              profile: f.profile.id,
+              app: f.app.id,
+              tool: ToolName.make("mutations.count"),
+            }),
             { status: "completed", value: 1 },
           );
           const request = yield* pending(f);
@@ -491,8 +520,14 @@ test(
                 label: "First",
                 fields: Redacted.make({ token: "synthetic" }),
               });
-              yield* executor.apps.update({ app: app.id, accounts: { service: account.id } });
-              const result = yield* executor.tools.call({ app: app.id, tool });
+              const profile = yield* executor.apps.profiles.create({
+                app: app.id,
+                owner,
+                subject: "alice",
+                idempotencyKey: "test",
+                accounts: { service: account.id },
+              });
+              const result = yield* executor.tools.call({ app: app.id, profile: profile.id, tool });
               assert.equal(result.status, "approval-required");
               if (result.status !== "approval-required") throw new Error("Expected approval");
               return result;
@@ -529,7 +564,7 @@ test(
         Effect.gen(function* () {
           const f = yield* fixture;
           const request = yield* pending(f);
-          const db = f.options.storage.orm("3.0.0");
+          const db = f.options.storage.orm("4.0.0");
           assert.ok(
             Schema.is(RequestInvalid)(
               yield* Effect.flip(
@@ -544,7 +579,11 @@ test(
           );
           assert.ok(
             Schema.is(RequestInvalid)(
-              yield* Effect.flip(db.transaction(f.executor.tools.call({ app: f.app.id, tool }))),
+              yield* Effect.flip(
+                db.transaction(
+                  f.executor.tools.call({ profile: f.profile.id, app: f.app.id, tool }),
+                ),
+              ),
             ),
           );
           const result = yield* f.executor.tools.resume({
@@ -553,7 +592,11 @@ test(
           });
           assert.equal(result.status, "completed");
           assert.deepEqual(
-            yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+            yield* f.executor.tools.call({
+              profile: f.profile.id,
+              app: f.app.id,
+              tool: ToolName.make("mutations.count"),
+            }),
             { status: "completed", value: 1 },
           );
         }).pipe(Effect.provide(services)),
@@ -597,15 +640,25 @@ test(
             owner: foreignOwner,
             name: "Other",
           });
-          yield* f.executor.apps.update({ app: other.id, accounts: { service: f.account.id } });
-          const foreign = yield* f.executor.tools.call({ app: other.id, tool });
+          const otherProfile = yield* f.executor.apps.profiles.create({
+            app: other.id,
+            owner: foreignOwner,
+            subject: "other",
+            idempotencyKey: "test",
+            accounts: { service: f.account.id },
+          });
+          const foreign = yield* f.executor.tools.call({
+            app: other.id,
+            profile: otherProfile.id,
+            tool,
+          });
           assert.equal(foreign.status, "approval-required");
           if (foreign.status !== "approval-required") throw new Error("Expected pending");
           const live = yield* atTime(expired.expiresAt - 1, pending(f));
           const afterExpiry =
             Math.max(expired.expiresAt, consumed.expiresAt, foreign.expiresAt) + 1;
           yield* atTime(afterExpiry, f.executor.tools.pruneApprovals({ owner }));
-          const rows = yield* f.options.storage.orm("3.0.0").findMany("toolApprovals", {});
+          const rows = yield* f.options.storage.orm("4.0.0").findMany("toolApprovals", {});
           assert.deepEqual(
             new Set(rows.map(({ id }) => id)),
             new Set([live.requestId, foreign.requestId]),
@@ -625,13 +678,13 @@ test(
           yield* Effect.promise(() => promise.tools.pruneApprovals({ owner: foreignOwner }));
           yield* atTime(afterExpiry, f.executor.tools.pruneApprovals());
           assert.deepEqual(
-            (yield* f.options.storage.orm("3.0.0").findMany("toolApprovals", {})).map(
+            (yield* f.options.storage.orm("4.0.0").findMany("toolApprovals", {})).map(
               ({ id }) => id,
             ),
             [live.requestId],
           );
           yield* atTime(live.expiresAt, f.executor.tools.pruneApprovals());
-          assert.deepEqual(yield* f.options.storage.orm("3.0.0").findMany("toolApprovals", {}), []);
+          assert.deepEqual(yield* f.options.storage.orm("4.0.0").findMany("toolApprovals", {}), []);
         }).pipe(Effect.provide(services)),
       ),
     ),
@@ -653,7 +706,7 @@ test("saving another approval prunes expired payloads and markers", { timeout: 2
           pending(f),
         );
         assert.deepEqual(
-          (yield* f.options.storage.orm("3.0.0").findMany("toolApprovals", {})).map(({ id }) => id),
+          (yield* f.options.storage.orm("4.0.0").findMany("toolApprovals", {})).map(({ id }) => id),
           [fresh.requestId],
         );
       }).pipe(Effect.provide(services)),
@@ -680,11 +733,15 @@ test("simultaneous pending resumes compete for one consumption", { timeout: 20_0
         assert.equal(results.filter((result) => result.status === "completed").length, 1);
         assert.equal(results.filter((result) => result.status === "already-consumed").length, 7);
         assert.deepEqual(
-          yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+          yield* f.executor.tools.call({
+            profile: f.profile.id,
+            app: f.app.id,
+            tool: ToolName.make("mutations.count"),
+          }),
           { status: "completed", value: 1 },
         );
         const row = yield* f.options.storage
-          .orm("3.0.0")
+          .orm("4.0.0")
           .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
         assert.ok(row);
         assert.equal(row.encrypted.byteLength, 0);
@@ -718,12 +775,16 @@ test(
             },
           );
           const row = yield* f.options.storage
-            .orm("3.0.0")
+            .orm("4.0.0")
             .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
           assert.ok(row);
           assert.equal(row.encrypted.byteLength, 0);
           assert.deepEqual(
-            yield* f.executor.tools.call({ app: f.app.id, tool: ToolName.make("mutations.count") }),
+            yield* f.executor.tools.call({
+              profile: f.profile.id,
+              app: f.app.id,
+              tool: ToolName.make("mutations.count"),
+            }),
             { status: "completed", value: 0 },
           );
         }).pipe(Effect.provide(services)),
@@ -765,7 +826,7 @@ test(
             );
           }
           const row = yield* f.options.storage
-            .orm("3.0.0")
+            .orm("4.0.0")
             .findFirst("toolApprovals", { where: (b) => b("id", "=", request.requestId) });
           assert.equal(row?.status, "pending");
           const result = yield* f.executor.tools.resume({

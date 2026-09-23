@@ -60,13 +60,7 @@ export class ProfileConflict extends Schema.TaggedError<ProfileConflict>()(
   "ProfileConflict",
   {
     profile: ProfileId,
-    reason: Schema.Literals([
-      "revision",
-      "idempotency",
-      "inactive",
-      "active-resources",
-      "fixed-binding",
-    ]),
+    reason: Schema.Literals(["revision", "idempotency", "inactive", "active-resources"]),
   },
   { httpApiStatus: 409 },
 ) {}

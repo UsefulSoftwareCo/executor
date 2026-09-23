@@ -151,8 +151,10 @@ async function value(server: Server, code: string) {
   return result.execution.value;
 }
 const call = (path: string, input: unknown) => `return await ${path}(${JSON.stringify(input)})`;
-const appPath = (slug: string) =>
-  /^[a-z][a-z0-9]*$/.test(slug) ? `tools.${slug}` : `tools[${JSON.stringify(slug)}]`;
+const appPath = (slug: string, profile?: string) => {
+  const app = /^[a-z][a-z0-9]*$/.test(slug) ? `tools.${slug}` : `tools[${JSON.stringify(slug)}]`;
+  return profile === undefined ? app : `${app}.profiles[${JSON.stringify(profile)}]`;
+};
 
 const reader = (server: Server, token = apiKey, origin = server.url.origin) =>
   Effect.runPromise(
@@ -378,6 +380,17 @@ async function verify(directory: string, source: string) {
       ),
       [],
     );
+    const firstProfile = await Effect.runPromise(
+      sdk.appProfiles.create({
+        params: { app: first.id },
+        payload: {
+          owner: OwnerId.make("mcp-test"),
+          subject: "local",
+          accounts: {},
+          idempotencyKey: "first",
+        },
+      }),
+    );
     const provider = first.requirements.accounts.service?.provider;
     assert.ok(provider);
     const incomplete = await execute(server, "return 1");
@@ -390,7 +403,10 @@ async function verify(directory: string, source: string) {
       await value(
         server,
         call(`${executor}.mutations.accountConnect_issue`, {
-          body: { owner: "alice", target: { app: first.id, requirement: "service" } },
+          body: {
+            owner: "alice",
+            target: { app: first.id, profile: firstProfile.id, requirement: "service" },
+          },
         }),
       ),
     );
@@ -414,7 +430,12 @@ async function verify(directory: string, source: string) {
       ),
     );
     assert.equal(pending.state.status, "pending");
-    assert.deepEqual(pending.target, { app: first.id, requirement: "service", name: "First" });
+    assert.deepEqual(pending.target, {
+      app: first.id,
+      profile: firstProfile.id,
+      requirement: "service",
+      name: "First",
+    });
     for (const [body, origin, expected] of [
       [grant, "https://foreign.example", 403],
       [{ ...grant, token: "00".repeat(32) }, server.url.origin, 401],
@@ -462,8 +483,14 @@ async function verify(directory: string, source: string) {
     assert.deepEqual(
       Schema.decodeUnknownSync(
         Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.String) }),
-      )(await value(server, call(`${executor}.queries.apps_get`, { path: { app: first.id } })))
-        .accounts,
+      )(
+        await value(
+          server,
+          call(`${executor}.queries.appProfiles_get`, {
+            path: { app: first.id, profile: firstProfile.id },
+          }),
+        ),
+      ).accounts,
       { service: accountA.id },
     );
     // Manual webhook setup is generated too; its private form remains outside agent discovery.
@@ -474,7 +501,7 @@ async function verify(directory: string, source: string) {
         server,
         call(`${executor}.mutations.webhooks_create`, {
           path: { app: first.id },
-          body: { key: "events", name: "events", config: {} },
+          body: { profile: firstProfile.id, key: "events", name: "events", config: {} },
         }),
       ),
     );
@@ -497,6 +524,17 @@ async function verify(directory: string, source: string) {
           body: { from: first.id, owner: "mcp-test", name: "Second" },
         }),
       ),
+    );
+    const secondProfile = await Effect.runPromise(
+      sdk.appProfiles.create({
+        params: { app: second.id },
+        payload: {
+          owner: OwnerId.make("mcp-test"),
+          subject: "local",
+          accounts: {},
+          idempotencyKey: "second",
+        },
+      }),
     );
     assert.notEqual(second.code, first.code);
     assert.notEqual(second.activeDeployment, first.activeDeployment);
@@ -531,18 +569,34 @@ async function verify(directory: string, source: string) {
     assert.deepEqual(
       Schema.decodeUnknownSync(
         Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.String) }),
-      )(await value(server, call(`${executor}.queries.apps_get`, { path: { app: second.id } })))
-        .accounts,
+      )(
+        await value(
+          server,
+          call(`${executor}.queries.appProfiles_get`, {
+            path: { app: second.id, profile: secondProfile.id },
+          }),
+        ),
+      ).accounts,
       {},
     );
     await value(
       server,
-      call(`${executor}.mutations.apps_update`, {
-        path: { app: second.id },
-        body: { accounts: { service: accountB.id } },
+      call(`${executor}.mutations.appProfiles_update`, {
+        path: { app: second.id, profile: secondProfile.id },
+        body: {
+          expectedRevision: (
+            await Effect.runPromise(
+              sdk.appProfiles.get({
+                params: { app: second.id, profile: secondProfile.id },
+                query: {},
+              }),
+            )
+          ).revision,
+          accounts: { service: accountB.id },
+        },
       }),
     );
-    const program = `return await Promise.all([${appPath(first.slug)}.mutations.identify({message: "hello"}), ${appPath(second.slug)}.mutations.identify({message: "hello"})])`;
+    const program = `return await Promise.all([${appPath(first.slug, firstProfile.id)}.mutations.identify({message: "hello"}), ${appPath(second.slug, secondProfile.id)}.mutations.identify({message: "hello"})])`;
     const expected = [
       { account: accountA.id, identity: "first" },
       { account: accountB.id, identity: "second" },
@@ -555,7 +609,9 @@ async function verify(directory: string, source: string) {
       (
         await execute(
           server,
-          call(`${appPath(first.slug)}.mutations.page99`, { message: "last page" }),
+          call(`${appPath(first.slug, firstProfile.id)}.mutations.page99`, {
+            message: "last page",
+          }),
         )
       ).execution.ok,
       true,
@@ -564,10 +620,14 @@ async function verify(directory: string, source: string) {
       await value(server, 'return await tools.search({ query: "secondOnly" })'),
     );
     assert.ok(
-      dynamic.items.some((tool) => tool.path === `${appPath(second.slug)}.mutations.secondOnly`),
+      dynamic.items.some(
+        (tool) => tool.path === `${appPath(second.slug, secondProfile.id)}.mutations.secondOnly`,
+      ),
     );
     assert.ok(
-      !dynamic.items.some((tool) => tool.path === `${appPath(first.slug)}.mutations.secondOnly`),
+      !dynamic.items.some(
+        (tool) => tool.path === `${appPath(first.slug, firstProfile.id)}.mutations.secondOnly`,
+      ),
     );
     const firstPage = Schema.decodeUnknownSync(SearchResult)(
       await value(server, "return await tools.search({ limit: 1 })"),
@@ -619,7 +679,9 @@ async function verify(directory: string, source: string) {
     });
     assert.equal(renameManaged.status, 403);
     await renameManaged.body?.cancel();
-    const managedAccount = managed.accounts.executor;
+    const managedProfile = inventory.profiles.find((profile) => profile.app === managed.id);
+    assert.ok(managedProfile);
+    const managedAccount = managedProfile.accounts.executor;
     assert.ok(typeof managedAccount === "string");
     const params = { account: managedAccount };
     assert.equal((await Effect.runPromise(read.dashboard.account({ params }))).canManage, false);
@@ -668,7 +730,7 @@ async function verify(directory: string, source: string) {
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
           owner: "executor-local",
-          target: { app: managed.id, requirement: "executor" },
+          target: { app: managed.id, profile: managedProfile.id, requirement: "executor" },
         }),
       });
       assert.equal(blocked.status, expected);
@@ -676,7 +738,7 @@ async function verify(directory: string, source: string) {
     }
     for (const destination of [
       {},
-      { provider, target: { app: first.id, requirement: "service" } },
+      { provider, target: { app: first.id, profile: firstProfile.id, requirement: "service" } },
     ]) {
       const invalid = await fetch(new URL("/v1/account-connections", server.url), {
         method: "POST",
@@ -764,7 +826,10 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     const managedAfter = upgraded.apps.find((app) => app.id === managed.id);
     assert.ok(managedAfter);
     assert.ok(managedAfter.activeDeployment !== null);
-    assert.equal(managedAfter.accounts.executor, managedAccount);
+    assert.equal(
+      upgraded.profiles.find((profile) => profile.id === managedProfile.id)?.accounts.executor,
+      managedAccount,
+    );
     assert.notEqual(managedAfter.activeDeployment, previous.app.activeDeployment);
     const generatedSource = await Effect.runPromise(
       (await reader(server)).dashboard.source({
@@ -810,7 +875,12 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     );
     assert.equal(
       Schema.decodeUnknownSync(App)(
-        await value(server, call(`${executor}.queries.apps_get`, { path: { app: first.id } })),
+        await value(
+          server,
+          call(`${executor}.queries.appProfiles_get`, {
+            path: { app: first.id, profile: firstProfile.id },
+          }),
+        ),
       ).activeDeployment,
       first.activeDeployment,
     );
@@ -841,7 +911,7 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     await browser.body?.cancel();
     const bad = await execute(
       server,
-      call(`${appPath(first.slug)}.mutations.identify`, { message: 123 }),
+      call(`${appPath(first.slug, firstProfile.id)}.mutations.identify`, { message: 123 }),
     );
     assert.equal(bad.execution.ok, false);
     if (!bad.execution.ok) assert.equal(bad.execution.error.message, "InputInvalid");
@@ -910,7 +980,7 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
       toolCalls: [],
     });
 
-    await verifyCancellation(server, `${appPath(first.slug)}.mutations.wait`);
+    await verifyCancellation(server, `${appPath(first.slug, firstProfile.id)}.mutations.wait`);
     const renamed = await value(
       server,
       call(`${executor}.mutations.accounts_update`, {
@@ -933,16 +1003,28 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
       Schema.decodeUnknownSync(Identity)(
         await value(
           server,
-          call(`${appPath(first.slug)}.mutations.identify`, { message: "updated" }),
+          call(`${appPath(first.slug, firstProfile.id)}.mutations.identify`, {
+            message: "updated",
+          }),
         ),
       ),
       { account: accountA.id, identity: "second" },
     );
     await value(
       server,
-      call(`${executor}.mutations.apps_update`, {
-        path: { app: second.id },
-        body: { accounts: {} },
+      call(`${executor}.mutations.appProfiles_update`, {
+        path: { app: second.id, profile: secondProfile.id },
+        body: {
+          expectedRevision: (
+            await Effect.runPromise(
+              sdk.appProfiles.get({
+                params: { app: second.id, profile: secondProfile.id },
+                query: {},
+              }),
+            )
+          ).revision,
+          accounts: {},
+        },
       }),
     );
     assert.equal(
@@ -956,9 +1038,19 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     );
     await value(
       server,
-      call(`${executor}.mutations.apps_update`, {
-        path: { app: second.id },
-        body: { accounts: { service: accountB.id } },
+      call(`${executor}.mutations.appProfiles_update`, {
+        path: { app: second.id, profile: secondProfile.id },
+        body: {
+          expectedRevision: (
+            await Effect.runPromise(
+              sdk.appProfiles.get({
+                params: { app: second.id, profile: secondProfile.id },
+                query: {},
+              }),
+            )
+          ).revision,
+          accounts: { service: accountB.id },
+        },
       }),
     );
     await value(
@@ -995,14 +1087,14 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     );
     const calls = await execute(
       server,
-      `await ${appPath(first.slug)}.mutations.identify({message:"1"}); await ${appPath(first.slug)}.mutations.identify({message:"2"}); return await ${appPath(first.slug)}.mutations.identify({message:"3"})`,
+      `await ${appPath(first.slug, firstProfile.id)}.mutations.identify({message:"1"}); await ${appPath(first.slug, firstProfile.id)}.mutations.identify({message:"2"}); return await ${appPath(first.slug, firstProfile.id)}.mutations.identify({message:"3"})`,
     );
     assert.equal(calls.execution.ok, false);
     if (!calls.execution.ok) assert.equal(calls.execution.error.kind, "ToolCallLimitExceeded");
     assert.equal(calls.execution.toolCalls.length, 2);
     const timeout = await execute(
       server,
-      `await ${appPath(first.slug)}.mutations.identify({message:"start"}); while (true) {}`,
+      `await ${appPath(first.slug, firstProfile.id)}.mutations.identify({message:"start"}); while (true) {}`,
     );
     assert.equal(timeout.execution.ok, false);
     if (!timeout.execution.ok) assert.equal(timeout.execution.error.kind, "TimeoutExceeded");

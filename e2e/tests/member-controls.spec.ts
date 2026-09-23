@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 /** Members keep a stable app overview and discover restricted actions without gaining authority. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -60,10 +61,12 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               ).toBe(200);
           }).pipe(Effect.orDie),
         );
+        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
             requirement: "service",
+            profile: profile.id,
             destination: { kind: "shared", audience: { kind: "everyone" } },
           }),
         );

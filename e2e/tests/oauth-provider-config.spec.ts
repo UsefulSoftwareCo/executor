@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -41,10 +42,12 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
+            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
               yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
                 requirement: "service",
+                profile: profile.id,
               }),
             );
             return `${prefix}/connections/${connection.id}/oauth/start`;

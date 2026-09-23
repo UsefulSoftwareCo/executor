@@ -118,7 +118,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: [StorageError, AccountNotFound],
     }).annotate(
       OpenApi.Description,
-      "Rename a saved account. Its ID, credentials and app selections stay the same.",
+      "Rename a saved account. Its ID, credentials and profile selections stay the same.",
     ),
   )
   .add(
@@ -148,7 +148,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete a saved account and its local credentials. Inspect affected app selections and confirm the intended account first. Does not revoke access at the provider. To stop using the account in only one app, update that app selection instead.",
+      "Delete a saved account and its local credentials. Inspect affected profile selections and confirm the intended account first. Does not revoke access at the provider. To stop using the account in only one app, update that profile selection instead.",
     ),
   )
   .add(

@@ -236,7 +236,19 @@ layer(TestLive, { excludeTestServices: true })("Profiles", (it) => {
         ]);
         expect(
           (yield* api.request(agent, "PATCH", path, { accounts: { sink: sinkA } })).status,
-        ).toBe(422);
+        ).toBe(404);
+        const withoutProfile = yield* api.request(agent, "POST", "/v1/tools/call", {
+          app: app.id,
+          tool: "queries.inspect",
+          input: {},
+        });
+        expect(withoutProfile.status).toBe(409);
+        expect(withoutProfile.body).toMatchObject({ _tag: "AccountRequired" });
+        const targetlessProfile = yield* api.request(agent, "POST", "/v1/account-connections", {
+          owner,
+          target: { app: app.id, requirement: "sink" },
+        });
+        expect(targetlessProfile.status).toBe(400);
         const mcp = yield* McpClient;
         const client = yield* mcp.connect(target.apiKey, "profile-targets");
         const discovery = yield* client.use(

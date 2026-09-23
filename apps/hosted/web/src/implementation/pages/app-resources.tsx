@@ -24,7 +24,7 @@ export function AppResources({
   if (view === "workflows") {
     const bindings = workflowBindings({
       ...key,
-      accounts: JSON.stringify(context.app.accounts),
+      accounts: JSON.stringify(context.accounts),
       deployment: context.app.activeDeployment ?? undefined,
       expectedProfileRevision: context.profile?.revision,
     });

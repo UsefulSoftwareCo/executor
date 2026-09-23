@@ -124,7 +124,6 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       deploy: (input) => run(AppInputs.deploy, input, executor.apps.deploy),
       get: (input) => run(AppInputs.get, input, executor.apps.get),
       list: (input = {}) => run(AppInputs.list, input, executor.apps.list),
-      update: (input) => run(AppInputs.update, input, executor.apps.update),
       remove: (input) => run(AppInputs.get, input, executor.apps.remove),
       activate: (input) => run(AppInputs.activate, input, executor.apps.activate),
       rename: (input) => run(AppInputs.rename, input, executor.apps.rename),

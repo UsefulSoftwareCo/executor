@@ -564,7 +564,15 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               actor = user.id,
             ) =>
               Effect.gen(function* () {
+                const profile = yield* executor.apps.profiles.create({
+                  app: app.id,
+                  owner: app.owner,
+                  subject: actor,
+                  idempotencyKey: "oauth-test",
+                  accounts: {},
+                });
                 const connection = yield* Accounts.connectAccount(app.owner, {
+                  profile: profile.id,
                   app: app.id,
                   requirement: "service",
                   destination: { kind: "shared", audience: { kind: "everyone" } },
@@ -615,7 +623,8 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                   ),
                 );
                 assert.equal(
-                  (yield* executor.apps.get({ app: app.id })).accounts.service,
+                  (yield* executor.apps.profiles.get({ app: app.id, profile: profile.id })).accounts
+                    .service,
                   account.id,
                 );
                 return account;

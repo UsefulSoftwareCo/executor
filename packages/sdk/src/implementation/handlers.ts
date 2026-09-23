@@ -96,7 +96,6 @@ export const executorHandlers = (executor: Executor) =>
         .handle("rename", ({ params, query, payload }) =>
           executor.apps.rename({ ...params, ...query, ...payload }),
         )
-        .handle("update", ({ params, payload }) => executor.apps.update({ ...params, ...payload }))
         .handle("activate", ({ params, query, payload }) =>
           executor.apps.activate({ ...params, ...query, ...payload }),
         )

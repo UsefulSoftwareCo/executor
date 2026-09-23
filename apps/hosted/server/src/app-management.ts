@@ -2,12 +2,7 @@ import { SqlClient } from "effect/unstable/sql";
 import { GroupDatabase } from "./contracts/groups.ts";
 import { CurrentUserId } from "./contracts/auth.ts";
 import { OrganizationId } from "./contracts/organization.ts";
-import {
-  resourceAuthority,
-  applicationAccess,
-  accountAccess,
-  safeAppMetadata,
-} from "./implementation/resource-policy.ts";
+import { resourceAuthority, applicationAccess } from "./implementation/resource-policy.ts";
 import { StorageError, type App } from "@executor-js/sdk/core";
 import type { AppCapabilities } from "@executor-js/app-management/contracts";
 import { Context } from "effect";
@@ -35,20 +30,10 @@ export const hostedAppCapabilities = Effect.gen(function* () {
         return yield* new AppAccessDenied({ reason: "forbidden" });
       const actor = yield* resourceAuthority(organization, identity.actor);
       const access = yield* applicationAccess(app.id, actor);
-      const ids = Object.values(app.accounts).flatMap((selection) =>
-        typeof selection === "string" ? [selection] : selection,
-      );
-      const denied = yield* Effect.filter(ids, (id) =>
-        accountAccess(id, actor).pipe(
-          Effect.map((access) => !access.canUse),
-          Effect.catchTag("OrganizationForbidden", () => Effect.succeed(true)),
-        ),
-      );
       return {
         visible: access.canUse,
         manage: access.canManage,
-        edit: access.canManage && denied.length === 0,
-        accounts: (yield* safeAppMetadata(app, actor)).accounts,
+        edit: access.canManage,
       } satisfies AppCapabilities;
     }).pipe(
       Effect.provideService(GroupDatabase, Effect.succeed(sql)),

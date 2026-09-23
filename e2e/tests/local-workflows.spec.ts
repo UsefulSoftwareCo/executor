@@ -6,6 +6,7 @@ import { Api, body, type Session } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import {
   workflowFiles,
   WorkflowRun as Run,
@@ -77,6 +78,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const { app } = yield* body(Deployment, deployed);
         resources.apps.push(app.id);
         const path = `/v1/apps/${app.id}`;
+        const profile = yield* createProfile(agent, path, { owner, subject: "local" });
         const addAccount = (token: string) =>
           Effect.gen(function* () {
             const created = yield* api.request(agent, "POST", "/v1/accounts", {
@@ -90,7 +92,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             const account = (yield* body(Resource, created)).id;
             resources.accounts.push(account);
             expect(
-              (yield* api.request(agent, "PATCH", path, { accounts: { service: account } })).status,
+              (yield* selectProfileAccounts(agent, path, profile.id, { service: account })).status,
             ).toBe(200);
             return account;
           });
@@ -102,7 +104,11 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             input: {},
           })).status,
         ).toBeGreaterThanOrEqual(400);
-        const definitions = yield* api.request(agent, "GET", `${path}/workflows`);
+        const definitions = yield* api.request(
+          agent,
+          "GET",
+          `${path}/workflows?profile=${profile.id}`,
+        );
         expect(definitions.status).toBe(200);
         expect(
           (yield* body(Schema.Array(Schema.Struct({ name: Schema.String })), definitions)).map(
@@ -112,6 +118,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const start = (workflow: string, input: Schema.Json = {}, key: string = randomUUID()) =>
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", `${path}/workflow-runs`, {
+              profile: profile.id,
               workflow,
               input,
               key,
@@ -141,6 +148,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", "/v1/tools/call", {
               app: app.id,
+              profile: profile.id,
               tool,
               input,
             });
@@ -158,6 +166,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         expect((yield* start("process", { label: "pinned" }, name)).id).toBe(run.id);
         expect(
           (yield* api.request(agent, "POST", `${path}/workflow-runs`, {
+            profile: profile.id,
             workflow: "process",
             input: { label: "other" },
             key: name,
@@ -213,7 +222,11 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Schema.Struct({ items: Schema.Array(Run) }),
         )(yield* call("queries.history"));
         expect(history.items.length).toBe(1);
-        const listed = yield* api.request(agent, "GET", `${path}/workflow-runs?limit=1`);
+        const listed = yield* api.request(
+          agent,
+          "GET",
+          `${path}/workflow-runs?limit=1&profile=${profile.id}`,
+        );
         expect(listed.status).toBe(200);
         expect(
           (yield* body(Schema.Struct({ items: Schema.Array(Run), next: Schema.String }), listed))

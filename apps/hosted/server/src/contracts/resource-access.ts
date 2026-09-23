@@ -1,4 +1,4 @@
-import { ProfileId } from "@executor-js/sdk/core";
+import { Profile, ProfileId, ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved bindings. */
 import {
@@ -81,7 +81,7 @@ export const ConnectionAccess = Schema.Struct({
     Schema.Struct({
       app: AppId,
       requirement: Schema.NonEmptyString,
-      profile: Schema.optional(ProfileId),
+      profile: ProfileId,
     }).pipe(Schema.encodeKeys({ profile: "installation" })),
   ),
 });
@@ -109,11 +109,14 @@ const errors = [
   AccountSelectionInvalid,
   AccountNotFound,
   AppNotFound,
+  ...ProfileErrors,
 ];
-/** Normal lists show use grants; management mode is explicit and never grants execution. */
+/** Profiles belong to the caller; app metadata contains no account selections. */
 export const ResourceDirectory = Schema.Struct({
   pendingApp: Schema.Boolean,
-  apps: Schema.Array(Schema.Struct({ app: App, access: AppAccess })),
+  apps: Schema.Array(
+    Schema.Struct({ app: App, access: AppAccess, profiles: Schema.Array(Profile) }),
+  ),
   accounts: Schema.Array(
     Schema.Struct({ account: Account, access: AccountAccess, provider: Provider }),
   ),

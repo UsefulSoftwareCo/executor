@@ -151,9 +151,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
           account: mailB,
           extra: [],
         });
-        expect((yield* api.request(actors.member, "GET", path)).body).toMatchObject({
-          accounts: {},
-        });
+        expect((yield* api.request(actors.member, "GET", path)).body).not.toHaveProperty(
+          "accounts",
+        );
         for (const [actor, other] of [
           [actors.member, bob.id],
           [actors.admin, alice.id],

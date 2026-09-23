@@ -15,7 +15,7 @@ const App = Schema.Struct({
   name: Schema.String,
   slug: Schema.String,
   activeDeployment: Schema.String,
-  accounts: Schema.Record(Schema.String, Schema.String),
+  accounts: Schema.optional(Schema.Never),
 });
 const Inventory = Schema.Struct({
   apps: Schema.Array(App),
@@ -33,6 +33,127 @@ const Source = Schema.Struct({
 });
 const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
 layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it) => {
+  it.effect(scenarios.executorAppCardAccount.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          browser = yield* Browser;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const selectedAccounts: string[] = [];
+        for (const actor of [actors.owner, actors.admin]) {
+          const inventory = yield* api.request(actor, "GET", `${prefix}/inventory`).pipe(
+            Effect.flatMap((response) => body(Inventory, response)),
+            Effect.repeat({
+              schedule: Schedule.spaced("250 millis"),
+              until: (data) =>
+                data.apps.some((app) => app.name === "Executor") &&
+                data.accounts.some((account) => account.method === "apiKey"),
+            }),
+            Effect.timeout("90 seconds"),
+          );
+          const app = inventory.apps.find((app) => app.name === "Executor");
+          if (app === undefined) return yield* Effect.die("Default Executor app missing");
+          expect(app.accounts).toBeUndefined();
+          const profiles = yield* body(
+            Schema.Array(Profile),
+            yield* api.request(actor, "GET", `${prefix}/apps/${app.id}/profiles`),
+          );
+          const profile = profiles[0];
+          if (profile === undefined) return yield* Effect.die("Default profile missing");
+          const account = inventory.accounts.find((item) => item.id === profile.accounts.service);
+          if (account === undefined) return yield* Effect.die("Managed account missing");
+          expect(selectedAccounts).not.toContain(account.id);
+          for (const previous of selectedAccounts)
+            expect(inventory.accounts.some((item) => item.id === previous)).toBe(false);
+          selectedAccounts.push(account.id);
+
+          yield* browser.login(actor);
+          yield* browser.use("Open Executor with its default profile", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+          );
+          yield* browser.use("The Accounts tab shows this user's managed account", (page) =>
+            page.getByRole("link", { name: account.label, exact: true }).waitFor(),
+          );
+          yield* browser.use("Return to the app list", (page) =>
+            page.getByRole("link", { name: "Back to apps", exact: true }).click(),
+          );
+          yield* browser.use("The Executor card is loaded", (page) =>
+            page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
+          );
+          yield* browser.checkpoint(`Executor card for ${account.label}`);
+          const card = yield* browser.use("The card agrees with the Accounts tab", (page) =>
+            page.getByRole("link", { name: "Open Executor", exact: true }).innerText(),
+          );
+          expect(card).toContain(account.label);
+          expect(card).not.toContain("Needs account");
+          for (const view of ["available", "managed"]) {
+            const directory = yield* body(
+              Schema.Struct({
+                apps: Schema.Array(Schema.Struct({ app: App, profiles: Schema.Array(Profile) })),
+              }),
+              yield* api.request(actor, "GET", `${prefix}/resources?view=${view}`),
+            );
+            const entry = directory.apps.find((entry) => entry.app.id === app.id);
+            expect(entry?.app.accounts).toBeUndefined();
+            expect(entry?.profiles.map((item) => item.id)).toEqual([profile.id]);
+            expect(entry?.profiles[0]?.accounts.service).toBe(account.id);
+          }
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const profilePath = `${prefix}/apps/${app.id}/profiles/${profile.id}`;
+              yield* Effect.addFinalizer(() =>
+                Effect.gen(function* () {
+                  const current = yield* body(
+                    Schema.Struct({ revision: Schema.Number }),
+                    yield* api.request(actor, "GET", profilePath),
+                  );
+                  expect(
+                    (yield* api.request(actor, "PATCH", profilePath, {
+                      accounts: profile.accounts,
+                      expectedRevision: current.revision,
+                    })).status,
+                  ).toBe(200);
+                }).pipe(Effect.orDie),
+              );
+              yield* browser.use("Reopen Executor from its card", (page) =>
+                page.getByRole("link", { name: "Open Executor", exact: true }).click(),
+              );
+              yield* browser.use("Open the selected profile's accounts", (page) =>
+                page
+                  .getByRole("navigation", { name: "App navigation" })
+                  .getByRole("link", { name: "Accounts", exact: true })
+                  .click(),
+              );
+              yield* browser.use(
+                "Remove the binding without disconnecting the saved account",
+                (page) =>
+                  page
+                    .getByRole("button", { name: `Remove ${account.label}`, exact: true })
+                    .click(),
+              );
+              yield* browser.use("Wait for the confirmed removal", (page) =>
+                page
+                  .getByRole("link", { name: account.label, exact: true })
+                  .waitFor({ state: "hidden" }),
+              );
+              yield* browser.use("Return to the list after changing the profile", (page) =>
+                page.getByRole("link", { name: "Back to apps", exact: true }).click(),
+              );
+              yield* browser.use("A genuinely missing binding still needs an account", (page) =>
+                page
+                  .getByRole("link", { name: "Open Executor", exact: true })
+                  .getByText("Needs account", { exact: true })
+                  .waitFor(),
+              );
+              yield* browser.checkpoint("Needs account only after removing the profile binding");
+            }),
+          );
+        }
+      }),
+    ),
+  );
   it.effect(scenarios.executorKeyAccount.title, (context) =>
     withCase(
       context,
@@ -134,7 +255,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             yield* browser.checkpoint("The installed app replaces the skeleton");
           }),
         );
-        expect(app.accounts).toEqual({});
+        expect(app.accounts).toBeUndefined();
         const path = `${prefix}/apps/${app.id}`;
         const profile = (actor: Session) =>
           Effect.gen(function* () {
@@ -165,7 +286,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         for (const inventory of yield* Effect.forEach([0, 1, 2, 3], () => read(actors.owner), {
           concurrency: 4,
         })) {
-          expect(inventory.apps.find((item) => item.id === app.id)?.accounts).toEqual({});
+          expect(inventory.apps.find((item) => item.id === app.id)).not.toHaveProperty("accounts");
           expect(
             inventory.accounts.filter((item) => item.method === "apiKey").map((item) => item.id),
           ).toEqual([account]);

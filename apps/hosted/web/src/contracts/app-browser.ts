@@ -42,7 +42,7 @@ export function appBrowserBindings(
     ...workflowBindings({
       organization,
       app: app.id,
-      accounts: JSON.stringify(app.accounts),
+      accounts: JSON.stringify(profile?.accounts ?? {}),
       deployment: app.activeDeployment ?? undefined,
       profile: profile?.id,
       expectedProfileRevision: profile?.revision,

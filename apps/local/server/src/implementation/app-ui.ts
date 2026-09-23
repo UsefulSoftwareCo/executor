@@ -43,7 +43,7 @@ export const appUi = (
   auth: LocalAuth,
 ) => {
   const native = runtime;
-  const db = storage.orm("3.0.0");
+  const db = storage.orm("4.0.0");
   const current = (id: AppId) =>
     executor.apps
       .get({ app: id, owner: OwnerId.make("local") })
@@ -198,7 +198,7 @@ export const appUi = (
       profile === undefined &&
       (request.headers["sec-fetch-mode"] === "navigate" ||
         request.headers.accept?.includes("text/html")) &&
-      Object.keys(app.requirements.accounts).some((slot) => !Object.hasOwn(app.accounts, slot))
+      Object.keys(app.requirements.accounts).length > 0
     ) {
       const saved = yield* executor.apps.profiles
         .list({ app: app.id, owner: app.owner, subject: "local" })
@@ -208,8 +208,8 @@ export const appUi = (
           item.enabled &&
           item.status !== "removed" &&
           item.status !== "removing" &&
-          Object.keys(app.requirements.accounts).every(
-            (slot) => Object.hasOwn(app.accounts, slot) || Object.hasOwn(item.accounts, slot),
+          Object.keys(app.requirements.accounts).every((slot) =>
+            Object.hasOwn(item.accounts, slot),
           ),
       );
       const only = candidates[0];

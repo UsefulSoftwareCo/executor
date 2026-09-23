@@ -135,7 +135,7 @@ export const appCommandFailure = (error: unknown): string | undefined => {
         ? "This account cannot perform that action. Check the host, selected organization, and your role."
         : "The request could not be confirmed. Check the app state before retrying.";
   if (Schema.is(AppOperationError)(error))
-    return "The app operation could not be completed. Check the app and its account selections.";
+    return "The app operation could not be completed. Check the app source and deployment state.";
   if (Schema.isSchemaError(error))
     return "Check the command options and source JSON. Use executor apps <command> --help for the expected input.";
   return undefined;

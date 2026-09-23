@@ -170,9 +170,14 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("See the connected account", (page) =>
             page.getByRole("link", { name: label, exact: true }).waitFor(),
           );
+          const profile = yield* Schema.decodeUnknownEffect(Schema.String)(
+            yield* browser.use("Read the selected profile", (page) =>
+              page.evaluate(() => new URL(location.href).searchParams.get("profile")),
+            ),
+          );
           const binding = yield* body(
             Schema.Struct({ accounts: Schema.Struct({ service: Schema.Array(Schema.String) }) }),
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
+            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
           );
           for (const id of binding.accounts.service)
             if (!connected.includes(id)) connected.push(id);

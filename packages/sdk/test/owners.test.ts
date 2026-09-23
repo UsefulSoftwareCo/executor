@@ -87,7 +87,13 @@ const populate = (executor: Effect.Success<ReturnType<typeof createExecutor>>, o
       label: "Work",
       fields: Redacted.make({ token: "synthetic-token" }),
     });
-    yield* executor.apps.update({ app: app.id, accounts: { service: account.id } });
+    yield* executor.apps.profiles.create({
+      app: app.id,
+      owner,
+      subject: owner,
+      idempotencyKey: "test",
+      accounts: { service: account.id },
+    });
     yield* executor.accountConnections.create({ owner, provider: requirement.provider });
     return { app, account };
   });
@@ -294,7 +300,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("3.0.0") as unknown as AnyTable;
+          const db = options.storage.orm("4.0.0") as unknown as AnyTable;
           const owned = (table: string, owner: OwnerId) =>
             db.findMany(table, {
               select: ["id"],
@@ -353,7 +359,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("3.0.0") as unknown as AnyTable;
+          const db = options.storage.orm("4.0.0") as unknown as AnyTable;
           const mine = yield* populate(executor, alice);
 
           // With no work in flight the check passes and reports the owner it read.

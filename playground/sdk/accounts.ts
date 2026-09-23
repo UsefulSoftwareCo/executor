@@ -1,5 +1,11 @@
 /** Selecting existing accounts never copies their credentials or transfers ownership. */
-import { type AccountId, type AppId, type Executor, type OwnerId } from "@executor-js/sdk";
+import {
+  type AccountId,
+  type AppId,
+  type Profile,
+  type Executor,
+  type OwnerId,
+} from "@executor-js/sdk";
 
 /** List reusable accounts whose provider definition matches an app requirement. */
 export async function listAxiomAccounts(executor: Executor, appId: AppId, owner: OwnerId) {
@@ -12,23 +18,35 @@ export async function listAxiomAccounts(executor: Executor, appId: AppId, owner:
 /** After product authorization, two apps can select the exact same saved account. */
 export async function reuseAxiomAccount(
   executor: Executor,
-  firstApp: AppId,
-  secondApp: AppId,
+  firstProfile: Profile,
+  secondProfile: Profile,
   selectedAccount: AccountId,
 ) {
-  await executor.apps.update({ app: firstApp, accounts: { axiom: selectedAccount } });
-  await executor.apps.update({ app: secondApp, accounts: { axiom: selectedAccount } });
+  await executor.apps.profiles.update({
+    app: firstProfile.app,
+    profile: firstProfile.id,
+    expectedRevision: firstProfile.revision,
+    accounts: { axiom: selectedAccount },
+  });
+  await executor.apps.profiles.update({
+    app: secondProfile.app,
+    profile: secondProfile.id,
+    expectedRevision: secondProfile.revision,
+    accounts: { axiom: selectedAccount },
+  });
 }
 
 /** One configured Mail app selects several accounts for its gmail.many() requirement. */
 export async function selectMailboxes(
   executor: Executor,
-  mailApp: AppId,
+  profile: Profile,
   work: AccountId,
   personal: AccountId,
 ) {
-  return executor.apps.update({
-    app: mailApp,
+  return executor.apps.profiles.update({
+    app: profile.app,
+    profile: profile.id,
+    expectedRevision: profile.revision,
     accounts: { mailboxes: [work, personal] },
   });
 }

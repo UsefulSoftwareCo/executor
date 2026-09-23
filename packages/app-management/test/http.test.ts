@@ -117,12 +117,11 @@ test(
               sources,
               repositories,
               // Hosted members must not inherit local pairing's default management authority.
-              access: (app: typeof App.Type, caller: { readonly canWrite: boolean }) =>
+              access: (_app: typeof App.Type, caller: { readonly canWrite: boolean }) =>
                 Effect.succeed({
                   visible: true,
                   manage: caller.canWrite,
                   edit: caller.canWrite,
-                  accounts: app.accounts,
                 }),
               registry,
               blobs,

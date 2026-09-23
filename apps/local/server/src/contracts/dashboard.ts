@@ -1,3 +1,4 @@
+import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
 import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
 import { DashboardProfiles } from "./profiles.ts";
@@ -45,7 +46,6 @@ import {
   AppSlugTaken,
   DeploymentBuildFailed,
   SkillDefinitionInvalid,
-  SelectedAccounts,
   OAuthClientInput,
   OAuthClientSetup,
   OAuthClientUnavailable,
@@ -188,6 +188,7 @@ export const providerDisplayUrl = (
 };
 /** A cheap inventory read, without evaluating app code or fetching live tool catalogs. */
 export const DashboardOverview = Schema.Struct({
+  profiles: Schema.Array(Profile),
   apps: Schema.Array(App),
   accounts: Schema.Array(DashboardAccount),
 });
@@ -554,20 +555,6 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
         payload: Schema.Struct({ name: AppName }),
         success: App,
         error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken, AppRenameBlocked],
-      }),
-    )
-    .add(
-      HttpApiEndpoint.patch("selectAccounts", "/dashboard/api/apps/:app/accounts", {
-        params: { app: AppId },
-        payload: Schema.Struct({ accounts: SelectedAccounts }),
-        success: App,
-        error: [
-          StorageError,
-          AppNotFound,
-          AppNotDeployed,
-          AccountNotFound,
-          AccountSelectionInvalid,
-        ],
       }),
     )
     .middleware(DashboardAccess),

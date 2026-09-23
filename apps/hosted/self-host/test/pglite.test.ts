@@ -187,7 +187,13 @@ test(
                 label: "Beta account",
                 fields: Redacted.make({ token: "other-synthetic-token" }),
               });
-              yield* executor.apps.update({ app: app.id, accounts: { service: one.id } });
+              const profile = yield* executor.apps.profiles.create({
+                app: app.id,
+                owner: ownerA,
+                subject: alice.id,
+                idempotencyKey: "test",
+                accounts: { service: one.id },
+              });
               // Re-running each owner's migrator preserves both sides of the shared database.
               yield* migrateHostedSchemas(options);
               assert.equal(
@@ -198,9 +204,12 @@ test(
                 yield* executor.accounts.get({ account: one.id, owner: ownerA }),
                 one,
               );
-              assert.deepEqual((yield* executor.apps.get({ app: app.id })).accounts, {
-                service: one.id,
-              });
+              assert.deepEqual(
+                (yield* executor.apps.profiles.get({ app: app.id, profile: profile.id })).accounts,
+                {
+                  service: one.id,
+                },
+              );
 
               const started = yield* Deferred.make<void>();
               const labels: string[][] = [];
@@ -218,7 +227,7 @@ test(
                 );
               yield* Deferred.await(started);
               yield* storage
-                .orm("3.0.0")
+                .orm("4.0.0")
                 .transaction(
                   executor.accounts
                     .update({ owner: ownerA, account: one.id, label: "Rolled back" })
@@ -437,13 +446,13 @@ export default defineApp({ accounts: { service } }, async (appContext) => ({  mu
                 saved.alice,
               );
               const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-              const accounts = yield* storage.orm("3.0.0").findMany("accounts");
+              const accounts = yield* storage.orm("4.0.0").findMany("accounts");
               assert.equal(accounts.find((account) => account.id === saved.one)?.label, "Renamed");
               assert.equal(
                 accounts.find((account) => account.id === saved.two)?.label,
                 "Beta account",
               );
-              const apps = yield* storage.orm("3.0.0").findMany("apps");
+              const apps = yield* storage.orm("4.0.0").findMany("apps");
               assert.equal(apps[0]?.id, saved.app);
               // Revocation uses current membership, not the session's remembered organization.
               const identity = yield* selfHostAuth;

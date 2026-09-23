@@ -492,9 +492,7 @@ export const hostedAppUi = (
       profile === undefined &&
       (request.headers["sec-fetch-mode"] === "navigate" ||
         request.headers.accept?.includes("text/html")) &&
-      Object.keys(current.app.requirements.accounts).some(
-        (slot) => !Object.hasOwn(current.app.accounts, slot),
-      )
+      Object.keys(current.app.requirements.accounts).length > 0
     ) {
       const saved = yield* executor.apps.profiles
         .list({ app: current.app.id, owner: current.access.owner, subject: current.access.userId })
@@ -505,9 +503,8 @@ export const hostedAppUi = (
             item.enabled &&
             item.status !== "removed" &&
             item.status !== "removing" &&
-            Object.keys(current.app.requirements.accounts).every(
-              (slot) =>
-                Object.hasOwn(current.app.accounts, slot) || Object.hasOwn(item.accounts, slot),
+            Object.keys(current.app.requirements.accounts).every((slot) =>
+              Object.hasOwn(item.accounts, slot),
             ),
         ),
         (item) =>

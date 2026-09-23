@@ -1,6 +1,6 @@
 /** MCP paths retain the real app and distinguish each saved profile below it. */
 import type { Account, App, AppId, Profile, ProfileId } from "@executor-js/sdk/core";
-/** A fixed app call or a particular revision of one personal profile. */
+/** An account-free app call or a particular revision of one personal profile. */
 export type McpTarget =
   | { readonly kind: "app" }
   | {
@@ -29,11 +29,7 @@ export function appTargets(
         label: item.name ?? (labels.length === 0 ? "Personal profile" : labels.join(", ")),
       };
     });
-  if (
-    Object.keys(app.requirements.accounts).every((slot) => Object.hasOwn(app.accounts, slot)) ||
-    targets.length === 0
-  )
-    targets.unshift({ kind: "app" });
+  if (Object.keys(app.requirements.accounts).length === 0) targets.unshift({ kind: "app" });
   return targets;
 }
 /** An app filter remains separate from the profile's immutable identity. */

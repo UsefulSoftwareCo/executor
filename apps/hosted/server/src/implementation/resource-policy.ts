@@ -148,19 +148,12 @@ export const requireAppAccess = (app: AppId, action: "read" | "manage" | "use") 
     return access;
   });
 
-/** Check current membership, app use and every selected account in one database snapshot.
+/** Check current membership and app use in one database snapshot.
  * The app was resolved with its owner before this call. Management never grants use.
  */
 export const requireAppUse = (app: App, organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
     if (app.owner !== organizationOwner(organization)) return yield* new OrganizationForbidden();
-    const selected = [
-      ...new Set(
-        Object.values(app.accounts).flatMap((value) =>
-          typeof value === "string" ? [value] : value,
-        ),
-      ),
-    ];
     const sql = yield* policyDatabase;
     const rows = yield* sql`select m.role from member m
       join hosted_app_access p on p.organization_id = m."organizationId"
@@ -173,16 +166,6 @@ export const requireAppUse = (app: App, organization: OrganizationId, user: stri
             select 1 from hosted_app_groups g
             join hosted_group_members gm on gm.group_id = g.group_id
             where g.app_id = p.id and gm.member_id = m.id)))
-        and (select count(*) from hosted_account_access ap
-          join executor_accounts ac on ac.id = ap.account_id
-          where ${sql.in("ac.id", selected)} and ac.owner = ${app.owner}
-            and ap.organization_id = ${organization}
-            and ((ap.kind = 'personal' and ap.personal_user_id = ${user})
-              or (ap.kind = 'shared' and (ap.audience = 'everyone'
-                or (ap.audience = 'groups' and exists (
-                  select 1 from hosted_account_groups ag
-                  join hosted_group_members gm on gm.group_id = ag.group_id
-                  where ag.account_id = ap.account_id and gm.member_id = m.id)))))) = ${selected.length}
       `;
     const result = yield* Schema.decodeUnknownEffect(
       Schema.Array(Schema.Struct({ role: OrganizationRole })),
@@ -224,24 +207,6 @@ export const visibleAccounts = (accounts: readonly Account[]) =>
       ),
     );
   });
-/** Never return another person's selected account IDs through app metadata. */
-export const safeAppMetadata = (app: App, actor: ResourceAuthority) =>
-  Effect.gen(function* () {
-    const entries = yield* Effect.forEach(Object.entries(app.accounts), ([slot, selection]) =>
-      Effect.gen(function* () {
-        const accounts = typeof selection === "string" ? [selection] : selection;
-        const visible = yield* Effect.filter(accounts, (account) =>
-          accountAccess(account, actor).pipe(
-            Effect.map((access) => access.canUse),
-            Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
-          ),
-        );
-        // A partially visible collection is not a different valid saved selection.
-        return visible.length === accounts.length ? [[slot, selection] as const] : [];
-      }),
-    );
-    return { ...app, accounts: Object.fromEntries(entries.flat()) };
-  });
 /** Normal app lists contain usable apps, not every app that an admin can manage. */
 export const visibleApps = (apps: readonly App[]) =>
   Effect.gen(function* () {
@@ -252,5 +217,5 @@ export const visibleApps = (apps: readonly App[]) =>
         Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
       ),
     );
-    return yield* Effect.forEach(visible, (app) => safeAppMetadata(app, actor));
+    return visible;
   });

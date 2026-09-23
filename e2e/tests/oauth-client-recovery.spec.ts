@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -13,7 +14,6 @@ import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
-  accounts: Schema.Record(Schema.String, Schema.String),
   requirements: Schema.Struct({
     accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
   }),
@@ -75,12 +75,12 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
               `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
             )
             .pipe(Effect.flatMap((response) => body(Setup, response)));
-        let profile: string | undefined;
+        let profile = (yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`)).id;
         const connection = () =>
           api
             .request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
               requirement: "service",
-              ...(profile === undefined ? {} : { profile }),
+              profile,
             })
             .pipe(Effect.flatMap((response) => body(Resource, response)));
         const started = yield* connection();

@@ -359,10 +359,7 @@ export const makeWebhooks = (
                 return yield* new WebhookConflict();
             }
             const current = yield* storedApp(db, { app: state.app.id });
-            if (
-              current.activeDeployment !== state.app.activeDeployment ||
-              !Schema.toEquivalence(Schema.Json)(current.accounts, state.app.accounts)
-            )
+            if (current.activeDeployment !== state.app.activeDeployment)
               return yield* new WebhookConflict();
             const existing = yield* query(() =>
               db.findFirst("webhooks", {

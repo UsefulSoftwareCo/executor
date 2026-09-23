@@ -1,7 +1,8 @@
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -40,6 +41,13 @@ layer(TestLive, { excludeTestServices: true })("Local OAuth", (it) => {
         const issuer = yield* clientCredentialsIssuer;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
         const deployed = yield* session.send(
           "POST",
           "/v1/apps/deploy",
@@ -83,10 +91,16 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           ),
         );
         expect(setup.scopes).toEqual(["reports:read"]);
+        const profile = yield* createProfile(
+          agent,
+          `/v1/apps/${app.id}`,
+          { owner: "local", subject: "local" },
+          headers,
+        );
         const issued = yield* session.send(
           "POST",
           "/account-connect/api/requests",
-          { owner: "local", target: { app: app.id, requirement: "service" } },
+          { owner: "local", target: { app: app.id, profile: profile.id, requirement: "service" } },
           headers,
         );
         expect(issued.status).toBe(200);

@@ -56,7 +56,7 @@ export const makeAccountConnections = (
                 app: row.target.app,
                 requirement: row.target.requirement,
                 name: row.target.name,
-                ...(row.target.profile === undefined ? {} : { profile: row.target.profile }),
+                profile: row.target.profile,
               },
         createdAt: row.createdAt,
         expiresAt: row.expiresAt,

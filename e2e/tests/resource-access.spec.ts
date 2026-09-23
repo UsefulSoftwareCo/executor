@@ -1,4 +1,5 @@
-/** Real hosted group checks cover fixed account bindings and current app authoring routes. */
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+/** Real hosted group checks cover profile account bindings and current app authoring routes. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -215,10 +216,13 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
+        const arrayProfile = yield* createProfile(actors.owner, `${prefix}/apps/${array.id}`);
+        const arrayCall = { ...call, profile: arrayProfile.id };
         const personalConnection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
             requirement: "service",
+            profile: arrayProfile.id,
             destination: { kind: "personal" },
           }),
         );
@@ -236,6 +240,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           Resource,
           yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
             requirement: "service",
+            profile: arrayProfile.id,
             destination: { kind: "shared", audience: { kind: "groups", groups: [sales.id] } },
           }),
         );
@@ -256,12 +261,20 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${personal.id}`)).status,
         ).toBe(403);
         expect(
-          (yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
-            .status,
+          (yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${array.id}/tools/call`,
+            arrayCall,
+          )).status,
         ).toBe(403);
         expect(
-          (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
-            .status,
+          (yield* api.request(
+            actors.admin,
+            "POST",
+            `${prefix}/apps/${array.id}/tools/call`,
+            arrayCall,
+          )).status,
         ).toBe(403);
         const teamAccess = yield* body(
           Access,
@@ -277,14 +290,15 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           actors.owner,
           "POST",
           `${prefix}/apps/${array.id}/tools/call`,
-          call,
+          arrayCall,
         );
         expect(allowed.status).toBe(200);
         expect(allowed.body).toEqual(["personal", "team"]);
         const browser = yield* Browser;
-        const appUrl = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`);
+        const appUrl = new URL(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`));
+        appUrl.searchParams.set("profile", arrayProfile.id);
         yield* browser.login(actors.owner);
-        yield* openPrivateApp(appUrl);
+        yield* openPrivateApp(appUrl.href);
         yield* browser.use("All selected accounts permit the UI", (page) =>
           page.getByRole("heading", { name: "Account protected UI" }).waitFor(),
         );
@@ -314,8 +328,8 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           }),
         );
         expect(
-          (yield* browser.use("Revoking one array account denies cached UI bytes", (page) =>
-            page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+          (yield* browser.use("Revoking one selected account denies the profile page", (page) =>
+            page.context().request.get(appUrl.href),
           )).status(),
         ).toBe(403);
         expect(
@@ -330,17 +344,20 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           )).status(),
         ).toBe(304);
         yield* browser.login(actors.admin);
-        yield* openPrivateApp(appUrl);
+        yield* openPrivateApp(appUrl.href);
         expect(
           (yield* browser.use(
             "An administrator cannot use another person's account in the UI",
-            (page) =>
-              page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+            (page) => page.context().request.get(appUrl.href),
           )).status(),
         ).toBe(403);
         expect(
-          (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
-            .status,
+          (yield* api.request(
+            actors.admin,
+            "POST",
+            `${prefix}/apps/${array.id}/tools/call`,
+            arrayCall,
+          )).status,
         ).toBe(403);
         const workspace = yield* body(
           Schema.Struct({
@@ -349,14 +366,14 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           }),
           yield* api.request(actors.admin, "GET", `${prefix}/apps/${array.id}/workspace`),
         );
-        expect(workspace.canEdit).toBe(false);
+        expect(workspace.canEdit).toBe(true);
         expect(
           (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/commits`, {
             expected: workspace.revision.commit,
             files: [{ path: "index.ts", content: arraySource }],
-            message: "Denied edit",
+            message: "Source editing is independent of personal profiles",
           })).status,
-        ).toBe(403);
+        ).toBe(200);
         const authoringList = yield* api.request(actors.admin, "GET", `${prefix}/apps`);
         expect(authoringList.status).toBe(200);
         expect(JSON.stringify(authoringList.body)).not.toContain(personal.id);
@@ -376,18 +393,34 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           }),
         );
         created.apps.push(single.id);
+        const singleProfile = yield* createProfile(actors.owner, `${prefix}/apps/${single.id}`);
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${single.id}/accounts`, {
-            accounts: { service: personal.id },
-          })).status,
+          (yield* selectProfileAccounts(
+            actors.owner,
+            `${prefix}/apps/${single.id}`,
+            singleProfile.id,
+            { service: personal.id },
+          )).status,
         ).toBe(200);
         expect(
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${personal.id}`)).status,
         ).toBe(200);
         created.accounts.splice(created.accounts.indexOf(personal.id), 1);
         // Renaming above changed the app origin; its old session cannot transfer.
-        const renamedUrl = yield* waitForAppUrl(actors.admin, `${prefix}/apps/${array.id}/ui`);
-        yield* openPrivateApp(renamedUrl);
+        const adminProfile = yield* createProfile(actors.admin, `${prefix}/apps/${array.id}`);
+        expect(
+          (yield* selectProfileAccounts(
+            actors.admin,
+            `${prefix}/apps/${array.id}`,
+            adminProfile.id,
+            { service: [team.id] },
+          )).status,
+        ).toBe(200);
+        const renamedUrl = new URL(
+          yield* waitForAppUrl(actors.admin, `${prefix}/apps/${array.id}/ui`),
+        );
+        renamedUrl.searchParams.set("profile", adminProfile.id);
+        yield* openPrivateApp(renamedUrl.href);
         const remainingAsset = yield* browser.use(
           "Locate the renamed app's retained asset",
           (page) => page.evaluate(() => new URL("probe.svg", document.baseURI).href),
@@ -406,18 +439,28 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         expect(
           (yield* body(
             bindings,
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${array.id}`),
+            yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/apps/${array.id}/profiles/${arrayProfile.id}`,
+            ),
           )).accounts,
         ).toEqual({ service: [team.id] });
         expect(
           (yield* body(
             bindings,
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${single.id}`),
+            yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/apps/${single.id}/profiles/${singleProfile.id}`,
+            ),
           )).accounts,
         ).toEqual({});
         expect(
-          (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
-            .body,
+          (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, {
+            ...call,
+            profile: adminProfile.id,
+          })).body,
         ).toEqual(["team"]);
         expect(
           (yield* body(
@@ -432,7 +475,11 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         expect(
           (yield* body(
             bindings,
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${array.id}`),
+            yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/apps/${array.id}/profiles/${arrayProfile.id}`,
+            ),
           )).accounts,
         ).toEqual({});
       }),

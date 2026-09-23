@@ -1,4 +1,3 @@
-import { assertFixedSlotsAvailable } from "./selection.ts";
 /** Capture and apply one app requirement, independently of account authentication. */
 import { Effect, Schema } from "effect";
 import {
@@ -27,26 +26,14 @@ export const captureConnectionTarget = (db: Query, target: typeof AccountConnect
     const invalid = (reason: AccountSelectionInvalid["reason"]) =>
       new AccountSelectionInvalid({ app: app.id, slot: target.requirement, reason });
     if (requirement === undefined) return yield* invalid("unknown_slot");
-    const profile =
-      target.profile === undefined
-        ? undefined
-        : yield* storedProfile(db, {
-            app: app.id,
-            profile: target.profile,
-            owner: app.owner,
-          });
-    if (
-      profile !== undefined &&
-      (profile.status === "removed" ||
-        profile.status === "removing" ||
-        Object.hasOwn(app.accounts, target.requirement))
-    )
-      return yield* new ProfileConflict({
-        profile: profile.id,
-        reason: Object.hasOwn(app.accounts, target.requirement) ? "fixed-binding" : "inactive",
-      });
-    if (profile === undefined) yield* assertFixedSlotsAvailable(db, app.id, [target.requirement]);
-    const bindings = profile?.accounts ?? app.accounts;
+    const profile = yield* storedProfile(db, {
+      app: app.id,
+      profile: target.profile,
+      owner: app.owner,
+    });
+    if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
+      return yield* new ProfileConflict({ profile: profile.id, reason: "inactive" });
+    const bindings = profile.accounts;
     const selection = Object.hasOwn(bindings, target.requirement)
       ? bindings[target.requirement]
       : undefined;
@@ -93,20 +80,14 @@ export const applyConnectionTarget = (
       required.cardinality !== target.cardinality
     )
       return yield* changed();
-    const profile =
-      target.profile === undefined
-        ? undefined
-        : yield* storedProfile(db, {
-            app: app.id,
-            profile: target.profile,
-            owner: app.owner,
-          });
-    if (profile?.status === "removed" || profile?.status === "removing") return yield* changed();
-    if (profile === undefined)
-      yield* assertFixedSlotsAvailable(db, app.id, [target.requirement]).pipe(
-        Effect.catchTag("AccountSelectionInvalid", () => changed()),
-      );
-    const bindings = profile?.accounts ?? app.accounts;
+    const profile = yield* storedProfile(db, {
+      app: app.id,
+      profile: target.profile,
+      owner: app.owner,
+    });
+    if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
+      return yield* changed();
+    const bindings = profile.accounts;
     const selected = Object.hasOwn(bindings, target.requirement)
       ? bindings[target.requirement]
       : undefined;
@@ -118,33 +99,16 @@ export const applyConnectionTarget = (
       if (typeof selected === "string") return yield* changed();
       selection = [...new Set([...(selected ?? []), account.id])];
     }
-    if (profile !== undefined) {
-      if (Object.hasOwn(app.accounts, target.requirement)) return yield* changed();
-      if (!Schema.toEquivalence(Schema.Json)(selected ?? null, selection))
-        yield* query(() =>
-          db.updateMany("profiles", {
-            where: (b) => b("id", "=", profile.id),
-            set: {
-              accounts: { ...bindings, [target.requirement]: selection },
-              revision: profile.revision + 1,
-              status: "pending",
-              failure: null,
-            },
-          }),
-        );
-      return;
-    }
-    yield* query(() =>
-      db.updateMany("apps", {
-        where: (b) => b("id", "=", app.id),
-        set: { accounts: { ...app.accounts, [target.requirement]: selection } },
-      }),
-    );
-    yield* query(() =>
-      db.updateMany("profiles", {
-        where: (b) =>
-          b.and(b("app", "=", app.id), b("status", "!=", "removed"), b("status", "!=", "removing")),
-        set: { status: "pending", failure: null },
-      }),
-    );
+    if (!Schema.toEquivalence(Schema.Json)(selected ?? null, selection))
+      yield* query(() =>
+        db.updateMany("profiles", {
+          where: (b) => b("id", "=", profile.id),
+          set: {
+            accounts: { ...bindings, [target.requirement]: selection },
+            revision: profile.revision + 1,
+            status: "pending",
+            failure: null,
+          },
+        }),
+      );
   });

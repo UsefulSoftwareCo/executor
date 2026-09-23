@@ -106,15 +106,15 @@ export const connectAccount = (
   input: {
     readonly app: AppId;
     readonly requirement: string;
-    readonly profile?: import("@executor-js/sdk/core").ProfileId | undefined;
+    readonly profile: import("@executor-js/sdk/core").ProfileId;
     readonly destination?: typeof ConnectionDestination.Type | undefined;
   },
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* executionManagerOwner(executor, input.app, input.profile);
-    if (input.profile !== undefined) yield* requireAppAccess(input.app, "use");
     yield* executor.apps.get({ owner, app: input.app });
+    yield* executionManagerOwner(executor, input.app, input.profile);
+    yield* requireAppAccess(input.app, "use");
     yield* checkDestination(input.destination ?? { kind: "personal" });
     return yield* executor.accountConnections
       .create({
@@ -122,7 +122,7 @@ export const connectAccount = (
         target: {
           app: input.app,
           requirement: input.requirement,
-          ...(input.profile === undefined ? {} : { profile: input.profile }),
+          profile: input.profile,
         },
       })
       .pipe(

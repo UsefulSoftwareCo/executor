@@ -18,7 +18,7 @@ Use `organization` explicitly in management calls. Never guess `me` or `default`
 and do not search local files for an organization or credentials.
 
 ```js
-return await tools.executor.mutations.apps_deploy({
+return await tools.executor.profiles["<management-profile-id>"].mutations.apps_deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
@@ -58,15 +58,16 @@ Hosted deployment currently creates a new named app and returns the app directly
 It rejects an existing name. Use source commits and deployment by app ID for edits.
 After deployment, start a new execute to discover and call its tools.
 Other hosted operations include `organization_inventory`, `organization_catalog`,
-`apps_install`, `apps_importCustom`, `apps_get`, `appUi_location`, `apps_selectAccounts`, and
+`apps_install`, `apps_importCustom`, `apps_get`, `appUi_location`, profile operations, and
 `apps_remove`. Always read their discovered signatures before calling them.
 
-For hosted account setup:
+For hosted account setup, create a profile with `profiles_create` first.
+Pass its ID to the connection request:
 
 ```js
-return await tools.executor.mutations.accounts_connect({
+return await tools.executor.profiles["<management-profile-id>"].mutations.accounts_connect({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
-  body: { requirement: "vercel" },
+  body: { profile: "<profile-id>", requirement: "vercel" },
 });
 ```
 
@@ -85,7 +86,7 @@ Use the returned app ID for API arguments and its name-derived slug for the agen
 Send the actual source string in `files[].content`.
 
 ```js
-const executor = tools.executor;
+const executor = tools.executor.profiles["<management-profile-id>"];
 return await executor.mutations.apps_deploy({
   body: {
     owner: "my-project",

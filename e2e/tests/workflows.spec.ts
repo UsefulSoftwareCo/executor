@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 /** Real HTTP coverage for durable app workflows, pinned execution, and product permissions. */
 import { expect, layer } from "@effect/vitest";
@@ -63,10 +64,12 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
             label: name,
             fields: { token },
           });
+        const profile = yield* createProfile(actors.owner, path);
         const connect = () =>
           Effect.gen(function* () {
             const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
               requirement: "service",
+              profile: profile.id,
             });
             expect(pending.status).toBe(200);
             const saved = yield* submit((yield* body(Resource, pending)).id, "synthetic-original");
@@ -76,7 +79,15 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
             return account;
           });
         const account = yield* connect();
-        const definitions = yield* api.request(actors.member, "GET", `${path}/workflows`);
+        expect(
+          (yield* api.request(actors.member, "GET", `${path}/workflows?profile=${profile.id}`))
+            .status,
+        ).toBe(403);
+        const definitions = yield* api.request(
+          actors.owner,
+          "GET",
+          `${path}/workflows?profile=${profile.id}`,
+        );
         expect(definitions.status).toBe(200);
         expect(
           (yield* body(Schema.Array(Schema.Struct({ name: Schema.String })), definitions)).map(
@@ -86,6 +97,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         const start = (workflow: string, input: Schema.Json = {}, key: string = randomUUID()) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+              profile: profile.id,
               workflow,
               input,
               key,
@@ -117,12 +129,14 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           });
         expect(
           (yield* api.request(actors.member, "POST", `${path}/workflow-runs`, {
+            profile: profile.id,
             workflow: "quick",
             input: {},
           })).status,
         ).toBe(403);
         expect(
           (yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+            profile: profile.id,
             workflow: "process",
             input: {},
           })).status,
@@ -131,13 +145,18 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         expect((yield* start("process", { label: "pinned" }, name)).id).toBe(run.id);
         expect(
           (yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+            profile: profile.id,
             workflow: "process",
             input: { label: "other" },
             key: name,
           })).status,
         ).toBeGreaterThanOrEqual(400);
         const call = (tool: string, input: Schema.Json = {}) =>
-          api.request(actors.owner, "POST", `${path}/tools/call`, { tool, input });
+          api.request(actors.owner, "POST", `${path}/tools/call`, {
+            profile: profile.id,
+            tool,
+            input,
+          });
         const isolation = yield* call("queries.isolation");
         expect(isolation.status).toBe(200);
         expect(isolation.body).toEqual({
@@ -201,15 +220,26 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         resources.runs.push({ app: app.id, id: internal.id });
         expect((yield* wait(internal.id, "complete")).output).toBe("v2");
         expect((yield* call("queries.history")).status).toBe(200);
+        expect(
+          (yield* api.request(
+            actors.member,
+            "GET",
+            `${path}/workflow-runs?profile=${profile.id}&limit=1`,
+          )).status,
+        ).toBe(403);
         const page = yield* body(
           Schema.Struct({ items: Schema.Array(Run), next: Schema.String }),
-          yield* api.request(actors.member, "GET", `${path}/workflow-runs?limit=1`),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${path}/workflow-runs?profile=${profile.id}&limit=1`,
+          ),
         );
         expect(page.items.length).toBe(1);
         const next = yield* api.request(
-          actors.member,
+          actors.owner,
           "GET",
-          `${path}/workflow-runs?limit=1&cursor=${encodeURIComponent(page.next)}`,
+          `${path}/workflow-runs?profile=${profile.id}&limit=1&cursor=${encodeURIComponent(page.next)}`,
         );
         expect(next.status).toBe(200);
         const nextPage = yield* body(Schema.Struct({ items: Schema.Array(Run) }), next);

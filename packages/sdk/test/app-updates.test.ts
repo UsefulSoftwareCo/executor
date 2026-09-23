@@ -120,7 +120,7 @@ test(
 );
 
 test(
-  "failed and incompatible ID builds preserve pointer, selections, and deployment rows",
+  "failed builds preserve deployment; changed requirements preserve profiles for repair",
   { timeout: 10_000 },
   () =>
     Effect.runPromise(
@@ -177,26 +177,37 @@ test(
             label: "Default",
             fields: Redacted.make({ token: "token" }),
           });
-          yield* incompatibleExecutor.apps.update({
+          const profile = yield* incompatibleExecutor.apps.profiles.create({
+            owner,
+            subject: "alice",
+            idempotencyKey: "test",
             app: app.app.id,
             accounts: { service: account.id },
           });
-          const invalid = yield* Effect.flip(
-            incompatibleExecutor.apps.deploy({
-              owner,
-              app: app.app.id,
-              files: files("next"),
-            }),
-          );
-          assert.ok(Schema.is(AccountSelectionInvalid)(invalid));
+          const next = yield* incompatibleExecutor.apps.deploy({
+            owner,
+            app: app.app.id,
+            files: files("next"),
+          });
           assert.equal(
             (yield* incompatibleExecutor.apps.get({ app: app.app.id })).activeDeployment,
-            app.deployment.id,
+            next.deployment.id,
           );
           assert.equal(
             (yield* incompatibleExecutor.apps.deployments({ app: app.app.id })).length,
-            1,
+            2,
           );
+          assert.deepEqual(
+            (yield* incompatibleExecutor.apps.profiles.get({
+              app: app.app.id,
+              profile: profile.id,
+            })).accounts,
+            profile.accounts,
+          );
+          const invalid = yield* Effect.flip(
+            incompatibleExecutor.tools.list({ app: app.app.id, profile: profile.id }),
+          );
+          assert.ok(Schema.is(AccountSelectionInvalid)(invalid));
         }).pipe(Effect.provide(services)),
       ),
     ),
@@ -317,7 +328,13 @@ test(
             label: "Default",
             fields: Redacted.make({ token: "token" }),
           });
-          yield* executor.apps.update({ app: initial.app.id, accounts: { service: account.id } });
+          const profile = yield* executor.apps.profiles.create({
+            app: initial.app.id,
+            owner,
+            subject: "alice",
+            idempotencyKey: "test",
+            accounts: { service: account.id },
+          });
           const update = yield* executor.apps
             .deploy({
               owner,
@@ -331,7 +348,12 @@ test(
           const deployed = yield* Fiber.join(update);
           assert.equal(deployed.app.id, initial.app.id);
           assert.equal(deployed.app.name, "After");
-          assert.deepEqual(deployed.app.accounts, { service: account.id });
+          assert.equal(Object.hasOwn(deployed.app, "accounts"), false);
+          assert.deepEqual(
+            (yield* executor.apps.profiles.get({ app: initial.app.id, profile: profile.id }))
+              .accounts,
+            { service: account.id },
+          );
         }).pipe(Effect.provide(services)),
       ),
     ),

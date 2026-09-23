@@ -31,10 +31,10 @@ export const AccountConnectionState = Schema.Union([
   Schema.Struct({ status: Schema.Literals(["pending", "cancelled", "expired"]) }),
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
-/** A configured app requirement to fill when account setup finishes. */
+/** An app profile requirement to fill when account setup finishes. */
 export const AccountConnectionTarget = Schema.Struct({
   app: AppId,
-  profile: Schema.optionalKey(ProfileId),
+  profile: ProfileId,
   requirement: Schema.NonEmptyString,
 });
 /** App name is captured for browser consent without exposing unrelated app configuration. */
@@ -161,7 +161,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       error: errors,
     }).annotate(
       OpenApi.Description,
-      "Check a connection request: pending, completed with account metadata, cancelled or expired. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed targeted requests have already selected the account for the app. Provider-only requests save standalone accounts.",
+      "Check a connection request: pending, completed with account metadata, cancelled or expired. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed targeted requests have already selected the account for the named profile. Provider-only requests save standalone accounts.",
     ),
   )
   .add(

@@ -211,18 +211,46 @@ test(
                     payload: { from: app.id, owner: OwnerId.make("local"), name: "Second process" },
                   }),
                 );
+                const appProfile = await Effect.runPromise(
+                  sdk.appProfiles.create({
+                    params: { app: app.id },
+                    payload: {
+                      owner: app.owner,
+                      subject: "local",
+                      idempotencyKey: "test",
+                      accounts: {},
+                    },
+                  }),
+                );
+                const secondProfile = await Effect.runPromise(
+                  sdk.appProfiles.create({
+                    params: { app: second.id },
+                    payload: {
+                      owner: second.owner,
+                      subject: "local",
+                      idempotencyKey: "test",
+                      accounts: {},
+                    },
+                  }),
+                );
                 for (const [item, selected] of [
                   [app, alpha],
                   [second, beta],
                 ] as const) {
                   await Effect.runPromise(
-                    dashboard.selectAccounts({
-                      params: { app: item.id },
-                      payload: { accounts: { service: selected.id } },
+                    sdk.appProfiles.update({
+                      params: {
+                        app: item.id,
+                        profile: item.id === app.id ? appProfile.id : secondProfile.id,
+                      },
+                      payload: { accounts: { service: selected.id }, expectedRevision: 1 },
                     }),
                   );
                   const page = await Effect.runPromise(
-                    dashboard.tools({ params: { app: item.id }, query: {} }),
+                    dashboard.tools({
+                      params: { app: item.id },
+                      query: { profile: item.id === app.id ? appProfile.id : secondProfile.id },
+                    }),
                   );
                   assert.deepEqual(
                     page.items.map((tool) => tool.name),
@@ -236,7 +264,12 @@ test(
                 const input = { value: "hello" };
                 const called = await Effect.runPromise(
                   sdk.tools.call({
-                    payload: { app: app.id, tool: ToolName.make("queries.alpha"), input },
+                    payload: {
+                      app: app.id,
+                      profile: appProfile.id,
+                      tool: ToolName.make("queries.alpha"),
+                      input,
+                    },
                   }),
                 );
                 assert.deepEqual(called, {
@@ -254,7 +287,12 @@ test(
                 });
                 const failure = await Effect.runPromise(
                   sdk.tools.call({
-                    payload: { app: app.id, tool: ToolName.make("mutations.failure"), input: {} },
+                    payload: {
+                      app: app.id,
+                      profile: appProfile.id,
+                      tool: ToolName.make("mutations.failure"),
+                      input: {},
+                    },
                   }),
                 );
                 assert.deepEqual(failure, {
@@ -267,7 +305,12 @@ test(
                 await assert.rejects(() =>
                   Effect.runPromise(
                     sdk.tools.call({
-                      payload: { app: app.id, tool: ToolName.make("queries.alpha"), input: {} },
+                      payload: {
+                        app: app.id,
+                        profile: appProfile.id,
+                        tool: ToolName.make("queries.alpha"),
+                        input: {},
+                      },
                     }),
                   ),
                 );
@@ -288,7 +331,7 @@ test(
                   const response = await client.callTool({
                     name: "execute",
                     arguments: {
-                      code: `return await Promise.all([tools[${JSON.stringify(app.slug)}].queries.alpha({value:"one"}), tools[${JSON.stringify(second.slug)}].queries.beta({value:"two"})])`,
+                      code: `return await Promise.all([tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(appProfile.id)}].queries.alpha({value:"one"}), tools[${JSON.stringify(second.slug)}].profiles[${JSON.stringify(secondProfile.id)}].queries.beta({value:"two"})])`,
                     },
                   });
                   const result = Schema.decodeUnknownSync(ExecuteResult)(
@@ -321,29 +364,59 @@ test(
                 ]) {
                   const selected = await account("alpha", mode);
                   await Effect.runPromise(
-                    dashboard.selectAccounts({
-                      params: { app: app.id },
-                      payload: { accounts: { service: selected.id } },
+                    sdk.appProfiles.update({
+                      params: { app: app.id, profile: appProfile.id },
+                      payload: {
+                        accounts: { service: selected.id },
+                        expectedRevision: (
+                          await Effect.runPromise(
+                            sdk.appProfiles.get({
+                              params: { app: app.id, profile: appProfile.id },
+                              query: {},
+                            }),
+                          )
+                        ).revision,
+                      },
                     }),
                   );
                   await assert.rejects(() =>
-                    Effect.runPromise(dashboard.tools({ params: { app: app.id }, query: {} })),
+                    Effect.runPromise(
+                      dashboard.tools({
+                        params: { app: app.id },
+                        query: { profile: appProfile.id },
+                      }),
+                    ),
                   );
                   await stopped(journal);
                 }
                 for (const mode of ["hang-initialize", "hang-call"]) {
                   const selected = await account("alpha", mode);
                   await Effect.runPromise(
-                    dashboard.selectAccounts({
-                      params: { app: app.id },
-                      payload: { accounts: { service: selected.id } },
+                    sdk.appProfiles.update({
+                      params: { app: app.id, profile: appProfile.id },
+                      payload: {
+                        accounts: { service: selected.id },
+                        expectedRevision: (
+                          await Effect.runPromise(
+                            sdk.appProfiles.get({
+                              params: { app: app.id, profile: appProfile.id },
+                              query: {},
+                            }),
+                          )
+                        ).revision,
+                      },
                     }),
                   );
                   const before = (await events(journal)).length;
                   const controller = new AbortController();
                   const pending = Effect.runPromise(
                     sdk.tools.call({
-                      payload: { app: app.id, tool: ToolName.make("queries.alpha"), input },
+                      payload: {
+                        app: app.id,
+                        profile: appProfile.id,
+                        tool: ToolName.make("queries.alpha"),
+                        input,
+                      },
                     }),
                     { signal: controller.signal },
                   );

@@ -75,19 +75,18 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         const organization = yield* organizationOf(account.owner);
         const profile = yield* CurrentProfile;
         const user = profile === undefined ? yield* CurrentUserId : profile.subject;
-        // Userless calls are existing host-owned webhook/workflow dispatch, with fixed bindings.
-        // They do not inherit a visitor identity or acquire a replacement credential.
+        if (user === undefined) return yield* new StorageError();
         const rows = yield* sql`select p.account_id from hosted_account_access p
         join executor_accounts a on a.id = p.account_id and a.owner = ${account.owner}
         where p.account_id = ${account.id} and p.organization_id = ${organization}
         and (p.kind <> 'personal' or exists(select 1 from member owner_member
           where owner_member."organizationId" = p.organization_id and owner_member."userId" = p.personal_user_id))
-        and (${user ?? null}::text is null or exists(select 1 from member m
-          where m."organizationId" = p.organization_id and m."userId" = ${user ?? null}
+        and exists(select 1 from member m
+          where m."organizationId" = p.organization_id and m."userId" = ${user}
           and ((p.kind = 'personal' and p.personal_user_id = m."userId")
             or (p.kind = 'shared' and (p.audience = 'everyone' or exists(
               select 1 from hosted_account_groups g join hosted_group_members gm on gm.group_id = g.group_id
-              where g.account_id = p.account_id and gm.member_id = m.id))))))`;
+              where g.account_id = p.account_id and gm.member_id = m.id)))))`;
         if (rows.length !== 1) return yield* new StorageError();
       }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
     connectionCompleting: (connection) =>
@@ -103,11 +102,9 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         and (c.target is null or exists (
           select 1 from hosted_app_access a
           where a.id = (c.target ->> 'app') and a.organization_id = c.organization_id
-          and (((c.target ->> 'installation') is null and (a.creator_id = ${user} or m.role in ('owner','admin')))
-            or ((c.target ->> 'installation') is not null
-              and exists(select 1 from executor_installations i where i.id = (c.target ->> 'installation') and i.app = a.id and i.subject = ${user} and i.status not in ('removing', 'removed'))
-              and ((a.audience = 'private' and a.creator_id = ${user}) or a.audience = 'everyone'
-                or (a.audience = 'groups' and exists(select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id where g.app_id = a.id and gm.member_id = m.id)))))
+          and exists(select 1 from executor_installations i where i.id = (c.target ->> 'installation') and i.app = a.id and i.subject = ${user} and i.enabled and i.status not in ('removing', 'removed'))
+          and ((a.audience = 'private' and a.creator_id = ${user}) or a.audience = 'everyone'
+            or (a.audience = 'groups' and exists(select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id where g.app_id = a.id and gm.member_id = m.id)))
         ))
         and (request.reconnect_account is null or exists (
           select 1 from hosted_account_access a where a.account_id = request.reconnect_account
@@ -180,25 +177,10 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         and ((p.kind = 'personal' and p.personal_user_id = ${user}) or (p.kind = 'shared' and (p.creator_id = ${user}
           or exists(select 1 from member m where m."organizationId" = ${organization} and m."userId" = ${user} and m.role in ('owner','admin'))))) for update`;
         if (policy.length !== 1) return yield* new StorageError();
-        // Lock each affected app before changing its selection, matching the SDK's writer lock.
-        yield* sql`select id from executor_apps a where owner = ${account.owner} and (
-          exists(select 1 from jsonb_each(a.accounts::jsonb) binding where binding.value = to_jsonb(${account.id}::text) or binding.value @> jsonb_build_array(${account.id}::text))
-          or exists(select 1 from executor_installations i, jsonb_each(i.accounts::jsonb) binding where i.app = a.id and (binding.value = to_jsonb(${account.id}::text) or binding.value @> jsonb_build_array(${account.id}::text)))
-        ) order by id for update`;
-        yield* sql`update executor_installations i set status = 'pending', failure = null
-          where i.status not in ('removed', 'removing') and exists(select 1 from executor_apps a, jsonb_each(a.accounts::jsonb) binding
-            where a.id = i.app and a.owner = ${account.owner} and (binding.value = to_jsonb(${account.id}::text) or binding.value @> jsonb_build_array(${account.id}::text)))`;
-        yield* sql`update executor_apps a set accounts = (
-        select coalesce(jsonb_object_agg(binding.key,
-          case when jsonb_typeof(binding.value) = 'array' then (
-            select coalesce(jsonb_agg(value), '[]'::jsonb) from jsonb_array_elements(binding.value) value where value <> to_jsonb(${account.id}::text)
-          ) else binding.value end), '{}'::jsonb)
-        from jsonb_each(a.accounts::jsonb) binding
-        where binding.value <> to_jsonb(${account.id}::text)
-          and not (jsonb_typeof(binding.value) = 'array'
-            and binding.value @> jsonb_build_array(${account.id}::text)
-            and binding.value <@ jsonb_build_array(${account.id}::text))
-      ) where a.owner = ${account.owner} and exists(select 1 from jsonb_each(accounts::jsonb) binding where binding.value = to_jsonb(${account.id}::text) or binding.value @> jsonb_build_array(${account.id}::text))`;
+        // Match the SDK's app lock before editing any of its profiles.
+        yield* sql`select id from executor_apps a where owner = ${account.owner} and
+          exists(select 1 from executor_installations i, jsonb_each(i.accounts::jsonb) binding where i.app = a.id and (binding.value = to_jsonb(${account.id}::text) or binding.value @> jsonb_build_array(${account.id}::text)))
+          order by id for update`;
         yield* sql`update executor_installations a set revision = revision + 1,
         status = case when status in ('removed', 'removing') then status else 'pending' end, failure = null, accounts = (
         select coalesce(jsonb_object_agg(binding.key,

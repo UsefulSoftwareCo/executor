@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 /** Group boundaries apply to discovery, sharing, and pending account connections. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -175,9 +176,11 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
 
         const ownAudience = { kind: "groups", groups: [engineering.id] };
         const salesAudience = { kind: "groups", groups: [sales.id] };
+        const profile = yield* createProfile(actors.member, `${prefix}/apps/${app.id}`);
         const connect = (audience: typeof ownAudience) =>
           api.request(actors.member, "POST", `${prefix}/apps/${app.id}/connections`, {
             requirement: "service",
+            profile: profile.id,
             destination: { kind: "shared", audience },
           });
         expect((yield* connect(salesAudience)).status).toBe(403);
@@ -191,7 +194,11 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
         expect((yield* submit(connection.id)).status).toBe(200);
         const binding = yield* body(
           Schema.Struct({ accounts: Schema.Struct({ service: Schema.Array(Schema.String) }) }),
-          yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}`),
+          yield* api.request(
+            actors.member,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
         );
         accounts.push(...binding.accounts.service);
         const account = accounts[0];
@@ -249,7 +256,11 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
         ).toBe(200);
         const after = yield* body(
           Schema.Struct({ accounts: Schema.Struct({ service: Schema.Array(Schema.String) }) }),
-          yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}`),
+          yield* api.request(
+            actors.member,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
         );
         expect(after.accounts.service).toEqual(accounts);
         expect(

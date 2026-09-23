@@ -27,12 +27,12 @@ export function AppAccounts({
 }) {
   return (
     <SharedAccounts
-      app={{ ...app, accounts: { ...app.accounts, ...profile?.accounts } }}
+      app={app}
+      selection={profile?.accounts ?? {}}
       accounts={data.accounts}
       onCreateProfile={onCreateProfile}
       removeAccountAction={(slot, account, label) =>
-        profile !== undefined &&
-        !Object.hasOwn(app.accounts, slot) && (
+        profile !== undefined && (
           <RemoveAccountBinding
             profile={profile}
             slot={slot}
@@ -43,23 +43,21 @@ export function AppAccounts({
           />
         )
       }
-      accountActions={(slot, requirement) =>
-        !Object.hasOwn(app.accounts, slot) && (
-          <AccountSelectionDialog
-            app={app}
-            data={data}
-            onSelected={onSelected}
-            profile={profile?.id}
-            slot={slot}
-            trigger={
-              <AccountSelectionTrigger
-                requirement={requirement}
-                selection={profile?.accounts[slot]}
-              />
-            }
-          />
-        )
-      }
+      accountActions={(slot, requirement) => (
+        <AccountSelectionDialog
+          app={app}
+          data={data}
+          onSelected={onSelected}
+          profile={profile?.id}
+          slot={slot}
+          trigger={
+            <AccountSelectionTrigger
+              requirement={requirement}
+              selection={profile?.accounts[slot]}
+            />
+          }
+        />
+      )}
       reconnectAction={(account) => (
         <Button variant="outline" size="sm" asChild>
           <Link to="/accounts/$accountId/credentials" params={{ accountId: account.id }}>

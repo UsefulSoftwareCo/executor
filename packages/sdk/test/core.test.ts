@@ -119,14 +119,22 @@ test(
           );
           assert.deepEqual(yield* executor.accounts.get({ account: other.id }), other);
           assert.equal("fields" in account, false);
-          yield* executor.apps.update({ app: app.id, accounts: { service: account.id } });
+          const profile = yield* executor.apps.profiles.create({
+            app: app.id,
+            owner,
+            subject: "alice",
+            idempotencyKey: "test",
+            accounts: { service: account.id },
+          });
           assert.deepEqual(
-            (yield* Effect.promise(() => promise.tools.list({ app: app.id, limit: 1 }))).items,
+            (yield* Effect.promise(() =>
+              promise.tools.list({ app: app.id, profile: profile.id, limit: 1 }),
+            )).items,
             [],
           );
           yield* Effect.promise(() =>
             assert.rejects(
-              promise.tools.list({ app: app.id, limit: 0 }),
+              promise.tools.list({ app: app.id, profile: profile.id, limit: 0 }),
               Schema.is(RequestInvalid),
             ),
           );
@@ -170,7 +178,7 @@ test(
             label: "Example",
             fields: Redacted.make({ token: "synthetic-token" }),
           });
-          const db = options.storage.orm("3.0.0");
+          const db = options.storage.orm("4.0.0");
           yield* db
             .transaction(add.pipe(Effect.andThen(Effect.fail("rollback"))))
             .pipe(Effect.result);
@@ -262,14 +270,21 @@ test(
             label: "Default",
             fields: Redacted.make({ token: "synthetic" }),
           });
-          const configured = yield* executor.apps.update({
+          const profile = yield* executor.apps.profiles.create({
+            owner,
+            subject: "alice",
+            idempotencyKey: "test",
             app: app.id,
             accounts: { service: account.id },
           });
           const renamed = yield* Effect.promise(() =>
             promise.apps.rename({ owner, app: app.id, name: "Renamed" }),
           );
-          assert.deepEqual(renamed, { ...configured, name: "Renamed", slug: "renamed" });
+          assert.deepEqual(renamed, { ...app, name: "Renamed", slug: "renamed" });
+          assert.deepEqual(
+            yield* executor.apps.profiles.get({ app: app.id, profile: profile.id }),
+            profile,
+          );
           assert.deepEqual(
             yield* executor.apps.rename({ app: app.id, owner, name: "Renamed" }),
             renamed,
@@ -337,7 +352,7 @@ test("app names determine slugs; normalized collisions fail without allocating s
         assert.equal(renamed.id, first.id);
         assert.equal(renamed.code, first.code);
         assert.equal(renamed.activeDeployment, first.activeDeployment);
-        assert.deepEqual(renamed.accounts, first.accounts);
+        assert.equal(Object.hasOwn(renamed, "accounts"), false);
         const deployed = yield* executor.apps.deploy({
           owner,
           app: first.id,
@@ -438,8 +453,22 @@ test("app predicates match scalar and collection account selections before deplo
         const account = AccountId.make("acc_filter");
         const other = AccountId.make("acc_other");
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`update executor_apps set accounts = ${JSON.stringify({ service: account })}::jsonb where id = ${first.app.id}`;
-        yield* sql`update executor_apps set accounts = ${JSON.stringify({ service: [account, other] })}::jsonb where id = ${second.app.id}`;
+        const scalarProfile = yield* executor.apps.profiles.create({
+          app: first.app.id,
+          owner,
+          subject: "alice",
+          idempotencyKey: "test",
+          accounts: {},
+        });
+        const collectionProfile = yield* executor.apps.profiles.create({
+          app: second.app.id,
+          owner,
+          subject: "alice",
+          idempotencyKey: "test",
+          accounts: {},
+        });
+        yield* sql`update executor_installations set accounts = ${JSON.stringify({ service: account })}::jsonb where id = ${scalarProfile.id}`;
+        yield* sql`update executor_installations set accounts = ${JSON.stringify({ service: [account, other] })}::jsonb where id = ${collectionProfile.id}`;
         yield* sql`update executor_deployments set requirements = 'null'::jsonb where id = ${unrelated.deployment.id}`;
         assert.deepEqual(
           (yield* executor.apps.list({ account })).map((app) => app.name).toSorted(),

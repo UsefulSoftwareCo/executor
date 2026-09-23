@@ -1,3 +1,4 @@
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -269,11 +270,13 @@ export default defineApp({ accounts: { primary: service, many: service.many() } 
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
+        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${deployed.id}`);
         for (let index = 1; index <= 7; index++) {
           const connection = yield* body(
             Resource,
             yield* api.request(actors.owner, "POST", `${prefix}/apps/${deployed.id}/connections`, {
               requirement: "primary",
+              profile: profile.id,
             }),
           );
           const saved = yield* body(

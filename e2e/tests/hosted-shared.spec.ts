@@ -1,3 +1,4 @@
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 /** The same Effect program runs against both hosted products. Only injected actor setup differs. */
 import { expect, layer } from "@effect/vitest";
@@ -104,6 +105,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             expect((yield* body(App, read)).id).toBe(created.app);
           }),
         );
+        const ownerProfile = yield* createProfile(actors.owner, `${prefix}/apps/${created.app}`);
         yield* evidence.step(
           "Owner connects an account",
           Effect.gen(function* () {
@@ -113,6 +115,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
               `${prefix}/apps/${created.app}/connections`,
               {
                 requirement: "service",
+                profile: ownerProfile.id,
                 destination: { kind: "shared", audience: { kind: "everyone" } },
               },
             );
@@ -129,7 +132,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             const selected = yield* api.request(
               actors.owner,
               "GET",
-              `${prefix}/apps/${created.app}`,
+              `${prefix}/apps/${created.app}/profiles/${ownerProfile.id}`,
             );
             expect(selected.status).toBe(200);
             expect(
@@ -143,10 +146,28 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
         yield* evidence.step(
           "Members and admins can use explicitly shared apps and accounts",
           Effect.gen(function* () {
+            if (created.account === undefined) return yield* Effect.die("Shared account missing");
+            const memberProfile = yield* createProfile(
+              actors.member,
+              `${prefix}/apps/${created.app}`,
+            );
+            const adminProfile = yield* createProfile(
+              actors.admin,
+              `${prefix}/apps/${created.app}`,
+            );
+            for (const [actor, profile] of [
+              [actors.member, memberProfile],
+              [actors.admin, adminProfile],
+            ] as const)
+              expect(
+                (yield* selectProfileAccounts(actor, `${prefix}/apps/${created.app}`, profile.id, {
+                  service: created.account,
+                })).status,
+              ).toBe(200);
             const tools = yield* api.request(
               actors.member,
               "GET",
-              `${prefix}/apps/${created.app}/tools`,
+              `${prefix}/apps/${created.app}/tools?profile=${memberProfile.id}`,
             );
             expect(tools.status).toBe(200);
             expect(
@@ -161,14 +182,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
                 actors.member,
                 "POST",
                 `${prefix}/apps/${created.app}/tools/call`,
-                call,
+                { ...call, profile: memberProfile.id },
               )).status,
             ).toBe(200);
             const invoked = yield* api.request(
               actors.admin,
               "POST",
               `${prefix}/apps/${created.app}/tools/call`,
-              call,
+              { ...call, profile: adminProfile.id },
             );
             expect(invoked.status).toBe(200);
             expect(invoked.body).toEqual({ message: "shared hosted scenario", connected: true });

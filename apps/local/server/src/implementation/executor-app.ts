@@ -1,12 +1,13 @@
 /** Install the bundled management app using the same deployment and account operations as user apps. */
 import {
   OwnerId,
+  AccountId,
   StorageError,
   type ExecutorDatabase,
   type Credentials,
   type Executor,
 } from "@executor-js/sdk/core";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
 
@@ -21,7 +22,7 @@ export const installExecutorApp = (
 ) =>
   Effect.gen(function* () {
     const files = yield* executorAppSource();
-    const db = storage.orm("3.0.0");
+    const db = storage.orm("4.0.0");
     const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
     const current =
       existing === undefined ? undefined : yield* executor.apps.source({ owner, app: existing.id });
@@ -50,7 +51,23 @@ export const installExecutorApp = (
       baseUrl: `http://127.0.0.1:${config.port}`,
       apiKey: Redacted.value(config.apiKey),
     });
-    const selected = app.accounts.executor;
+    const profile = yield* db
+      .findFirst("profiles", {
+        where: (b) =>
+          b.and(
+            b("app", "=", app.id),
+            b("subject", "=", "local"),
+            b("idempotencyKey", "=", "executor-default"),
+          ),
+      })
+      .pipe(Effect.mapError(() => new StorageError()));
+    // The immutable creation request retains the host-owned account even after a user clears its selection.
+    const selected =
+      profile === null
+        ? undefined
+        : (yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ accounts: Schema.Struct({ executor: AccountId }) }),
+          )(profile.request).pipe(Effect.mapError(() => new StorageError()))).accounts.executor;
     const account =
       typeof selected === "string"
         ? yield* executor.accounts.get({ account: selected })
@@ -70,7 +87,15 @@ export const installExecutorApp = (
         set: { encryptedCredentials },
       })
       .pipe(Effect.mapError(() => new StorageError()));
-    if (selected !== account.id)
-      yield* executor.apps.update({ app: app.id, accounts: { executor: account.id } });
-    return { app: app.id, account: account.id };
+    const saved =
+      profile === null
+        ? yield* executor.apps.profiles.create({
+            app: app.id,
+            owner,
+            subject: "local",
+            idempotencyKey: "executor-default",
+            accounts: { executor: account.id },
+          })
+        : profile;
+    return { app: app.id, account: account.id, profile: saved.id };
   });

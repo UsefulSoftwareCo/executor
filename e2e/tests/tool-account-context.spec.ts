@@ -1,3 +1,4 @@
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -24,6 +25,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(App, deployed);
+        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -38,6 +40,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
               Resource,
               yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
                 requirement: "workspaces",
+                profile: profile.id,
               }),
             );
             const response = yield* api.request(
@@ -55,18 +58,16 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           personal = yield* add("Personal GitHub", "personal");
         yield* browser.login(actors.owner);
         yield* checkToolAccountContext({
-          url: `/org/${actors.organization.slug}/apps/${app.id}`,
+          url: `/org/${actors.organization.slug}/apps/${app.id}?profile=${profile.id}`,
           work,
           personal,
           catalogs: [actors.organization.id, actors.organization.slug].map(
             (reference) => `/api/organizations/${reference}/apps/${app.id}/tools`,
           ),
           select: (ids) =>
-            api
-              .request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/accounts`, {
-                accounts: { workspaces: ids },
-              })
-              .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
+            selectProfileAccounts(actors.owner, `${prefix}/apps/${app.id}`, profile.id, {
+              workspaces: ids,
+            }).pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
         });
       }),
     ),
