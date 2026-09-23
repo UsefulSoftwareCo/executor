@@ -42,8 +42,8 @@ environment on same-repository PRs and provisions a disposable Neon branch.
 An earlier run on the same ref is cancelled. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
 
-Every push to `main` runs the same deployed suite on PlanetScale. Production
-deployment depends on that job passing for the exact candidate commit.
+Every push to `main` deploys production directly, without a deployed-test gate.
+The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
 Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
 
