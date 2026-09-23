@@ -14,6 +14,7 @@ import { Target } from "../support/platform.ts";
 const App = Schema.Struct({ id: Schema.String, repository: Schema.NullOr(Schema.String) });
 const files = (value: string) => [
   { path: "index.ts", content: `export default ${JSON.stringify(value)};` },
+  { path: "nested/deep/value.json", content: JSON.stringify({ value }) },
 ];
 
 layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
@@ -207,6 +208,21 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
               completedSpan: "source.repository.credentials",
             });
         }
+
+        // Exercise the native Git proxy's POST body and read its response after headers return.
+        const want = `want ${winner.revision.commit}\n`;
+        const upload = yield* http.execute(
+          HttpClientRequest.post(`${target.metadata.origin}${git.path}/git-upload-pack`).pipe(
+            HttpClientRequest.bearerToken(key.key),
+            HttpClientRequest.bodyText(
+              `${(want.length + 4).toString(16).padStart(4, "0")}${want}00000009done\n`,
+              "application/x-git-upload-pack-request",
+            ),
+          ),
+        );
+        expect(upload.status).toBe(200);
+        const pack = new Uint8Array(yield* upload.arrayBuffer);
+        expect(new TextDecoder().decode(pack.subarray(0, 12))).toBe("0008NAK\nPACK");
 
         const stale = yield* api.request(actors.owner, "POST", `${path}/commits`, {
           expected: initial.revision.commit,
