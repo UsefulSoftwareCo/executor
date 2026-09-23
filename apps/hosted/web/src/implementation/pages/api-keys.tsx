@@ -5,6 +5,7 @@ import { Cause, Exit, Redacted } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useState } from "react";
 import type { ApiKeySummary, CreatedApiKey } from "@executor-js/hosted-server/api-keys";
+import { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import { Card, CardContent } from "@executor-js/ui/components/card";
@@ -17,18 +18,33 @@ import {
 } from "@executor-js/ui/components/dialog";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@executor-js/ui/components/select";
+import {
   apiKeysAtom,
   createApiKeyAtom,
   revokeApiKeyAtom,
   ApiKeyFailed,
 } from "../../contracts/api-keys.ts";
-import { OrganizationDetailsBoundary, useOrganization } from "../components/organization.tsx";
+import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
+import {
+  OrganizationAvatar,
+  OrganizationDetailsBoundary,
+  useOrganization,
+} from "../components/organization.tsx";
 import { documentationUrl } from "../../contracts/documentation.ts";
 
 const tokenDocsUrl = documentationUrl("api-keys/#personal-access-tokens");
 
 const date = (value: string | null) =>
   value === null ? "Never" : new Date(value).toLocaleString();
+/** The organization select value: one organization id, or the whole account. */
+const fullAccount = "account";
 const errorMessage = (cause: Cause.Cause<ApiKeyFailed>) => {
   const error = Cause.squash(cause);
   return error instanceof ApiKeyFailed ? error.message : "Could not update API keys. Try again.";
@@ -44,6 +60,25 @@ export function ApiKeysPage() {
 }
 function PersonalAccessTokens() {
   const organization = useOrganization();
+  const organizations = useAtomValue(organizationsAtom);
+  const memberships: ReadonlyArray<OrganizationSummary> = AsyncResult.isSuccess(organizations)
+    ? organizations.value
+    : [
+        {
+          id: organization.organization,
+          name: organization.name,
+          slug: organization.slug,
+          logo: organization.logo,
+        },
+      ];
+  /** A pinned key names its organization; one the user has left keeps a plain label. */
+  const pinnedOrganization = (key: ApiKeySummary) =>
+    key.metadata?.organization === undefined
+      ? undefined
+      : (memberships.find((item) => item.id === key.metadata?.organization) ?? {
+          name: "Organization you left",
+          logo: null,
+        });
   useDocumentTitle(productTitle("API keys"));
   const [offset, setOffset] = useState(0);
   const query = apiKeysAtom(offset);
@@ -59,6 +94,7 @@ function PersonalAccessTokens() {
   const [form, setForm] = useState(false);
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("");
+  const [scope, setScope] = useState<string>(organization.organization);
   const [created, setCreated] = useState<typeof CreatedApiKey.Type>();
   const [target, setTarget] = useState<ApiKeySummary>();
   const [error, setError] = useState<string>();
@@ -99,7 +135,8 @@ function PersonalAccessTokens() {
         )}
       </PageHeader>
       <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
-        Tokens have your current permissions. Changes to your organization memberships and roles
+        Tokens have your current permissions. Limit a token to one organization, or give it your
+        full account so it can reach every organization you belong to. Membership and role changes
         apply automatically. Tokens stay active when you sign out.
       </p>
       {error && !form && !target && !created && (
@@ -155,7 +192,7 @@ function PersonalAccessTokens() {
               <table className="w-full text-left text-sm">
                 <thead className="border-b text-xs text-muted-foreground">
                   <tr>
-                    {["Name", "Last used", "Expires", "Status", ""].map((label) => (
+                    {["Name", "Organization", "Last used", "Expires", "Status", ""].map((label) => (
                       <th key={label} className="px-4 py-3 font-medium">
                         {label}
                       </th>
@@ -173,6 +210,19 @@ function PersonalAccessTokens() {
                           <p className="mt-1 text-xs text-muted-foreground">
                             Created by you · {date(key.createdAt)}
                           </p>
+                        </td>
+                        <td className="px-4 py-4 text-xs">
+                          {(() => {
+                            const pinned = pinnedOrganization(key);
+                            return pinned === undefined ? (
+                              "Full account"
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5">
+                                <OrganizationAvatar name={pinned.name} logo={pinned.logo} />
+                                {pinned.name}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-4 text-xs">{date(key.lastRequest)}</td>
                         <td className="px-4 py-4 text-xs">{date(key.expiresAt)}</td>
@@ -246,7 +296,7 @@ function PersonalAccessTokens() {
           <div className="space-y-2 pr-6">
             <DialogTitle>Create token</DialogTitle>
             <DialogDescription>
-              This token has your current permissions in Executor.
+              This token has your current permissions in the organization you choose.
             </DialogDescription>
           </div>
           <form
@@ -257,6 +307,9 @@ function PersonalAccessTokens() {
               setError(undefined);
               const result = await create({
                 name: name.trim(),
+                ...(scope === fullAccount
+                  ? {}
+                  : { metadata: { organization: OrganizationId.make(scope) } }),
                 ...(expiry
                   ? { expiresIn: Math.floor((new Date(expiry).getTime() - Date.now()) / 1000) }
                   : {}),
@@ -271,6 +324,7 @@ function PersonalAccessTokens() {
                 setForm(false);
                 setName("");
                 setExpiry("");
+                setScope(organization.organization);
                 setOffset(0);
                 refresh();
               }
@@ -290,6 +344,35 @@ function PersonalAccessTokens() {
                 disabled={creating}
               />
             </label>
+            <div className="block text-sm font-medium">
+              <label htmlFor="token-organization">Organization</label>
+              <Select value={scope} onValueChange={setScope} disabled={creating}>
+                <SelectTrigger
+                  id="token-organization"
+                  className="mt-2 w-full"
+                  aria-label="Organization"
+                >
+                  <SelectValue placeholder="Select organization" />
+                </SelectTrigger>
+                <SelectContent>
+                  {memberships.map((item) => (
+                    <SelectItem key={item.id} value={item.id} textValue={item.name}>
+                      <OrganizationAvatar name={item.name} logo={item.logo} />
+                      <span className="truncate">{item.name}</span>
+                    </SelectItem>
+                  ))}
+                  <SelectSeparator />
+                  <SelectItem value={fullAccount} textValue="Full account">
+                    Full account
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="mt-1.5 block text-xs font-normal text-muted-foreground">
+                {scope === fullAccount
+                  ? "Works in every organization you belong to, now and in the future."
+                  : "Works only in this organization. Requests to other organizations fail."}
+              </span>
+            </div>
             <label className="block text-sm font-medium">
               Expiry <span className="font-normal text-muted-foreground">(optional)</span>
               <Input
@@ -349,14 +432,25 @@ function PersonalAccessTokens() {
           </DialogDescription>
           {created && (
             <>
+              {/* A text input masked with CSS: password inputs refuse to copy the secret. */}
               <Input
-                type={showKey ? "text" : "password"}
+                type="text"
                 aria-label="New token"
                 readOnly
                 value={Redacted.value(created.key)}
-                className="font-mono text-xs"
+                className={
+                  showKey ? "font-mono text-xs" : "font-mono text-xs [-webkit-text-security:disc]"
+                }
                 autoComplete="off"
+                spellCheck={false}
                 data-private
+                onFocus={(event) => event.target.select()}
+                onCopy={(event) => {
+                  event.preventDefault();
+                  event.clipboardData.setData("text/plain", Redacted.value(created.key));
+                  setCopied(true);
+                  setError(undefined);
+                }}
               />
               <Button variant="ghost" size="sm" onClick={() => setShowKey(!showKey)}>
                 {showKey ? "Hide key" : "Show key"}

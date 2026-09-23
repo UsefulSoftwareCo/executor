@@ -1,4 +1,5 @@
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
+import { ApiKeyMetadata } from "@executor-js/hosted-server/api-keys";
 import { AppManagementHost, AppSourceView } from "@executor-js/app-management";
 import { gitSourceStorage } from "@executor-js/app-source";
 import { nativeRepositories } from "@executor-js/app-source/node";
@@ -364,11 +365,39 @@ test(
               );
               assert.equal(access, status, `pinned key MCP access in ${organization}`);
             }
-            // Browser-created PATs cannot record metadata, so only setup mints pinned keys.
-            assert.equal(
-              (yield* request("/api/auth/api-key/create", {
+            // Browser-created PATs may pin one organization the creator belongs to.
+            const handPinned = yield* json(
+              yield* request("/api/auth/api-key/create", {
                 name: "Hand pinned",
                 metadata: { organization: b.id },
+              }),
+              Schema.Struct({ key: Schema.String, metadata: ApiKeyMetadata }),
+            );
+            assert.equal(handPinned.metadata.organization, b.id);
+            for (const [reference, status] of [
+              [b.id, 200],
+              [a.id, 403],
+            ] as const) {
+              const response = yield* Effect.promise(() =>
+                web.handler(
+                  new Request(`${origin}/api/organizations/${reference}/inventory`, {
+                    headers: { authorization: `Bearer ${handPinned.key}` },
+                  }),
+                ),
+              );
+              assert.equal(response.status, status, `hand-pinned key in ${reference}`);
+            }
+            assert.equal(
+              (yield* request("/api/auth/api-key/create", {
+                name: "Foreign pin",
+                metadata: { organization: c.id },
+              })).status,
+              403,
+            );
+            assert.equal(
+              (yield* request("/api/auth/api-key/create", {
+                name: "Extra metadata",
+                metadata: { organization: b.id, role: "owner" },
               })).status,
               400,
             );

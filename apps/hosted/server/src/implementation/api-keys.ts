@@ -5,9 +5,9 @@ import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
 import { fullAuthority } from "@executor-js/authorization";
 import { authCall } from "@executor-js/mcp-auth/oauth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
-import { ApiKeyId, CreateApiKey } from "../contracts/api-keys.ts";
+import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 
 /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
@@ -18,28 +18,43 @@ export const apiKeys = apiKey({
   enableSessionForAPIKeys: false,
   rateLimit: { enabled: false },
   keyExpiration: { minExpiresIn: 1 / 86400 },
-  // Only the auto-minted Executor app key records metadata; the browser create
-  // endpoint rejects it through apiKeyManagement's strict body schema.
+  // Metadata records the key's scope; apiKeyManagement's strict body schema
+  // limits browser-created keys to a single organization pin.
   enableMetadata: true,
 });
 
-/** A saved Executor account's key authorizes only inside the organization that minted it. */
-const KeyMetadata = Schema.NullOr(Schema.Struct({ organization: Schema.optional(OrganizationId) }));
+/** Stored metadata; keys created before pinning existed carry none. */
+const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
+/** Pin a key to one organization; the auto-minted Executor app key always uses this. */
 export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
 
-/** Constrain native key management to browser sessions and the v1 PAT inputs. */
+/** Constrain native key management to browser sessions and the PAT inputs. */
 export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
   if (!ctx.path?.startsWith("/api-key/") || ctx.request === undefined) return;
   if (ctx.headers?.has("authorization")) throw new APIError("FORBIDDEN");
   if (ctx.method !== "GET" && ctx.headers?.get("origin") !== new URL(ctx.context.baseURL).origin)
     throw new APIError("FORBIDDEN");
   if (ctx.path === "/api-key/create") {
-    if (
-      Option.isNone(
-        Schema.decodeUnknownOption(CreateApiKey, { onExcessProperty: "error" })(ctx.body),
-      )
-    )
-      throw new APIError("BAD_REQUEST");
+    const input = Schema.decodeUnknownOption(CreateApiKey, { onExcessProperty: "error" })(ctx.body);
+    if (Option.isNone(input)) throw new APIError("BAD_REQUEST");
+    // A pinned key must belong to an organization the creator is a member of today.
+    const organization = input.value.metadata?.organization;
+    if (organization !== undefined) {
+      const session = await getSessionFromCtx(ctx);
+      if (session === null) throw new APIError("UNAUTHORIZED");
+      const member = await ctx.context.adapter.findOne({
+        model: "member",
+        where: [
+          { field: "userId", value: session.user.id },
+          { field: "organizationId", value: organization },
+        ],
+        select: ["id"],
+      });
+      if (member === null)
+        throw new APIError("FORBIDDEN", {
+          message: "You are not a member of that organization.",
+        });
+    }
   }
   if (!["/api-key/create", "/api-key/list", "/api-key/get", "/api-key/delete"].includes(ctx.path))
     throw new APIError("NOT_FOUND");
@@ -77,7 +92,7 @@ const identity = (
     };
   });
 
-/** User PATs carry no organization; a pinned key never authorizes another organization. */
+/** A full-account key carries no organization; a pinned key never authorizes another organization. */
 export const requirePinnedOrganization = (
   identity: { readonly organization: OrganizationId | undefined },
   organization: OrganizationId,

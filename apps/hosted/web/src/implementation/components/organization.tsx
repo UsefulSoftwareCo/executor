@@ -496,7 +496,8 @@ export function OrganizationDestination({
     />
   );
 }
-function OrganizationAvatar({
+/** Compact organization mark shared by the switcher and organization pickers. */
+export function OrganizationAvatar({
   name,
   logo,
 }: {
