@@ -137,22 +137,26 @@ const temporaryKeychain = Effect.gen(function* () {
 });
 
 /**
- * Convert the PEM pair into a PKCS#12 stream and import it. Both PEMs reach
- * `openssl` through private file descriptors and the PKCS#12 only ever exists
- * as a pipe between the two processes.
+ * Convert the PEM pair into a complete PKCS#12 file on a private RAM volume.
+ * security import can read a pipe before the full archive arrives. Both PEMs
+ * still reach openssl through private file descriptors. The archive never
+ * reaches persistent storage.
  */
 const importIdentity = (keychain: { readonly file: string; readonly password: string }) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const key = yield* Config.Redacted("EXECUTOR_MAC_SIGNING_KEY");
     const certificate = yield* Config.Redacted("EXECUTOR_MAC_SIGNING_CERTIFICATE");
-    // This password only protects the PKCS#12 while it is in flight between the
-    // two processes below. `security import` takes it as an argument and has no
-    // other input for it.
+    // This password protects the temporary PKCS#12 until the import completes.
+    // security import takes it as an argument and has no other input for it.
     const transfer = randomHex(24);
     yield* Effect.scoped(
       Effect.gen(function* () {
-        const openssl = yield* processes.spawn(
+        const archive = path.join(yield* memoryVolume, "identity.p12");
+        yield* fs.writeFile(archive, new Uint8Array(), { mode: 0o600 });
+        const exported = yield* processes.exitCode(
           ChildProcess.make(
             "/usr/bin/openssl",
             [
@@ -166,12 +170,14 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
               "env:EXECUTOR_MAC_PKCS12_PASSWORD",
               "-name",
               "executor-developer-id",
+              "-out",
+              archive,
             ],
             {
               env: { EXECUTOR_MAC_PKCS12_PASSWORD: transfer },
               extendEnv: true,
               stdin: "ignore",
-              stdout: "pipe",
+              stdout: "ignore",
               stderr: "inherit",
               additionalFds: {
                 fd3: { type: "input", stream: pemStream(key) },
@@ -180,12 +186,16 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
             },
           ),
         );
+        if (exported !== 0)
+          yield* Effect.die(
+            new Error(`Reading the signing key failed (openssl exited ${exported})`),
+          );
         const imported = yield* processes.exitCode(
           ChildProcess.make(
             security,
             [
               "import",
-              "/dev/stdin",
+              archive,
               "-k",
               keychain.file,
               "-f",
@@ -195,14 +205,9 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
               "-T",
               "/usr/bin/codesign",
             ],
-            { stdin: openssl.stdout, stdout: "inherit", stderr: "inherit" },
+            { stdin: "ignore", stdout: "inherit", stderr: "inherit" },
           ),
         );
-        const exported = yield* openssl.exitCode;
-        if (exported !== 0)
-          yield* Effect.die(
-            new Error(`Reading the signing key failed (openssl exited ${exported})`),
-          );
         if (imported !== 0)
           yield* Effect.die(
             new Error(`Importing the identity failed (security exited ${imported})`),
@@ -245,22 +250,20 @@ const importIdentity = (keychain: { readonly file: string; readonly password: st
   });
 
 /**
- * notarytool opens its App Store Connect key only as a seekable file: a pipe on
- * stdin, on /dev/fd/3 and from process substitution were each refused. Give it
- * one on a volume that lives in memory, so the key never reaches persistent
- * storage, and take the volume away again as soon as it has been read.
+ * Apple signing tools need complete, seekable credential files. Keep those on
+ * a private volume in memory, then eject it as soon as the tool has read them.
  */
 const memoryVolume = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const name = `executor-notary-${randomHex(8)}`;
+  const name = `executor-signing-${randomHex(8)}`;
   const device = yield* Effect.acquireRelease(
     processes
       .string(ChildProcess.make("/usr/bin/hdiutil", ["attach", "-nomount", "ram://2048"]))
       .pipe(Effect.map((output) => output.trim().split(/\s+/)[0] ?? "")),
     (device) =>
       // Ejecting unmounts the volume and releases the memory behind it.
-      succeed("/usr/sbin/diskutil", ["eject", device], "Ejecting the notarization volume").pipe(
+      succeed("/usr/sbin/diskutil", ["eject", device], "Ejecting the signing volume").pipe(
         Effect.ignore,
       ),
   );
@@ -269,7 +272,7 @@ const memoryVolume = Effect.gen(function* () {
   yield* succeed(
     "/usr/sbin/diskutil",
     ["eraseVolume", "HFS+", name, device],
-    "Preparing the notarization volume",
+    "Preparing the signing volume",
   );
   const directory = `/Volumes/${name}`;
   yield* fs.chmod(directory, 0o700);
