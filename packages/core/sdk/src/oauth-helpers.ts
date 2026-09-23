@@ -252,9 +252,6 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
   if (input.codeChallenge) {
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("code_challenge", input.codeChallenge);
-  } else {
-    url.searchParams.delete("code_challenge_method");
-    url.searchParams.delete("code_challenge");
   }
   if (input.resource) {
     url.searchParams.set("resource", input.resource);
@@ -263,6 +260,12 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
     for (const [k, v] of Object.entries(input.extraParams)) {
       url.searchParams.set(k, v);
     }
+  }
+  // When this flow does not use PKCE, configured endpoint or provider-extra
+  // parameters must not reintroduce a challenge without a persisted verifier.
+  if (!input.codeChallenge) {
+    url.searchParams.delete("code_challenge_method");
+    url.searchParams.delete("code_challenge");
   }
   return url.toString();
 };

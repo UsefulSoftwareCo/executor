@@ -273,6 +273,10 @@ describe("buildAuthorizationUrl", () => {
         ...withoutPkce,
         authorizationUrl:
           "https://example.com/authorize?code_challenge=stale&code_challenge_method=S256",
+        extraParams: {
+          code_challenge: "also-stale",
+          code_challenge_method: "plain",
+        },
       }),
     );
     expect(url.searchParams.has("code_challenge_method")).toBe(false);
