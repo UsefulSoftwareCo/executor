@@ -11,6 +11,8 @@ import {
 import {
   AuthTemplateSlug,
   ConnectionName,
+  ElicitationResponse,
+  FormElicitation,
   IntegrationSlug,
   OAuthClientSlug,
   ToolAddress,
@@ -1397,6 +1399,7 @@ describe("mcpPlugin", () => {
 // ---------------------------------------------------------------------------
 
 const serveAnnotationsTestServer = serveMcpServer(makeAnnotationsMcpServer);
+const isFormElicitation = Schema.is(FormElicitation);
 
 const seedAnnotationsExecutor = (serverUrl: string) =>
   createExecutor(
@@ -1448,6 +1451,55 @@ describe("MCP destructiveHint → requiresApproval", () => {
       const deleteTitled = tools.find((t) => String(t.name) === "delete_titled");
       expect(deleteTitled?.annotations?.requiresApproval).toBe(true);
       expect(deleteTitled?.annotations?.approvalDescription).toBe("Delete dataset");
+    }),
+  );
+
+  it.effect("uses annotations.title as approvalDescription without destructiveHint", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+
+      const tools = yield* executor.tools.list();
+      const createTitled = tools.find((t) => String(t.name) === "create_titled");
+      expect(createTitled?.annotations?.requiresApproval).toBe(false);
+      expect(createTitled?.annotations?.approvalDescription).toBe("Create dataset");
+
+      const deleteUntitled = tools.find((t) => String(t.name) === "delete");
+      expect(deleteUntitled?.annotations?.approvalDescription).toBe("delete");
+
+      const ping = tools.find((t) => String(t.name) === "ping");
+      expect(ping?.annotations?.approvalDescription).toBeUndefined();
+    }),
+  );
+
+  it.effect("a policy-gated additive tool prompts with its title", () =>
+    Effect.gen(function* () {
+      const server = yield* serveAnnotationsTestServer;
+      const executor = yield* seedAnnotationsExecutor(server.url);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "annotations_test.*",
+        action: "require_approval",
+      });
+
+      const tools = yield* executor.tools.list();
+      const createTitled = tools.find((t) => String(t.name) === "create_titled");
+      expect(createTitled).toBeDefined();
+
+      const messages: string[] = [];
+      yield* executor.execute(
+        createTitled!.address,
+        { name: "reports" },
+        {
+          onElicitation: (ctx) => {
+            if (isFormElicitation(ctx.request)) messages.push(ctx.request.message);
+            return Effect.succeed(ElicitationResponse.make({ action: "accept" }));
+          },
+        },
+      );
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatch(/^Create dataset\n/);
     }),
   );
 
