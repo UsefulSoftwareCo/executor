@@ -6,6 +6,7 @@ import { emailOTPClient } from "better-auth/client/plugins";
 import { authRequest } from "@executor-js/hosted-web/contracts/auth";
 import { Effect } from "effect";
 import { signInCallback } from "@executor-js/hosted-web/contracts/navigation";
+import { startSsoSignIn } from "./sso.ts";
 
 /** Keep the submitting form mounted until the server selects the next document. */
 export const finishCloudSignIn = (redirect: string) =>
@@ -13,11 +14,23 @@ export const finishCloudSignIn = (redirect: string) =>
 
 /** Cloud-only credentials; shared session queries use the same origin and cookie. */
 export const cloudAuthClient = createAuthClient({ plugins: [passkeyClient(), emailOTPClient()] });
-/** Send one short-lived sign-in code without exposing whether an account exists. */
-export const sendCodeAtom = BrowserAtoms.fn((email: string) =>
-  authRequest((options) =>
-    cloudAuthClient.emailOtp.sendVerificationOtp({ email, type: "sign-in" }, options),
-  ).pipe(Effect.withSpan("ui.auth.sendCode"), Effect.asVoid),
+/** Prefer verified company SSO; send a code only when the server confirms no SSO connection. */
+export const beginEmailSignInAtom = BrowserAtoms.fn(
+  (input: { readonly email: string; readonly redirect: string }) =>
+    startSsoSignIn(input).pipe(
+      Effect.as("sso" as const),
+      Effect.catch((error) =>
+        error.code === "SSO_NOT_CONFIGURED" && error.status === 404
+          ? authRequest((options) =>
+              cloudAuthClient.emailOtp.sendVerificationOtp(
+                { email: input.email.trim(), type: "sign-in" },
+                options,
+              ),
+            ).pipe(Effect.as("email-code" as const))
+          : Effect.fail(error),
+      ),
+      Effect.withSpan("ui.auth.beginEmailSignIn"),
+    ),
 );
 /** Successful code verification also proves email ownership. */
 export const verifyCodeAtom = BrowserAtoms.fn(

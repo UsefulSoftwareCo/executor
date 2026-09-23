@@ -42,17 +42,28 @@ const seedPlan = (plan: BillingPlanDeclaration) => ({
     feature_id: item.featureId,
     included: item.included,
     unlimited: item.unlimited,
-    ...(item.price ? { price: { amount: item.price.amount, interval: item.price.interval } } : {}),
+    ...(item.reset ? { reset: item.reset } : {}),
+    ...(item.price
+      ? {
+          price: {
+            amount: item.price.amount,
+            interval: item.price.interval,
+            billing_units: item.price.billingUnits,
+            billing_method: item.price.billingMethod,
+          },
+        }
+      : {}),
   })),
 });
 
 export const billingCatalogSeed = (declaration: BillingCatalogDeclaration) => ({
-  features: [declaration.features.executions, declaration.features.members].map((feature) => ({
+  features: Object.values(declaration.features).map((feature) => ({
     id: feature.featureId,
     name: feature.name,
     consumable: feature.consumable,
+    type: feature.type,
   })),
-  plans: [seedPlan(declaration.plans.free), seedPlan(declaration.plans.team)],
+  plans: Object.values(declaration.plans).map(seedPlan),
 });
 
 /**

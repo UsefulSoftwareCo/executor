@@ -98,7 +98,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
       Effect.gen(function* () {
         const onboarding = yield* Onboarding;
         const authenticator = yield* onboarding.passkey;
-        yield* onboarding.emailSignIn(yield* onboarding.freshEmail);
+        yield* onboarding.emailSignIn(yield* onboarding.freshEmail, "signup");
         yield* authenticator.register;
         expect(yield* onboarding.organizations).toEqual([]);
         const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);

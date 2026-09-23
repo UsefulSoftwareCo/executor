@@ -30,6 +30,24 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  cloudSsoOidc: {
+    file: "cloud-sso.spec.ts",
+    title: "Cloud SSO OIDC setup preserves drafts and binds verified identities to one team",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud customer SSO"),
+      local: na("Cloud customer SSO"),
+    },
+  },
+  cloudSsoSaml: {
+    file: "cloud-sso.spec.ts",
+    title: "Cloud SSO SAML accepts signed assertions and rejects tampering and replay",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud customer SSO"),
+      local: na("Cloud customer SSO"),
+    },
+  },
   memberControls: {
     file: "member-controls.spec.ts",
     title: "Member restrictions keep controls visible and the app overview stable",

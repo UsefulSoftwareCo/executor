@@ -21,6 +21,7 @@ import { nativeAuthAnalytics, type NativeAuthUsage } from "./auth-analytics.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
 import { cloudEmulators } from "../infrastructure/emulators.ts";
 import { emulatedSocialProviders } from "./emulated-auth.ts";
+import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
 
 /** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
@@ -135,10 +136,23 @@ export const cloudAuthOptions = (
   const base = authOptions(settings, ipAddressHeaders);
   return {
     ...base,
+    account: { ...base.account, storeStateStrategy: "database" as const },
+    advanced: {
+      ...base.advanced,
+      cookies: {
+        // SAML returns through a cross-site POST. Keep its browser binding
+        // cookie available without changing any session cookie's SameSite policy.
+        relay_state: { attributes: { sameSite: "none" as const, secure: true } },
+      },
+    },
     trustedOrigins: [...base.trustedOrigins, ...settings.trustedOrigins],
     databaseHooks: {
       user: {
         create: {
+          before: async (user, context) =>
+            (await ssoVerifiedEmail(user.email, context))
+              ? { data: { ...user, emailVerified: true } }
+              : undefined,
           after: async (user, context) => {
             if (user.emailVerified && onSignup !== undefined) await onSignup(user.id);
             return Effect.runPromise(
@@ -265,6 +279,8 @@ export const cloudAuthOptions = (
             ),
           ),
       }),
+      // The native migrator creates tables in plugin order; SSO references organization.
+      cloudSso(billing),
       emailOTP({
         storeOTP: "hashed",
         expiresIn: emailCodeExpiresIn,

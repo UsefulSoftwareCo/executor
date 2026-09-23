@@ -11,6 +11,7 @@ import { Resource } from "alchemy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Config, Effect, Layer, Redacted, Schema } from "effect";
+import type { BillingFeatureDeclaration } from "../contracts/billing-catalog.ts";
 
 /** Credential-bearing provider errors remain redacted in deployment diagnostics. */
 export class AutumnProvisioningFailed extends Schema.TaggedError<AutumnProvisioningFailed>()(
@@ -67,17 +68,13 @@ const reserved = (id: string) => {
 };
 
 /** An immutable feature identity. Changing its meaning requires a new ID. */
-export interface AutumnFeatureProps {
-  readonly featureId: string;
-  readonly name: string;
-  readonly consumable: boolean;
-}
+export type AutumnFeatureProps = BillingFeatureDeclaration;
 /** Only catalog metadata is stored in Alchemy state. */
-export interface AutumnFeatureAttributes extends AutumnFeatureProps {
+export type AutumnFeatureAttributes = AutumnFeatureProps & {
   readonly archived: boolean;
   readonly account: string;
-}
-/** Declare a metered usage or seat feature. */
+};
+/** Declare a metered usage, seat, or boolean feature. */
 export type AutumnFeature = Resource<
   "Executor.AutumnFeature",
   AutumnFeatureProps,
@@ -85,16 +82,33 @@ export type AutumnFeature = Resource<
 >;
 /** Feature lifetime is retained by the catalog stack. */
 export const AutumnFeature = Resource<AutumnFeature>("Executor.AutumnFeature");
-const featureProjection = (
-  value: GetFeatureResponse,
-  account: string,
-): AutumnFeatureAttributes => ({
-  account,
-  featureId: value.id,
-  name: value.name,
-  consumable: value.consumable,
-  archived: value.archived,
-});
+const featureIdentity = {
+  account: Schema.String,
+  featureId: Schema.String,
+  name: Schema.String,
+  archived: Schema.Boolean,
+};
+const FeatureAttributes = Schema.Union([
+  Schema.Struct({
+    ...featureIdentity,
+    type: Schema.Literal("metered"),
+    consumable: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...featureIdentity,
+    type: Schema.Literal("boolean"),
+    consumable: Schema.Literal(false),
+  }),
+]);
+const featureProjection = (value: GetFeatureResponse, account: string) =>
+  Schema.decodeUnknownEffect(FeatureAttributes)({
+    account,
+    featureId: value.id,
+    name: value.name,
+    type: value.type,
+    consumable: value.consumable,
+    archived: value.archived,
+  }).pipe(Effect.orDie);
 
 /** Read drift, recover interrupted creates, and archive only on explicit destruction. */
 export const autumnFeatureProvider = () =>
@@ -107,18 +121,24 @@ export const autumnFeatureProvider = () =>
         optional(use("read feature", (signal) => api.features.get({ featureId: id }, { signal })));
       return {
         stables: ["featureId"],
-        diff: ({ news, output }) =>
-          Effect.sync(() => {
-            if (output && output.account !== account)
-              throw new Error(
-                "Use a new billing stage for a different Autumn account or environment",
-              );
-            if (!isResolved(news) || !output) return undefined;
-            if (news.featureId !== output.featureId || news.consumable !== output.consumable)
-              return { action: "replace" as const };
-            if (news.name !== output.name || output.archived) return { action: "update" as const };
-            return undefined;
-          }),
+        diff: Effect.fn(function* ({ news, output }) {
+          if (output && output.account !== account)
+            return yield* Effect.die(
+              "Use a new billing stage for a different Autumn account or environment",
+            );
+          if (!isResolved(news) || !output) return undefined;
+          // Compare provider metadata, including types absent from older Alchemy state.
+          const current = yield* get(output.featureId);
+          if (
+            current === undefined ||
+            news.featureId !== output.featureId ||
+            news.type !== current.type ||
+            news.consumable !== current.consumable
+          )
+            return { action: "replace" as const };
+          if (news.name !== current.name || current.archived) return { action: "update" as const };
+          return undefined;
+        }),
         read: Effect.fn(function* ({ output, olds }) {
           if (output && output.account !== account)
             return yield* Effect.die(
@@ -127,13 +147,13 @@ export const autumnFeatureProvider = () =>
           const id = output?.featureId ?? olds?.featureId;
           if (id === undefined) return undefined;
           const value = yield* get(id);
-          return value === undefined ? undefined : featureAttributes(value);
+          return value === undefined ? undefined : yield* featureAttributes(value);
         }),
         reconcile: Effect.fn(function* ({ news, output }) {
           reserved(news.featureId);
           const current = yield* get(news.featureId);
-          const props = { ...news, type: "metered" } satisfies CreateFeatureParams;
-          if (current && (current.type !== "metered" || current.consumable !== news.consumable))
+          const props = { ...news } satisfies CreateFeatureParams;
+          if (current && (current.type !== news.type || current.consumable !== news.consumable))
             return yield* Effect.die(
               "An existing Autumn feature has a different meaning; use a new ID",
             );
@@ -145,7 +165,7 @@ export const autumnFeatureProvider = () =>
             yield* use("update feature", (signal) =>
               api.features.update({ ...props, archived: false }, { signal }),
             );
-          return featureAttributes(
+          return yield* featureAttributes(
             yield* use("read feature", (signal) =>
               api.features.get({ featureId: news.featureId }, { signal }),
             ),

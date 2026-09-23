@@ -218,8 +218,11 @@ export const billingBindings = Effect.gen(function* () {
           namespace: value.namespace,
           executions: value.executions,
           members: value.members,
+          domainVerification: value.domainVerification,
           free: value.free,
+          payAsYouGo: value.payAsYouGo,
           team: value.team,
+          enterprise: value.enterprise,
         } satisfies BillingCatalog);
       }),
     ),

@@ -19,8 +19,11 @@ export const Route = createRootRoute({
 
 function Root() {
   const { pathname, searchStr } = useLocation();
+  const ssoSignIn = pathname === "/login/sso";
   const devtoolsPath =
-    pathname === "/login" ? (new URLSearchParams(searchStr).get("redirect") ?? pathname) : pathname;
+    pathname === "/login" || ssoSignIn
+      ? (new URLSearchParams(searchStr).get("redirect") ?? pathname)
+      : pathname;
   if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
     return (
       <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
@@ -39,13 +42,17 @@ function Root() {
     >
       <AnalyticsIdentity />
       <ErrorReportingIdentity />
-      <AuthBoundary>
-        <OrganizationResumeBoundary>
-          <TeamSetupBoundary>
-            <Outlet />
-          </TeamSetupBoundary>
-        </OrganizationResumeBoundary>
-      </AuthBoundary>
+      {ssoSignIn ? (
+        <Outlet />
+      ) : (
+        <AuthBoundary>
+          <OrganizationResumeBoundary>
+            <TeamSetupBoundary>
+              <Outlet />
+            </TeamSetupBoundary>
+          </OrganizationResumeBoundary>
+        </AuthBoundary>
+      )}
       <ExecutorDevtools
         organization={devtoolsPath.startsWith("/org/") ? devtoolsPath.split(/[/?#]/)[2] : undefined}
       />

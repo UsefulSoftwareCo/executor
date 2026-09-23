@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { OrganizationPage } from "@executor-js/hosted-web/pages/organization";
 import { DeleteOrganization } from "../components/delete-organization.tsx";
 import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
+import { SsoSettings } from "../components/sso-settings.tsx";
 import { Button } from "@executor-js/ui/components/button";
 import {
   Card,
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/org/$organizationSlug/organization")({
   component: () => (
     <OrganizationPage emailInvitations footer={<DeleteOrganization />}>
       <BillingSettings />
+      <SsoSettings />
     </OrganizationPage>
   ),
 });

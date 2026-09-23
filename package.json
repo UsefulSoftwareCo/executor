@@ -128,6 +128,8 @@
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.79": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.79.patch",
-    "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch"
+    "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
+    "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
+    "better-auth@1.7.5": "patches/better-auth@1.7.5.patch"
   }
 }

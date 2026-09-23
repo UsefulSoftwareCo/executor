@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@better-auth/passkey": "1.7.5",
+    "@better-auth/sso": "1.7.5",
     "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",

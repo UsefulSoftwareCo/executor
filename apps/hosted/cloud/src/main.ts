@@ -131,6 +131,8 @@ export default Api.make(
           "/",
           "/login",
           "/login/",
+          "/login/sso",
+          "/login/sso/",
           "/create",
           "/create/",
           "/api",
@@ -252,7 +254,7 @@ export default Api.make(
       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
       authoringRoutes,
-      ...(["login", "create"] as const).map((page) =>
+      ...(["login", "login/sso", "create"] as const).map((page) =>
         HttpRouter.add(
           "GET",
           `/${page}`,

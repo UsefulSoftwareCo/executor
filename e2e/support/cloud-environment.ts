@@ -47,6 +47,15 @@ export const startCloudEnvironment = (input: {
     const analyticsPort = yield* startAnalyticsCollector(directory);
     const collector = yield* startOtlpCollector(directory);
     const databasePassword = randomBytes(24).toString("hex");
+    const ssoDatabase = `${directory}/sso-database.json`;
+    yield* fs.writeFileString(
+      ssoDatabase,
+      JSON.stringify({
+        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor?sslmode=disable`,
+      }),
+      { mode: 0o600 },
+    );
+    yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
         process.platform === "win32" ? ";" : ":",
@@ -122,6 +131,30 @@ export const startCloudEnvironment = (input: {
           fs.writeFileString(`${directory}/${file}`, text, { flag: "a", mode: 0o600 }),
         ),
         Effect.forkScoped,
+      );
+    const ssoIssuer = yield* processes.spawn(
+      ChildProcess.make(
+        "node",
+        ["apps/hosted/testing/sso-idp.ts", "--directory", directory, "--application", input.origin],
+        {
+          env: { PATH: env.PATH, NODE_ENV: "test" },
+          extendEnv: false,
+          stdout: "pipe",
+          stderr: "pipe",
+          forceKillAfter: "5 seconds",
+        },
+      ),
+    );
+    yield* capture(ssoIssuer, "sso-idp.log");
+    const sso = yield* fs
+      .readFileString(`${directory}/sso-idp.json`)
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Struct({ origin: Schema.String })),
+          ),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
       );
     const docker = yield* processes.spawn(
       ChildProcess.make(
@@ -210,7 +243,7 @@ export const startCloudEnvironment = (input: {
     const server = yield* processes.spawn(
       ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
         cwd: cloud,
-        env,
+        env: { ...env, AUTH_TRUSTED_ORIGINS: sso.origin },
         extendEnv: false,
         stdout: "pipe",
         stderr: "pipe",

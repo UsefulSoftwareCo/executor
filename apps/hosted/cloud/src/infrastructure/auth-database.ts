@@ -72,7 +72,9 @@ export const cloudAuthDatabase = Layer.unwrap(
               );
             },
           });
-          return { db, type: "postgres" as const };
+          // SSO account resolution and membership provisioning require real
+          // transactions; the Kysely adapter otherwise runs callbacks without one.
+          return { db, type: "postgres" as const, transaction: true };
         }),
       }),
     );

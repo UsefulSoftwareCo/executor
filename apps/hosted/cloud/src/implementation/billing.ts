@@ -67,24 +67,42 @@ export const billingLive = Effect.gen(function* () {
       const plans = yield* use(autumn.listPlans({ customerId }));
       const balance = customer.balances[catalog.executions];
       return yield* Schema.decodeUnknownEffect(BillingOverview)({
+        enterprise: customer.subscriptions.some(
+          (subscription) =>
+            subscription.planId === catalog.enterprise &&
+            ["active", "trialing"].includes(subscription.status),
+        ),
         usage: balance
           ? { used: balance.usage, remaining: balance.remaining, unlimited: balance.unlimited }
           : null,
         plans: plans.list
-          .filter((plan) => !plan.archived && [catalog.free, catalog.team].includes(plan.id))
+          .filter(
+            (plan) =>
+              !plan.archived && [catalog.free, catalog.team, catalog.enterprise].includes(plan.id),
+          )
           .map((plan) => {
             const seats = plan.items.find((item) => item.featureId === catalog.members)?.price;
             const price = plan.price ?? seats;
             return {
               id: plan.id,
-              name: plan.id === catalog.free ? "Free" : "Team",
+              name:
+                plan.id === catalog.free
+                  ? "Free"
+                  : plan.id === catalog.team
+                    ? "Team"
+                    : "Enterprise",
+              purchase: plan.id === catalog.enterprise ? "contact" : "checkout",
               price: price
                 ? { amount: price.amount, interval: price.interval, unit: seats ? "member" : null }
                 : null,
             };
           }),
         subscriptions: customer.subscriptions
-          .filter((subscription) => [catalog.free, catalog.team].includes(subscription.planId))
+          .filter((subscription) =>
+            [catalog.free, catalog.payAsYouGo, catalog.team, catalog.enterprise].includes(
+              subscription.planId,
+            ),
+          )
           .map((subscription) => ({
             planId: subscription.planId,
             status: subscription.status,
@@ -106,6 +124,15 @@ export const billingLive = Effect.gen(function* () {
       const row = rows[0];
       if (row === undefined) return yield* new BillingUnavailable();
       const { autumn, catalog, customerId, value } = yield* customer(organization);
+      // V1's pay-as-you-go plan meters executions only; it has no seat balance to report.
+      if (
+        value.subscriptions.some(
+          (subscription) =>
+            subscription.planId === catalog.payAsYouGo &&
+            ["active", "trialing"].includes(subscription.status),
+        )
+      )
+        return;
       const balance = value.balances[catalog.members];
       if (balance === undefined) return yield* new BillingUnavailable();
       if (balance.usage !== row.count)
@@ -188,7 +215,7 @@ export const billingLive = Effect.gen(function* () {
         const { catalog, value } = yield* customer(organization);
         return value.subscriptions.some(
           (subscription) =>
-            subscription.planId === catalog.team &&
+            [catalog.team, catalog.enterprise].includes(subscription.planId) &&
             ["active", "trialing"].includes(subscription.status),
         )
           ? Number.POSITIVE_INFINITY
@@ -213,7 +240,11 @@ export const billingLive = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* syncSeats(organization);
             const current = yield* overview(organization);
-            if (!current.plans.some((candidate) => candidate.id === plan))
+            if (
+              !current.plans.some(
+                (candidate) => candidate.id === plan && candidate.purchase === "checkout",
+              )
+            )
               return yield* new BillingPlanUnavailable();
             if (
               current.subscriptions.some(

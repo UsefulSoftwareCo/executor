@@ -13,8 +13,11 @@ export const BillingCatalog = Schema.Struct({
   namespace: Schema.NonEmptyString,
   executions: Schema.NonEmptyString,
   members: Schema.NonEmptyString,
+  domainVerification: Schema.NonEmptyString,
   free: Schema.NonEmptyString,
+  payAsYouGo: Schema.NonEmptyString,
   team: Schema.NonEmptyString,
+  enterprise: Schema.NonEmptyString,
 });
 /** One catalog is shared by the API and MCP runtime in the same deployment stage. */
 export type BillingCatalog = typeof BillingCatalog.Type;
@@ -31,12 +34,14 @@ export const teamMemberPrice = 15;
  */
 export const seededMonthlyExecutions = 100_000_000;
 
-/** An immutable metered or seat feature. Changing a meaning requires a new ID. */
-export interface BillingFeatureDeclaration {
+/** An immutable metered or boolean feature. Changing a meaning requires a new ID. */
+export type BillingFeatureDeclaration = {
   readonly featureId: string;
   readonly name: string;
-  readonly consumable: boolean;
-}
+} & (
+  | { readonly type: "metered"; readonly consumable: boolean }
+  | { readonly type: "boolean"; readonly consumable: false }
+);
 /** One mutually exclusive plan. Never a global default: customers select it explicitly. */
 export interface BillingPlanDeclaration {
   readonly planId: string;
@@ -66,10 +71,13 @@ export interface BillingCatalogDeclaration {
   readonly features: {
     readonly executions: BillingFeatureDeclaration;
     readonly members: BillingFeatureDeclaration;
+    readonly domainVerification: BillingFeatureDeclaration;
   };
   readonly plans: {
     readonly free: BillingPlanDeclaration;
+    readonly payAsYouGo: BillingPlanDeclaration;
     readonly team: BillingPlanDeclaration;
+    readonly enterprise: BillingPlanDeclaration;
   };
 }
 
@@ -85,18 +93,38 @@ export const billingCatalogDeclaration = (
   const namespace = `executor-next-${stage}`;
   const executions = `${namespace}-executions`;
   const members = `${namespace}-members`;
+  const domainVerification = `${namespace}-domain-verification`;
   return {
     catalog: {
       environment,
       namespace,
       executions,
       members,
+      domainVerification,
       free: `${namespace}-free`,
+      payAsYouGo: `${namespace}-free-pay-as-you-go`,
       team: `${namespace}-team`,
+      enterprise: `${namespace}-enterprise`,
     },
     features: {
-      executions: { featureId: executions, name: `Executions (${stage})`, consumable: true },
-      members: { featureId: members, name: `Members (${stage})`, consumable: false },
+      executions: {
+        featureId: executions,
+        name: `Executions (${stage})`,
+        type: "metered",
+        consumable: true,
+      },
+      members: {
+        featureId: members,
+        name: `Members (${stage})`,
+        type: "metered",
+        consumable: false,
+      },
+      domainVerification: {
+        featureId: domainVerification,
+        name: `Domain Verification (${stage})`,
+        type: "boolean",
+        consumable: false,
+      },
     },
     plans: {
       free: {
@@ -111,6 +139,26 @@ export const billingCatalogDeclaration = (
             included: options.freeExecutions ?? freeMonthlyExecutions,
             unlimited: false,
             reset: { interval: "month" },
+          },
+        ],
+      },
+      payAsYouGo: {
+        planId: `${namespace}-free-pay-as-you-go`,
+        group: namespace,
+        name: `Free Pay As You Go (${stage})`,
+        freeTrial: null,
+        items: [
+          {
+            featureId: executions,
+            included: freeMonthlyExecutions,
+            unlimited: false,
+            reset: { interval: "month" },
+            price: {
+              amount: 0.2,
+              billingUnits: 1000,
+              billingMethod: "usage_based",
+              interval: "month",
+            },
           },
         ],
       },
@@ -132,6 +180,19 @@ export const billingCatalogDeclaration = (
             },
           },
           { featureId: executions, included: 0, unlimited: true, reset: { interval: "month" } },
+          { featureId: domainVerification, included: 0, unlimited: false },
+        ],
+      },
+      enterprise: {
+        planId: `${namespace}-enterprise`,
+        group: namespace,
+        name: `Enterprise (${stage})`,
+        freeTrial: null,
+        // V1's Enterprise plan is assigned manually; each contract sets its own price.
+        items: [
+          { featureId: members, included: 0, unlimited: true },
+          { featureId: executions, included: 0, unlimited: true, reset: { interval: "month" } },
+          { featureId: domainVerification, included: 0, unlimited: false },
         ],
       },
     },

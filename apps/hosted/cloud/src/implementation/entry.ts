@@ -17,17 +17,17 @@ const privateHeaders = {
 /** Resolve sign-in and first-team entry using the current request's verified session. */
 export const resolveCloudEntry = (
   session: (headers: Headers) => Effect.Effect<BrowserSession, AuthenticationUnavailable>,
-  page: "login" | "create",
+  page: "login" | "login/sso" | "create",
   redirect: string,
   headers: Headers,
 ) =>
   Effect.gen(function* () {
     const current = yield* session(headers);
     if (current === null)
-      return page === "login"
-        ? CloudEntryPage.make({ kind: "page", path: "/login", session: null, onboarding: null })
+      return page !== "create"
+        ? CloudEntryPage.make({ kind: "page", path: `/${page}`, session: null, onboarding: null })
         : { kind: "redirect" as const, location: "/login?redirect=%2Fcreate" };
-    if (page === "login") {
+    if (page !== "create") {
       const enrollment = (headers.get("cookie") ?? "")
         .split(";")
         .some(
@@ -114,7 +114,7 @@ export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) 
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(request.url, "https://entry.invalid");
     const page = url.searchParams.get("page");
-    if (page !== "login" && page !== "create")
+    if (page !== "login" && page !== "login/sso" && page !== "create")
       return HttpServerResponse.empty({ status: 400, headers: privateHeaders });
     const result = yield* resolveCloudEntry(
       session,

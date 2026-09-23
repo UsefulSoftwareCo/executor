@@ -9,6 +9,7 @@ import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
+import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -78,7 +79,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
       Effect.gen(function* () {
         const api = yield* Api,
           actors = yield* Actors,
-          browser = yield* Browser;
+          browser = yield* Browser,
+          target = yield* Target;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const anonymous = yield* api.session();
         const apiDocument = yield* body(
@@ -131,7 +133,12 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           page.goto(bookmark),
         );
         yield* browser.use("Sign-in return stays on the dashboard", (page) =>
-          page.getByRole("heading", { name: "Sign in to Executor", exact: true }).waitFor(),
+          page
+            .getByRole("heading", {
+              name: target.metadata.target === "cloud" ? "Sign in" : "Sign in to Executor",
+              exact: true,
+            })
+            .waitFor(),
         );
         yield* browser.login(actors.owner);
         // Inventory provisions the ordinary Executor app and this user's personal profile.

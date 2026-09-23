@@ -16,6 +16,7 @@ import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as CreateAgentRouteImport } from './routes/create_.agent'
 import { Route as EmailUnsubscribeRouteImport } from './routes/email.unsubscribe'
+import { Route as LoginSsoRouteImport } from './routes/login_.sso'
 import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 import { Route as OrgOrganizationSlugRouteImport } from './routes/org.$organizationSlug'
@@ -74,6 +75,11 @@ const CreateAgentRoute = CreateAgentRouteImport.update({
 const EmailUnsubscribeRoute = EmailUnsubscribeRouteImport.update({
   id: '/email/unsubscribe',
   path: '/email/unsubscribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginSsoRoute = LoginSsoRouteImport.update({
+  id: '/login_/sso',
+  path: '/login/sso',
   getParentRoute: () => rootRouteImport,
 } as any)
 const McpAuthorizeRoute = McpAuthorizeRouteImport.update({
@@ -225,6 +231,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/create/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+  '/login/sso': typeof LoginSsoRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
@@ -258,6 +265,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/create/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+  '/login/sso': typeof LoginSsoRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
@@ -291,6 +299,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/create_/agent': typeof CreateAgentRoute
   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+  '/login_/sso': typeof LoginSsoRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
@@ -326,6 +335,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/create/agent'
     | '/email/unsubscribe'
+    | '/login/sso'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
@@ -359,6 +369,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/create/agent'
     | '/email/unsubscribe'
+    | '/login/sso'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/mcp/approve/$requestId'
@@ -391,6 +402,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/create_/agent'
     | '/email/unsubscribe'
+    | '/login_/sso'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
@@ -425,6 +437,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   CreateAgentRoute: typeof CreateAgentRoute
   EmailUnsubscribeRoute: typeof EmailUnsubscribeRoute
+  LoginSsoRoute: typeof LoginSsoRoute
   McpAuthorizeRoute: typeof McpAuthorizeRoute
   OauthCallbackRoute: typeof OauthCallbackRoute
   OrgOrganizationSlugRoute: typeof OrgOrganizationSlugRouteWithChildren
@@ -480,6 +493,13 @@ declare module '@tanstack/react-router' {
       path: '/email/unsubscribe'
       fullPath: '/email/unsubscribe'
       preLoaderRoute: typeof EmailUnsubscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login_/sso': {
+      id: '/login_/sso'
+      path: '/login/sso'
+      fullPath: '/login/sso'
+      preLoaderRoute: typeof LoginSsoRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/mcp/authorize': {
@@ -717,6 +737,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   CreateAgentRoute: CreateAgentRoute,
   EmailUnsubscribeRoute: EmailUnsubscribeRoute,
+  LoginSsoRoute: LoginSsoRoute,
   McpAuthorizeRoute: McpAuthorizeRoute,
   OauthCallbackRoute: OauthCallbackRoute,
   OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,

@@ -5,7 +5,7 @@ import { OnboardingEntry } from "./onboarding.ts";
 /** Private document data contains display identity and setup metadata, never session credentials. */
 export const CloudEntryPage = Schema.Struct({
   kind: Schema.Literal("page"),
-  path: Schema.Literals(["/login", "/create", "/"]),
+  path: Schema.Literals(["/login", "/login/sso", "/create", "/"]),
   session: BrowserSession,
   onboarding: Schema.NullOr(OnboardingEntry),
 });

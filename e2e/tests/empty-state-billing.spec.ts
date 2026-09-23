@@ -18,7 +18,9 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) => 
         yield* browser.use("Provide an empty billing catalog at the HTTP boundary", (page) =>
           page.route("**/api/organizations/*/billing", (route) => {
             reads++;
-            return route.fulfill({ json: { usage: null, plans: [], subscriptions: [] } });
+            return route.fulfill({
+              json: { enterprise: false, usage: null, plans: [], subscriptions: [] },
+            });
           }),
         );
         for (const viewport of [

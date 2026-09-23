@@ -17,7 +17,11 @@ layer(BillingTarget.layer, { excludeTestServices: true })("Cloud billing sandbox
             overview.text,
           );
           expect(parsed.plans.map((plan) => plan.id).sort()).toEqual(
-            [`${target.namespace}-free`, `${target.namespace}-team`].sort(),
+            [
+              `${target.namespace}-free`,
+              `${target.namespace}-team`,
+              `${target.namespace}-enterprise`,
+            ].sort(),
           );
           expect((yield* target.anonymous("GET", `${prefix}/billing`)).status).toBe(401);
           expect((yield* target.member("GET", `${prefix}/billing`)).status).toBe(403);

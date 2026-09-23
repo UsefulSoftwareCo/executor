@@ -12,6 +12,7 @@ import { RequireUser } from "@executor-js/hosted-server";
 export const BillingPlan = Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.String,
+  purchase: Schema.Literals(["checkout", "contact"]),
   price: Schema.NullOr(
     Schema.Struct({
       amount: Schema.Number,
@@ -22,6 +23,7 @@ export const BillingPlan = Schema.Struct({
 });
 /** Current subscription state, never inferred from a checkout redirect. */
 export const BillingOverview = Schema.Struct({
+  enterprise: Schema.Boolean,
   usage: Schema.NullOr(
     Schema.Struct({ used: Schema.Number, remaining: Schema.Number, unlimited: Schema.Boolean }),
   ),

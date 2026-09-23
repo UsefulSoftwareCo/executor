@@ -1,0 +1,17 @@
+diff --git a/dist/api/rate-limiter/index.mjs b/dist/api/rate-limiter/index.mjs
+index 55b2705f9915dd611fb6d9a5e3b81d5cc47fb846..8caad90d67af19a9d18a937d96668e3ab072f6b5 100644
+--- a/dist/api/rate-limiter/index.mjs
++++ b/dist/api/rate-limiter/index.mjs
+@@ -85,7 +85,11 @@ function createDatabaseStorageWrapper(ctx) {
+ 				value: key
+ 			}]
+ 		}))[0];
+-		if (typeof data?.lastRequest === "bigint") data.lastRequest = Number(data.lastRequest);
++		if (typeof data?.lastRequest === "bigint" || typeof data?.lastRequest === "string") {
++			const lastRequest = Number(data.lastRequest);
++			if (!Number.isSafeInteger(lastRequest) || lastRequest < 0) throw new BetterAuthError("Invalid persisted rate-limit timestamp");
++			data.lastRequest = lastRequest;
++		}
+ 		return data;
+ 	};
+ 	const consume = async (key, rule) => {

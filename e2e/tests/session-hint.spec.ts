@@ -6,6 +6,7 @@ import { HostedLive, withCase } from "../support/case.ts";
 import { dashboardLoadingProbe } from "../support/dashboard-loading.ts";
 import { scenarios } from "../test-plan.ts";
 import { SessionHint } from "../support/contracts.ts";
+import { Target } from "../support/platform.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
   it.effect(scenarios.sessionHint.title, (context) =>
@@ -14,6 +15,8 @@ layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
       Effect.gen(function* () {
         const actors = yield* Actors;
         const browser = yield* Browser;
+        const target = yield* Target;
+        const loginTitle = target.metadata.target === "cloud" ? "Sign in" : "Sign in to Executor";
         const destination = `/org/${actors.organization.slug}/apps?view=accounts`;
         yield* browser.login(yield* freshOwnerSession);
         const pageResponse = yield* browser.use("Open the static dashboard", (page) =>
@@ -93,7 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
             expect(expired.some((item) => item.name === cookie.name)).toBe(false);
             yield* browser.use("Login stays visible without a redirect loop", (page) =>
               page
-                .getByRole("heading", { name: "Sign in to Executor", exact: true })
+                .getByRole("heading", { name: loginTitle, exact: true })
                 .waitFor({ state: "visible" }),
             );
           }),
@@ -104,7 +107,7 @@ layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
         yield* browser.use("Reload login", (page) => page.reload());
         yield* browser.use("Malformed metadata does not redirect login", (page) =>
           page
-            .getByRole("heading", { name: "Sign in to Executor", exact: true })
+            .getByRole("heading", { name: loginTitle, exact: true })
             .waitFor({ state: "visible" }),
         );
         const malformed = yield* browser.use("Malformed metadata is removed", (page) =>

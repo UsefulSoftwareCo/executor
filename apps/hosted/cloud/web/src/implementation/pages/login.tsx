@@ -8,15 +8,22 @@ import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import { Cause, Exit, Option } from "effect";
 import { useEffect, useState } from "react";
+import { SsoSignInForm } from "./sso-sign-in.tsx";
+import { Spinner } from "@executor-js/ui/components/spinner";
 import {
   finishCloudSignIn,
   passkeySignInAtom,
-  sendCodeAtom,
+  beginEmailSignInAtom,
   verifyCodeAtom,
 } from "../../contracts/auth.ts";
 
 /** Cloud adds passkeys and verified email codes to the social sign-in choices. */
-export function CloudLoginPage(props: ReturnType<typeof loginSearch>) {
+export function CloudLoginPage(
+  props: ReturnType<typeof loginSearch> & {
+    readonly method?: "sso";
+    readonly mode?: "signin" | "signup";
+  },
+) {
   const session = useAtomValue(sessionAtom);
   const refresh = useAtomRefresh(sessionAtom);
   const current = Option.getOrUndefined(AsyncResult.value(session));
@@ -45,7 +52,25 @@ export function CloudLoginPage(props: ReturnType<typeof loginSearch>) {
         )}
       </>
     );
-  return <CloudSignInForm {...props} />;
+  if (AsyncResult.isFailure(session) && current !== null)
+    return (
+      <div
+        className="min-h-dvh flex items-center justify-center gap-4 bg-background text-foreground"
+        role="alert"
+      >
+        <p>Unable to check your session.</p>
+        <Button variant="outline" onClick={refresh}>
+          Try again
+        </Button>
+      </div>
+    );
+  if (current === undefined)
+    return (
+      <div className="min-h-dvh flex items-center justify-center bg-background text-foreground">
+        <Spinner />
+      </div>
+    );
+  return props.method === "sso" ? <SsoSignInForm {...props} /> : <CloudSignInForm {...props} />;
 }
 
 function CompleteSignIn({
@@ -61,18 +86,23 @@ function CompleteSignIn({
   return null;
 }
 
-function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
-  const send = useAtomSet(sendCodeAtom, { mode: "promiseExit" });
+function CloudSignInForm(
+  props: ReturnType<typeof loginSearch> & { readonly mode?: "signin" | "signup" },
+) {
+  const signingUp = props.mode === "signup";
+  const begin = useAtomSet(beginEmailSignInAtom, { mode: "promiseExit" });
   const verify = useAtomSet(verifyCodeAtom, { mode: "promiseExit" });
   const passkey = useAtomSet(passkeySignInAtom, { mode: "promiseExit" });
-  const sending = useAtomValue(sendCodeAtom),
+  const beginning = useAtomValue(beginEmailSignInAtom),
     verifying = useAtomValue(verifyCodeAtom),
     signing = useAtomValue(passkeySignInAtom);
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const redirecting = AsyncResult.isSuccess(beginning) && beginning.value === "sso";
   const pending =
-    sending.waiting ||
+    beginning.waiting ||
+    redirecting ||
     verifying.waiting ||
     signing.waiting ||
     AsyncResult.isSuccess(verifying) ||
@@ -83,37 +113,60 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
     setError(value instanceof AuthFailed ? value.message : "Sign-in failed. Try again.");
   };
   return (
-    <LoginPage {...props}>
-      <Button
-        variant="outline"
-        disabled={pending}
-        loading={signing.waiting}
-        onClick={async () => {
-          setError(null);
-          reportBrowserUsage({ area: "auth", action: "passkey", outcome: "started" });
-          const result = await passkey(props.redirect);
-          if (Exit.isSuccess(result))
-            reportBrowserUsage({ area: "auth", action: "passkey", outcome: "success" });
-          if (Exit.isFailure(result)) failure(result.cause);
-        }}
-      >
-        Sign in with a passkey
-      </Button>
+    <LoginPage
+      {...props}
+      title={signingUp ? "Sign up" : "Sign in"}
+      cardFooter={
+        <p className="text-center text-sm text-muted-foreground">
+          {signingUp ? "Already have an account? " : "Don't have an account? "}
+          <a
+            className="text-foreground hover:underline underline-offset-4"
+            href={`/login?mode=${signingUp ? "signin" : "signup"}&redirect=${encodeURIComponent(props.redirect)}`}
+          >
+            {signingUp ? "Sign in" : "Sign up"}
+          </a>
+        </p>
+      }
+      footer={
+        <>
+          <div className="flex justify-center">
+            <Button
+              variant="link"
+              className="h-auto p-0 text-[13px] text-muted-foreground hover:text-foreground"
+              aria-label="Sign in with a passkey"
+              disabled={pending}
+              loading={signing.waiting}
+              onClick={async () => {
+                setError(null);
+                reportBrowserUsage({ area: "auth", action: "passkey", outcome: "started" });
+                const result = await passkey(props.redirect);
+                if (Exit.isSuccess(result))
+                  reportBrowserUsage({ area: "auth", action: "passkey", outcome: "success" });
+                if (Exit.isFailure(result)) failure(result.cause);
+              }}
+            >
+              Sign in with a passkey
+            </Button>
+          </div>
+          <LoginLegalFooter privacyUrl="/privacy" termsUrl="/terms" />
+        </>
+      }
+    >
       <form
-        className="settings-form [&_h2]:text-[15px] [&_h2]:font-medium flex flex-col gap-4 w-full max-w-100 mt-7 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.5 [&_label]:text-[13px]"
+        className="settings-form"
         onSubmit={async (event) => {
           event.preventDefault();
           setError(null);
           if (!sent) {
-            reportBrowserUsage({ area: "auth", action: "send_email_code", outcome: "started" });
-            const result = await send(email.trim());
+            reportBrowserUsage({ area: "auth", action: "email_sign_in", outcome: "started" });
+            const result = await begin({ email: email.trim(), redirect: props.redirect });
             reportBrowserUsage({
               area: "auth",
-              action: "send_email_code",
+              action: "email_sign_in",
               outcome: Exit.isSuccess(result) ? "success" : "failure",
             });
             if (Exit.isFailure(result)) failure(result.cause);
-            else setSent(true);
+            else if (result.value === "email-code") setSent(true);
           } else {
             reportBrowserUsage({ area: "auth", action: "verify_email_code", outcome: "started" });
             const otp = String(new FormData(event.currentTarget).get("otp"));
@@ -131,6 +184,7 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
           Email
           <Input
             type="email"
+            placeholder="Your email address"
             required
             autoComplete="email"
             value={email}
@@ -156,8 +210,13 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
             </label>
           </>
         )}
-        <Button loading={sending.waiting || verifying.waiting} disabled={pending}>
-          {sent ? "Sign in" : "Email me a code"}
+        <Button
+          aria-label={sent ? "Sign in" : "Continue"}
+          className="text-base font-medium"
+          loading={beginning.waiting || verifying.waiting || redirecting}
+          disabled={pending}
+        >
+          {sent ? "Sign in" : "Continue"}
         </Button>
         {sent && (
           <Button
@@ -178,7 +237,6 @@ function CloudSignInForm(props: ReturnType<typeof loginSearch>) {
           {error}
         </p>
       )}
-      <LoginLegalFooter privacyUrl="/privacy" termsUrl="/terms" />
     </LoginPage>
   );
 }

@@ -19,9 +19,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud smoke", (it) => {
         expect((yield* api.request(anonymous, "GET", "/api/viewer")).status).toBe(401);
         yield* browser.use("Open cloud sign-in", (page) => page.goto("/login"));
         yield* browser.use("Email sign-in is available", (page) =>
-          page
-            .getByRole("button", { name: "Email me a code", exact: true })
-            .waitFor({ state: "visible" }),
+          page.getByRole("button", { name: "Continue", exact: true }).waitFor({ state: "visible" }),
         );
         yield* browser.use("Email field is visible", (page) =>
           page.getByLabel("Email", { exact: true }).waitFor({ state: "visible" }),

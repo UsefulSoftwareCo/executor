@@ -14,6 +14,7 @@
   "dependencies": {
     "@alchemy.run/better-auth": "2.0.0-beta.79",
     "@better-auth/passkey": "1.7.5",
+    "@better-auth/sso": "1.7.5",
     "@cloudflare/worker-bundler": "0.2.4",
     "@distilled.cloud/cloudflare": "1.0.0-rc.12",
     "@distilled.cloud/posthog": "1.0.0-rc.12",

@@ -29,7 +29,7 @@ export const developmentRoutes = (
       "/",
       homepageResponse(cookiePrefix, marketing.experiment, dashboard.document),
     ),
-    ...(["login", "create"] as const).map((page) =>
+    ...(["login", "login/sso", "create"] as const).map((page) =>
       HttpRouter.add(
         "GET",
         `/${page}`,

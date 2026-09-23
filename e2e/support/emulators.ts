@@ -168,6 +168,32 @@ const make = Effect.gen(function* () {
       Effect.map(({ data }) => data.filter((message) => message.to.includes(email))),
     );
   return {
+    billingSubscription: (input: {
+      readonly organizationId: string;
+      readonly planId: string;
+      readonly status: "active" | "trialing" | "scheduled" | "expired";
+    }) =>
+      Effect.gen(function* () {
+        const match =
+          /^(executor-next-[a-z0-9-]+?)-(free|free-pay-as-you-go|team|enterprise)$/.exec(
+            input.planId,
+          );
+        if (!match?.[1])
+          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
+        yield* emulatorRequest(
+          value.services.billing.baseUrl,
+          "/_emulate/seed",
+          {
+            customers: [
+              {
+                id: `${match[1]}:organization:${input.organizationId}`,
+                subscriptions: [{ plan_id: input.planId, status: input.status }],
+              },
+            ],
+          },
+          value.services.billing.token,
+        );
+      }),
     identity: (provider: "google" | "github") =>
       Effect.gen(function* () {
         const login = `onboarding-${randomUUID().slice(0, 8)}`;

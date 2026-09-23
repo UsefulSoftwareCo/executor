@@ -36,15 +36,24 @@ const make = Effect.gen(function* () {
       ),
     )
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Organizations)));
-  const emailSignIn = (email: string) =>
+  const emailSignIn = (email: string, mode: "signin" | "signup" = "signin") =>
     Effect.gen(function* () {
       yield* openLogin;
+      if (mode === "signup") {
+        yield* browser.use("Choose account creation", (page) =>
+          page.getByRole("link", { name: "Sign up", exact: true }).click(),
+        );
+        yield* browser.use("The sign-up view is ready", (page) =>
+          page.getByRole("heading", { name: "Sign up", exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Sign up with email or a social account");
+      }
       yield* browser.use("Enter the synthetic email", (page) =>
         page.getByLabel("Email", { exact: true }).fill(email),
       );
       const received = yield* emulators.received(email);
       yield* browser.use("Request a real sign-in code", (page) =>
-        page.getByRole("button", { name: "Email me a code", exact: true }).click(),
+        page.getByRole("button", { name: "Continue", exact: true }).click(),
       );
       const code = yield* evidence.step(
         "Read the delivered code from the mail emulator",

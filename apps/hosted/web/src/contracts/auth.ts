@@ -32,6 +32,10 @@ const authMessage = (code: string | undefined, status: number): string => {
   if (code === "INVALID_OTP")
     return "This sign-in code is incorrect. Check the code and try again.";
   if (code === "INVALID_EMAIL_OR_PASSWORD") return "Email or password is incorrect. Try again.";
+  if (code === "SSO_NOT_CONFIGURED")
+    return "SSO is not available for this email domain. Check your work email or contact your administrator.";
+  if (code === "SSO_DOMAIN_AMBIGUOUS")
+    return "More than one SSO connection uses this email domain. Contact your administrator for help signing in.";
   if (status === 401) return "Authentication failed. Start sign-in again.";
   if (status === 403)
     return "Access was denied. Check your invitation or contact an administrator.";
