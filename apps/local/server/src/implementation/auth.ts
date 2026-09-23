@@ -2,6 +2,7 @@
 import { Clock, Effect, Redacted, Ref } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { SqlClient } from "effect/unstable/sql";
 import {
   AuthForbidden,
   LocalAuthApi,
@@ -24,10 +25,10 @@ const matches = (access: SessionAccess, target: SessionTarget) =>
     : access.app === target.app && access.origin === target.origin;
 
 /** One token lifecycle for dashboard and app sessions; app access always checks its parent login. */
-export const makeLocalAuth = (crypto: Crypto, directory: string) =>
+export const makeLocalAuth = (crypto: Crypto, directory: string, sharedSql?: SqlClient.SqlClient) =>
   Effect.gen(function* () {
     const grants = yield* Ref.make<ReadonlyMap<SessionHash, Grant>>(new Map());
-    const sessions = yield* openBrowserSessions(directory);
+    const sessions = yield* openBrowserSessions(directory, sharedSql);
     const token = Effect.sync(() =>
       Redacted.make(
         Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>

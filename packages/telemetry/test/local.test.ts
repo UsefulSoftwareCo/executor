@@ -28,6 +28,31 @@ const Collector = Schema.fromJsonString(
   }),
 );
 
+test("local telemetry opt-out does not start a collector or write diagnostics", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const runtime = ManagedRuntime.make(
+          localTelemetry(directory, "disabled-test").pipe(
+            Layer.provide(NodeServices.layer),
+            Layer.provide(
+              Layer.succeed(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromUnknown({ EXECUTOR_DISABLE_LOCAL_TELEMETRY: true }),
+              ),
+            ),
+          ),
+        );
+        yield* Effect.addFinalizer(() => Effect.promise(() => runtime.dispose()));
+        yield* Effect.promise(() => runtime.runPromise(Effect.logInfo("not persisted")));
+        assert.equal(yield* fs.exists(`${directory}/diagnostics`), false);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
 test(
   "bundled collector searches and paginates the full seven-day retention window",
   { timeout: 20_000 },
