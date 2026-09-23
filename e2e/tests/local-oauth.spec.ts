@@ -7,6 +7,7 @@ import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
+import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 
 const Published = Schema.Struct({
   app: Schema.Struct({
@@ -167,6 +168,93 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         expect(completed.state.account.label).toBe("Local reports");
         expect((yield* issuer.metrics).generation).toBe(1);
         yield* browser.checkpoint("Local client-credentials connection completed");
+        const discovery = yield* oauthSetupIssuer;
+        yield* discovery.configure({ discovery: "missing" });
+        const discoveryDeployment = yield* session.send(
+          "POST",
+          "/v1/apps/deploy",
+          {
+            owner: "local",
+            name: "Local connection error",
+            files: [
+              {
+                path: "index.ts",
+                content: `import { defineApp, defineProvider, oauth2 } from "apps";
+const service=defineProvider({name:"Sample service",auth:{oauth:oauth2({discover:${JSON.stringify(discovery.origin + "/mcp")}})}});
+export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
+              },
+            ],
+          },
+          headers,
+        );
+        expect(discoveryDeployment.status).toBe(200);
+        const { app: discoveryApp } = yield* body(Published, discoveryDeployment);
+        yield* Effect.addFinalizer(() =>
+          session
+            .send("DELETE", `/v1/apps/${discoveryApp.id}`, undefined, headers)
+            .pipe(Effect.orDie),
+        );
+        const discoveryProfile = yield* createProfile(
+          agent,
+          `/v1/apps/${discoveryApp.id}`,
+          { owner: "local", subject: "local" },
+          headers,
+        );
+        const discoveryRequest = yield* session.send(
+          "POST",
+          "/account-connect/api/requests",
+          {
+            owner: "local",
+            target: {
+              app: discoveryApp.id,
+              profile: discoveryProfile.id,
+              requirement: "service",
+            },
+          },
+          headers,
+        );
+        expect(discoveryRequest.status).toBe(200);
+        const discoveryLink = yield* body(Link, discoveryRequest);
+        yield* browser.use("Open a failing limited connection link", (page) =>
+          page
+            .goto(discoveryLink.url)
+            .then(() =>
+              page
+                .getByRole("alert")
+                .getByText("OAuth settings not found", { exact: true })
+                .waitFor(),
+            )
+            .then(() => page.getByLabel("Account name", { exact: true }).fill("Local draft")),
+        );
+        const explanation = yield* browser.use("Local uses the shared cause and recovery", (page) =>
+          page.getByRole("alert", { name: "OAuth settings not found", exact: true }).innerText(),
+        );
+        expect(explanation).toContain("This app is configured for OAuth");
+        expect(explanation).toContain("OAuthSetupFailed");
+        expect(explanation).not.toContain("No account credentials were changed");
+        expect(
+          yield* browser.use("Configuration failures do not offer retry", (page) =>
+            page.getByRole("button", { name: "Try again", exact: true }).count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Local-OAuth-missing-settings-card");
+        const fixPrompt = yield* browser.use("Copy the local integration fix prompt", (page) =>
+          page
+            .context()
+            .grantPermissions(["clipboard-read", "clipboard-write"])
+            .then(() => page.getByRole("button", { name: "Copy fix prompt", exact: true }).click())
+            .then(() => page.evaluate(() => navigator.clipboard.readText())),
+        );
+        expect(fixPrompt).toContain("OAuthSetupFailed");
+        expect(fixPrompt).toContain("provider definition");
+        expect(fixPrompt).toContain("Verify the failed operation");
+        expect(fixPrompt).not.toContain("Local draft");
+        expect(fixPrompt).not.toContain(discoveryLink.url);
+        expect(
+          yield* browser.use("Local error details preserve the draft", (page) =>
+            page.getByLabel("Account name", { exact: true }).inputValue(),
+          ),
+        ).toBe("Local draft");
       }),
     ),
   );

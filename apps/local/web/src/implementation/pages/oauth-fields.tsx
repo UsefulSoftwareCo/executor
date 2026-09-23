@@ -54,14 +54,14 @@ export function OAuthFields({
     : oauthSetupAtom({ provider: provider.id, method });
   return (
     <OAuthSetup<Atom.Failure<typeof query>> query={query}>
-      {({ setup, blocked, action, refresh }) => (
+      {({ setup, action, refresh }) => (
         <SharedFields<OAuthStartResult & { readonly connection?: AccountConnectionId }, OAuthError>
           providerName={provider.definition.name}
           {...(account ? { account } : {})}
           Failure={Failure}
           setup={setup}
           setupAction={action}
-          disabled={disabled || blocked}
+          disabled={disabled}
           {...(onPendingChange ? { onPendingChange } : {})}
           redirectUri={new URL(OAuthCallbackPath, window.location.origin).href}
           requiresClient={(cause) => {

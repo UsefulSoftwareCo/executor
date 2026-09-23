@@ -486,7 +486,7 @@ test("remote HTTP discovery and token endpoints are rejected before OAuth networ
           label: "Default",
           redirectUri,
         }),
-        (error) => Schema.is(OAuthSetupFailed)(error) && error.reason === "discovery",
+        (error) => Schema.is(OAuthSetupFailed)(error) && error.reason === "discovery_blocked",
       );
     }
     assert.equal(f.service.discoveryRequests.length, 0);

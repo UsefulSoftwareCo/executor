@@ -14,17 +14,26 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const address = yield* Deferred.make<string>();
   let registration = true;
   let expiresAt = 0;
-  let discoveryFails = false;
+  let discovery:
+    | "available"
+    | "unavailable"
+    | "missing"
+    | "no-oauth"
+    | "invalid-json"
+    | "invalid-metadata"
+    | "blocked" = "available";
   let scopes = ["read"];
   let registrations = 0;
   let discoveries = 0;
   let authMethods = ["client_secret_basic"];
   let lastRegistration: { scope: string; method: string } | undefined;
   const resource = Effect.gen(function* () {
+    if (discovery === "missing" || discovery === "no-oauth")
+      return HttpServerResponse.empty({ status: 404 });
     const origin = yield* Deferred.await(address);
     return yield* HttpServerResponse.json({
       resource: `${origin}/mcp`,
-      authorization_servers: [origin],
+      authorization_servers: [discovery === "blocked" ? "http://blocked.internal:8081" : origin],
       scopes_supported: scopes,
     });
   });
@@ -33,6 +42,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       "GET",
       "/mcp",
       Effect.gen(function* () {
+        if (discovery === "no-oauth") return HttpServerResponse.empty({ status: 200 });
         const origin = yield* Deferred.await(address);
         return HttpServerResponse.empty({
           status: 401,
@@ -48,10 +58,16 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       "/.well-known/oauth-authorization-server",
       Effect.gen(function* () {
         discoveries++;
-        if (discoveryFails) return HttpServerResponse.empty({ status: 503 });
+        if (discovery === "unavailable") return HttpServerResponse.empty({ status: 503 });
+        if (discovery === "missing" || discovery === "no-oauth")
+          return HttpServerResponse.empty({ status: 404 });
+        if (discovery === "invalid-json")
+          return HttpServerResponse.text("PRIVATE_UPSTREAM_DIAGNOSTIC", {
+            contentType: "application/json",
+          });
         const origin = yield* Deferred.await(address);
         return yield* HttpServerResponse.json({
-          issuer: origin,
+          issuer: discovery === "invalid-metadata" ? `${origin}/wrong-issuer` : origin,
           authorization_endpoint: `${origin}/authorize`,
           token_endpoint: `${origin}/token`,
           code_challenge_methods_supported: ["S256"],
@@ -106,14 +122,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     configure: (input: {
       readonly registration?: boolean;
       readonly expiresAt?: number;
-      readonly discoveryFails?: boolean;
+      readonly discovery?: typeof discovery;
       readonly scopes?: readonly string[];
       readonly authMethods?: readonly string[];
     }) =>
       Effect.sync(() => {
         if (input.registration !== undefined) registration = input.registration;
         if (input.expiresAt !== undefined) expiresAt = input.expiresAt;
-        if (input.discoveryFails !== undefined) discoveryFails = input.discoveryFails;
+        if (input.discovery !== undefined) discovery = input.discovery;
         if (input.scopes !== undefined) scopes = [...input.scopes];
         if (input.authMethods !== undefined) authMethods = [...input.authMethods];
       }),

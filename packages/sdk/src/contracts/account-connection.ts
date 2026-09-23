@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileId } from "./shared.ts";
 import { ProfileErrors } from "./profiles.ts";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
@@ -95,31 +96,55 @@ export const CompleteConnectionOAuth = Schema.Struct({
   callbackUrl: Schema.RedactedFromValue(HttpUrl),
 });
 /** Unknown IDs and mismatched owners have the same result. */
-export class AccountConnectionNotFound extends Schema.TaggedError<AccountConnectionNotFound>()(
-  "AccountConnectionNotFound",
-  { connection: AccountConnectionId },
-  { httpApiStatus: 404 },
-) {}
+export const AccountConnectionNotFound = UserFacingError.define({
+  tag: "AccountConnectionNotFound",
+  status: 404,
+  fields: { connection: AccountConnectionId },
+  title: "Connection no longer available",
+  description: "This connection request could not be found.",
+  recovery: {
+    action:
+      "Close this form and start account setup again. You can also copy the fix prompt into your agent to create a new connection link.",
+    instructions:
+      "Check whether the account connection request still exists. Start a new request for the current app requirement and provide its supported connection link. Do not reconstruct or reuse a missing request’s credentials or link.",
+  },
+});
+/** Parsed AccountConnectionNotFound failure. */
+export type AccountConnectionNotFound = typeof AccountConnectionNotFound.Type;
 /** Cancelled, expired, or superseded flows cannot save credentials. */
-export class AccountConnectionClosed extends Schema.TaggedError<AccountConnectionClosed>()(
-  "AccountConnectionClosed",
-  { connection: AccountConnectionId },
-  { httpApiStatus: 409 },
-) {}
+export const AccountConnectionClosed = UserFacingError.define({
+  tag: "AccountConnectionClosed",
+  status: 409,
+  fields: { connection: AccountConnectionId },
+  title: "Connection has ended",
+  description: "This request was completed, cancelled, or expired.",
+  recovery: {
+    action: "Close this form and start account setup again.",
+    instructions:
+      "Read the current connection status. If it completed, check whether the intended account is already connected. Otherwise start a fresh account setup request. Do not reuse a cancelled or expired request or create a duplicate account blindly.",
+  },
+});
+/** Parsed AccountConnectionClosed failure. */
+export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
 
 /** Target changes require a fresh connection; no credentials or selections are committed. */
-export class AccountConnectionTargetChanged extends Schema.TaggedError<AccountConnectionTargetChanged>()(
-  "AccountConnectionTargetChanged",
-  {
+export const AccountConnectionTargetChanged = UserFacingError.define({
+  tag: "AccountConnectionTargetChanged",
+  status: 409,
+  fields: {
     app: AppId,
     requirement: Schema.String,
   },
-  {
-    httpApiStatus: 409,
-    description:
-      "The app requirement or its selection changed. Start a new connection for this app.",
+  title: "App account setup changed",
+  description: "This connection no longer matches the app’s requirements.",
+  recovery: {
+    action: "Close this form and start account setup again.",
+    instructions:
+      "Read the current app deployment, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
   },
-) {}
+});
+/** Parsed AccountConnectionTargetChanged failure. */
+export type AccountConnectionTargetChanged = typeof AccountConnectionTargetChanged.Type;
 
 const errors = [
   ...ProfileErrors,

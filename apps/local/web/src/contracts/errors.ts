@@ -74,14 +74,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
     AccountConnectionClosed: () =>
       message("This connection has ended", "Ask your agent for a new connection link."),
     OAuthSetupFailed: (error) =>
-      message(
-        "Could not connect the account",
-        error.reason === "invalid_client"
-          ? "Check the OAuth client ID and secret, then try again."
-          : error.reason === "token_exchange"
-            ? "The service could not complete the connection. Try again."
-            : "Check the provider's OAuth configuration, then try again.",
-      ),
+      message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthCompletionFailed: (error) =>
       message(
         "Sign-in did not finish",

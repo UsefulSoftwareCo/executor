@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
 import { Schema } from "effect";
 import { StorageError, CredentialsError } from "./shared.ts";
@@ -25,14 +26,20 @@ export type Account = typeof Account.Type;
 export const AccountFieldsInput = Schema.RedactedFromValue(JsonObject);
 
 /** No account matched the ID and any supplied owner constraint. */
-export class AccountNotFound extends Schema.TaggedError<AccountNotFound>()(
-  "AccountNotFound",
-  { account: AccountId },
-  {
-    httpApiStatus: 404,
-    description: "No account matches this id and any supplied owner constraint.",
+export const AccountNotFound = UserFacingError.define({
+  tag: "AccountNotFound",
+  status: 404,
+  fields: { account: AccountId },
+  title: "Account no longer available",
+  description: "The requested account could not be found.",
+  recovery: {
+    action: "Close this form and select an available account, or start a new connection.",
+    instructions:
+      "Inspect the current app’s account selection and check whether the intended account still exists and is accessible. Guide selection of an available account or creation of a new connection. Do not silently substitute a different account.",
   },
-) {}
+});
+/** Parsed AccountNotFound failure. */
+export type AccountNotFound = typeof AccountNotFound.Type;
 
 /** Submitted fields failed the declared method schema; values never enter this error. */
 export class AccountFieldsInvalid extends Schema.TaggedError<AccountFieldsInvalid>()(

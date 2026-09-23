@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Durable account bindings and setup state for one use of an app. Deployments belong to the app. */
 import { Context, Schema, type Effect } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
@@ -50,20 +51,39 @@ export const CurrentProfile = Context.Reference<Profile | undefined>("executor/C
   defaultValue: () => undefined,
 });
 /** Profiles are always resolved within the requested app and optional owner. */
-export class ProfileNotFound extends Schema.TaggedError<ProfileNotFound>()(
-  "ProfileNotFound",
-  { app: AppId, profile: ProfileId },
-  { httpApiStatus: 404 },
-) {}
+export const ProfileNotFound = UserFacingError.define({
+  tag: "ProfileNotFound",
+  status: 404,
+  fields: { app: AppId, profile: ProfileId },
+  title: "Account selection unavailable",
+  description: "The saved account selection for this app could not be found.",
+  recovery: {
+    action: "Close this form and reopen the app’s account selection.",
+    instructions:
+      "Read the current app’s account requirements and saved account selection. Reopen setup to establish the intended selection through the supported account flow. Do not invent missing bindings or reuse a stale profile reference.",
+  },
+});
+/** Parsed ProfileNotFound failure. */
+export type ProfileNotFound = typeof ProfileNotFound.Type;
 /** A stale editor or stopped profile cannot silently select another identity. */
-export class ProfileConflict extends Schema.TaggedError<ProfileConflict>()(
-  "ProfileConflict",
-  {
+export const ProfileConflict = UserFacingError.define({
+  tag: "ProfileConflict",
+  status: 409,
+  fields: {
     profile: ProfileId,
     reason: Schema.Literals(["revision", "idempotency", "inactive", "active-resources"]),
   },
-  { httpApiStatus: 409 },
-) {}
+  title: "Account selection could not be updated",
+  description:
+    "The saved account selection is out of date or cannot be changed in its current state.",
+  recovery: {
+    action: "Reload the current account selection and review it before making changes.",
+    instructions:
+      "Read the latest profile state, account requirements, and active resource bindings. Resolve the conflict against the user’s intended selection. Preserve newer selections and active resource bindings; do not overwrite them with stale state.",
+  },
+});
+/** Parsed ProfileConflict failure. */
+export type ProfileConflict = typeof ProfileConflict.Type;
 /** Shared errors preserve profile failures through execution transports. */
 export const ProfileErrors = [ProfileNotFound, ProfileConflict] as const;
 const target = { app: AppId, profile: ProfileId };

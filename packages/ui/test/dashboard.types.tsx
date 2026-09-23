@@ -1,16 +1,32 @@
 /** Compile-only checks: shared views must not widen an operation's errors to fit its renderer. */
 import type { Atom } from "effect/unstable/reactivity";
 import { Schema, type Exit } from "effect";
-import type { App, Provider } from "@executor-js/sdk";
+import type { App, Provider, OAuthClientSetup } from "@executor-js/sdk";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { AccountSubmission, OAuthSubmission } from "../src/contracts/credentials.ts";
 import type { FailureProps, InstallApp, Query } from "../src/contracts/dashboard.ts";
 import { QueryView } from "../src/implementation/dashboard/context.tsx";
 import { CatalogInstall } from "../src/implementation/dashboard/catalog.tsx";
 import { AccountForm } from "../src/implementation/dashboard/account-form.tsx";
-import { OAuthFields } from "../src/implementation/dashboard/oauth-fields.tsx";
+import { OAuthFields, OAuthSetup } from "../src/implementation/dashboard/oauth-fields.tsx";
 
 class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
 class SessionEnded extends Schema.TaggedError<SessionEnded>()("SessionEnded", {}) {}
+const SetupUnavailable = UserFacingError.define({
+  tag: "SetupUnavailable",
+  status: 503,
+  title: "Setup unavailable",
+  description: "Setup could not complete.",
+  recovery: { action: "Try again.", instructions: "Check the setup service." },
+});
+function checkSetupErrors(
+  complete: Query<OAuthClientSetup, typeof SetupUnavailable.Type>,
+  missingPresentation: Query<OAuthClientSetup, Denied | typeof SetupUnavailable.Type>,
+) {
+  OAuthSetup({ query: complete, children: () => null });
+  // @ts-expect-error Every expected setup error must own its presentation.
+  OAuthSetup({ query: missingPresentation, children: () => null });
+}
 type Errors = Denied | SessionEnded;
 const Failure = (_props: FailureProps<Errors>) => null;
 const IncompleteFailure = (_props: FailureProps<Denied>) => null;

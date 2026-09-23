@@ -88,12 +88,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     OAuthReconnectRequired: () => "This account needs to sign in again.",
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",
-    OAuthSetupFailed: (error) =>
-      error.reason === "invalid_client"
-        ? "The OAuth client details were not accepted. Check the client ID and secret, then try again."
-        : error.reason === "token_exchange"
-          ? "Couldn’t connect to this service. Try again."
-          : "Connection setup failed. Check the provider’s OAuth configuration and try again.",
+    OAuthSetupFailed: (error) => `${error.description} ${error.recovery.action}`,
     OAuthCompletionFailed: (error) =>
       error.reason === "invalid_client"
         ? "The OAuth client was rejected. Update its details and try again."

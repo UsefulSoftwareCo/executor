@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowDown01Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Exit, Option, Redacted, type Cause } from "effect";
+import { Cause, Exit, Option, Redacted } from "effect";
 import type { Account, OAuthClientSetup } from "@executor-js/sdk";
 import type { OAuthSubmission } from "../../contracts/credentials.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
@@ -12,40 +12,32 @@ import { Input } from "../components/input.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { CopyButton } from "./code.tsx";
 import { AsyncResult } from "effect/unstable/reactivity";
+import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ErrorNotice } from "./error-notice.tsx";
 import { useQuery } from "./context.tsx";
 
 /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
-export function OAuthSetup<E>({
+export function OAuthSetup<E extends UserFacingError>({
   query,
   children,
 }: {
   readonly query: Query<OAuthClientSetup, E>;
   readonly children: (state: {
     readonly setup: OAuthClientSetup | "unresolved";
-    readonly blocked: boolean;
     readonly action: ReactNode;
     readonly refresh: () => void;
   }) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
-  const failed = AsyncResult.isFailure(result) && !result.waiting;
-  const loading = Option.isNone(data) || (AsyncResult.isFailure(result) && result.waiting);
+  const failed = AsyncResult.isFailure(result);
+  const loading = Option.isNone(data);
   const action = failed ? (
-    <div
-      role="alert"
-      className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 text-xs text-destructive max-[740px]:h-11"
-    >
-      <span>Couldn’t prepare sign-in.</span>
-      <Button
-        type="button"
-        size="sm"
-        variant="link"
-        className="h-full min-h-0 shrink-0 px-1 py-0 text-xs max-[740px]:min-h-0"
-        onClick={refresh}
-      >
-        Retry
-      </Button>
-    </div>
+    <ErrorNotice
+      error={Option.getOrElse(Cause.findErrorOption(result.cause), () => new UnexpectedError())}
+      context="While preparing account sign-in."
+      retry={refresh}
+      retrying={result.waiting}
+    />
   ) : loading ? (
     <Skeleton
       role="status"
@@ -57,7 +49,6 @@ export function OAuthSetup<E>({
     <div className="flex flex-col gap-4">
       {children({
         setup: Option.isSome(data) ? data.value : "unresolved",
-        blocked: failed,
         action,
         refresh,
       })}

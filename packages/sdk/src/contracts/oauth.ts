@@ -1,3 +1,4 @@
+import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
 import { AuthMethodName } from "./provider.ts";
@@ -97,11 +98,15 @@ export interface OAuthOptions {
 }
 
 /** OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. */
-export class OAuthSetupFailed extends Schema.TaggedError<OAuthSetupFailed>()(
-  "OAuthSetupFailed",
-  {
+export const OAuthSetupFailed = UserFacingError.define({
+  tag: "OAuthSetupFailed",
+  status: 422,
+  fields: {
     reason: Schema.Literals([
-      "discovery",
+      "discovery_unavailable",
+      "discovery_missing",
+      "discovery_invalid",
+      "discovery_blocked",
       "registration",
       "invalid_client",
       "invalid_redirect",
@@ -109,12 +114,111 @@ export class OAuthSetupFailed extends Schema.TaggedError<OAuthSetupFailed>()(
       "unsupported",
     ]),
   },
-  { httpApiStatus: 422 },
-) {
-  override get message() {
-    return `OAuth setup failed: ${this.reason}`;
-  }
-}
+  presentation: ({ reason }) =>
+    (
+      ({
+        discovery_unavailable: {
+          title: "Sign-in temporarily unavailable",
+          description:
+            "We could not load the service’s OAuth sign-in settings. The service may be unavailable, busy, or unreachable.",
+          recovery: {
+            action:
+              "Try again. If this continues, copy the fix prompt into your agent to check the service and connection settings.",
+            instructions:
+              "Inspect the current app’s provider definition and OAuth discovery URL. Check reachability and service status, and distinguish a temporary outage from an incorrect endpoint. Fix incorrect configuration only when the evidence supports it; retry a temporary failure.",
+          },
+          retryable: true,
+        },
+        discovery_missing: {
+          title: "OAuth settings not found",
+          description:
+            "This app is configured for OAuth, but its server did not provide OAuth sign-in settings.",
+          recovery: {
+            action:
+              "Check the app’s server URL and sign-in method. Copy the fix prompt into your agent to update the integration.",
+            instructions:
+              "Inspect the current app’s provider definition, server URL, and the service’s documented sign-in method. Check whether discovery targets the correct OAuth issuer. Do not disable authentication just because OAuth metadata is missing. Use No authentication only if the service documentation confirms this endpoint is public; otherwise configure its supported sign-in method.",
+          },
+        },
+        discovery_invalid: {
+          title: "OAuth settings not valid",
+          description:
+            "We reached the service, but its response could not be used to prepare OAuth sign-in.",
+          recovery: {
+            action:
+              "Check the app’s OAuth server URL and configuration. Copy the fix prompt into your agent to investigate.",
+            instructions:
+              "Inspect the app’s provider definition and OAuth discovery configuration. Compare the discovery response with the required OAuth metadata and the service documentation. Identify an incorrect endpoint or invalid metadata, then repair the app configuration or explain the precise service-side correction needed.",
+          },
+        },
+        discovery_blocked: {
+          title: "OAuth address blocked",
+          description:
+            "This Executor instance does not allow access to an address in the app’s OAuth configuration.",
+          recovery: {
+            action:
+              "Review the app’s server URL and this instance’s network policy. Copy the fix prompt into your agent to find an allowed configuration.",
+            instructions:
+              "Inspect the app’s OAuth discovery URL and advertised endpoints against this Executor instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
+          },
+        },
+        registration: {
+          title: "OAuth registration failed",
+          description: "We could not register an OAuth client for this connection.",
+          recovery: {
+            action:
+              "Try again. If registration still fails, copy the fix prompt into your agent to review the OAuth client setup.",
+            instructions:
+              "Inspect the service’s client registration support and the app’s OAuth configuration. Distinguish a temporary registration failure from a service that requires a pre-registered client. Use the supported registration or saved-client path without repeatedly creating clients.",
+          },
+          retryable: true,
+        },
+        invalid_client: {
+          title: "OAuth client not accepted",
+          description: "Executor could not use the OAuth client configuration for this connection.",
+          recovery: {
+            action:
+              "Check the OAuth client settings for this service. Copy the fix prompt into your agent to find and correct the mismatch.",
+            instructions:
+              "Inspect which OAuth client configuration this connection selects and compare its client ID, authentication method, and redirect settings with the service’s developer settings. Check secret availability through the supported credential mechanism without exposing values. Correct the mismatch rather than replacing unrelated accounts.",
+          },
+        },
+        invalid_redirect: {
+          title: "Callback URL not valid",
+          description: "Executor’s callback URL cannot be used for this sign-in.",
+          recovery: {
+            action:
+              "Check the OAuth callback URL against the service’s settings. Copy the fix prompt into your agent to correct the mismatch.",
+            instructions:
+              "Compare Executor’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
+          },
+        },
+        token_exchange: {
+          title: "Account connection failed",
+          description: "We could not complete the connection with this service.",
+          recovery: {
+            action:
+              "Try connecting again. If this continues, copy the fix prompt into your agent to investigate the sign-in exchange.",
+            instructions:
+              "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and authorization flow. Check for an expired or already-used authorization code without printing it. Fix verified configuration errors and start a fresh user sign-in when needed; never replay a consumed code.",
+          },
+          retryable: true,
+        },
+        unsupported: {
+          title: "Sign-in method unavailable",
+          description: "Executor cannot use this app’s OAuth sign-in configuration.",
+          recovery: {
+            action:
+              "Review the app’s sign-in method and OAuth settings. Copy the fix prompt into your agent to use a supported configuration.",
+            instructions:
+              "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
+          },
+        },
+      }) satisfies Record<typeof reason, ErrorPresentation>
+    )[reason],
+});
+/** Parsed OAuthSetupFailed failure. */
+export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
 /** The saved grant cannot supply a fresh token. Its account identity remains available for reconnection. */
 export class OAuthReconnectRequired extends Schema.TaggedError<OAuthReconnectRequired>()(
   "OAuthReconnectRequired",

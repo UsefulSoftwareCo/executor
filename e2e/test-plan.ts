@@ -548,6 +548,16 @@ export const scenarios = {
       local: na("Hosted account dialogs and callback recovery."),
     },
   },
+  oauthSetupErrors: {
+    file: "oauth-setup-errors.spec.ts",
+    title:
+      "OAuth setup explains each discovery failure and preserves recovery on desktop and mobile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer; hosted presentation is shared."),
+      local: na("Local connection-link coverage is in the local OAuth scenario."),
+    },
+  },
   localOAuth: {
     file: "local-oauth.spec.ts",
     title: "Local OAuth setup checks preserve grant boundaries and complete machine accounts",

@@ -7,6 +7,7 @@ import {
   Effect,
   Encoding,
   JsonSchema,
+  Match,
   Redacted,
   Schema,
   SchemaRepresentation,
@@ -133,9 +134,25 @@ export const makeOAuth = (
           ))
       )
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      const discovered = yield* protocol
-        .discover(method)
-        .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "discovery" })));
+      const discovered = yield* protocol.discover(method).pipe(
+        Effect.mapError(
+          (error) =>
+            new OAuthSetupFailed({
+              reason: Match.value(error.reason).pipe(
+                Match.when("request", () => "discovery_unavailable" as const),
+                Match.when("metadata_missing", () => "discovery_missing" as const),
+                Match.when("destination_blocked", () => "discovery_blocked" as const),
+                Match.whenOr(
+                  "invalid_response",
+                  "invalid_client",
+                  "invalid_grant",
+                  () => "discovery_invalid" as const,
+                ),
+                Match.exhaustive,
+              ),
+            }),
+        ),
+      );
       for (const address of [
         discovered.server.issuer,
         discovered.server.authorization_endpoint,
@@ -143,7 +160,7 @@ export const makeOAuth = (
         discovered.server.registration_endpoint,
       ].filter((address) => address !== undefined)) {
         const url = parseDestination(address, options.urlPolicy);
-        if (url === undefined) return yield* new OAuthSetupFailed({ reason: "discovery" });
+        if (url === undefined) return yield* new OAuthSetupFailed({ reason: "discovery_blocked" });
       }
       if (
         discovered.grant === "authorization_code" &&

@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
@@ -67,11 +68,20 @@ export const OrganizationAccess = Schema.Struct({
 });
 export type OrganizationAccess = typeof OrganizationAccess.Type;
 /** No membership exists, or the caller does not have the required role. */
-export class OrganizationForbidden extends Schema.TaggedError<OrganizationForbidden>()(
-  "OrganizationForbidden",
-  {},
-  { httpApiStatus: 403 },
-) {}
+export const OrganizationForbidden = UserFacingError.define({
+  tag: "OrganizationForbidden",
+  status: 403,
+  title: "Organization access denied",
+  description: "Your current membership or role does not allow this action in this organization.",
+  recovery: {
+    action:
+      "Check that you’re using the right account and organization. Copy the fix prompt into your agent to investigate the missing access.",
+    instructions:
+      "Check the signed-in identity, organization, and permission required for the failed operation. Identify a wrong context or a missing access grant and the supported way to resolve it. Do not bypass authorization or assume changing integration code can grant access.",
+  },
+});
+/** Parsed OrganizationForbidden failure. */
+export type OrganizationForbidden = typeof OrganizationForbidden.Type;
 /** Request-local authority, provided by RequireOrganization. */
 export class CurrentOrganization extends Context.Service<CurrentOrganization, OrganizationAccess>()(
   "hosted/CurrentOrganization",

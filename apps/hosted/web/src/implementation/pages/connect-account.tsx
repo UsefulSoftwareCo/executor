@@ -145,13 +145,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       {...(onPendingChange ? { onPendingChange } : {})}
       oauth={({ method, disabled, onPendingChange }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
-          {({ setup, blocked, action, refresh }) => (
+          {({ setup, action, refresh }) => (
             <OAuthFields
               providerName={provider.definition.name}
               Failure={HostedFailure}
               setup={setup}
               setupAction={action}
-              disabled={disabled || blocked}
+              disabled={disabled}
               manualClient={manualClient}
               initialLabel={initialLabel}
               {...(account ? { account } : {})}

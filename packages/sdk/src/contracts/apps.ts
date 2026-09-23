@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
@@ -120,11 +121,20 @@ export const DeployAppInput = Schema.Union([
 export type DeployAppInput = typeof DeployAppInput.Type;
 
 /** No app matched the ID and any supplied owner constraint. */
-export class AppNotFound extends Schema.TaggedError<AppNotFound>()(
-  "AppNotFound",
-  { app: AppId },
-  { httpApiStatus: 404, description: "No app matches this id and any supplied owner constraint." },
-) {}
+export const AppNotFound = UserFacingError.define({
+  tag: "AppNotFound",
+  status: 404,
+  fields: { app: AppId },
+  title: "App no longer available",
+  description: "Executor could not find the requested app.",
+  recovery: {
+    action: "Return to Apps and open an available app.",
+    instructions:
+      "Check whether the app was removed or is unavailable in the current organization. Find the intended accessible app and reopen its account setup. Do not redirect the connection to a different app without the user’s choice.",
+  },
+});
+/** Parsed AppNotFound failure. */
+export type AppNotFound = typeof AppNotFound.Type;
 
 /** A draft has source but no active executable deployment. */
 export class AppNotDeployed extends Schema.TaggedError<AppNotDeployed>()(

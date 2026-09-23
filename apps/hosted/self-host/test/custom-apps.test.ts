@@ -373,7 +373,7 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
             const setupBody = yield* Effect.promise(() => setup.text());
             assert.equal(
               Schema.decodeUnknownSync(Schema.fromJsonString(OAuthSetupFailed))(setupBody).reason,
-              "discovery",
+              "discovery_blocked",
             );
             assert.ok(!setupBody.includes("synthetic-client-secret"));
 

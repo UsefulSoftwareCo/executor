@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Local browser pairing and the private desktop bootstrap protocol. */
 import { Schema, type Effect } from "effect";
 import { AppId } from "@executor-js/sdk";
@@ -18,11 +19,19 @@ export class PairingRejected extends Schema.TaggedError<PairingRejected>()(
   },
 ) {}
 /** Browser requests must come from this server's exact loopback origin. */
-export class AuthForbidden extends Schema.TaggedError<AuthForbidden>()(
-  "AuthForbidden",
-  {},
-  { httpApiStatus: 403 },
-) {}
+export const AuthForbidden = UserFacingError.define({
+  tag: "AuthForbidden",
+  status: 403,
+  title: "Local request not allowed",
+  description: "This browser request did not come from the expected local Executor address.",
+  recovery: {
+    action: "Open Executor at its local address directly in your browser and try again.",
+    instructions:
+      "Check the local Executor origin and open its supported address directly. Correct a stale or unsupported browser origin. Preserve host and origin validation; keep connection-link credentials private.",
+  },
+});
+/** Parsed AuthForbidden failure. */
+export type AuthForbidden = typeof AuthForbidden.Type;
 /** Only a programmatic client with the local API key can issue a fresh pairing link. */
 export class PairingUnauthorized extends Schema.TaggedError<PairingUnauthorized>()(
   "PairingUnauthorized",
@@ -30,14 +39,21 @@ export class PairingUnauthorized extends Schema.TaggedError<PairingUnauthorized>
   { httpApiStatus: 401 },
 ) {}
 /** Session persistence failed; never treat an unavailable store as a signed-out browser. */
-export class AuthStorageError extends Schema.TaggedError<AuthStorageError>()(
-  "AuthStorageError",
-  {},
-  {
-    httpApiStatus: 503,
-    description: "Executor could not read or save your browser session. Try again.",
+export const AuthStorageError = UserFacingError.define({
+  tag: "AuthStorageError",
+  status: 503,
+  title: "Executor access storage unavailable",
+  description: "Executor could not read or save the access information needed for this action.",
+  recovery: {
+    action:
+      "Try again. If this continues, copy the fix prompt into your agent to check Executor’s access storage.",
+    instructions:
+      "Inspect the local Executor instance’s access-record storage and safe diagnostics. Restore storage access without deleting grants, resetting credentials, or weakening authorization.",
   },
-) {}
+  retryable: true,
+});
+/** Parsed AuthStorageError failure. */
+export type AuthStorageError = typeof AuthStorageError.Type;
 /** SHA-256 digest of an opaque browser credential, never the credential itself. */
 export const SessionHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).pipe(
   Schema.brand("SessionHash"),

@@ -220,6 +220,26 @@ const seedRows = (
 ) =>
   Effect.gen(function* () {
     const epoch = new Date(0);
+    yield* db.create("profiles", {
+      id: `ins_${owner}`,
+      app: context.app,
+      owner,
+      subject: `subject:${owner}`,
+      name: null,
+      idempotencyKey: `profile:${owner}`,
+      accounts: {},
+      webhookConfig: {},
+      revision: 1,
+      enabled: true,
+      status: "ready",
+      failure: null,
+      reconciledDeployment: context.deployment,
+      reconciledRevision: 1,
+      request: {},
+      lease: null,
+      leaseUntil: epoch,
+      createdAt: epoch,
+    });
     yield* db.create("toolApprovals", {
       id: `apr_${owner}`,
       owner,
@@ -300,7 +320,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("4.0.0") as unknown as AnyTable;
+          const db = options.storage.orm(storageSchema.version) as unknown as AnyTable;
           const owned = (table: string, owner: OwnerId) =>
             db.findMany(table, {
               select: ["id"],
@@ -359,7 +379,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("4.0.0") as unknown as AnyTable;
+          const db = options.storage.orm(storageSchema.version) as unknown as AnyTable;
           const mine = yield* populate(executor, alice);
 
           // With no work in flight the check passes and reports the owner it read.

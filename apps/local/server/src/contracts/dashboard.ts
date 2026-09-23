@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
 import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
@@ -80,23 +81,33 @@ import {
 export const OAuthCallbackPath = "/api/oauth/callback";
 
 /** The browser has no active local session. */
-export class DashboardUnauthorized extends Schema.TaggedError<DashboardUnauthorized>()(
-  "DashboardUnauthorized",
-  {},
-  {
-    httpApiStatus: 401,
-    description: "Open a fresh connection link from executor pair.",
+export const DashboardUnauthorized = UserFacingError.define({
+  tag: "DashboardUnauthorized",
+  status: 401,
+  title: "Browser pairing required",
+  description: "This browser is not paired with this Executor instance.",
+  recovery: {
+    action: "Run executor pair and open the new link, then return to account setup.",
+    instructions:
+      "Restore local browser pairing with executor pair and guide the user through the new pairing link. Then reopen the intended app’s account setup. Keep pairing credentials private and preserve pairing authorization.",
   },
-) {}
+});
+/** Parsed DashboardUnauthorized failure. */
+export type DashboardUnauthorized = typeof DashboardUnauthorized.Type;
 /** Browser calls must originate from this exact loopback server. */
-export class DashboardForbidden extends Schema.TaggedError<DashboardForbidden>()(
-  "DashboardForbidden",
-  {},
-  {
-    httpApiStatus: 403,
-    description: "Open the dashboard from this local server's address.",
+export const DashboardForbidden = UserFacingError.define({
+  tag: "DashboardForbidden",
+  status: 403,
+  title: "Dashboard access denied",
+  description: "This browser cannot use the current dashboard address.",
+  recovery: {
+    action: "Open Executor directly at its local dashboard address and return to account setup.",
+    instructions:
+      "Check the local Executor dashboard origin and open its supported address directly. Correct a stale or unsupported browser origin. Preserve host and origin validation; do not loosen dashboard access checks.",
   },
-) {}
+});
+/** Parsed DashboardForbidden failure. */
+export type DashboardForbidden = typeof DashboardForbidden.Type;
 /** Live app inspection exceeded the host's discovery timeout. */
 export class ToolDiscoveryTimedOut extends Schema.TaggedError<ToolDiscoveryTimedOut>()(
   "ToolDiscoveryTimedOut",

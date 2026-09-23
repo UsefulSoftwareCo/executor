@@ -95,11 +95,21 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         const actionSize = (role: "status" | "alert" | "button" | "group", name?: string) =>
           Effect.gen(function* () {
             const bounds = yield* browser.use("Measure the stable connection action", (page) => {
-              const action = page
-                .getByRole("dialog")
-                .getByRole(role, name === undefined ? {} : { name, exact: true });
-              // Playwright waits for stable geometry before measuring a resized dialog.
-              return action.scrollIntoViewIfNeeded().then(() => action.boundingBox());
+              const dialog = page.getByRole("dialog");
+              const action = dialog.getByRole(
+                role,
+                name === undefined ? {} : { name, exact: true },
+              );
+              // A max-width transition can have several identical bounds before it
+              // reaches the viewport width. Wait for the transition, not that plateau.
+              return dialog
+                .evaluate((element) =>
+                  Promise.allSettled(
+                    element.getAnimations().map((animation) => animation.finished),
+                  ),
+                )
+                .then(() => action.scrollIntoViewIfNeeded())
+                .then(() => action.boundingBox());
             });
             if (bounds === null)
               return yield* Effect.die(new Error("Connection action must be visible"));
@@ -108,16 +118,21 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         const connectionLayout = () =>
           browser.use("Measure the stable dialog and account-name field", (page) => {
             const dialog = page.getByRole("dialog");
-            return dialog.scrollIntoViewIfNeeded().then(() =>
-              Promise.all([
-                dialog.boundingBox(),
-                dialog.getByLabel("Account name", { exact: true }).boundingBox(),
-              ]).then(([dialog, name]) => {
-                if (dialog === null || name === null)
-                  throw new Error("The connection dialog and name must be visible");
-                return { dialog, name };
-              }),
-            );
+            return dialog
+              .evaluate((element) =>
+                Promise.allSettled(element.getAnimations().map((animation) => animation.finished)),
+              )
+              .then(() => dialog.scrollIntoViewIfNeeded())
+              .then(() =>
+                Promise.all([
+                  dialog.boundingBox(),
+                  dialog.getByLabel("Account name", { exact: true }).boundingBox(),
+                ]).then(([dialog, name]) => {
+                  if (dialog === null || name === null)
+                    throw new Error("The connection dialog and name must be visible");
+                  return { dialog, name };
+                }),
+              );
           });
         const startPattern = /\/connections\/[^/]+\/oauth\/start$/;
         const completePattern = /\/connections\/[^/]+\/oauth\/complete$/;
@@ -173,38 +188,54 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* issuer.configure({ discoveryFails: true });
         yield* setup.release;
         yield* browser.use("Wait for setup failure", (page) =>
-          page.getByText("Couldn’t prepare sign-in.", { exact: true }).waitFor(),
+          page.getByText("Sign-in temporarily unavailable", { exact: true }).waitFor(),
         );
-        expect(yield* connectionLayout()).toEqual(loadingLayout);
+        const failedLayout = yield* connectionLayout();
+        expect(failedLayout.name.width).toEqual(loadingLayout.name.width);
         const failedActionSize = yield* actionSize("alert");
+        expect(failedActionSize.height).toBeGreaterThan(loadingSize.height);
         yield* capture("Setup-failed-with-retry");
         yield* browser.use("Show setup recovery on mobile", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );
-        expect(yield* connectionLayout()).toEqual(mobileLoadingLayout);
+        const mobileFailedLayout = yield* connectionLayout();
+        expect(mobileFailedLayout.name.width).toEqual(mobileLoadingLayout.name.width);
         const mobileFailedActionSize = yield* actionSize("alert");
+        expect(mobileFailedActionSize.height).toBeGreaterThan(mobileLoadingSize.height);
         yield* browser.checkpoint("Setup-failed-mobile");
         yield* browser.use("Restore desktop for setup retry", (page) =>
           page.setViewportSize({ width: 1440, height: 960 }),
         );
         yield* issuer.configure({ discoveryFails: false });
         const retry = yield* holdQuery(setupPaths, "continue");
-        yield* click("Retry");
+        yield* click("Try again");
         yield* retry.requested;
-        expect(yield* actionSize("status", "Preparing connection")).toEqual(loadingSize);
-        expect(yield* connectionLayout()).toEqual(loadingLayout);
+        yield* browser.use("Retry keeps the explanation and blocks repeat requests", (page) =>
+          page
+            .getByRole("status", { name: "Checking connection", exact: true })
+            .waitFor()
+            .then(() => page.getByRole("button", { name: "Checking…", exact: true }).isDisabled())
+            .then((disabled) => expect(disabled).toBe(true)),
+        );
+        expect(yield* actionSize("alert")).toEqual(failedActionSize);
+        expect(yield* connectionLayout()).toEqual(failedLayout);
         yield* capture("Setup-retrying");
+        yield* browser.use("Show retry without collapsing the mobile card", (page) =>
+          page.setViewportSize({ width: 390, height: 844 }),
+        );
+        expect(yield* actionSize("alert")).toEqual(mobileFailedActionSize);
+        expect(yield* connectionLayout()).toEqual(mobileFailedLayout);
+        yield* browser.checkpoint("Setup-retrying-mobile");
+        yield* browser.use("Restore desktop during retry", (page) =>
+          page.setViewportSize({ width: 1440, height: 960 }),
+        );
         yield* retry.release;
         yield* browser.use("Wait for automatic setup", (page) =>
           page
             .getByRole("dialog")
             .getByRole("button", { name: "Connect Sample service", exact: true })
             .waitFor()
-            .then(() =>
-              page
-                .getByRole("status", { name: "Preparing connection", exact: true })
-                .waitFor({ state: "hidden" }),
-            ),
+            .then(() => page.getByRole("alert").waitFor({ state: "hidden" })),
         );
         expect(
           yield* browser.use("Setup failure and retry preserve the account name", (page) =>
@@ -213,14 +244,16 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         ).toBe("Work reports");
         expect(yield* connectionLayout()).toEqual(loadingLayout);
         expect(yield* actionSize("group", "Connection options")).toEqual(loadingSize);
-        expect(yield* actionSize("button", "Connect Sample service")).toEqual(failedActionSize);
+        expect((yield* actionSize("button", "Connect Sample service")).width).toEqual(
+          failedActionSize.width,
+        );
         yield* browser.use("Check the ready action on mobile", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );
         expect(yield* connectionLayout()).toEqual(mobileLoadingLayout);
         expect(yield* actionSize("group", "Connection options")).toEqual(mobileLoadingSize);
-        expect(yield* actionSize("button", "Connect Sample service")).toEqual(
-          mobileFailedActionSize,
+        expect((yield* actionSize("button", "Connect Sample service")).width).toEqual(
+          mobileFailedActionSize.width,
         );
         yield* browser.checkpoint("Automatic-OAuth-ready-mobile");
         yield* browser.use("Restore desktop after checking action sizes", (page) =>

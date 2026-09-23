@@ -1,3 +1,4 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors } from "@executor-js/sdk/core";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
@@ -36,11 +37,19 @@ export const ConnectionGrant = Schema.Struct({
 });
 export type ConnectionGrant = typeof ConnectionGrant.Type;
 /** The limited link is invalid; no general browser session is accepted as a substitute. */
-export class ConnectionLinkRejected extends Schema.TaggedError<ConnectionLinkRejected>()(
-  "ConnectionLinkRejected",
-  {},
-  { httpApiStatus: 401 },
-) {}
+export const ConnectionLinkRejected = UserFacingError.define({
+  tag: "ConnectionLinkRejected",
+  status: 401,
+  title: "Connection link not valid",
+  description: "This link cannot be used to connect an account.",
+  recovery: {
+    action: "Copy the fix prompt into your agent to create a new connection link.",
+    instructions:
+      "Create a new account connection request for the intended app requirement and provide its supported connection link. The rejected link is not usable. Do not reconstruct, log, or reuse its credential-bearing fragment.",
+  },
+});
+/** Parsed ConnectionLinkRejected failure. */
+export type ConnectionLinkRejected = typeof ConnectionLinkRejected.Type;
 /** A host-generated URL, not part of the reusable SDK request model. */
 export const AccountConnectionLink = Schema.Struct({
   connection: AccountConnectionId,

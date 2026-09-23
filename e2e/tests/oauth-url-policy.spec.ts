@@ -78,7 +78,7 @@ export default defineApp({ accounts: { service } }, async () => ({  queries: {} 
             expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
           } else {
             const failure = yield* body(Schema.Struct({ reason: Schema.String }), started);
-            expect(failure.reason).toBe("discovery");
+            expect(failure.reason).toBe("discovery_blocked");
           }
         }
       }),

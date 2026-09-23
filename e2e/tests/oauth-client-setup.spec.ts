@@ -96,9 +96,9 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
           "client-required",
         );
-        yield* issuer.configure({ discoveryFails: true });
+        yield* issuer.configure({ discovery: "unavailable" });
         expect((yield* api.request(actors.owner, "GET", setupPath(provider))).status).toBe(422);
-        yield* issuer.configure({ discoveryFails: false });
+        yield* issuer.configure({ discovery: "available" });
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
         const check = yield* holdQuery(
@@ -130,18 +130,18 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
             page.getByRole("textbox", { name: "Client ID", exact: true }).count(),
           ),
         ).toBe(0);
-        yield* issuer.configure({ discoveryFails: true });
+        yield* issuer.configure({ discovery: "unavailable" });
         yield* check.release;
         yield* browser.use("Failed discovery offers retry", (page) =>
           page
             .getByRole("alert")
-            .getByText("Couldn’t prepare sign-in.", { exact: true })
+            .getByText("Sign-in temporarily unavailable", { exact: true })
             .waitFor({ state: "visible" }),
         );
         yield* browser.checkpoint("OAuth setup check failed without guessing");
-        yield* issuer.configure({ discoveryFails: false });
+        yield* issuer.configure({ discovery: "available" });
         yield* browser.use("Retry the real setup endpoint", (page) =>
-          page.getByRole("dialog").getByRole("button", { name: "Retry", exact: true }).click(),
+          page.getByRole("dialog").getByRole("button", { name: "Try again", exact: true }).click(),
         );
         yield* browser.use("Retry clears the setup error", (page) =>
           page.getByRole("alert").waitFor({ state: "hidden" }),

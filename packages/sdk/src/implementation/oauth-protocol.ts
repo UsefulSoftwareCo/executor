@@ -20,19 +20,30 @@ import { bearerResourceMetadata } from "./oauth-challenge.ts";
 export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>()(
   "OAuthProtocolFailed",
   {
-    reason: Schema.Literals(["request", "invalid_grant", "invalid_client", "invalid_response"]),
+    reason: Schema.Literals([
+      "request",
+      "invalid_grant",
+      "invalid_client",
+      "invalid_response",
+      "metadata_missing",
+      "destination_blocked",
+    ]),
   },
 ) {}
 
-const failure = (error: unknown) =>
-  new OAuthProtocolFailed({
-    reason:
-      error instanceof oauth.ResponseBodyError && error.error === "invalid_grant"
-        ? "invalid_grant"
-        : error instanceof oauth.ResponseBodyError && error.error === "invalid_client"
-          ? "invalid_client"
-          : "request",
-  });
+const failure = (error: unknown): OAuthProtocolFailed =>
+  Schema.is(OAuthProtocolFailed)(error)
+    ? error
+    : new OAuthProtocolFailed({
+        reason:
+          error instanceof oauth.ResponseBodyError && error.error === "invalid_grant"
+            ? "invalid_grant"
+            : error instanceof oauth.ResponseBodyError && error.error === "invalid_client"
+              ? "invalid_client"
+              : error instanceof oauth.OperationProcessingError || error instanceof SyntaxError
+                ? "invalid_response"
+                : "request",
+      });
 
 /** Rehydrate mutable protocol arrays from the immutable storage contract. */
 const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
@@ -88,7 +99,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           // Enforce host policy on every request, including discovered endpoints and saved grants.
           const destination = parseDestination(url, options.urlPolicy);
           if (destination === undefined)
-            return yield* new OAuthProtocolFailed({ reason: "request" });
+            return yield* new OAuthProtocolFailed({ reason: "destination_blocked" });
           const request = yield* Effect.try({
             try: () =>
               HttpClientRequest.fromWeb(
@@ -147,21 +158,27 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       : Effect.succeed(method);
   };
 
+  const discoveryResponse = (response: Response) => {
+    if (response.status === 404 || response.status === 410)
+      throw new OAuthProtocolFailed({ reason: "metadata_missing" });
+    if (response.status === 429 || response.status >= 500)
+      throw new OAuthProtocolFailed({ reason: "request" });
+    if (response.status !== 200) throw new OAuthProtocolFailed({ reason: "invalid_response" });
+    return response;
+  };
+
   const discoverIssuer = (issuer: URL) =>
     request(async (settings) => {
-      const response = await oauth.discoveryRequest(issuer, { ...settings, algorithm: "oauth2" });
+      let response = await oauth.discoveryRequest(issuer, { ...settings, algorithm: "oauth2" });
       if (response.status === 404)
-        return oauth.processDiscoveryResponse(
-          issuer,
-          await oauth.discoveryRequest(issuer, { ...settings, algorithm: "oidc" }),
-        );
-      return oauth.processDiscoveryResponse(issuer, response);
+        response = await oauth.discoveryRequest(issuer, { ...settings, algorithm: "oidc" });
+      return oauth.processDiscoveryResponse(issuer, discoveryResponse(response));
     }).pipe(Effect.flatMap((server) => decode(OAuthTokenServer, server)));
 
   const secureUrl = (value: string) => {
     const url = parseDestination(value, options.urlPolicy);
     return url === undefined
-      ? Effect.fail(new OAuthProtocolFailed({ reason: "invalid_response" }))
+      ? Effect.fail(new OAuthProtocolFailed({ reason: "destination_blocked" }))
       : Effect.succeed(url);
   };
 
@@ -203,8 +220,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           );
         }
         if (metadataUrl === undefined && response.status === 404) return undefined;
-        if (response.status !== 200) throw new OAuthProtocolFailed({ reason: "request" });
-        const document: unknown = await response.json();
+        const document: unknown = await discoveryResponse(response).json();
         return document;
       });
       if (document === undefined) return undefined;
