@@ -94,6 +94,7 @@ const errorMessage = Match.type<HostedError>().pipe(
         ? "The OAuth client was rejected. Update its details and try again."
         : "Sign-in did not complete. Try connecting again.",
     InputInvalid: () => "The input does not match this tool’s schema.",
+    AppProviderFailed: (error) => `${error.description} ${error.recovery.action}`,
     AppEvaluationFailed: (error) => `${error.description} ${error.recovery.action}`,
     ToolNotFound: () => "This tool is no longer available. Reload the app’s tools and try again.",
     ToolBlocked: () => "The tool's approval policy blocked this tool call. The tool did not run.",

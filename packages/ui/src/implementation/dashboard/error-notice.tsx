@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { UserFacingError } from "@executor-js/utils/user-facing-error";
@@ -11,6 +11,7 @@ import { cn } from "../lib/utils.ts";
 /** Explain the failure and recovery inline; retain the card while a retry is pending. */
 export function ErrorNotice({
   error,
+  action,
   context,
   retry,
   retrying = false,
@@ -18,6 +19,8 @@ export function ErrorNotice({
   retryStatus = "Checking connection",
 }: {
   readonly error: UserFacingError;
+  /** Product navigation or recovery controls; error contracts remain independent of routing. */
+  readonly action?: ReactNode;
   /** The operation supplies task context without changing the error's reusable explanation. */
   readonly context: string;
   readonly retry?: (() => void) | undefined;
@@ -61,6 +64,7 @@ export function ErrorNotice({
         )}
       >
         <div className="flex flex-wrap items-center gap-2">
+          {action}
           {error.retryable && retry && (
             <Button
               type="button"

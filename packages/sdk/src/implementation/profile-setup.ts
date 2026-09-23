@@ -1,3 +1,4 @@
+import { AppProviderFailed } from "../contracts/tools.ts";
 /** Durable per-profile reconciliation. Leases cover network work without holding SQL transactions. */
 import { Clock, Effect, Result, Schema, type Crypto } from "effect";
 import { Profile, ProfileNotFound } from "../contracts/profiles.ts";
@@ -223,7 +224,9 @@ export const makeProfileSetup = (
           (Schema.is(AccountRequired)(error) ||
             Schema.is(AccountNotFound)(error) ||
             Schema.is(AccountSelectionInvalid)(error) ||
-            Schema.is(OAuthReconnectRequired)(error))
+            Schema.is(OAuthReconnectRequired)(error) ||
+            (Schema.is(AppProviderFailed)(error) &&
+              (error.reason === "unauthorized" || error.reason === "forbidden")))
         ) {
           status = "needs-setup";
           failure = "accounts";

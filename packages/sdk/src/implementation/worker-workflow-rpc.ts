@@ -75,7 +75,7 @@ export const invocationWorkflow = (
                 return yield* execution.invoke(command).pipe(
                   Effect.timeout(command.timeout),
                   Effect.catchTag("TimeoutError", () =>
-                    Effect.fail(new WorkflowFailure({ reason: "execution", retryable: true })),
+                    Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
                   ),
                 );
             }

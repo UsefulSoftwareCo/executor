@@ -1,3 +1,4 @@
+import type { ProviderError } from "../contracts/provider-error.ts";
 import { ToolResultObservation } from "../contracts/host.ts";
 /** Adapt any MCP transport into ordinary tools with shared validation behavior. */
 import { Effect, Schema } from "effect";
@@ -6,7 +7,9 @@ import { JsonObject, compileJsonSchemaDecoder, jsonSchemaDecoder } from "../effe
 import type { McpClient } from "./mcp-client.ts";
 
 /** Evaluate fresh metadata for the account bound to this client. */
-export const adaptMcpTools = (client: McpClient): Effect.Effect<McpTools, McpError> =>
+export const adaptMcpTools = (
+  client: McpClient,
+): Effect.Effect<McpTools, McpError | ProviderError> =>
   Effect.gen(function* () {
     const metadata = yield* client.list;
     const entries = yield* Effect.forEach(metadata, (tool) =>

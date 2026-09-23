@@ -1,3 +1,4 @@
+import { accountProviderError } from "./provider-error.ts";
 /** Combine account-bound protocol operations without changing their upstream inputs. */
 import { Effect, Schema } from "effect";
 import type { AppOperation, OperationContext } from "../contracts/operations.ts";
@@ -90,15 +91,14 @@ const combine = <K extends Kind>(kind: K, groups: ReadonlyMap<string, Map<string
           },
           run: (context, input: Selection) => {
             const operation = select(input);
-            return operation
-              .run(context, input.input)
-              .pipe(
-                Effect.flatMap((output) =>
-                  operation.output === undefined
-                    ? Effect.succeed(output)
-                    : Schema.decodeUnknownEffect(operation.output)(output),
-                ),
-              );
+            return operation.run(context, input.input).pipe(
+              Effect.mapError((error) => accountProviderError(error, input.accountId)),
+              Effect.flatMap((output) =>
+                operation.output === undefined
+                  ? Effect.succeed(output)
+                  : Schema.decodeUnknownEffect(operation.output)(output),
+              ),
+            );
           },
         }),
       ];
@@ -123,7 +123,7 @@ export const accountOperations = <Account extends { readonly id: string }>(
       for (const account of accounts) {
         const operations = yield* Effect.tryPromise({
           try: () => discover(account),
-          catch: (error) => error,
+          catch: (error) => accountProviderError(error, account.id),
         });
         for (const [source, target] of [
           [operations.queries, queries],

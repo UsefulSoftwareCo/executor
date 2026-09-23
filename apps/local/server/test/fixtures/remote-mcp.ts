@@ -33,17 +33,17 @@ export async function withRemoteMcp(
   const streams = new Map<string, ServerResponse>();
   const server = createServer(async (request, response) => {
     const account = request.headers.authorization?.replace("Bearer ", "") ?? "public";
+    if (options.legacy && request.url === "/mcp" && request.method === "POST") {
+      response.writeHead(405);
+      response.end();
+      return;
+    }
     if (options.unauthorized) {
       response.writeHead(
         401,
         options.authChallenge === undefined ? {} : { "www-authenticate": options.authChallenge },
       );
       response.end("synthetic secret must not escape");
-      return;
-    }
-    if (options.legacy && request.url === "/mcp" && request.method === "POST") {
-      response.writeHead(405);
-      response.end();
       return;
     }
     if (options.legacy && request.method === "GET") {

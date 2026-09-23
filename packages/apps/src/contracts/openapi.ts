@@ -1,6 +1,7 @@
+import type { ProviderError } from "./provider-error.ts";
 /** Normalized OpenAPI metadata retained with app source; no compiler or protocol client is required. */
 import { Schema, type Effect } from "effect";
-import { HttpUrl, JsonObject } from "./schema.ts";
+import { AccountId, HttpUrl, JsonObject } from "./schema.ts";
 
 /** One parameter's HTTP placement and serialization. */
 export const RequestParameter = Schema.Struct({
@@ -40,6 +41,7 @@ export type CredentialBinding = typeof CredentialBinding.Type;
 
 /** Selected credentials stay in the server runtime, separate from operation metadata. */
 export const OpenapiAccount = Schema.Struct({
+  id: Schema.optional(AccountId),
   method: Schema.String,
   fields: Schema.Record(Schema.String, Schema.Unknown),
 });
@@ -73,7 +75,10 @@ export interface OpenapiTool {
   readonly readOnly: boolean;
   readonly outputSchema?: JsonObject;
   readonly input: Schema.Decoder<Schema.Json>;
-  readonly run: (context: unknown, input: Schema.Json) => Effect.Effect<unknown, OpenapiError>;
+  readonly run: (
+    context: unknown,
+    input: Schema.Json,
+  ) => Effect.Effect<unknown, OpenapiError | ProviderError>;
 }
 /** Executable operations keyed by their generated names. */
 export type OpenapiTools = Readonly<Record<string, OpenapiTool>>;

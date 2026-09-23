@@ -1,3 +1,5 @@
+import { ProviderError } from "apps/contracts";
+import { appProviderFailure } from "./provider-error.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Redacted, Result, Schema } from "effect";
 import type { AppDatabases } from "@executor-js/app-data";
@@ -200,11 +202,15 @@ function invocation(state: Snapshot, tool: ToolName, input: Json) {
   }).pipe(Effect.mapError(() => new StorageError()));
 }
 
-const runtimeFailure = (identity: { app: AppId; deployment: DeploymentId; tool: ToolName }) =>
+const runtimeFailure = (
+  identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
+  state: Snapshot,
+) =>
   Match.type<
     Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Runtime["mutate"]>>
   >().pipe(
     Match.tagsExhaustive({
+      ProviderError: (error) => appProviderFailure(state, error),
       WorkflowFailure: () =>
         new ToolCallFailed({ ...identity, reason: "Workflow operation failed" }),
       ElicitationFailed: ({ reason }) => new ToolElicitationFailed({ ...identity, reason }),
@@ -271,13 +277,14 @@ export const makeTools = (
               : { workflowControls: workflows(state.app.id, state) }),
           })
           .pipe(
-            Effect.mapError(
-              () =>
-                new AppEvaluationFailed({
-                  app: state.app.id,
-                  deployment: state.deployment.id,
-                  reason: "App evaluation failed",
-                }),
+            Effect.mapError((error) =>
+              Schema.is(ProviderError)(error)
+                ? appProviderFailure(state, error)
+                : new AppEvaluationFailed({
+                    app: state.app.id,
+                    deployment: state.deployment.id,
+                    reason: "App evaluation failed",
+                  }),
             ),
           );
         const sorted = [...tools]
@@ -370,7 +377,7 @@ export const makeTools = (
             result.failure.elicitation,
           );
         }
-        return yield* Effect.fail(runtimeFailure(identity)(result.failure));
+        return yield* Effect.fail(runtimeFailure(identity, state)(result.failure));
       }).pipe(Effect.withSpan("sdk.tools.call")),
     pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
       Schema.decodeUnknownEffect(ToolInputs.pruneApprovals)(input)

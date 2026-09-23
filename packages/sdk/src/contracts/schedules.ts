@@ -17,7 +17,7 @@ import { AccountNotFound } from "./account.ts";
 import { DeploymentNotFound } from "./deployment.ts";
 import { OAuthReconnectRequired } from "./oauth.ts";
 import { CredentialsError } from "./shared.ts";
-import { AppEvaluationFailed, ToolInvocation } from "./tools.ts";
+import { AppProviderFailed, AppEvaluationFailed, ToolInvocation } from "./tools.ts";
 
 /** Stable configured schedule address, independent of deployment revisions. */
 export const ScheduleId = Schema.NonEmptyString.pipe(Schema.brand("ScheduleId"));
@@ -166,6 +166,7 @@ export const ScheduleErrors = [
   OAuthReconnectRequired,
   CredentialsError,
   AppEvaluationFailed,
+  AppProviderFailed,
 ] as const;
 /** Local SDK serving routes. Hosted products wrap these operations in their own authority. */
 export const SchedulesGroup = HttpApiGroup.make("schedules")

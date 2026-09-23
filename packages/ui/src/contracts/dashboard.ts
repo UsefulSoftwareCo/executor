@@ -12,7 +12,7 @@ import type {
   ProviderDefinition,
   SelectedAccounts,
 } from "@executor-js/sdk";
-import type { McpImportAuth } from "@executor-js/catalog/contracts";
+import type { CatalogImport } from "@executor-js/catalog/contracts";
 import type { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { Schema, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
@@ -60,10 +60,8 @@ export interface AppDeploymentsProps<E> {
   readonly actions?: ReactNode;
 }
 /** Common command input; a host adapter supplies its own API route parameters. */
-export interface InstallApp {
-  readonly entry: string;
+export interface InstallApp extends CatalogImport {
   readonly name: string;
-  readonly mcpAuth?: McpImportAuth;
 }
 /** A typed command and its operation-specific failure renderer. */
 export interface MutationProps<Input, A, E> {
@@ -105,6 +103,7 @@ export interface AppLinkProps {
 }
 /** Accounts without a detail route can still render their label. */
 export interface AccountLinkProps {
+  readonly className?: string;
   readonly account: AccountId;
   readonly children: ReactNode;
 }

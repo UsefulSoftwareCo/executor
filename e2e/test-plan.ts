@@ -409,6 +409,24 @@ export const scenarios = {
       local: na("Local has no organizations or groups."),
     },
   },
+  providerErrors: {
+    file: "provider-errors.spec.ts",
+    title: "Provider failures retain safe reasons and account recovery across protocols",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses controlled loopback providers through the shared runtime contract."),
+      local: na("Shared error views and SDK are exercised through hosted APIs."),
+    },
+  },
+  graphqlCatalogImport: {
+    file: "graphql-catalog.spec.ts",
+    title: "GraphQL catalog import hides CLI entries and connects account tools",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback GraphQL upstream to verify the shared catalog importer."),
+      local: na("The shared catalog form is exercised through hosted installation."),
+    },
+  },
   cloudCatalogInstall: {
     file: "cloud-compiler.spec.ts",
     title: "Cloud catalog installs Axiom through the browser and reaches account setup",

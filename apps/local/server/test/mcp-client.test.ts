@@ -2,7 +2,7 @@ import { McpError } from "apps/mcp";
 import { Effect } from "effect";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { jsonSchema, ValidationError } from "apps";
+import { jsonSchema, ValidationError, ProviderError } from "apps";
 import { mcpToolsEffect } from "apps/mcp/effect";
 import { withRemoteMcp } from "./fixtures/remote-mcp.ts";
 
@@ -33,21 +33,22 @@ test("MCP rejects cursor loops and sanitizes authentication errors", async () =>
     );
     assert.equal(sessions.size, 0);
   });
-  await withRemoteMcp({ unauthorized: true }, async ({ url }) => {
-    await assert.rejects(
-      () =>
-        Effect.runPromise(
-          mcpToolsEffect({ url, headers: { Authorization: "Bearer synthetic-secret" } }),
-        ),
-      (error: unknown) => {
-        assert.ok(error instanceof McpError);
-        assert.equal(error.reason, "unauthorized");
-        assert.equal(error.status, 401);
-        assert.ok(!JSON.stringify(error).includes("secret"));
-        return true;
-      },
-    );
-  });
+  for (const legacy of [false, true])
+    await withRemoteMcp({ unauthorized: true, legacy }, async ({ url }) => {
+      await assert.rejects(
+        () =>
+          Effect.runPromise(
+            mcpToolsEffect({ url, headers: { Authorization: "Bearer synthetic-secret" } }),
+          ),
+        (error: unknown) => {
+          assert.ok(error instanceof ProviderError);
+          assert.equal(error.reason, "unauthorized");
+          assert.equal(error.status, 401);
+          assert.ok(!JSON.stringify(error).includes("secret"));
+          return true;
+        },
+      );
+    });
 });
 
 test("MCP aborts an in-flight call without retrying and cleans up the session", async () => {

@@ -1,3 +1,5 @@
+import { httpProviderError, accountProviderError } from "./provider-error.ts";
+import { ProviderError } from "../contracts/provider-error.ts";
 /** Official MCP transports at an Effect boundary. Connections belong to one operation. */
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -9,7 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { captureTelemetry } from "@executor-js/telemetry";
-import { Effect, Redacted, Schema, Stream } from "effect";
+import { Deferred, Effect, Redacted, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import {
   defaultMcpClientLimits,
@@ -21,21 +23,22 @@ import { adaptMcpTools } from "./mcp-tools.ts";
 import { mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
 
 /** Safe projection of transport errors. Raw messages can contain credential-bearing URLs. */
-const failure = (phase: McpError["phase"], error: unknown): McpError => {
+const failure = (phase: McpError["phase"], error: unknown): McpError | ProviderError => {
+  if (Schema.is(ProviderError)(error)) return error;
   const status =
     error instanceof UnauthorizedError
       ? 401
       : error instanceof StreamableHTTPError || error instanceof SseError
         ? error.code
         : undefined;
+  const provider = status === undefined ? undefined : httpProviderError(status);
+  if (provider !== undefined) return provider;
   return new McpError({
     phase,
     reason:
       error instanceof ProtocolError && error.code === ErrorCode.RequestTimeout
         ? "timeout"
-        : status === 401 || status === 403
-          ? "unauthorized"
-          : "request",
+        : "request",
     ...(status === undefined ? {} : { status }),
   });
 };
@@ -43,7 +46,11 @@ const failure = (phase: McpError["phase"], error: unknown): McpError => {
 // The library consumes Web Responses; Effect owns requests and streaming bodies.
 // Retain the transport abort signal after response headers arrive.
 const transportFetch =
-  (connection: McpConnection, telemetry: Effect.Success<typeof captureTelemetry>): FetchLike =>
+  (
+    connection: McpConnection,
+    telemetry: Effect.Success<typeof captureTelemetry>,
+    rejected: Deferred.Deferred<never, ProviderError>,
+  ): FetchLike =>
   (url, init) =>
     Effect.runPromiseWith(telemetry.context)(
       Effect.gen(function* () {
@@ -61,6 +68,13 @@ const transportFetch =
         });
         const client = yield* HttpClient.HttpClient;
         const response = yield* client.execute(request);
+        const provider = httpProviderError(response.status, response.headers);
+        if (provider !== undefined) {
+          // EventSource replaces rejected fetch errors. Retain our safe failure
+          // within this session so SSE cannot erase its status or reason.
+          yield* Deferred.fail(rejected, provider);
+          return yield* provider;
+        }
         return new Response(
           [204, 205, 304].includes(response.status)
             ? null
@@ -82,7 +96,7 @@ const transportFetch =
             ]),
           }),
         ),
-        Effect.mapError(() => failure("transport", undefined)),
+        Effect.mapError((error) => failure("transport", error)),
       ),
       init?.signal ? { signal: init.signal } : {},
     );
@@ -96,9 +110,10 @@ function withClient<A, E>(
     Effect.scoped(
       Effect.gen(function* () {
         const telemetry = yield* captureTelemetry;
+        const rejected = yield* Deferred.make<never, ProviderError>();
         const { client, transport } = yield* Effect.acquireRelease(
           Effect.sync(() => {
-            const fetch = transportFetch(connection, telemetry);
+            const fetch = transportFetch(connection, telemetry, rejected);
             return {
               client: new Client(
                 { name: "executor-apps", version: "0.1.0" },
@@ -144,8 +159,12 @@ function withClient<A, E>(
         yield* Effect.tryPromise({
           try: (signal) => client.connect(wire, { signal, timeout: connection.timeoutMs }),
           catch: (error) => failure("connect", error),
-        }).pipe(Effect.timeout(connection.timeoutMs), Effect.withSpan("provider.mcp.connect"));
-        return yield* use(client);
+        }).pipe(
+          Effect.raceFirst(Deferred.await(rejected)),
+          Effect.timeout(connection.timeoutMs),
+          Effect.withSpan("provider.mcp.connect"),
+        );
+        return yield* use(client).pipe(Effect.raceFirst(Deferred.await(rejected)));
       }),
     ).pipe(
       Effect.withSpan("provider.mcp.session", {
@@ -188,6 +207,17 @@ export const mcpToolsEffect = (input: McpToolsOptions) =>
       timeoutMs: options.timeoutMs ?? defaultMcpClientLimits.timeoutMs,
     };
     return yield* adaptMcpTools(
-      mcpClient((mode, use) => withClient(connection, mode, use), connection.timeoutMs, failure),
+      mcpClient(
+        (mode, use) =>
+          withClient(connection, mode, use).pipe(
+            Effect.mapError((error) =>
+              options.accountId === undefined
+                ? error
+                : accountProviderError(error, options.accountId),
+            ),
+          ),
+        connection.timeoutMs,
+        failure,
+      ),
     );
   });
