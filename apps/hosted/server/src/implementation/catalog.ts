@@ -32,7 +32,19 @@ export const catalogLive = (
           input.entry === executor.id
             ? executorAppSource(origin, skills, document).pipe(
                 Effect.map(({ files }) => ({ files })),
-                Effect.mapError((error) => new CatalogImportFailed({ reason: error.reason })),
+                Effect.mapError(
+                  (error) => new CatalogImportFailed({ code: error.code, reason: error.reason }),
+                ),
+                Effect.tapError((error) =>
+                  Effect.annotateCurrentSpan("catalog.error.reason", error.code),
+                ),
+                Effect.withSpan("catalog.generate", {
+                  attributes: {
+                    "catalog.stage": "generate",
+                    "catalog.entry.id": executor.id,
+                    "catalog.entry.kind": executor.kind,
+                  },
+                }),
               )
             : published.prepare(input),
       });

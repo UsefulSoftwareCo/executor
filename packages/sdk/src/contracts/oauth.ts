@@ -248,6 +248,7 @@ export const OAuthTokenServer = Schema.Struct({
   token_endpoint: HttpUrl,
   registration_endpoint: Schema.optional(HttpUrl),
   jwks_uri: Schema.optional(HttpUrl),
+  id_token_signing_alg_values_supported: Schema.optional(Schema.Array(Schema.String)),
   authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
   client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
   code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),

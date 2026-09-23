@@ -2,7 +2,7 @@
 import { parseDestination } from "@executor-js/utils/url-policy";
 import { Effect, Encoding, Schema } from "effect";
 import { captureTelemetry } from "@executor-js/telemetry";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as oauth from "oauth4webapi";
 import {
   OAuthResource,
@@ -14,12 +14,65 @@ import {
   type OAuthClientAuth,
 } from "../contracts/oauth.ts";
 import type { ProviderAuthMethod } from "../contracts/provider.ts";
-import { bearerResourceMetadata } from "./oauth-challenge.ts";
+import { probeOAuthChallenge } from "./oauth-probe.ts";
+
+const ProtocolCode = Schema.Literals([
+  oauth.WWW_AUTHENTICATE_CHALLENGE,
+  oauth.RESPONSE_BODY_ERROR,
+  oauth.UNSUPPORTED_OPERATION,
+  oauth.AUTHORIZATION_RESPONSE_ERROR,
+  oauth.PARSE_ERROR,
+  oauth.INVALID_RESPONSE,
+  oauth.INVALID_REQUEST,
+  oauth.RESPONSE_IS_NOT_JSON,
+  oauth.RESPONSE_IS_NOT_CONFORM,
+  oauth.HTTP_REQUEST_FORBIDDEN,
+  oauth.REQUEST_PROTOCOL_FORBIDDEN,
+  oauth.JWT_TIMESTAMP_CHECK,
+  oauth.JWT_CLAIM_COMPARISON,
+  oauth.JSON_ATTRIBUTE_COMPARISON,
+  oauth.KEY_SELECTION,
+  oauth.MISSING_SERVER_METADATA,
+  oauth.INVALID_SERVER_METADATA,
+  "schema_decode",
+  "timeout",
+]);
+const ProviderError = Schema.Literals([
+  "invalid_grant",
+  "invalid_client",
+  "invalid_request",
+  "invalid_scope",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_redirect_uri",
+  "invalid_client_metadata",
+  "access_denied",
+  "server_error",
+  "temporarily_unavailable",
+]);
+const ValidationField = Schema.Literals([
+  "client_id",
+  "client_secret",
+  "client_secret_expires_at",
+  "access_token",
+  "token_type",
+  "expires_in",
+  "refresh_token",
+  "id_token",
+  "issuer",
+  "authorization_endpoint",
+  "token_endpoint",
+  "jwt_alg",
+]);
 
 /** Private, sanitized protocol failure. Never retain a response, request, or thrown library error. */
 export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>()(
   "OAuthProtocolFailed",
   {
+    code: Schema.optional(ProtocolCode),
+    status: Schema.optional(Schema.Int),
+    providerError: Schema.optional(ProviderError),
+    field: Schema.optional(ValidationField),
     reason: Schema.Literals([
       "request",
       "invalid_grant",
@@ -31,19 +84,65 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
   },
 ) {}
 
-const failure = (error: unknown): OAuthProtocolFailed =>
-  Schema.is(OAuthProtocolFailed)(error)
-    ? error
-    : new OAuthProtocolFailed({
-        reason:
-          error instanceof oauth.ResponseBodyError && error.error === "invalid_grant"
-            ? "invalid_grant"
-            : error instanceof oauth.ResponseBodyError && error.error === "invalid_client"
-              ? "invalid_client"
-              : error instanceof oauth.OperationProcessingError || error instanceof SyntaxError
-                ? "invalid_response"
-                : "request",
-      });
+const failure = (error: unknown): OAuthProtocolFailed => {
+  if (Schema.is(OAuthProtocolFailed)(error)) return error;
+  const libraryError =
+    error instanceof oauth.OperationProcessingError ||
+    error instanceof oauth.ResponseBodyError ||
+    error instanceof oauth.WWWAuthenticateChallengeError ||
+    error instanceof oauth.UnsupportedOperationError ||
+    error instanceof oauth.AuthorizationResponseError;
+  const code = libraryError && Schema.is(ProtocolCode)(error.code) ? error.code : undefined;
+  const status =
+    error instanceof oauth.ResponseBodyError || error instanceof oauth.WWWAuthenticateChallengeError
+      ? error.status
+      : error instanceof oauth.OperationProcessingError && error.cause instanceof Response
+        ? error.cause.status
+        : undefined;
+  const providerError =
+    error instanceof oauth.ResponseBodyError && Schema.is(ProviderError)(error.error)
+      ? error.error
+      : undefined;
+  // Match library-owned validation labels; never record its message, cause, expected value or body.
+  const fieldValue =
+    error instanceof oauth.OperationProcessingError
+      ? error.message === 'unexpected JWT "alg" header parameter'
+        ? "jwt_alg"
+        : /^"response" body "([a-z_]+)" property/.exec(error.message)?.[1]
+      : undefined;
+  return new OAuthProtocolFailed({
+    ...(code === undefined ? {} : { code }),
+    ...(status === undefined ? {} : { status }),
+    ...(providerError === undefined ? {} : { providerError }),
+    ...(Schema.is(ValidationField)(fieldValue) ? { field: fieldValue } : {}),
+    reason:
+      error instanceof oauth.ResponseBodyError && error.error === "invalid_grant"
+        ? "invalid_grant"
+        : error instanceof oauth.ResponseBodyError && error.error === "invalid_client"
+          ? "invalid_client"
+          : error instanceof oauth.OperationProcessingError || error instanceof SyntaxError
+            ? "invalid_response"
+            : "request",
+  });
+};
+
+const observeFailure = (error: OAuthProtocolFailed) =>
+  Effect.annotateCurrentSpan({
+    "oauth.error.reason": error.reason,
+    ...(error.code === undefined ? {} : { "oauth.error.code": error.code }),
+    ...(error.status === undefined ? {} : { "http.response.status_code": error.status }),
+    ...(error.providerError === undefined
+      ? {}
+      : { "oauth.error.provider_code": error.providerError }),
+    ...(error.field === undefined ? {} : { "oauth.error.field": error.field }),
+  });
+const protocolStage =
+  (stage: "discover" | "register" | "authorize" | "exchange" | "clientCredentials" | "refresh") =>
+  <A, R>(program: Effect.Effect<A, OAuthProtocolFailed, R>) =>
+    program.pipe(
+      Effect.tapError(observeFailure),
+      Effect.withSpan(`oauth.${stage}`, { attributes: { "oauth.stage": stage } }),
+    );
 
 /** Rehydrate mutable protocol arrays from the immutable storage contract. */
 const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
@@ -53,6 +152,11 @@ const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
     : { authorization_endpoint: server.authorization_endpoint }),
   token_endpoint: server.token_endpoint,
   ...(server.jwks_uri === undefined ? {} : { jwks_uri: server.jwks_uri }),
+  ...(server.id_token_signing_alg_values_supported === undefined
+    ? {}
+    : {
+        id_token_signing_alg_values_supported: [...server.id_token_signing_alg_values_supported],
+      }),
   ...(server.registration_endpoint === undefined
     ? {}
     : { registration_endpoint: server.registration_endpoint }),
@@ -112,6 +216,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             catch: failure,
           });
           const response = yield* options.httpClient.execute(request);
+          yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
           const body = yield* response.arrayBuffer.pipe(Effect.withSpan("oauth.response.read"));
           return new Response(body, { status: response.status, headers: response.headers });
         }).pipe(
@@ -133,14 +238,19 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       });
     }).pipe(
       Effect.timeout("30 seconds"),
-      Effect.withSpan("oauth.request"),
       Effect.mapError((error) =>
-        error._tag === "TimeoutError" ? new OAuthProtocolFailed({ reason: "request" }) : error,
+        error._tag === "TimeoutError"
+          ? new OAuthProtocolFailed({ reason: "request", code: "timeout" })
+          : error,
       ),
+      Effect.tapError(observeFailure),
+      Effect.withSpan("oauth.request"),
     );
   const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
     Schema.decodeUnknownEffect(schema)(value).pipe(
-      Effect.mapError(() => new OAuthProtocolFailed({ reason: "invalid_response" })),
+      Effect.mapError(
+        () => new OAuthProtocolFailed({ reason: "invalid_response", code: "schema_decode" }),
+      ),
     );
 
   const clientMethod = (server: OAuthTokenServer, configured?: OAuthClientAuth) => {
@@ -185,16 +295,10 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
   const discoverResource = (endpoint: URL) =>
     Effect.gen(function* () {
       // Inspect only headers: a successful MCP GET may open an endless SSE stream.
-      const advertised = yield* Effect.scoped(
-        HttpClient.withScope(options.httpClient)
-          .get(endpoint, {
-            headers: { accept: "application/json, text/event-stream" },
-          })
-          .pipe(
-            Effect.map((response) => bearerResourceMetadata(response.headers["www-authenticate"])),
-            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-          ),
-      ).pipe(Effect.timeout("10 seconds"), Effect.mapError(failure));
+      const advertised = yield* probeOAuthChallenge(endpoint, options.httpClient).pipe(
+        Effect.map((response) => response.resourceMetadata),
+        Effect.mapError(failure),
+      );
       const metadataUrl = advertised === undefined ? undefined : yield* secureUrl(advertised);
       const document = yield* request(async (settings) => {
         let response =
@@ -284,7 +388,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           grant: "authorization_code" as const,
           server: yield* decode(OAuthServer, resolved.server),
         };
-      }).pipe(Effect.withSpan("oauth.discover")),
+      }).pipe(protocolStage("discover")),
     register: (
       server: OAuthServer,
       redirectUri: string,
@@ -294,22 +398,28 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       Effect.gen(function* () {
         const method = yield* clientMethod(server, configured);
         const advertised = method === "client_secret_basic_raw" ? "client_secret_basic" : method;
-        const registered = yield* request(async (settings) =>
-          oauth.processDynamicClientRegistrationResponse(
-            await oauth.dynamicClientRegistrationRequest(
-              metadata(server),
-              {
-                client_name: options.clientName,
-                redirect_uris: [redirectUri],
-                token_endpoint_auth_method: advertised,
-                grant_types: ["authorization_code", "refresh_token"],
-                response_types: ["code"],
-                ...(scopes.length === 0 ? {} : { scope: scopes.join(" ") }),
-              },
-              settings,
-            ),
-          ),
-        );
+        const registered = yield* request(async (settings) => {
+          const response = await oauth.dynamicClientRegistrationRequest(
+            metadata(server),
+            {
+              client_name: options.clientName,
+              redirect_uris: [redirectUri],
+              token_endpoint_auth_method: advertised,
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+              ...(scopes.length === 0 ? {} : { scope: scopes.join(" ") }),
+            },
+            settings,
+          );
+          // Some providers use 200 instead of RFC 7591's 201. Normalize only that status;
+          // oauth4webapi still validates the content type, JSON and registration fields.
+          // The transport span retains the provider's original status.
+          return oauth.processDynamicClientRegistrationResponse(
+            response.status === 200
+              ? new Response(response.body, { status: 201, headers: response.headers })
+              : response,
+          );
+        });
         if (
           registered.token_endpoint_auth_method !== undefined &&
           registered.token_endpoint_auth_method !== advertised
@@ -319,7 +429,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           ...registered,
           token_endpoint_auth_method: method,
         });
-      }).pipe(Effect.withSpan("oauth.register")),
+      }).pipe(protocolStage("register")),
     authorize: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
@@ -353,7 +463,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           authorizationUrl: url.href,
           ...(nonce === undefined ? {} : { nonce }),
         };
-      }).pipe(Effect.withSpan("oauth.authorize")),
+      }).pipe(protocolStage("authorize")),
     exchange: (
       input: {
         server: OAuthServer;
@@ -389,7 +499,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           response,
           input.nonce === undefined ? {} : { expectedNonce: input.nonce, requireIdToken: true },
         );
-      }).pipe(Effect.withSpan("oauth.exchange")),
+      }).pipe(protocolStage("exchange")),
     clientCredentials: (input: {
       server: OAuthTokenServer;
       client: OAuthConfidentialRegistration;
@@ -409,7 +519,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           settings,
         );
         return oauth.processClientCredentialsResponse(server, input.client, response);
-      }).pipe(Effect.withSpan("oauth.clientCredentials")),
+      }).pipe(protocolStage("clientCredentials")),
     refresh: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
@@ -434,6 +544,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             },
           ),
         );
-      }).pipe(Effect.withSpan("oauth.refresh")),
+      }).pipe(protocolStage("refresh")),
   };
 };

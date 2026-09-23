@@ -117,6 +117,7 @@ export const makeOAuth = (
       );
       if (row === null) return yield* new ProviderNotFound({ provider: input.provider });
       const provider = yield* decode(Provider, row);
+      yield* Effect.annotateCurrentSpan("oauth.provider.id", provider.id);
       const method = Object.hasOwn(provider.definition.auth, input.method)
         ? provider.definition.auth[input.method]
         : undefined;
@@ -497,6 +498,7 @@ export const makeOAuth = (
       if (row.expiresAt.getTime() <= now)
         return yield* new OAuthCompletionFailed({ reason: "expired" });
       const attempt = yield* decrypt(id, row.encrypted, OAuthAttempt);
+      yield* Effect.annotateCurrentSpan("oauth.provider.id", attempt.provider);
       if (attempt.connection !== input.connection) return yield* invalid();
       const connection = yield* openConnection(db, input);
       if (connection.oauthAttempt !== id) return yield* invalid();

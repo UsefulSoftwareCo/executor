@@ -15,8 +15,8 @@ import {
 } from "../contracts/openapi.ts";
 import { packageFile, sourceFiles } from "./files.ts";
 
-function fail(reason: string): never {
-  throw new TemplateError({ reason });
+function fail(code: TemplateError["code"], reason: string): never {
+  throw new TemplateError({ code, reason });
 }
 const record = (value: unknown): JsonObject => Schema.decodeUnknownSync(JsonObject)(value);
 const own = (value: JsonObject, key: string): Json | undefined =>
@@ -26,17 +26,18 @@ const identifier = (name: string) => name.replace(/[^a-zA-Z0-9_]/g, "_");
 function absolute(value: string): string {
   const url = new URL(value);
   if (url.protocol !== "https:" && url.protocol !== "http:")
-    fail("Only HTTP APIs can be imported.");
+    fail("server_protocol", "Only HTTP APIs can be imported.");
   if (url.username || url.password || url.hash || url.search || /[{}]/.test(value))
-    fail("This API needs a configured server URL before import.");
+    fail("server_url", "This API needs a configured server URL before import.");
   return url.href.replace(/\/$/, "");
 }
 function resolve(root: JsonObject, value: JsonObject, visited = new Set<string>()): JsonObject {
   const ref = value.$ref;
   if (ref === undefined) return value;
   if (typeof ref !== "string" || !ref.startsWith("#/"))
-    fail("External OpenAPI references are not supported yet.");
-  if (visited.has(ref)) fail("A circular OpenAPI object reference cannot be imported.");
+    fail("external_reference", "External OpenAPI references are not supported yet.");
+  if (visited.has(ref))
+    fail("circular_reference", "A circular OpenAPI object reference cannot be imported.");
   let found: unknown = root;
   for (const part of ref.slice(2).split("/"))
     found = own(record(found), part.replace(/~1/g, "/").replace(/~0/g, "~"));
@@ -93,7 +94,8 @@ function schemaDocument(
     for (const key of ["allOf", "anyOf", "oneOf", "prefixItems"]) {
       const items = output[key];
       if (items !== undefined) {
-        if (!Array.isArray(items)) fail("An API schema keyword has an invalid value.");
+        if (!Array.isArray(items))
+          fail("schema_keyword", "An API schema keyword has an invalid value.");
         output[key] = items.map(convert);
       }
     }
@@ -112,10 +114,12 @@ function schemaDocument(
     }
     if (typeof output.$ref === "string") {
       const match = /^#\/components\/schemas\/([^/]+)$/.exec(output.$ref);
-      if (!match?.[1]) fail("Only local component schema references are supported.");
+      if (!match?.[1])
+        fail("schema_reference", "Only local component schema references are supported.");
       const name = match[1].replace(/~1/g, "/").replace(/~0/g, "~");
       const definition = schemas[name];
-      if (definition === undefined) fail("An input schema references a missing component.");
+      if (definition === undefined)
+        fail("missing_component", "An input schema references a missing component.");
       output.$ref = `#/$defs/${match[1]}`;
       if (!definitions.has(name)) {
         definitions.set(name, {});
@@ -161,7 +165,10 @@ const generateDefinition = (
       const root = record(document);
       const spec = Schema.decodeUnknownSync(Specification)(root);
       if (!/^3\.[01]\./.test(spec.openapi))
-        fail("This importer supports OpenAPI 3.0 and 3.1. Swagger 2 needs conversion first.");
+        fail(
+          "openapi_version",
+          "This importer supports OpenAPI 3.0 and 3.1. Swagger 2 needs conversion first.",
+        );
       const schemes = spec.components?.securitySchemes ?? {};
       const bindings = new Map<string, CredentialBinding>();
       const cookieSchemes = new Set<string>();
@@ -229,7 +236,7 @@ const generateDefinition = (
           entry.auth.header,
         );
         if (!header?.[1] || header[2] === undefined)
-          fail("This catalog entry needs a custom authentication helper.");
+          fail("auth_helper", "This catalog entry needs a custom authentication helper.");
         bindings.set("apiKey", {
           scheme: "apiKey",
           field: "token",
@@ -245,7 +252,10 @@ const generateDefinition = (
         entry.auth &&
         !["none", "public"].includes(entry.auth.kind)
       )
-        fail("This entry does not declare enough authentication details to generate an app.");
+        fail(
+          "auth_missing",
+          "This entry does not declare enough authentication details to generate an app.",
+        );
       const methods = new Map<string, GeneratedSecrets>();
       const operations: GeneratedOperation[] = [];
       // Every credential-bearing operation of one app addresses one origin. A document-,
@@ -258,7 +268,7 @@ const generateDefinition = (
           : new URL(absolute(new URL(rootServer, entry.connectUrl).href)).origin;
       for (const [path, source] of Object.entries(spec.paths)) {
         if (!path.startsWith("/") || path.includes("?") || path.includes("#"))
-          fail("An operation has an invalid API path.");
+          fail("operation_path", "An operation has an invalid API path.");
         const item = resolve(root, source);
         for (const method of [
           "GET",
@@ -275,7 +285,10 @@ const generateDefinition = (
           );
           const name = identifier(operation.operationId ?? `${method.toLowerCase()}_${path}`);
           if (operations.some((op) => op.name === name))
-            fail("The API has duplicate tool names. Update its operation IDs first.");
+            fail(
+              "duplicate_operation",
+              "The API has duplicate tool names. Update its operation IDs first.",
+            );
           const serverList =
             operation.servers ??
             (Array.isArray(item.servers)
@@ -285,11 +298,14 @@ const generateDefinition = (
           const server = serverList?.[0];
           const serverUrl = options.baseUrl ?? server?.url;
           if (serverUrl === undefined)
-            fail("The API has no server URL. Set an API base URL and try again.");
+            fail("server_missing", "The API has no server URL. Set an API base URL and try again.");
           const baseUrl = absolute(new URL(serverUrl, entry.connectUrl).href);
           pinnedOrigin ??= new URL(baseUrl).origin;
           if (new URL(baseUrl).origin !== pinnedOrigin)
-            fail("This API sends some operations to a different host. Set an API base URL first.");
+            fail(
+              "multiple_hosts",
+              "This API sends some operations to a different host. Set an API base URL first.",
+            );
           const combined = [
             ...(Array.isArray(item.parameters) ? item.parameters : []),
             ...(operation.parameters ?? []),
@@ -306,14 +322,14 @@ const generateDefinition = (
           const requestParameters: GeneratedOperation["parameters"][number][] = [];
           for (const p of parameters.values()) {
             if (p.in === "cookie" || p.content !== undefined || p.allowReserved)
-              fail(`Tool ${name} uses unsupported parameter encoding.`);
+              fail("parameter_encoding", `Tool ${name} uses unsupported parameter encoding.`);
             const style = p.style ?? (p.in === "query" ? "form" : "simple");
             if (
               (p.in === "query" &&
                 !["form", "spaceDelimited", "pipeDelimited", "deepObject"].includes(style)) ||
               (p.in !== "query" && style !== "simple")
             )
-              fail(`Tool ${name} uses unsupported parameter style.`);
+              fail("parameter_style", `Tool ${name} uses unsupported parameter style.`);
             const key = p.in === "header" ? "headers" : p.in;
             const group = groups.get(key) ?? { properties: {}, required: [] };
             group.properties[p.name] = p.schema ?? {};
@@ -345,6 +361,7 @@ const generateDefinition = (
               properties.body = { type: "string", description: "File bytes encoded as base64." };
             } else
               fail(
+                "request_body",
                 `Tool ${name} uses an unsupported request body. JSON and binary files are supported.`,
               );
             if (request.required) required.push("body");
@@ -361,6 +378,7 @@ const generateDefinition = (
             if (keys.some((key) => oauth.some((method) => method.name === key))) {
               if (keys.length !== 1)
                 fail(
+                  "combined_oauth",
                   `Tool ${name} combines OAuth with another credential and needs a custom helper.`,
                 );
               continue;
@@ -368,7 +386,7 @@ const generateDefinition = (
             const parts = keys.map(
               (key) =>
                 bindings.get(key) ??
-                fail(`Tool ${name} uses an unsupported authentication method.`),
+                fail("auth_method", `Tool ${name} uses an unsupported authentication method.`),
             );
             const methodName =
               bindings.size === 1 && parts.length === 1 ? "apiKey" : keys.join("_and_");
@@ -388,7 +406,10 @@ const generateDefinition = (
           try {
             jsonSchema(input);
           } catch {
-            fail(`Tool ${name} has an input schema this importer cannot preserve yet.`);
+            fail(
+              "input_schema",
+              `Tool ${name} has an input schema this importer cannot preserve yet.`,
+            );
           }
           const outputSchema = responseSchema(
             root,
@@ -415,7 +436,7 @@ const generateDefinition = (
           });
         }
       }
-      if (!operations.length) fail("This API does not contain any operations.");
+      if (!operations.length) fail("no_operations", "This API does not contain any operations.");
       if (
         !operations.some(
           (operation) =>
@@ -429,6 +450,7 @@ const generateDefinition = (
         )
       )
         fail(
+          "no_supported_operations",
           "This API has no operations supported by the available authentication and response transports.",
         );
       const secrets = [...methods.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -467,6 +489,7 @@ const generateDefinition = (
       error instanceof TemplateError
         ? error
         : new TemplateError({
+            code: "invalid_document",
             reason:
               "This API definition could not be read. It may contain unsupported OpenAPI features.",
           }),

@@ -1,5 +1,6 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Schema, type Effect } from "effect";
+import { TemplateErrorCode } from "@executor-js/app-templates";
 import { JsonObject, SourceFiles } from "@executor-js/sdk";
 import type { CustomAppInput } from "./imports.ts";
 
@@ -43,6 +44,32 @@ export const CatalogFeed = Schema.Struct({
 export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>()(
   "CatalogImportFailed",
   {
+    code: Schema.Union([
+      TemplateErrorCode,
+      Schema.Literals([
+        "entry_missing",
+        "destination_blocked",
+        "base_url_blocked",
+        "package_name",
+        "patch_operation",
+        "patch_path",
+        "patch_mismatch",
+        "patch_value",
+        "mcp_url",
+        "mcp_probe",
+        "mcp_timeout",
+        "mcp_auth_missing",
+        "mcp_discovery",
+        "mcp_entry",
+        "mcp_auth_header",
+        "document_size",
+        "document_fetch",
+        "document_json",
+        "document_yaml",
+        "document_kind",
+        "document_url",
+      ]),
+    ]),
     reason: Schema.String,
   },
   { httpApiStatus: 422 },

@@ -436,6 +436,34 @@ export const scenarios = {
       local: na("Cloudflare lifecycle spans belong to the cloud host."),
     },
   },
+  oauthCompatibility: {
+    file: "oauth-compatibility.spec.ts",
+    title:
+      "OAuth accepts valid HTTP 200 registration and advertised ES256 tokens without weakening validation",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
+      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
+    },
+  },
+  setupDiagnostics: {
+    file: "setup-diagnostics.spec.ts",
+    title: "Setup failures deliver safe catalog and OAuth diagnostics",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer to provoke safe diagnostic failures."),
+      local: na("Exercises shared catalog and OAuth instrumentation through hosted APIs."),
+    },
+  },
+  mcpAuthDiscovery: {
+    file: "mcp-auth-discovery.spec.ts",
+    title: "MCP imports and OAuth setup honor POST authentication challenges",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback MCP issuer."),
+      local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
+    },
+  },
   oauthUrlPolicy: {
     file: "oauth-url-policy.spec.ts",
     title: "OAuth setup honors host URL policy and named loopback callbacks",
