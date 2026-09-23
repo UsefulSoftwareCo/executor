@@ -9,7 +9,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
 import { HostedClient } from "./api.ts";
 import { inventoryAtom } from "./organization.ts";
-import { toolsAtom } from "./apps.ts";
+import { connectionAtom, toolsAtom } from "./apps.ts";
 
 class AccountKey extends Data.Class<{
   readonly organization: OrganizationReference;
@@ -39,7 +39,17 @@ export const renameAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => renameAccount(new AccountKey(key));
-export const reconnectAccountAtom = HostedClient.mutation("accounts", "reconnect");
+/** Resolves once the dialog's connection is loaded, so it opens without a skeleton. */
+export const reconnectAccountAtom = HostedClient.runtime.fn(
+  (key: { readonly organization: OrganizationReference; readonly account: AccountId }, get) =>
+    Effect.gen(function* () {
+      const client = yield* HostedClient;
+      const pending = yield* client.accounts.reconnect({ params: key });
+      return yield* get.result(
+        connectionAtom({ organization: key.organization, connection: pending.id }),
+      );
+    }),
+);
 const disconnectAccount = Atom.family((key: AccountKey) =>
   HostedClient.runtime.fn((_: void, get) =>
     Effect.flatMap(HostedClient, (client) => client.accounts.disconnect({ params: key })).pipe(
