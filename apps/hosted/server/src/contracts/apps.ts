@@ -1,3 +1,4 @@
+import { SourceDisplayQuery } from "@executor-js/app-management/contracts/source-display";
 import { RequiredAction } from "./authorization.ts";
 import { AppWorkflowsActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
@@ -108,7 +109,7 @@ export const HostedApps = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.get("source", `${prefix}/:app/source`, {
       params: app,
-      query: { deployment: Schema.optional(DeploymentId) },
+      query: { deployment: Schema.optional(DeploymentId), ...SourceDisplayQuery },
       success: Deployment,
       error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound, OrganizationForbidden],
     }).annotate(RequiredAction, "read"),

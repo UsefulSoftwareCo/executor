@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
-import { Code, useFormattedCode } from "./code.tsx";
+import { Code } from "./code.tsx";
 import { cn } from "../lib/utils.ts";
 
 type FileNode = { readonly kind: "file"; readonly name: string; readonly path: string };
@@ -132,7 +132,7 @@ function SourceFolder({
   );
 }
 
-/** Read-only source inspection, shared by working trees and retained deployments. */
+/** Inspect server-prepared display files; selection, line counts and copying use that same text. */
 export function SourceBrowser({
   files,
   className,
@@ -143,7 +143,6 @@ export function SourceBrowser({
   const [selected, setSelected] = useState("index.ts");
   const file = files.find((file) => file.path === selected) ?? files[0];
   const tree = useMemo(() => sourceTree(files), [files]);
-  const display = useFormattedCode(file?.content ?? "", file?.path ?? "");
   return (
     <SourceFrame aria-label="Source browser" className={className}>
       <nav
@@ -184,7 +183,7 @@ export function SourceBrowser({
             </Select>
           </div>
           <span className="text-xs tabular-nums text-muted-foreground max-md:hidden">
-            {display.split("\n").length} lines
+            {(file?.content ?? "").split("\n").length} lines
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto [&_.code-view]:min-h-full [&_.code-view]:bg-transparent [&_.code-view]:py-4 [&_.code-view]:text-xs [&_.code-view]:leading-6">

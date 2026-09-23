@@ -1,3 +1,4 @@
+import { SourceDisplayQuery } from "./source-display.ts";
 /** Shared app wire contracts; browser imports never load HTTP route or Git adapters. */
 import { Context, Schema } from "effect";
 import {
@@ -53,7 +54,7 @@ export const AppAuthoringMetadata = Schema.Struct({
   ...authoringFields,
   canPublish: Schema.Boolean,
 });
-/** The editable snapshot carries the same server-authorized authoring metadata. */
+/** Working source and authoring metadata. Explicit display reads format files without changing the revision. */
 export const AppSourceView = Schema.Struct({
   ...SourceSnapshot.fields,
   ...authoringFields,
@@ -147,11 +148,12 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         }),
         HttpApiEndpoint.get("source", "/apps/:app/workspace", {
           params: app,
+          query: SourceDisplayQuery,
           success: AppSourceView,
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Read private working source and its Git revision. Read this before editing. Returns source permissions and authenticated clone metadata.",
+          "Read private working source and its Git revision. Read this before editing. Returns source permissions and authenticated clone metadata. Use format=display only for read-only inspection; omit it when editing to retain exact source bytes.",
         ),
         HttpApiEndpoint.post("commit", "/apps/:app/commits", {
           params: app,

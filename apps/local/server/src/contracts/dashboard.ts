@@ -1,3 +1,4 @@
+import { SourceDisplayQuery } from "@executor-js/app-management/contracts/source-display";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
@@ -337,6 +338,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("source", "/dashboard/api/apps/:app/deployments/:deployment", {
         params: { app: AppId, deployment: DeploymentId },
+        query: SourceDisplayQuery,
         success: Deployment,
         error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
       }),

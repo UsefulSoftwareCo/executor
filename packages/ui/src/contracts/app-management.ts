@@ -40,7 +40,11 @@ export const makeAppManagementAtoms = <R, E>(
   );
   const source = Atom.family((app: AppId) =>
     runtime
-      .atom(Effect.flatMap(client, (api) => api.source({ params: { ...params, app } })))
+      .atom(
+        Effect.flatMap(client, (api) =>
+          api.source({ params: { ...params, app }, query: { format: "display" } }),
+        ),
+      )
       .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure)),
   );
   const history = Atom.family((app: AppId) =>

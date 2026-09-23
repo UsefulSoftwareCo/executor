@@ -912,6 +912,15 @@ export const scenarios = {
       cloud: na("Local pairing journey."),
     },
   },
+  localSourceFormatting: {
+    file: "local-source-formatting.spec.ts",
+    title: "local source views receive server-formatted text and preserve raw source",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local paired source routes."),
+      cloud: na("Local paired source routes."),
+    },
+  },
   codeFormatting: {
     file: "code-formatting.spec.ts",
     title: "code blocks format source and copy without changing stored content",

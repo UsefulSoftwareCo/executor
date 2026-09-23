@@ -168,7 +168,10 @@ test(
                   "deploying must not launch the MCP server",
                 );
                 const source = await Effect.runPromise(
-                  dashboard.source({ params: { app: app.id, deployment: app.activeDeployment } }),
+                  dashboard.source({
+                    query: {},
+                    params: { app: app.id, deployment: app.activeDeployment },
+                  }),
                 );
                 assert.deepEqual(source.files.map((file) => file.path).sort(), [
                   "index.ts",

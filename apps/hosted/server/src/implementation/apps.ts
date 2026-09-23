@@ -1,3 +1,4 @@
+import { sourceDisplay } from "@executor-js/app-management/source-display";
 import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
@@ -131,7 +132,9 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
     )
     .handle("source", ({ params, query }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        appSource(owner, params.app, query.deployment),
+        appSource(owner, params.app, query.deployment).pipe(
+          Effect.flatMap((source) => sourceDisplay(source, query.format)),
+        ),
       ),
     )
     .handle("activate", ({ params, payload }) =>

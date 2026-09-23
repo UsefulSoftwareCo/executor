@@ -1,3 +1,4 @@
+import { sourceDisplay } from "./implementation/source-display.ts";
 import {
   AppAccessDenied,
   AppIdentity,
@@ -169,7 +170,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
       .handle("authoring", ({ params }) =>
         authoring(params.app).pipe(Effect.map(({ metadata }) => metadata)),
       )
-      .handle("source", ({ params }) =>
+      .handle("source", ({ params, query }) =>
         Effect.gen(function* () {
           const { app, host, metadata } = yield* authoring(params.app);
           const source = yield* host.executor.apps.workspace({
@@ -178,7 +179,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           });
           const { canPublish, ...fields } = metadata;
           return {
-            ...source,
+            ...(yield* sourceDisplay(source, query.format)),
             ...fields,
             publication:
               canPublish && host.publisher !== undefined && metadata.namespace !== null
