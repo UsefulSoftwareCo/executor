@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./node": "./src/node.ts",
+    "./node/build": "./src/node-build.ts",
     "./core": "./src/core.ts",
     "./blobs": "./src/blobs.ts",
     "./ui-build": "./src/ui-build.ts",
@@ -13,7 +14,8 @@
     "./workerd": "./src/workerd.ts",
     "./workerd/build": "./src/workerd-build.ts",
     "./scheduling": "./src/scheduling.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./node/workerd": "./src/node-workerd.ts"
   },
   "dependencies": {
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.79",

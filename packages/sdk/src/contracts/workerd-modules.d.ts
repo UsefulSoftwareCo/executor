@@ -1,5 +1,10 @@
 /** Narrow constructors provided by workerd; app modules never load these in Node. */
 declare module "cloudflare:workers" {
+  export abstract class WorkerEntrypoint<Env> {
+    protected readonly ctx: import("@cloudflare/workers-types").ExecutionContext;
+    protected readonly env: Env;
+    constructor(ctx: import("@cloudflare/workers-types").ExecutionContext, env: Env);
+  }
   export abstract class DurableObject<Env> {
     protected readonly ctx: import("@cloudflare/workers-types").DurableObjectState;
     protected readonly env: Env;

@@ -150,9 +150,14 @@ seeding, browser opening and complete teardown.
 The self-host release-image check runs against a prebuilt Docker image, outside
 the source-server targets. It covers first-admin setup, an npm-dependent app,
 encrypted account access, and retained login/app execution after replacing the
-container with the same volume. It runs with explicit settings, local defaults,
+container with the same volume. It also compiles an authored frontend with
+Tailwind and checks stored app data before and after replacement. It runs with explicit settings, local defaults,
 and Railway's domain/port variables plus a root-owned volume. It also checks
-non-root execution, generated key permissions, and refusal to replace missing keys:
+non-root execution, generated key permissions, and refusal to replace missing keys.
+The explicit-settings scenario also checks allowed internal imports, preserved Host
+headers, and DNS rejection before any connection, including redirected imports.
+It clones and pushes app source through the image's Git HTTP server, then checks
+the committed files through the workspace API before and after replacement:
 
 ```sh
 EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \
@@ -165,6 +170,12 @@ removes its own container and volume. It does not publish the image.
 Build with `--build-arg EXECUTOR_BUILD_VERSION=<commit-sha>`. The image embeds this
 identity in both dashboard assets and the server environment. The release check
 requires the same version in a delivered server trace before and after restart.
+To check an upgrade, pull the previous image and set
+`EXECUTOR_E2E_DOCKER_PREVIOUS_IMAGE=<previous-tag>`. The scenario creates data with
+that image, replaces it with `EXECUTOR_E2E_DOCKER_IMAGE`, and checks retained
+login, encrypted credentials, app data, frontend availability and execution. It
+reads the previous build version from the image and checks the new version after
+replacement.
 
 | Command                 | Target                                                          | Current coverage                                              |
 | ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |

@@ -100,7 +100,7 @@ export const startManagedServer = (
       current = scope;
       yield* Effect.gen(function* () {
         const child = yield* processes.spawn(
-          ChildProcess.make("node", entry.command, {
+          ChildProcess.make(target.metadata.target === "local" ? "node" : "bun", entry.command, {
             extendEnv: false,
             ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
             env,

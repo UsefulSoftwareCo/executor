@@ -96,7 +96,8 @@ export const selfHostAuth = Effect.gen(function* () {
   });
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const web = yield* HttpServerRequest.toWeb(request);
+    const incoming = yield* HttpServerRequest.toWeb(request);
+    const web = new Request(incoming, { headers: new Headers(incoming.headers) });
     // The socket address is trusted. Never accept a client-supplied forwarding header.
     web.headers.delete("x-executor-client-ip");
     if (Option.isSome(request.remoteAddress))
