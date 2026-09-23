@@ -1,3 +1,5 @@
+import { ApiKeysPending } from "./api-keys-pending.tsx";
+import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
 import { parseAppSearch } from "../../contracts/navigation.ts";
@@ -33,16 +35,16 @@ export function PagePending({ pathname: destination }: { readonly pathname?: str
       />
     );
   if (/\/accounts\/?$/.test(pathname)) return <InventoryPageSkeleton kind="accounts" />;
-  const title = /\/organization\/?$/.test(pathname)
-    ? "Organization settings"
-    : /\/apps\/add/.test(pathname)
-      ? "Add app"
-      : /\/accounts\//.test(pathname)
-        ? "Account"
-        : /\/apps\//.test(pathname)
-          ? "App"
-          : /\/connect\/?$/.test(pathname)
-            ? "Connect"
-            : "Executor";
+  if (/\/api-keys\/?$/.test(pathname)) return <ApiKeysPending />;
+  if (/\/organization\/?$/.test(pathname)) return <OrganizationSettingsPending />;
+  const title = /\/apps\/add/.test(pathname)
+    ? "Add app"
+    : /\/accounts\//.test(pathname)
+      ? "Account"
+      : /\/apps\//.test(pathname)
+        ? "App"
+        : /\/connect\/?$/.test(pathname)
+          ? "Connect"
+          : "Executor";
   return <PageSkeleton title={title} />;
 }

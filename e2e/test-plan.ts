@@ -670,6 +670,24 @@ export const scenarios = {
       local: na("This journey checks hosted app metadata requests."),
     },
   },
+  settingsLoading: {
+    file: "settings-loading.spec.ts",
+    title: "Settings loading keeps static labels and controls around unknown values",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Organization settings are hosted only."),
+    },
+  },
+  apiKeysLoading: {
+    file: "settings-loading.spec.ts",
+    title: "API keys loading keeps its page identity and reads tokens before metadata",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Personal tokens are hosted only."),
+    },
+  },
   dashboardLoading: {
     file: "dashboard-loading.spec.ts",
     title: "Dashboard loading shows content skeletons without auth or organization gates",

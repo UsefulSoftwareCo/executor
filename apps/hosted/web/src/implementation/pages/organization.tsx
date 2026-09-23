@@ -1,3 +1,7 @@
+import {
+  OrganizationSettingsPending,
+  organizationSettingClass,
+} from "../components/organization-settings-pending.tsx";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit } from "effect";
@@ -43,7 +47,9 @@ export function OrganizationPage({
   readonly footer?: ReactNode;
 }) {
   return (
-    <OrganizationDetailsBoundary>
+    <OrganizationDetailsBoundary
+      pending={<OrganizationSettingsPending>{children}</OrganizationSettingsPending>}
+    >
       <OrganizationSettings emailInvitations={emailInvitations} footer={footer}>
         {children}
       </OrganizationSettings>
@@ -203,10 +209,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
   const [saved, setSaved] = useState(false);
   const name = draft ?? organization.name;
   return (
-    <Card
-      asChild
-      className="organization-setting border border-border rounded-[10px] bg-background shadow-none flex flex-col gap-0 p-0 [&_[data-slot='card-header']]:gap-1 [&_[data-slot='card-header']]:[padding:14px_16px_10px] [&_[data-slot='card-title']_h2]:text-[14px] [&_[data-slot='card-title']_h2]:leading-[1.4] [&_[data-slot='card-title']_h2]:font-medium [&_[data-slot='card-description']]:text-[12px] [&_[data-slot='card-description']]:leading-[1.5] [&_[data-slot='card-content']]:min-w-0 [&_[data-slot='card-content']]:[padding:0_16px_10px] [&_[data-slot='card-footer']]:justify-between [&_[data-slot='card-footer']]:gap-3 [&_[data-slot='card-footer']]:[padding:0_16px_12px] [&_[data-slot='card-footer']]:border-0 [&_[data-slot='card-footer']_>_p]:text-muted-foreground [&_[data-slot='card-footer']_>_p]:text-[11px] max-[640px]:[&_[data-slot='card-header']]:[padding:12px_12px_10px] max-[640px]:[&_[data-slot='card-content']]:[padding:0_12px_12px] max-[640px]:[&_[data-slot='card-footer']]:[padding:0_12px_10px]"
-    >
+    <Card asChild className={organizationSettingClass}>
       <form
         onSubmit={async (event) => {
           event.preventDefault();
@@ -284,10 +287,7 @@ function OrganizationUrl({ disabled }: { readonly disabled: boolean }) {
   const [saved, setSaved] = useState(false);
   const slug = draft ?? organization.slug;
   return (
-    <Card
-      asChild
-      className="organization-setting border border-border rounded-[10px] bg-background shadow-none flex flex-col gap-0 p-0 [&_[data-slot='card-header']]:gap-1 [&_[data-slot='card-header']]:[padding:14px_16px_10px] [&_[data-slot='card-title']_h2]:text-[14px] [&_[data-slot='card-title']_h2]:leading-[1.4] [&_[data-slot='card-title']_h2]:font-medium [&_[data-slot='card-description']]:text-[12px] [&_[data-slot='card-description']]:leading-[1.5] [&_[data-slot='card-content']]:min-w-0 [&_[data-slot='card-content']]:[padding:0_16px_10px] [&_[data-slot='card-footer']]:justify-between [&_[data-slot='card-footer']]:gap-3 [&_[data-slot='card-footer']]:[padding:0_16px_12px] [&_[data-slot='card-footer']]:border-0 [&_[data-slot='card-footer']_>_p]:text-muted-foreground [&_[data-slot='card-footer']_>_p]:text-[11px] max-[640px]:[&_[data-slot='card-header']]:[padding:12px_12px_10px] max-[640px]:[&_[data-slot='card-content']]:[padding:0_12px_12px] max-[640px]:[&_[data-slot='card-footer']]:[padding:0_12px_10px]"
-    >
+    <Card asChild className={organizationSettingClass}>
       <form
         onSubmit={async (event) => {
           event.preventDefault();

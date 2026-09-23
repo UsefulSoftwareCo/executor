@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { OrganizationPage } from "@executor-js/hosted-web/pages/organization";
 import { DeleteOrganization } from "../components/delete-organization.tsx";
-import { useOrganization } from "@executor-js/hosted-web/organization";
+import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
 import { Button } from "@executor-js/ui/components/button";
 import {
   Card,
@@ -21,7 +21,7 @@ export const Route = createFileRoute("/org/$organizationSlug/organization")({
 });
 
 function BillingSettings() {
-  const organization = useOrganization();
+  const organization = useOrganizationRoute();
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="gap-1.5 px-4 pt-4 pb-3">
@@ -34,6 +34,7 @@ function BillingSettings() {
         <Button
           asChild
           variant="outline"
+          disabled={organization.role === undefined}
           disabledReason={
             organization.role === "member"
               ? "Only organization owners and admins can manage billing."

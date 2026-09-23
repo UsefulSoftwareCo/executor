@@ -4,6 +4,8 @@ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Redacted } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useState } from "react";
+import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { ApiKeysIntro, TokenListPending } from "../components/api-keys-pending.tsx";
 import type { ApiKeySummary, CreatedApiKey } from "@executor-js/hosted-server/api-keys";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Button } from "@executor-js/ui/components/button";
@@ -34,8 +36,8 @@ import {
 import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
 import {
   OrganizationAvatar,
-  OrganizationDetailsBoundary,
-  useOrganization,
+  useOrganizationDetails,
+  useOrganizationRoute,
 } from "../components/organization.tsx";
 import { documentationUrl } from "../../contracts/documentation.ts";
 
@@ -52,25 +54,12 @@ const errorMessage = (cause: Cause.Cause<ApiKeyFailed>) => {
 
 /** Personal tokens; the selected organization supplies only the example request URL. */
 export function ApiKeysPage() {
-  return (
-    <OrganizationDetailsBoundary>
-      <PersonalAccessTokens />
-    </OrganizationDetailsBoundary>
-  );
-}
-function PersonalAccessTokens() {
-  const organization = useOrganization();
+  const route = useOrganizationRoute();
+  const organization = useOrganizationDetails();
   const organizations = useAtomValue(organizationsAtom);
   const memberships: ReadonlyArray<OrganizationSummary> = AsyncResult.isSuccess(organizations)
     ? organizations.value
-    : [
-        {
-          id: organization.organization,
-          name: organization.name,
-          slug: organization.slug,
-          logo: organization.logo,
-        },
-      ];
+    : [];
   /** A pinned key names its organization; one the user has left keeps a plain label. */
   const pinnedOrganization = (key: ApiKeySummary) =>
     key.metadata?.organization === undefined
@@ -94,7 +83,8 @@ function PersonalAccessTokens() {
   const [form, setForm] = useState(false);
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("");
-  const [scope, setScope] = useState<string>(organization.organization);
+  const [selectedScope, setScope] = useState<string>();
+  const scope = selectedScope ?? organization?.organization;
   const [created, setCreated] = useState<typeof CreatedApiKey.Type>();
   const [target, setTarget] = useState<ApiKeySummary>();
   const [error, setError] = useState<string>();
@@ -102,13 +92,13 @@ function PersonalAccessTokens() {
   const [showKey, setShowKey] = useState(false);
   const pending = creating || revoking;
   const empty = AsyncResult.isSuccess(keys) && keys.value.apiKeys.length === 0;
-  const example = `curl '${window.location.origin}/api/organizations/${encodeURIComponent(organization.organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_API_KEY>'`;
+  const example = `curl '${window.location.origin}/api/organizations/${encodeURIComponent(route.id ?? route.organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_API_KEY>'`;
   const mcpExample = JSON.stringify(
     {
       mcpServers: {
         executor: {
           type: "http",
-          url: `${window.location.origin}/org/${encodeURIComponent(organization.slug)}/mcp`,
+          url: `${window.location.origin}/org/${encodeURIComponent(route.slug)}/mcp`,
           headers: { Authorization: "Bearer <YOUR_PAT>" },
         },
       },
@@ -125,17 +115,21 @@ function PersonalAccessTokens() {
               setError(undefined);
               setForm(true);
             }}
-            disabled={pending}
+            disabled={pending || organization === null}
           >
             Create token
           </Button>
         )}
       </PageHeader>
-      <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
-        Tokens have your current permissions. Limit a token to one organization, or give it your
-        full account so it can reach every organization you belong to. Membership and role changes
-        apply automatically. Tokens stay active when you sign out.
-      </p>
+      <ApiKeysIntro />
+      {route.metadataFailed && (
+        <div role="alert" className="mb-4 flex items-center gap-3 text-sm">
+          <p>Could not load organization details.</p>
+          <Button variant="outline" onClick={route.retry}>
+            Try again
+          </Button>
+        </div>
+      )}
       {error && !form && !target && !created && (
         <p role="alert" className="mb-4 text-sm text-destructive">
           {error}
@@ -152,9 +146,7 @@ function PersonalAccessTokens() {
             </div>
           )}
           {AsyncResult.isInitial(keys) ? (
-            <p role="status" className="p-6 text-sm text-muted-foreground">
-              Loading tokens…
-            </p>
+            <TokenListPending />
           ) : AsyncResult.isFailure(keys) ? (
             <div className="p-6">
               <p role="alert" className="mb-3 text-sm text-destructive">
@@ -171,7 +163,7 @@ function PersonalAccessTokens() {
                 title="No tokens yet"
                 action={
                   <Button
-                    disabled={pending}
+                    disabled={pending || organization === null}
                     onClick={() => {
                       setError(undefined);
                       setForm(true);
@@ -211,7 +203,14 @@ function PersonalAccessTokens() {
                         <td className="px-4 py-4 text-xs">
                           {(() => {
                             const pinned = pinnedOrganization(key);
-                            return pinned === undefined ? (
+                            return key.metadata?.organization !== undefined &&
+                              !AsyncResult.isSuccess(organizations) ? (
+                              AsyncResult.isFailure(organizations) ? (
+                                "Organization unavailable"
+                              ) : (
+                                <Skeleton className="h-3 w-24" aria-label="Loading organization" />
+                              )
+                            ) : pinned === undefined ? (
                               "Full account"
                             ) : (
                               <span className="inline-flex items-center gap-1.5">
@@ -233,7 +232,7 @@ function PersonalAccessTokens() {
                                 setTarget(key);
                                 setError(undefined);
                               }}
-                              disabled={pending}
+                              disabled={pending || organization === null}
                             >
                               Revoke<span className="sr-only"> {key.name}</span>
                             </Button>
@@ -269,10 +268,16 @@ function PersonalAccessTokens() {
       <div className="mt-8 space-y-6">
         <div>
           <h2 className="text-sm font-medium">Connect an MCP client</h2>
-          <p className="my-2 text-sm text-muted-foreground">
-            Replace the placeholder with your token. The URL names {organization.name}, so no
-            organization header is needed.
-          </p>
+          <div className="my-2 text-sm text-muted-foreground">
+            Replace the placeholder with your token. The URL names{" "}
+            {route.name ?? (
+              <Skeleton
+                className="inline-block h-3 w-24 align-middle"
+                aria-label="Loading organization name"
+              />
+            )}
+            , so no organization header is needed.
+          </div>
           <pre className="overflow-x-auto rounded-lg border bg-muted/30 p-4 text-xs">
             <code>{mcpExample}</code>
           </pre>
@@ -301,7 +306,7 @@ function PersonalAccessTokens() {
             className="space-y-6"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (creating) return;
+              if (creating || organization === null || scope === undefined) return;
               setError(undefined);
               const result = await create({
                 name: name.trim(),
@@ -344,7 +349,11 @@ function PersonalAccessTokens() {
             </label>
             <div className="block text-sm font-medium">
               <label htmlFor="token-organization">Organization</label>
-              <Select value={scope} onValueChange={setScope} disabled={creating}>
+              <Select
+                {...(scope === undefined ? {} : { value: scope })}
+                onValueChange={setScope}
+                disabled={creating}
+              >
                 <SelectTrigger
                   id="token-organization"
                   className="mt-2 w-full"
@@ -407,7 +416,11 @@ function PersonalAccessTokens() {
               >
                 Cancel
               </Button>
-              <Button loading={creating} disabled={creating || !name.trim()} type="submit">
+              <Button
+                loading={creating}
+                disabled={creating || !name.trim() || organization === null}
+                type="submit"
+              >
                 Create token
               </Button>
             </DialogFooter>

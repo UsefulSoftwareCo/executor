@@ -1,7 +1,6 @@
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { OrganizationSlug, OrganizationReference } from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { PageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -98,20 +97,32 @@ export function OrganizationContent({ children }: { readonly children: ReactNode
   );
 }
 /** Native organization settings need verified metadata, but their wait stays inside the page. */
-export function OrganizationDetailsBoundary({ children }: { readonly children: ReactNode }) {
+export function OrganizationDetailsBoundary({
+  children,
+  pending,
+  title = "Organization settings",
+}: {
+  readonly children: ReactNode;
+  readonly pending: ReactNode;
+  readonly title?: string;
+}) {
   const organization = useContext(OrganizationContext);
   const route = useOrganizationRoute();
   if (organization === null && route.metadataFailed)
     return (
       <PageFrame>
-        <PageHeader title="Organization settings" />
-        <p role="alert">Unable to load organization settings.</p>
+        <PageHeader title={title} />
+        <p role="alert">Unable to load {title.toLowerCase()}.</p>
         <Button variant="outline" onClick={route.retry}>
           Try again
         </Button>
       </PageFrame>
     );
-  return organization === null ? <PageSkeleton title="Organization settings" /> : children;
+  return organization === null ? pending : children;
+}
+/** Verified details when available; missing metadata must not hide static page content. */
+export function useOrganizationDetails() {
+  return useContext(OrganizationContext);
 }
 /** Settings use verified organization metadata; request handlers still enforce current access. */
 export function useOrganization() {

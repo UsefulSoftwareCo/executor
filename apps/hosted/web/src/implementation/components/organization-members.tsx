@@ -553,6 +553,28 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
   );
 }
 
+/** Keep member labels and disabled controls visible while organization permissions load. */
+export function OrganizationMembersPending() {
+  return (
+    <section className="organization-members mt-6" aria-label="Organization members">
+      <div className="membership-list flex flex-col gap-3">
+        <h2 className="membership-heading flex items-baseline gap-2 text-[14px] font-medium">
+          Members
+        </h2>
+        <div className="membership-toolbar flex items-center justify-between gap-4 [&_.search-input]:flex-1 [&_.search-input]:max-w-130 [&_.search-input]:w-auto [&_.search-input_input]:h-9 [&_.search-input_input]:border-input [&_.search-input_input]:rounded-[6px] [&_.search-input_input]:bg-transparent [&_.search-input_>_svg]:top-2.75 [&_>_button]:h-9 [&_>_button]:rounded-[6px] [&_>_button]:text-[12px] [&_>_button]:bg-transparent [&_>_button]:shadow-none max-[480px]:gap-2.5 max-[480px]:[&_.search-input_input]:h-10.5 max-[480px]:[&_.search-input_input]:text-[14px] max-[480px]:[&_.search-input_>_svg]:top-3.5 max-[480px]:[&_>_button]:min-h-10.5 max-[480px]:[&_>_button]:py-0 max-[480px]:[&_>_button]:px-[12px]">
+          <fieldset disabled className="contents">
+            <SearchInput placeholder="Search by name or email…" value="" onChange={() => {}} />
+          </fieldset>
+          <Button variant="outline" size="sm" disabled>
+            Add member
+          </Button>
+        </div>
+        <MembersSkeleton />
+      </div>
+    </section>
+  );
+}
+
 /** Placeholder widths vary per row so the loading table does not look like a grid. */
 const membershipSkeletonRows = [
   { name: "w-28", email: "w-40" },
