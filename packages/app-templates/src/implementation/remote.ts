@@ -19,17 +19,24 @@ export const generateRemoteApp = (
             'apiKey: secrets({ label: "API key", fields: object({ token: string({ minLength: 1 }) }) })',
           ]
         : []),
+      ...(auth.public
+        ? ['public: secrets({ label: "No authentication (public server)", fields: object({}) })']
+        : []),
     ];
     const keyHeader = auth.apiKey
       ? `{ [${serialize(auth.apiKey.header)}]: ${serialize(auth.apiKey.prefix)} + account.fields.token }`
       : undefined;
     const oauthHeader = '{ Authorization: "Bearer " + account.fields.access_token }';
-    const headers =
+    const authenticatedHeaders =
       auth.oauth && auth.apiKey
         ? `account.method === "oauth" ? ${oauthHeader} : ${keyHeader}`
         : auth.oauth
           ? oauthHeader
           : keyHeader;
+    const headers =
+      auth.public && authenticatedHeaders !== undefined
+        ? `account.method === "public" ? {} : ${authenticatedHeaders}`
+        : authenticatedHeaders;
     return {
       files: yield* sourceFiles([
         {

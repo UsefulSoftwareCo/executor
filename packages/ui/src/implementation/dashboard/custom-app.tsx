@@ -199,13 +199,19 @@ export function RemoteAppForm<Command, E>({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {kind === "mcp" && <SelectItem value="auto">Detect from server</SelectItem>}
+                  {kind === "mcp" && <SelectItem value="auto">Choose during setup</SelectItem>}
                   <SelectItem value="none">No authentication</SelectItem>
                   <SelectItem value="apiKey">API key</SelectItem>
                   <SelectItem value="oauth">OAuth</SelectItem>
                 </SelectContent>
               </Select>
             </label>
+            {kind === "mcp" && auth === "auto" && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Add the app first, then choose how to connect. OAuth settings are checked during
+                account setup.
+              </p>
+            )}
             {auth === "apiKey" && (
               <>
                 <div className="custom-app-row grid grid-cols-[minmax(0,_2fr)_minmax(0,_1fr)] gap-4">

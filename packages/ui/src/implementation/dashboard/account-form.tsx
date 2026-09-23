@@ -121,7 +121,9 @@ export function AccountForm<A, E>({
       ) : fields ? (
         <>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Get these credentials from your {provider.definition.name} account settings.
+            {Object.keys(fields.properties).length === 0
+              ? "This connection sends no credentials. Continue only if the service supports public access."
+              : `Get these credentials from your ${provider.definition.name} account settings.`}
           </p>
           <CredentialFields
             fields={fields}

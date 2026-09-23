@@ -1,7 +1,5 @@
 /** Remote MCP imports retain ordinary source. Catalogs stay live and account-specific. */
 import { Effect } from "effect";
-import { probeOAuthChallenge } from "@executor-js/sdk/core";
-import { type HttpClient } from "effect/unstable/http";
 import { generateRemoteApp } from "@executor-js/app-templates";
 import { parseDestination, type HostEgress, type UrlPolicy } from "@executor-js/utils/url-policy";
 import {
@@ -25,7 +23,7 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
       url.password ||
       url.hash ||
       /[{}]/.test(url.href) ||
-      // Live probes run from the host process, so the destination policy applies to them.
+      // Stored endpoints must satisfy the importing host's destination policy.
       parseDestination(url.href, policy) === undefined
     ) {
       return yield* fail(
@@ -36,65 +34,14 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
     return url.href;
   });
 
-/** Inspect only response headers and release streams; an auth error alone does not establish OAuth support. */
-const advertisesOAuth = (url: string, client: HttpClient.HttpClient) =>
-  Effect.gen(function* () {
-    const response = yield* probeOAuthChallenge(url, client);
-    if (
-      (response.status < 200 || response.status >= 300) &&
-      ![401, 403, 405].includes(response.status)
-    ) {
-      return yield* fail(
-        "mcp_probe",
-        "Could not check this MCP server's sign-in methods. Try again or choose a method explicitly.",
-      );
-    }
-    yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-    return response.resourceMetadata !== undefined;
-  }).pipe(
-    Effect.mapError((error) =>
-      fail(
-        error._tag === "TimeoutError" ? "mcp_timeout" : "mcp_probe",
-        "Could not check this MCP server's sign-in methods. Try again or choose a method explicitly.",
-      ),
-    ),
-  );
-
-function authentication(
-  entry: CatalogEntry,
-  choice: McpImportAuth,
-  url: string,
-  client: HttpClient.HttpClient,
-) {
-  if (choice !== "auto") return Effect.succeed(choice);
+/** Catalog hints configure source; live discovery belongs to account setup and app execution. */
+function authentication(entry: CatalogEntry, choice: McpImportAuth) {
+  if (choice !== "auto") return choice;
   const kind = entry.auth?.kind;
-  if (kind === "oauth") return Effect.succeed("oauth" as const);
-  if (kind === "mixed") return Effect.succeed("mixed" as const);
-  return Effect.gen(function* () {
-    // Catalog hints may be incomplete. Preserve API-key support while adding live OAuth support.
-    if (yield* advertisesOAuth(url, client))
-      return kind === "api_key" ? ("mixed" as const) : ("oauth" as const);
-    if (kind === "api_key") return "apiKey" as const;
-    if (kind === "none" || kind === "public") return "none" as const;
-    const { McpError, probeMcp } = yield* Effect.promise(
-      () => import("@executor-js/app-templates/probe"),
-    );
-    return yield* probeMcp({ url, timeoutMs: 10_000 }).pipe(
-      Effect.as("none" as const),
-      Effect.mapError((error) =>
-        fail(
-          error instanceof McpError && error.reason === "unauthorized"
-            ? "mcp_auth_missing"
-            : error instanceof McpError && error.reason === "timeout"
-              ? "mcp_timeout"
-              : "mcp_discovery",
-          error instanceof McpError && error.reason === "unauthorized"
-            ? "This MCP server requires authentication but did not advertise OAuth. Choose a sign-in method and try again."
-            : "Could not discover this MCP server. Check its URL and try again.",
-        ),
-      ),
-    );
-  });
+  if (kind === "oauth") return "oauth";
+  if (kind === "mixed" || kind === "api_key") return "mixed";
+  if (kind === "none" || kind === "public") return "none";
+  return "setup";
 }
 
 /** Generate a provider only when needed; credentials are never embedded in retained files. */
@@ -107,9 +54,12 @@ export const generateMcpApp = (
     if (entry.kind !== "mcp") return yield* fail("mcp_entry", "Choose an MCP catalog entry.");
     const url = yield* mcpUrl(entry.connectUrl, egress.policy);
     const discovery = yield* mcpUrl(entry.oauthDiscoveryUrl ?? url, egress.policy);
-    const auth = yield* authentication(entry, choice, discovery, egress.client);
+    const auth = authentication(entry, choice);
     let header = { name: "Authorization", prefix: "Bearer " };
-    if ((auth === "apiKey" || auth === "mixed") && entry.auth?.header !== undefined) {
+    if (
+      (auth === "apiKey" || auth === "mixed" || auth === "setup") &&
+      entry.auth?.header !== undefined
+    ) {
       const parsed = /^([!#$%&'*+.^_`|~A-Za-z0-9-]+):\s*([^{}\r\n]*)\{[A-Za-z0-9_]+\}$/.exec(
         entry.auth.header,
       );
@@ -121,9 +71,12 @@ export const generateMcpApp = (
       header = { name: parsed[1], prefix: parsed[2] };
     }
     return yield* generateRemoteApp(entry.name, url, "mcp", {
-      ...(auth === "oauth" || auth === "mixed" ? { oauth: { discover: discovery } } : {}),
-      ...(auth === "apiKey" || auth === "mixed"
+      ...(auth === "oauth" || auth === "mixed" || auth === "setup"
+        ? { oauth: { discover: discovery } }
+        : {}),
+      ...(auth === "apiKey" || auth === "mixed" || auth === "setup"
         ? { apiKey: { header: header.name, prefix: header.prefix } }
         : {}),
+      ...(auth === "setup" ? { public: true } : {}),
     });
   }).pipe(Effect.catchTag("TemplateError", (error) => Effect.fail(fail(error.code, error.reason))));

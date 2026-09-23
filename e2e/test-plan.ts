@@ -484,11 +484,22 @@ export const scenarios = {
   },
   mcpAuthDiscovery: {
     file: "mcp-auth-discovery.spec.ts",
-    title: "MCP imports and OAuth setup honor POST authentication challenges",
+    title: "MCP imports defer discovery and OAuth setup honors POST authentication challenges",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback MCP issuer."),
       local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
+    },
+  },
+  mcpDeferredSetup: {
+    file: "mcp-deferred-setup.spec.ts",
+    title: "MCP outages preserve added apps and recover in account setup and tools",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses controlled loopback MCP and OAuth servers through shared product code."),
+      local: na(
+        "Shared import, connection, and error views are verified through the hosted product.",
+      ),
     },
   },
   oauthUrlPolicy: {

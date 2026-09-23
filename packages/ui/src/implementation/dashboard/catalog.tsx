@@ -321,7 +321,7 @@ export function CatalogInstall<E>({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="auto">Automatic</SelectItem>
+                      <SelectItem value="auto">Use catalog settings</SelectItem>
                       <SelectItem value="oauth">OAuth</SelectItem>
                       <SelectItem value="apiKey">API key</SelectItem>
                       <SelectItem value="none">No authentication</SelectItem>

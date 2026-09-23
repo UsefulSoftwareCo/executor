@@ -13,8 +13,12 @@ const Message = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
   method: Schema.String,
 });
-const identity = Effect.gen(function* () {
+const identity = Effect.fn(function* (access: "bearer" | "public") {
   const request = yield* HttpServerRequest.HttpServerRequest;
+  if (access === "public") {
+    yield* Schema.decodeUnknownEffect(Schema.Undefined)(request.headers.authorization);
+    return "public";
+  }
   const credential = yield* Schema.decodeUnknownEffect(
     Schema.Literals(["Bearer synthetic-work", "Bearer synthetic-personal"]),
   )(request.headers.authorization);
@@ -27,7 +31,7 @@ const output = {
 };
 
 /** Start isolated OpenAPI, MCP and GraphQL endpoints; close the listener with the case scope. */
-export const templateUpstream = Effect.gen(function* () {
+const makeTemplateUpstream = Effect.fn(function* (access: "bearer" | "public") {
   const routes = Layer.mergeAll(
     HttpRouter.add(
       "GET",
@@ -56,7 +60,7 @@ export const templateUpstream = Effect.gen(function* () {
       "GET",
       "/identity",
       Effect.gen(function* () {
-        return yield* HttpServerResponse.json({ account: yield* identity });
+        return yield* HttpServerResponse.json({ account: yield* identity(access) });
       }),
     ),
     HttpRouter.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 })),
@@ -69,7 +73,7 @@ export const templateUpstream = Effect.gen(function* () {
           Effect.flatMap(Schema.decodeUnknownEffect(Message)),
         );
         if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
-        const account = yield* identity;
+        const account = yield* identity(access);
         const tool = {
           name: "identity",
           description: "Read the selected account",
@@ -138,7 +142,7 @@ export const templateUpstream = Effect.gen(function* () {
                 ],
               },
             }
-          : { identity: yield* identity };
+          : { identity: yield* identity(access) };
         return yield* HttpServerResponse.json({ data });
       }),
     ),
@@ -152,3 +156,7 @@ export const templateUpstream = Effect.gen(function* () {
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
   return `http://127.0.0.1:${server.address.port}`;
 });
+
+export const templateUpstream = makeTemplateUpstream("bearer");
+/** Public fixtures reject Authorization headers so credential-free connections are observable. */
+export const publicTemplateUpstream = makeTemplateUpstream("public");

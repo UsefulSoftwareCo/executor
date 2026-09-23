@@ -161,6 +161,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
               [403, { "x-ratelimit-remaining": "0" }, "rate_limited"],
               [403, { "www-authenticate": 'Bearer error="insufficient_scope"' }, "forbidden"],
               [429, {}, "rate_limited"],
+              [520, {}, "unavailable"],
             ] as const) {
               yield* upstream.configure({ status, headers, phase: "call" });
               yield* assertFailure(yield* call(), reason, status);

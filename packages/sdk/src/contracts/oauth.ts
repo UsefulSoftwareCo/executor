@@ -118,12 +118,12 @@ export const OAuthSetupFailed = UserFacingError.define({
     (
       ({
         discovery_unavailable: {
-          title: "Sign-in temporarily unavailable",
+          title: "The connected service’s sign-in is unavailable",
           description:
-            "We could not load the service’s OAuth sign-in settings. The service may be unavailable, busy, or unreachable.",
+            "Executor could not load sign-in settings from this app’s service. The service may be down, busy, or unreachable. This affects the service connection, not your Executor sign-in.",
           recovery: {
             action:
-              "Try again. If this continues, copy the fix prompt into your agent to check the service and connection settings.",
+              "Try again. If this continues, check the service’s status or copy the fix prompt to investigate its server address and connection settings.",
             instructions:
               "Inspect the current app’s provider definition and OAuth discovery URL. Check reachability and service status, and distinguish a temporary outage from an incorrect endpoint. Fix incorrect configuration only when the evidence supports it; retry a temporary failure.",
           },
