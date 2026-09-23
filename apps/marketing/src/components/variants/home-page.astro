@@ -4,7 +4,7 @@ import { tagline, introduction } from "../../content/site-copy";
 import { heroVariants, type HeroVariant } from "../../content/hero-experiment";
 import DocBody from "./doc-body.astro";
 import EarlyPreviewNotice from "../early-preview-notice.astro";
-import { betaNoticeDismissalKey } from "@executor-js/ui/contracts/early-preview";
+import { betaNoticeDismissalKey, earlyPreview } from "@executor-js/ui/contracts/early-preview";
 
 interface Props { variant?: HeroVariant }
 const { variant = heroVariants[0] } = Astro.props;
@@ -32,6 +32,7 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
       <strong class="font-mono font-semibold">Executor v2 Beta</strong>
       <span>You may see bugs.</span>
       <button type="button" data-early-preview-open aria-haspopup="dialog" aria-controls="early-preview-notice" class="min-h-8 cursor-pointer font-semibold underline underline-offset-2 hover:text-[#765b21] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]">Learn more</button>
+      <button type="button" data-early-preview-open aria-haspopup="dialog" aria-controls="early-preview-notice" class="min-h-8 cursor-pointer font-semibold underline underline-offset-2 hover:text-[#765b21] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]">{earlyPreview.migration.title}</button>
     </div>
     <button type="button" data-beta-notice-dismiss aria-label="Dismiss beta notice" class="absolute inset-y-0 right-1 flex min-w-8 cursor-pointer items-center justify-center text-lg leading-none text-[#75694d] hover:text-[#3d3523] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]">&times;</button>
   </aside>

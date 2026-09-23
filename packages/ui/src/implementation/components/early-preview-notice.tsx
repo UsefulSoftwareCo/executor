@@ -26,6 +26,12 @@ export function EarlyPreviewNotice({ avatarSrc }: EarlyPreviewNoticeProps) {
         id="early-preview-description"
         className="mt-5 space-y-4 text-[15px] leading-[1.65] text-[#666] dark:text-[#aaa]"
       >
+        <section aria-labelledby="v1-migration-title" className="space-y-2">
+          <h3 id="v1-migration-title" className="font-semibold text-[#111] dark:text-[#ededed]">
+            {earlyPreview.migration.title}
+          </h3>
+          <p>{earlyPreview.migration.description}</p>
+        </section>
         {earlyPreview.paragraphs.map((paragraph) => (
           <p key={paragraph}>{paragraph}</p>
         ))}

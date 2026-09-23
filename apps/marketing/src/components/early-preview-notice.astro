@@ -29,7 +29,9 @@ import { EarlyPreviewNotice } from "@executor-js/ui/components/early-preview-not
         dialog.showModal();
         document.documentElement.style.overflow = "hidden";
       };
-      document.querySelector("[data-early-preview-open]")?.addEventListener("click", openDialog);
+      for (const button of document.querySelectorAll("[data-early-preview-open]")) {
+        button.addEventListener("click", openDialog);
+      }
       if (!dismissed) openDialog();
     }
   }
