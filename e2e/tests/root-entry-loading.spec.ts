@@ -3,20 +3,20 @@ import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Organization } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import {
   holdOrganizationEntry,
-  trackOrganizationInventory,
+  trackOrganizationResources,
   waitForLastOrganization,
 } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
   it.effect(scenarios.rootEntryLoading.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;
@@ -79,7 +79,7 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
                   page.setViewportSize({ width: viewport.width, height: viewport.height }),
                 );
                 const list = yield* holdOrganizationEntry;
-                const inventory = yield* trackOrganizationInventory;
+                const resources = yield* trackOrganizationResources;
                 yield* browser.use(
                   `${viewport.name}: reopen root with the organization list held`,
                   (page) => page.goto("/"),
@@ -113,11 +113,11 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
                     page.getByPlaceholder("Search apps…", { exact: true }).inputValue(),
                   ),
                 ).toBe("Executor");
-                expect(inventory).toEqual([
-                  `/api/organizations/${actors.organization.id}/inventory`,
+                expect(resources).toEqual([
+                  `/api/organizations/${actors.organization.id}/resources`,
                 ]);
                 yield* browser.checkpoint(`${viewport.name}: canonical URL without a second load`);
-                return { viewport: viewport.name, inventory: [...inventory] };
+                return { viewport: viewport.name, resources: [...resources] };
               }),
             ),
         );
@@ -177,7 +177,7 @@ layer(HostedLive, { excludeTestServices: true })("Root entry loading", (it) => {
           existingOrganizations: organizations.length,
           preparationRequested: false,
           rememberedDestinationLoadsBeforeOrganizationList: true,
-          canonicalNavigationKeepsInventoryAndDraft: true,
+          canonicalNavigationKeepsResourcesAndDraft: true,
           restored,
           heldRequests: ["/api/auth/organization/list", "/api/onboarding/prepare"],
           organizationLoadingVerified: true,

@@ -7,7 +7,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 const App = Schema.Struct({
@@ -34,7 +34,7 @@ const Source = Schema.Struct({
 const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
 layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it) => {
   it.effect(scenarios.executorAppCardAccount.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -155,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
     ),
   );
   it.effect(scenarios.executorKeyAccount.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

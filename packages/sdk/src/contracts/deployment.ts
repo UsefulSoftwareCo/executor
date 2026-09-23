@@ -1,5 +1,6 @@
 /** Immutable deployments, source files and expected build errors. */
 import { Schema } from "effect";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { AppCodeId, AppId, BuildId, DeploymentId, OwnerId } from "./shared.ts";
 import { SourceCommit, SourceFiles } from "./source.ts";
 
@@ -43,14 +44,20 @@ export const DeploymentSummary = Schema.Struct({
 export type DeploymentSummary = typeof DeploymentSummary.Type;
 
 /** No deployment with this id belongs to the configured app's code lineage. */
-export class DeploymentNotFound extends Schema.TaggedError<DeploymentNotFound>()(
-  "DeploymentNotFound",
-  { app: AppId, deployment: DeploymentId },
-  {
-    httpApiStatus: 404,
-    description: "No deployment matches this id and the app's code lineage.",
+export const DeploymentNotFound = UserFacingError.define({
+  tag: "DeploymentNotFound",
+  status: 404,
+  fields: { app: AppId, deployment: DeploymentId },
+  title: "Deployment no longer available",
+  description: "Executor could not find the requested deployment for this app.",
+  recovery: {
+    action: "Reload the app to use its current deployment. If this continues, check Deployments.",
+    instructions:
+      "Read the app’s current active deployment and retained deployments. Check for a stale deployment reference or an unavailable retained build. Reopen the current deployment through the supported app flow and verify tool discovery. Do not select a different app or roll back without the user’s choice.",
   },
-) {}
+});
+/** Parsed missing deployment. */
+export type DeploymentNotFound = typeof DeploymentNotFound.Type;
 
 /** The app changed since the caller read it; retry against the current pointer. */
 export class AppDeploymentChanged extends Schema.TaggedError<AppDeploymentChanged>()(

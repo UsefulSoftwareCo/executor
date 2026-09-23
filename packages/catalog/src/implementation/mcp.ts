@@ -1,7 +1,7 @@
 /** Remote MCP imports retain ordinary source. Catalogs stay live and account-specific. */
 import { Effect } from "effect";
-import { bearerResourceMetadata } from "@executor-js/sdk/core";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { probeOAuthChallenge } from "@executor-js/sdk/core";
+import { type HttpClient } from "effect/unstable/http";
 import { generateRemoteApp } from "@executor-js/app-templates";
 import { parseDestination, type HostEgress, type UrlPolicy } from "@executor-js/utils/url-policy";
 import {
@@ -10,13 +10,14 @@ import {
   type McpImportAuth,
 } from "../contracts/catalog.ts";
 
-const fail = (reason: string) => new CatalogImportFailed({ reason });
+const fail = (code: CatalogImportFailed["code"], reason: string) =>
+  new CatalogImportFailed({ code, reason });
 
 const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
   Effect.gen(function* () {
     const url = yield* Effect.try({
       try: () => new URL(value ?? ""),
-      catch: () => fail("This MCP entry has no valid server URL."),
+      catch: () => fail("mcp_url", "This MCP entry has no valid server URL."),
     });
     if (
       !["https:", "http:"].includes(url.protocol) ||
@@ -28,6 +29,7 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
       parseDestination(url.href, policy) === undefined
     ) {
       return yield* fail(
+        "mcp_url",
         "Use an HTTP MCP server URL without embedded credentials or placeholders.",
       );
     }
@@ -36,26 +38,23 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
 
 /** Inspect only response headers and release streams; an auth error alone does not establish OAuth support. */
 const advertisesOAuth = (url: string, client: HttpClient.HttpClient) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const response = yield* HttpClient.withScope(client).get(url, {
-        headers: { accept: "application/json, text/event-stream" },
-      });
-      if (
-        (response.status < 200 || response.status >= 300) &&
-        ![401, 403, 405].includes(response.status)
-      ) {
-        return yield* fail(
-          "Could not check this MCP server's sign-in methods. Try again or choose a method explicitly.",
-        );
-      }
-      return bearerResourceMetadata(response.headers["www-authenticate"]) !== undefined;
-    }),
-  ).pipe(
-    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-    Effect.timeout("10 seconds"),
-    Effect.mapError(() =>
+  Effect.gen(function* () {
+    const response = yield* probeOAuthChallenge(url, client);
+    if (
+      (response.status < 200 || response.status >= 300) &&
+      ![401, 403, 405].includes(response.status)
+    ) {
+      return yield* fail(
+        "mcp_probe",
+        "Could not check this MCP server's sign-in methods. Try again or choose a method explicitly.",
+      );
+    }
+    yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+    return response.resourceMetadata !== undefined;
+  }).pipe(
+    Effect.mapError((error) =>
       fail(
+        error._tag === "TimeoutError" ? "mcp_timeout" : "mcp_probe",
         "Could not check this MCP server's sign-in methods. Try again or choose a method explicitly.",
       ),
     ),
@@ -85,6 +84,11 @@ function authentication(
       Effect.mapError((error) =>
         fail(
           error instanceof McpError && error.reason === "unauthorized"
+            ? "mcp_auth_missing"
+            : error instanceof McpError && error.reason === "timeout"
+              ? "mcp_timeout"
+              : "mcp_discovery",
+          error instanceof McpError && error.reason === "unauthorized"
             ? "This MCP server requires authentication but did not advertise OAuth. Choose a sign-in method and try again."
             : "Could not discover this MCP server. Check its URL and try again.",
         ),
@@ -100,7 +104,7 @@ export const generateMcpApp = (
   choice: McpImportAuth = "auto",
 ) =>
   Effect.gen(function* () {
-    if (entry.kind !== "mcp") return yield* fail("Choose an MCP catalog entry.");
+    if (entry.kind !== "mcp") return yield* fail("mcp_entry", "Choose an MCP catalog entry.");
     const url = yield* mcpUrl(entry.connectUrl, egress.policy);
     const discovery = yield* mcpUrl(entry.oauthDiscoveryUrl ?? url, egress.policy);
     const auth = yield* authentication(entry, choice, discovery, egress.client);
@@ -110,7 +114,10 @@ export const generateMcpApp = (
         entry.auth.header,
       );
       if (!parsed?.[1] || parsed[2] === undefined)
-        return yield* fail("This MCP server needs a custom authentication helper.");
+        return yield* fail(
+          "mcp_auth_header",
+          "This MCP server needs a custom authentication helper.",
+        );
       header = { name: parsed[1], prefix: parsed[2] };
     }
     return yield* generateRemoteApp(entry.name, url, "mcp", {
@@ -119,4 +126,4 @@ export const generateMcpApp = (
         ? { apiKey: { header: header.name, prefix: header.prefix } }
         : {}),
     });
-  }).pipe(Effect.catchTag("TemplateError", (error) => Effect.fail(fail(error.reason))));
+  }).pipe(Effect.catchTag("TemplateError", (error) => Effect.fail(fail(error.code, error.reason))));

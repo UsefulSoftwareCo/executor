@@ -5,7 +5,7 @@ import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
@@ -34,7 +34,7 @@ const singleSource = arraySource
 
 layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
   it.effect(scenarios.resourceAccess.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -486,7 +486,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
     ),
   );
   it.effect(scenarios.groupAuthoring.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

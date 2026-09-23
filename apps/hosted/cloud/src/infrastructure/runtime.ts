@@ -134,17 +134,12 @@ export const cloudRuntime = Effect.fn(function* (
                     "__executor_rpc.js": appRpcBridge(bundle.mainModule),
                   },
                   compatibilityDate: "2026-07-30",
-                  compatibilityFlags:
-                    context.workflow === undefined
-                      ? ["nodejs_compat", "global_fetch_strictly_public"]
-                      : ["nodejs_compat"],
-                  // The private outbound service follows public Worker routes.
-                  // Supplying it explicitly also works inside native Workflows.
-                  ...(command.operation === "requirements"
-                    ? { globalOutbound: null }
-                    : context.workflow === undefined
-                      ? {}
-                      : { globalOutbound: outbound }),
+                  compatibilityFlags: ["nodejs_compat"],
+                  // Validation and discovery can also run inside a native Workflow,
+                  // without a workflow execution context. Its implicit outbound is
+                  // not a Fetcher. Always use the private service, which enforces
+                  // public routing; the strictly-public flag here would bypass it.
+                  globalOutbound: command.operation === "requirements" ? null : outbound,
                 })),
               ),
             )

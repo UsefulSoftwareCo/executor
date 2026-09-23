@@ -4,7 +4,7 @@ import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 const Profile = Schema.Struct({
@@ -27,7 +27,7 @@ const capture=workflow({input:object({})},async ctx=>ctx.step.do("identity",asyn
 export default defineApp({accounts:{service,extra:service.many()}},{queries:{who},mutations:{tick},workflows:{capture},schedules:{tick:interval({minutes:1},tick,{})}});`;
 layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
   it.effect(scenarios.hostedProfiles.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

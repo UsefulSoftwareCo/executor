@@ -63,7 +63,7 @@ export function QueryResult<A, E>({
     onInitial: () => ({ error: null, content: pending }),
     onSuccess: ({ value }) => ({ error: null, content: children(value) }),
     onFailure: (failure) => ({
-      error: <Failure cause={failure.cause} retry={retry} />,
+      error: <Failure cause={failure.cause} retry={retry} retrying={failure.waiting} />,
       content: Option.match(AsyncResult.value(failure), {
         onNone: () => null,
         onSome: children,

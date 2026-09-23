@@ -4,6 +4,8 @@ export {
   CatalogImport,
   CatalogImportFailed,
   CatalogUnavailable,
+  GraphqlImport,
+  graphqlCatalogAuth,
   McpImportAuth,
   PreparedApp,
 } from "./catalog.ts";

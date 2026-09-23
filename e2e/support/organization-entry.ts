@@ -66,21 +66,21 @@ export const holdOrganizationEntry = Effect.gen(function* () {
   };
 });
 
-/** Observe real inventory reads across root restoration and canonical URL replacement. */
-export const trackOrganizationInventory = Effect.gen(function* () {
+/** Observe real resource reads across root restoration and canonical URL replacement. */
+export const trackOrganizationResources = Effect.gen(function* () {
   const browser = yield* Browser;
   const paths: string[] = [];
   const requested = (request: Request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === "GET" && /^\/api\/organizations\/[^/]+\/inventory$/.test(path))
+    if (request.method() === "GET" && /^\/api\/organizations\/[^/]+\/resources$/.test(path))
       paths.push(path);
   };
-  yield* browser.use("Observe inventory requests", (page) =>
+  yield* browser.use("Observe resource requests", (page) =>
     Promise.resolve(page.on("request", requested)),
   );
   yield* Effect.addFinalizer(() =>
     browser
-      .use("Stop observing inventory requests", (page) =>
+      .use("Stop observing resource requests", (page) =>
         Promise.resolve(page.off("request", requested)),
       )
       .pipe(Effect.orDie),

@@ -3,7 +3,6 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { emit } from "./emit.ts";
 import { nativePlatform, platformArchive, release } from "./config.ts";
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
@@ -69,16 +68,12 @@ const build = Effect.gen(function* () {
     output,
   );
   yield* installNodeRuntime(runtime);
-  yield* emit(
-    path.join(root, "apps/local/desktop/src"),
-    path.join(runtime, "apps/local/desktop/src"),
-  );
   yield* fs.writeFileString(
     path.join(runtime, "desktop-server.mjs"),
     `import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
 Object.assign(process.env, packagedRuntimeEnvironment(process.env));
 process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
-await import("./apps/local/desktop/src/server.js");
+await import("./runtime/desktop.mjs");
 `,
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);

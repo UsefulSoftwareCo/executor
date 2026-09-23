@@ -7,7 +7,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { holdQuery } from "../support/query-transition.ts";
@@ -24,7 +24,7 @@ const Batch = Schema.Struct({
 });
 layer(HostedLive, { excludeTestServices: true })("Optimistic observability", (it) => {
   it.effect(scenarios.optimisticObservability.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

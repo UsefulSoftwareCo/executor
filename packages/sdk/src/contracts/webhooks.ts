@@ -1,3 +1,4 @@
+import { AppProviderFailed } from "./tools.ts";
 import { ProfileId } from "./shared.ts";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Durable, account-bound webhook subscriptions. Products authorize management; callbacks authenticate in app code. */
@@ -87,6 +88,7 @@ export class WebhookFailed extends Schema.TaggedError<WebhookFailed>()(
 ) {}
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
 export const WebhookErrors = [
+  AppProviderFailed,
   ...ProfileErrors,
   StorageError,
   CredentialsError,

@@ -7,7 +7,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 
@@ -74,7 +74,7 @@ const Completed = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
   it.effect(scenarios.appUi.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

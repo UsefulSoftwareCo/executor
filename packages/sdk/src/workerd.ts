@@ -15,3 +15,5 @@ export {
   invocationWorkflow,
   invocationWorkflowControls,
 } from "./implementation/worker-workflow-rpc.ts";
+export { bindingWorkerdApps } from "./implementation/binding-workerd-apps.ts";
+export { workerdHostHandler } from "./implementation/workerd-client.ts";

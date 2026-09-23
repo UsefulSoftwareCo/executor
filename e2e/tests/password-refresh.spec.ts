@@ -1,7 +1,7 @@
 import { layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openSignedOutLogin, retainedDraft } from "../support/sign-in-refresh.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors, password } from "../support/actors.ts";
@@ -9,7 +9,7 @@ import { refreshVisiblePage } from "../support/query-transition.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Password refresh", (it) => {
   it.effect(scenarios.passwordRefresh.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser,

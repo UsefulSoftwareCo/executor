@@ -836,6 +836,35 @@ export const makeSqlOrmAdapter = (
       const idColumn = table.getIdColumn();
       const prepared = yield* prepareValues(table, options.update, false);
 
+      // Equality on the supplied primary key has an exact conflict target. Let the
+      // database arbitrate concurrent inserts instead of racing a read then create.
+      const condition = options.where;
+      if (
+        (provider === "postgresql" || provider === "cockroachdb" || provider === "sqlite") &&
+        condition !== undefined &&
+        Condition.$is("Compare")(condition) &&
+        condition.column.isId &&
+        condition.operator === "=" &&
+        !isAbsentKey(condition.value) &&
+        Equal.equals(condition.value, options.create[idColumn.ormName])
+      ) {
+        const created = yield* prepareValues(table, options.create, true);
+        const conflict =
+          Object.keys(prepared.encoded).length === 0
+            ? sql`DO NOTHING`
+            : sql`DO UPDATE SET ${sql.update(prepared.encoded)}`;
+        const statement = sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, [created.encoded], undefined)} ON CONFLICT (${sql(idColumn.names.sql)}) ${conflict}`;
+        if (!options.returning) {
+          yield* statement;
+          return undefined;
+        }
+        const rows = yield* sql<RawRow>`${statement} RETURNING ${returningList(sql, table)}`;
+        const row = rows[0];
+        return row === undefined
+          ? yield* selectById(table, condition.value)
+          : yield* Effect.fromResult(decodeResult(row, table));
+      }
+
       // MSSQL has no row count on `.raw`, so the update reports itself through
       // `OUTPUT INSERTED`: one round trip when a row already exists.
       if (provider === "mssql" && Object.keys(prepared.encoded).length > 0) {

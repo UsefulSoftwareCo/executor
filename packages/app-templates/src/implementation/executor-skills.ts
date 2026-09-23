@@ -38,6 +38,9 @@ export const readExecutorSkills = Effect.gen(function* () {
 }).pipe(
   Effect.mapError(
     () =>
-      new TemplateError({ reason: "Build apps before loading the Executor authoring reference." }),
+      new TemplateError({
+        code: "authoring_reference",
+        reason: "Build apps before loading the Executor authoring reference.",
+      }),
   ),
 );

@@ -12,7 +12,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         const browser = yield* Browser;
         const read = (path: string) =>
           browser.use(`Request ${path}`, (page) => page.context().request.get(path));
-        const shell = yield* read("/login");
+        const shell = yield* read("/org/routing-fixture/apps");
         expect(shell.status()).toBe(200);
         const html = yield* browser.use("Read the dashboard document", () => shell.text());
         expect(html).toContain('id="root"');

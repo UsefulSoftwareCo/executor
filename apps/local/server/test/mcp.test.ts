@@ -763,12 +763,16 @@ async function verify(directory: string, source: string) {
     const detail = await Effect.runPromise(read.dashboard.app({ params: { app: first.id } }));
     assert.ok(detail.deployments.some((deployment) => deployment.id === first.activeDeployment));
     const sourceRead = await Effect.runPromise(
-      read.dashboard.source({ params: { app: first.id, deployment: first.activeDeployment } }),
+      read.dashboard.source({
+        query: {},
+        params: { app: first.id, deployment: first.activeDeployment },
+      }),
     );
     assert.equal(sourceRead.files[0]?.content, source);
     const wrongLineage = await Effect.runPromise(
       Effect.flip(
         read.dashboard.source({
+          query: {},
           params: {
             app: first.id,
             deployment: documented.app.activeDeployment,
@@ -833,6 +837,7 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     assert.notEqual(managedAfter.activeDeployment, previous.app.activeDeployment);
     const generatedSource = await Effect.runPromise(
       (await reader(server)).dashboard.source({
+        query: {},
         params: { app: managed.id, deployment: managedAfter.activeDeployment },
       }),
     );

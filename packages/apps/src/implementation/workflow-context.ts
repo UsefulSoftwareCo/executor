@@ -76,7 +76,7 @@ export const makeWorkflowContext = (
       return work.pipe(
         Effect.timeout(timeout),
         Effect.catchTag("TimeoutError", () =>
-          Effect.fail(new WorkflowFailure({ reason: "execution", retryable: true })),
+          Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
         ),
       );
     };

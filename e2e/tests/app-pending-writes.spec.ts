@@ -7,7 +7,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { holdQuery } from "../support/query-transition.ts";
 
@@ -79,7 +79,7 @@ createRoot(root).render(<Page />);`,
 
 layer(HostedLive, { excludeTestServices: true })("Pending app writes", (it) => {
   it.effect(scenarios.appPendingWrites.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

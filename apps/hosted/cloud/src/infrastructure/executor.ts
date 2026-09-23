@@ -41,7 +41,7 @@ import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudBlobs } from "./blobs.ts";
 import { cloudWorkflows } from "./workflows.ts";
 import { cloudRuntime } from "./runtime.ts";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
@@ -76,7 +76,7 @@ export const cloudExecutor = Effect.fn(function* (
     Config.option,
     Config.map(Option.getOrUndefined),
   );
-  const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+  const connection = yield* cloudDatabaseConnection;
   const makeRuntime = yield* cloudRuntime(databases, origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -226,4 +226,4 @@ export const cloudExecutor = Effect.fn(function* (
       ),
     ),
   );
-}, Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
+});

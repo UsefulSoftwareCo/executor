@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 
@@ -16,7 +16,7 @@ const send = mutation({ input: object({}), approval: always() }, async () => ({ 
 export default defineApp({ accounts: {} }, async () => ({  mutations: { send }, schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (it) => {
   it.effect(scenarios.scheduleLoading.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -78,7 +78,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
                 yield* browser.use(
                   "Schedules has no duplicate subhead while metadata loads",
                   (page) =>
-                    page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
+                    page
+                      .getByRole("navigation", { name: "App navigation" })
+                      .getByRole("link", { name: "Schedules", exact: true })
+                      .count(),
                 ),
               ).toBe(0);
               expect(yield* frame("Schedules")).toEqual(reference);
@@ -180,7 +183,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
   );
 
   it.effect(scenarios.scheduleDiscoveryStates.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -206,7 +209,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
             expect(
               yield* browser.use(
                 `${phase}: failed discovery is not an empty schedule list`,
-                (page) => page.getByText("This app has no schedules.", { exact: true }).count(),
+                (page) =>
+                  page.getByRole("heading", { name: "No schedules yet", exact: true }).count(),
               ),
             ).toBe(0);
           });
@@ -264,11 +268,14 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
           page.goto(`/org/${actors.organization.slug}/apps/${emptyApp.id}?view=schedules`),
         );
         yield* browser.use("Successful discovery can report an empty list", (page) =>
-          page.getByText("This app has no schedules.", { exact: true }).waitFor(),
+          page.getByRole("heading", { name: "No schedules yet", exact: true }).waitFor(),
         );
         expect(
           yield* browser.use("An empty schedule list retains the subhead", (page) =>
-            page.getByRole("heading", { name: "Schedules", exact: true, level: 2 }).count(),
+            page
+              .getByRole("navigation", { name: "App navigation" })
+              .getByRole("link", { name: "Schedules", exact: true })
+              .count(),
           ),
         ).toBe(1);
         yield* browser.checkpoint("Confirmed empty schedule list");
@@ -277,7 +284,7 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
   );
 
   it.effect(scenarios.scheduleAccountSetup.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -315,12 +322,12 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         );
         yield* browser.use("Account setup explains the blocked discovery", (page) =>
           page
-            .getByRole("heading", { name: "Choose accounts to load schedules", exact: true })
+            .getByText("Choose accounts in Accounts to start using this app.", { exact: true })
             .waitFor(),
         );
         expect(
           yield* browser.use("Missing accounts do not imply no schedules", (page) =>
-            page.getByText("This app has no schedules.", { exact: true }).count(),
+            page.getByRole("heading", { name: "No schedules yet", exact: true }).count(),
           ),
         ).toBe(0);
         expect(
@@ -330,17 +337,17 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         ).toBe(0);
         yield* browser.checkpoint("Schedules need account setup");
         yield* browser.use("Open account recovery", (page) =>
-          page.getByRole("link", { name: "View accounts", exact: true }).click(),
+          page.getByRole("button", { name: "Go to Accounts", exact: true }).click(),
         );
         yield* browser.use("The account selection action is available", (page) =>
-          page.getByRole("link", { name: "Choose accounts", exact: true }).waitFor(),
+          page.getByRole("button", { name: "Add Schedule fixture account", exact: true }).waitFor(),
         );
       }),
     ),
   );
 
   it.effect(scenarios.hostedScheduleBrowser.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

@@ -5,7 +5,7 @@ import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Organization } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 const Access = Schema.Struct({ revision: Schema.String });
@@ -15,7 +15,7 @@ const service=defineProvider({name:"Group isolation fixture",auth:{key:secrets({
 export default defineApp({accounts:{service}},async ctx=>({name:"Isolation",queries:{identity:query({input:object({})},async()=>ctx.accounts.service.fields.token)}}));`;
 layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
   it.effect(scenarios.resourceIsolation.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

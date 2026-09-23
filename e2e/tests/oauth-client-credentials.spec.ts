@@ -4,7 +4,7 @@ import { Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { scenarios } from "../test-plan.ts";
@@ -19,7 +19,7 @@ const Read = Schema.Struct({ authenticated: Schema.Boolean, generation: Schema.N
 
 layer(HostedLive, { excludeTestServices: true })("Machine OAuth", (it) => {
   it.effect(scenarios.oauthClientForm.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -160,7 +160,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
     ),
   );
   it.effect(scenarios.oauthClientCredentials.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

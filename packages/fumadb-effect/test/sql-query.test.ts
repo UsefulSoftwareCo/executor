@@ -378,6 +378,36 @@ describe("sql query adapter", () => {
         ),
       );
 
+      if (provider === "postgresql" || provider === "cockroachdb" || provider === "sqlite") {
+        it.effect("arbitrates concurrent primary-key upserts", () =>
+          withOrm(provider, (orm) =>
+            Effect.gen(function* () {
+              const rows = yield* Effect.forEach(
+                Array.from({ length: 8 }, (_, index) => index),
+                (index) =>
+                  orm.upsert("users", {
+                    where: (b) => b("id", "=", "shared"),
+                    create: { id: "shared", name: `writer-${index}` },
+                    update: { name: `writer-${index}` },
+                    returning: true,
+                  }),
+                { concurrency: 8 },
+              );
+              expect(rows).toHaveLength(8);
+              expect(rows.every((row) => row.id === "shared")).toBe(true);
+              expect(yield* orm.count("users")).toBe(1);
+              const unchanged = yield* orm.upsert("users", {
+                where: (b) => b("id", "=", "shared"),
+                create: { id: "shared", name: "unused" },
+                update: {},
+                returning: true,
+              });
+              expect(unchanged.name).toMatch(/^writer-/);
+            }),
+          ),
+        );
+      }
+
       it.effect("rolls back a transaction and a nested transaction", () =>
         withOrm(provider, (orm) =>
           Effect.gen(function* () {

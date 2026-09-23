@@ -1,3 +1,4 @@
+import type { ProviderError } from "../contracts/provider-error.ts";
 /** Shared MCP pagination, wire parsing and calls. Transport owns connection lifetime. */
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type {
@@ -40,13 +41,13 @@ export interface WithMcpClient {
   <A, E>(
     mode: "discover" | "call",
     use: (client: Client) => Effect.Effect<A, E>,
-  ): Effect.Effect<A, E | McpError>;
+  ): Effect.Effect<A, E | McpError | ProviderError>;
 }
 /** Shared client operations never cache catalogs or account credentials. */
 export function mcpClient(
   withClient: WithMcpClient,
   timeoutMs: number,
-  failure: (phase: McpError["phase"], error: unknown) => McpError,
+  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
 ) {
   /** Follow the complete live catalog, rejecting duplicate tools and cursor loops. */
   const list = withClient("discover", (client) =>

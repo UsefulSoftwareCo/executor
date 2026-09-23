@@ -6,7 +6,8 @@
   "exports": {
     "./url-policy": "./src/url-policy.ts",
     "./safe-fetch": "./src/safe-fetch.ts",
-    "./user-facing-error": "./src/user-facing-error.ts"
+    "./user-facing-error": "./src/user-facing-error.ts",
+    "./safe-fetch/bun": "./src/safe-fetch-bun.ts"
   },
   "dependencies": {
     "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",

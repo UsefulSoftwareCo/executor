@@ -15,7 +15,13 @@ import {
 } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { platformArchive, platformVersion, platforms, release } from "./config.ts";
+import {
+  npmArchiveBudgetBytes,
+  platformArchive,
+  platformVersion,
+  platforms,
+  release,
+} from "./config.ts";
 
 const RegistryVersion = Schema.Struct({
   version: Schema.String,
@@ -69,6 +75,10 @@ NodeRuntime.runMain(
       for (const pkg of packages) {
         if (!(yield* fs.exists(pkg.file)))
           return yield* Effect.die(new Error(`Missing ${pkg.file}`));
+        if (Number((yield* fs.stat(pkg.file)).size) > npmArchiveBudgetBytes)
+          return yield* Effect.die(
+            new Error(`npm archive exceeds the 180 MiB release budget: ${pkg.file}`),
+          );
         const response = yield* http.get(`${registry}/executor/${pkg.version}`);
         yield* response.text;
         if (response.status !== 404)

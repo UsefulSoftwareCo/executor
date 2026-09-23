@@ -1,3 +1,4 @@
+import { parseProviderError } from "./provider-error.ts";
 import { toPromise } from "./authoring.ts";
 import type { WorkflowControls, WorkflowReads } from "../contracts/workflows.ts";
 import {
@@ -271,9 +272,13 @@ function dispatch(
         fetch: yield* invocationFetch(invocationSignal),
         elicit: makeElicit(delivery, invocationSignal),
       };
-      const definition = yield* safe(
-        () => native.evaluate(bound).pipe(Effect.withSpan("app.evaluate")),
-        new HostEvaluationFailed(),
+      const definition = yield* native.evaluate(bound).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+          const provider = parseProviderError(Cause.squash(cause));
+          return Effect.fail(Option.isSome(provider) ? provider.value : new HostEvaluationFailed());
+        }),
+        Effect.withSpan("app.evaluate"),
       );
       if (request.operation === "workflows") {
         return yield* Effect.forEach(Object.entries(definition.workflows ?? {}), ([name, entry]) =>
@@ -518,9 +523,6 @@ function dispatch(
               input,
             );
           }).pipe(
-            Effect.withSpan("app.operation.execute", {
-              attributes: { "executor.tool.name": toolName, "executor.operation": kind },
-            }),
             Effect.ensuring(
               Effect.sync(() => {
                 running = undefined;
@@ -528,10 +530,19 @@ function dispatch(
             ),
             Effect.catchCause((cause) => {
               if (Cause.hasInterrupts(cause)) return Effect.interrupt;
-              const failure = Schema.decodeUnknownOption(ElicitationFailed)(Cause.squash(cause));
+              const error = Cause.squash(cause);
+              const provider = parseProviderError(error);
+              const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
               return Effect.fail(
-                Option.isSome(failure) ? failure.value : new HostOperationFailed(),
+                Option.isSome(provider)
+                  ? provider.value
+                  : Option.isSome(failure)
+                    ? failure.value
+                    : new HostOperationFailed(),
               );
+            }),
+            Effect.withSpan("app.operation.execute", {
+              attributes: { "executor.tool.name": toolName, "executor.operation": kind },
             }),
           );
           const outputSchema = tool.output;
@@ -574,6 +585,7 @@ function dispatch(
 
 const errorStatus = Match.type<HostError>().pipe(
   Match.tagsExhaustive({
+    ProviderError: () => 502,
     WorkflowFailure: () => 422,
     HostRequestInvalid: () => 400,
     HostAccountsInvalid: () => 422,

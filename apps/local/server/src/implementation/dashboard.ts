@@ -1,3 +1,4 @@
+import { sourceDisplay } from "@executor-js/app-management/source-display";
 import { localResourceHandlers } from "./resources.ts";
 import { localProfileHandlers } from "./profiles.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
@@ -336,7 +337,11 @@ export const dashboard = (
           ? Effect.fail(new AppDeletionBlocked(params))
           : executor.apps.remove(params),
       )
-      .handle("source", ({ params }) => executor.apps.source(params))
+      .handle("source", ({ params, query }) =>
+        executor.apps
+          .source(params)
+          .pipe(Effect.flatMap((source) => sourceDisplay(source, query.format))),
+      )
       .handle("catalog", () => appCatalog.list)
       .handle("importApp", ({ payload }) =>
         Effect.gen(function* () {

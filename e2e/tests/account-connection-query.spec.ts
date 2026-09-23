@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { holdQuery } from "../support/query-transition.ts";
@@ -12,7 +12,7 @@ import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Account connection", (it) => {
   it.effect(scenarios.accountConnectionQuery.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;

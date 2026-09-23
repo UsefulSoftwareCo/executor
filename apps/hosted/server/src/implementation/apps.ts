@@ -1,3 +1,4 @@
+import { sourceDisplay } from "@executor-js/app-management/source-display";
 import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
@@ -23,9 +24,12 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
       Effect.mapError(
         () =>
           new CatalogImportFailed({
+            code: "package_name",
             reason: "The app package could not be named for this organization.",
           }),
       ),
+      Effect.tapError((error) => Effect.annotateCurrentSpan("catalog.error.reason", error.code)),
+      Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
     return (yield* executor.apps.deploy({ owner, name: input.name, files })).app;
   });
@@ -44,9 +48,12 @@ export const importCustomApp = (owner: OwnerId, input: RemoteCustomAppInput) =>
       Effect.mapError(
         () =>
           new CatalogImportFailed({
+            code: "package_name",
             reason: "The app package could not be named for this organization.",
           }),
       ),
+      Effect.tapError((error) => Effect.annotateCurrentSpan("catalog.error.reason", error.code)),
+      Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
     return (yield* executor.apps.deploy({ owner, name: input.name, files })).app;
   });
@@ -131,7 +138,9 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
     )
     .handle("source", ({ params, query }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        appSource(owner, params.app, query.deployment),
+        appSource(owner, params.app, query.deployment).pipe(
+          Effect.flatMap((source) => sourceDisplay(source, query.format)),
+        ),
       ),
     )
     .handle("activate", ({ params, payload }) =>

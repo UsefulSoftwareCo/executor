@@ -1,4 +1,6 @@
+import { ProviderError } from "apps/contracts";
 import { ProfileId } from "./shared.ts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Existing tool call seam, using the configured app's saved accounts. Discovery design is deferred. */
 import { Schema } from "effect";
@@ -81,14 +83,88 @@ export const ToolPage = Schema.Struct({
 export type ToolPage = typeof ToolPage.Type;
 
 /** Evaluating the app's live definition failed before any tool ran. */
-export class AppEvaluationFailed extends Schema.TaggedError<AppEvaluationFailed>()(
-  "AppEvaluationFailed",
-  { app: AppId, deployment: DeploymentId, reason: Schema.String },
-  {
-    httpApiStatus: 502,
-    description: "App evaluation failed. The reason is sanitized, without source or secrets.",
+export const AppEvaluationFailed = UserFacingError.define({
+  tag: "AppEvaluationFailed",
+  status: 502,
+  fields: { app: AppId, deployment: DeploymentId, reason: Schema.String },
+  title: "Tools could not be loaded",
+  description: "Executor could not load this app’s tool definitions.",
+  recovery: {
+    action: "Try again. If this continues, copy the fix prompt to investigate the app.",
+    instructions:
+      "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.",
   },
-) {}
+  retryable: true,
+});
+/** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
+export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;
+
+/** Recognized provider failure, enriched only with trusted selected-account metadata. */
+export const AppProviderFailed = UserFacingError.define({
+  tag: "AppProviderFailed",
+  status: 502,
+  fields: {
+    app: AppId,
+    deployment: DeploymentId,
+    reason: ProviderError.fields.reason,
+    status: ProviderError.fields.status,
+    account: Schema.optional(
+      Schema.Struct({ id: AccountId, label: Schema.String, provider: Schema.String }),
+    ),
+  },
+  presentation: ({ reason, status, account }) => {
+    const service = account === undefined ? "The connected service" : account.provider;
+    const target = account === undefined ? "" : ` for account “${account.label}”`;
+    const http = status === undefined ? "" : ` (HTTP ${status})`;
+    const instructions =
+      "Use the selected app and profile. Inspect only safe status codes and documented provider error codes. Do not print credentials or raw responses, switch accounts, or change authentication methods automatically. Verify tool discovery and a safe read after the repair. Before repeating a failed operation, check whether it already made changes.";
+    switch (reason) {
+      case "unauthorized":
+        return {
+          title: "Authentication failed",
+          description: `${service} rejected the credentials${target}${http}.`,
+          recovery: {
+            action:
+              "Check the account’s credentials. Update its API key or reconnect its sign-in, then try again.",
+            instructions: `The provider rejected authentication. This does not establish whether credentials are expired, revoked, missing, or sent incorrectly. ${instructions}`,
+          },
+          retryable: false,
+        };
+      case "forbidden":
+        return {
+          title: "Permission required",
+          description: `${service} reported insufficient permission${target}${http}.`,
+          recovery: {
+            action: "Check the account’s permissions and the service’s access requirements.",
+            instructions: `The provider explicitly reported insufficient permission. Do not invent required scopes or organization approval requirements. ${instructions}`,
+          },
+          retryable: false,
+        };
+      case "rate_limited":
+        return {
+          title: "Service rate limit reached",
+          description: `${service} is limiting requests${target}${http}.`,
+          recovery: {
+            action: "Wait for the service’s rate limit to reset before trying again.",
+            instructions: `The provider reported a rate limit. Do not replace credentials to fix it. ${instructions}`,
+          },
+          retryable: true,
+        };
+      case "rejected":
+        return {
+          title: "Service rejected the request",
+          description: `${service} refused the request${target}${http}. We could not identify the cause from the available error details.`,
+          recovery: {
+            action: "Check the service’s access requirements and rate limits before trying again.",
+            instructions: `A forbidden HTTP response alone does not prove invalid credentials, insufficient scopes, SSO restrictions, or a rate limit. ${instructions}`,
+          },
+          retryable: false,
+        };
+    }
+  },
+});
+/** Safe, decoded provider failure with product recovery guidance. */
+export type AppProviderFailed = typeof AppProviderFailed.Type;
 
 /** This evaluated app does not expose the named tool. */
 export class ToolNotFound extends Schema.TaggedError<ToolNotFound>()(
@@ -254,6 +330,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppNotDeployed,
         DeploymentNotFound,
         AppEvaluationFailed,
+        AppProviderFailed,
         AccountNotFound,
         AccountRequired,
         AccountSelectionInvalid,
@@ -276,6 +353,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppNotDeployed,
         DeploymentNotFound,
         AppEvaluationFailed,
+        AppProviderFailed,
         AccountNotFound,
         AccountRequired,
         AccountSelectionInvalid,

@@ -100,7 +100,7 @@ export const startManagedServer = (
       current = scope;
       yield* Effect.gen(function* () {
         const child = yield* processes.spawn(
-          ChildProcess.make("node", entry.command, {
+          ChildProcess.make(target.metadata.target === "local" ? "node" : "bun", entry.command, {
             extendEnv: false,
             ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
             env,
@@ -185,8 +185,10 @@ export const startManagedServer = (
       HttpRouter.add("POST", "/restart", control("restart")),
     );
     const services = yield* Layer.build(
-      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      Layer.fresh(
+        HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+          Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+        ),
       ),
     );
     const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));

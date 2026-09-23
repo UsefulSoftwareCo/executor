@@ -1,3 +1,4 @@
+import { SourceDisplayQuery } from "@executor-js/app-management/contracts/source-display";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
@@ -23,6 +24,7 @@ import {
   DeployedApp,
   AppNotDeployed,
   AppEvaluationFailed,
+  AppProviderFailed,
   AppId,
   AppName,
   AppNotFound,
@@ -260,6 +262,7 @@ const toolErrors = [
   AppNotDeployed,
   DeploymentNotFound,
   AppEvaluationFailed,
+  AppProviderFailed,
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
@@ -337,6 +340,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("source", "/dashboard/api/apps/:app/deployments/:deployment", {
         params: { app: AppId, deployment: DeploymentId },
+        query: SourceDisplayQuery,
         success: Deployment,
         error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
       }),
@@ -360,6 +364,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           AppNotDeployed,
           DeploymentNotFound,
           AppEvaluationFailed,
+          AppProviderFailed,
           AccountNotFound,
           AccountRequired,
           AccountSelectionInvalid,

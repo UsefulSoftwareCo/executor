@@ -9,6 +9,7 @@
         "@changesets/cli": "^2.30.0",
         "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect/@effect/vitest@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "@kitlangton/terminal-control": "^1.2.1",
         "@modelcontextprotocol/sdk": "^1.30.0",
@@ -20,6 +21,7 @@
         "autumn-js": "1.2.28",
         "dugite": "3.2.3",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "esbuild": "0.28.2",
         "miniflare": "4.20260730.0",
         "oxfmt": "^0.68.0",
         "oxlint": "^1.83.0",
@@ -127,6 +129,8 @@
       "name": "@executor-js/hosted-self-host",
       "dependencies": {
         "@better-auth/core": "1.7.5",
+        "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-bun@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@electric-sql/pglite": "0.5.8",
@@ -149,10 +153,12 @@
         "zod": "4.5.4",
       },
       "devDependencies": {
+        "@cloudflare/workers-types": "5.20260729.1",
         "@executor-js/authorization": "workspace:*",
         "@executor-js/catalog": "workspace:*",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@types/proper-lockfile": "4.1.4",
+        "esbuild": "0.28.2",
       },
     },
     "apps/hosted/self-host/web": {
@@ -199,6 +205,7 @@
     "apps/hosted/testing": {
       "name": "@executor-js/hosted-testing",
       "dependencies": {
+        "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-bun@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@executor-js/devtools": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
@@ -225,6 +232,7 @@
         "@executor-js/sdk": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "@executor-js/ui": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@hugeicons/core-free-icons": "^4.3.3",
         "@hugeicons/react": "^1.1.10",
         "@tanstack/history": "1.162.4",
@@ -397,6 +405,8 @@
         "@executor-js/sdk": "workspace:*",
         "@napi-rs/keyring": "2.1.0",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "jsonc-parser": "3.3.1",
+        "prettier": "3.9.8",
         "proper-lockfile": "4.1.2",
       },
       "devDependencies": {
@@ -623,8 +633,6 @@
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-        "jsonc-parser": "3.3.1",
-        "prettier": "3.9.8",
         "radix-ui": "^1.4.3",
         "react-markdown": "^10.1.0",
         "remark-gfm": "^4.0.1",

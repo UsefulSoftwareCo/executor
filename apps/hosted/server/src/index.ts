@@ -33,6 +33,7 @@ export * from "./contracts/organization-removal.ts";
 export {
   deleteOrganizationRecords,
   beginOrganizationRemoval,
+  previewOrganizationRemoval,
   removeOrganizationDurably,
 } from "./implementation/organization-removal.ts";
 export { makeOrganizationRemovals } from "./implementation/organization-removals.ts";

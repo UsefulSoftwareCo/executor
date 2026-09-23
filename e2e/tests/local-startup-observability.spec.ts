@@ -1,6 +1,6 @@
 /** Start the actual local entry with failing resources and inspect its retained diagnostic. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Stream, Schema } from "effect";
+import { Config, Effect, FileSystem, Option, Stream, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { randomBytes } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -17,6 +17,12 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
           processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const target = yield* Target,
           evidence = yield* Evidence;
+        const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
+          Config.option,
+        );
+        const command = Option.isSome(packagedEntry)
+          ? [packagedEntry.value, "serve"]
+          : ["apps/local/server/src/main.ts"];
         for (const stage of ["listen", "storage", "runtime"] as const) {
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-startup-" });
           const secret = randomBytes(32).toString("hex");
@@ -26,7 +32,7 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
               "synthetic invalid resource",
             );
           const child = yield* processes.spawn(
-            ChildProcess.make("node", ["apps/local/server/src/main.ts"], {
+            ChildProcess.make("node", command, {
               extendEnv: false,
               env: {
                 PATH: process.env.PATH ?? "",

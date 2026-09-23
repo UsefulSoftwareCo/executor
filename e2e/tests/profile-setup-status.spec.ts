@@ -5,13 +5,13 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { webhookRegistrationFixture } from "../support/webhook-registration.ts";
 import { scenarios } from "../test-plan.ts";
 layer(HostedLive, { excludeTestServices: true })("Account setup status", (it) => {
   it.effect(scenarios.profileSetupStatus.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -107,7 +107,10 @@ export default defineApp({accounts:{service}},{queries:{ready:query({input:objec
         yield* browser.checkpoint("Pending provider setup stays invisible");
         yield* provider.fail;
         yield* browser.use("The provider failure is shown", (page) =>
-          page.getByRole("alert").filter({ hasText: "Account setup failed" }).waitFor(),
+          page
+            .getByRole("alert")
+            .filter({ hasText: "Background setup failed. Retry setup." })
+            .waitFor(),
         );
         yield* browser.use("Retry is available after failure", (page) =>
           page.getByRole("button", { name: "Retry setup", exact: true }).waitFor(),
@@ -119,7 +122,7 @@ export default defineApp({accounts:{service}},{queries:{ready:query({input:objec
         yield* browser.use("The error disappears after successful setup", (page) =>
           page
             .getByRole("alert")
-            .filter({ hasText: "Account setup failed" })
+            .filter({ hasText: "Background setup failed. Retry setup." })
             .waitFor({ state: "hidden" }),
         );
         yield* browser.use("Successful setup has no status controls", (page) =>

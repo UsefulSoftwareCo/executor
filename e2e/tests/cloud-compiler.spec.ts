@@ -5,14 +5,14 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
   it.effect(scenarios.cloudCatalogInstall.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser,
@@ -93,7 +93,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
     ),
   );
   it.effect(scenarios.cloudCompilerDependencies.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

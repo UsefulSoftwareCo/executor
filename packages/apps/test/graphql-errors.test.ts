@@ -12,7 +12,9 @@ test("valid GraphQL failures stay distinct from malformed responses and omit ups
   );
   const privateValue = "synthetic-private-upstream-value";
   let reply: unknown = { data: { thing: { good: "ok", bad: null } } };
+  const userAgents: (string | undefined)[] = [];
   const server = createServer(async (request, response) => {
+    userAgents.push(request.headers["user-agent"]);
     let body = "";
     for await (const chunk of request) body += chunk;
     const input = Schema.decodeUnknownSync(
@@ -34,6 +36,7 @@ test("valid GraphQL failures stay distinct from malformed responses and omit ups
     const tool = tools.query_thing;
     assert.ok(tool);
     assert.deepEqual(await Effect.runPromise(tool.run({}, {})), { good: "ok", bad: null });
+    assert.deepEqual(userAgents, ["Executor", "Executor"]);
     for (const data of [null, { thing: { good: "ok", bad: null } }]) {
       reply = { data, errors: [{ message: privateValue, extensions: { internal: privateValue } }] };
       await assert.rejects(Effect.runPromise(tool.run({}, {})), (error: unknown) => {
@@ -49,6 +52,13 @@ test("valid GraphQL failures stay distinct from malformed responses and omit ups
       Effect.runPromise(tool.run({}, {})),
       (error: unknown) => Schema.is(GraphqlError)(error) && error.reason === "invalid_response",
     );
+    await Effect.runPromise(
+      graphqlToolsEffect({
+        url: `http://127.0.0.1:${address.port}`,
+        headers: { "User-Agent": "Custom client" },
+      }),
+    );
+    assert.equal(userAgents.at(-1), "Custom client");
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>

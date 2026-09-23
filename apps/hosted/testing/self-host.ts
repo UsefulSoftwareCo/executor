@@ -1,8 +1,7 @@
 /** Explicit local test server. Production's entry point never mounts these auth shortcuts. */
-import { createServer } from "node:http";
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
+import * as BunRuntime from "@effect/platform-bun/BunRuntime";
+import * as BunServices from "@effect/platform-bun/BunServices";
 import { localTelemetry } from "@executor-js/telemetry/local";
 import { Config, Console, Effect, Layer } from "effect";
 import { CliError, Command, Flag } from "effect/unstable/cli";
@@ -29,8 +28,8 @@ const command = Command.make("test-self-host", {
           );
           return HttpRouter.serve(routes, { disableLogger: true }).pipe(
             Layer.provide(
-              NodeHttpServer.layer(createServer, {
-                host: target.hostname === "[::1]" ? "::1" : "127.0.0.1",
+              BunHttpServer.layer({
+                hostname: target.hostname === "[::1]" ? "::1" : "127.0.0.1",
                 port: target.port,
               }),
             ),
@@ -39,7 +38,7 @@ const command = Command.make("test-self-host", {
       ).pipe(
         Layer.provide(selfHostDatabase),
         Layer.provide(localTelemetry(directory, "executor-selfhost-test")),
-        Layer.provide(NodeHttpServer.layerHttpServices),
+        Layer.provide(BunHttpServer.layerHttpServices),
       );
       yield* Console.log(`Starting local test server at ${target.origin}/login`);
       yield* Layer.launch(server);
@@ -47,9 +46,9 @@ const command = Command.make("test-self-host", {
   ),
 );
 
-NodeRuntime.runMain(
+BunRuntime.runMain(
   Command.run(command, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
+    Effect.provide(BunServices.layer),
     Effect.catch((error) =>
       CliError.isCliError(error)
         ? Effect.fail(error)

@@ -36,6 +36,15 @@ const storeRetries: OrganizationRemovalRetries = {
   backoff: "linear",
 };
 
+/** Count private resources without returning their metadata to the organization owner. */
+export const previewOrganizationRemoval = Effect.gen(function* () {
+  const current = yield* requireOrganizationOwner;
+  const executor = yield* Effect.flatten(HostedExecutor);
+  const apps = yield* executor.apps.list({ owner: current.owner });
+  const accounts = yield* executor.accounts.list({ owner: current.owner });
+  return { organization: current.organization, apps: apps.length, accounts: accounts.length };
+});
+
 /**
  * Accept a removal: check authority, refuse for work the caller can still
  * finish, then write the tombstone. From the moment the tombstone commits no
@@ -47,19 +56,17 @@ const storeRetries: OrganizationRemovalRetries = {
  * the first run instead of starting a second over the same records.
  */
 export const beginOrganizationRemoval = Effect.gen(function* () {
-  const current = yield* requireOrganizationOwner;
+  const started = yield* previewOrganizationRemoval;
   const executor = yield* Effect.flatten(HostedExecutor);
   const removals = yield* OrganizationRemovals;
-  const organization = current.organization;
-  const owner = current.owner;
+  const organization = started.organization;
+  const owner = organizationOwner(organization);
   // Refusals a retry would clear: a running workflow, a pinned account. Taking
   // them here keeps a transient refusal free, because nothing is hidden yet.
   yield* executor.owners.check({ owner });
-  const apps = yield* executor.apps.list({ owner });
-  const accounts = yield* executor.accounts.list({ owner });
   const record = yield* removals.begin(organization, organization);
   return {
-    started: { organization, apps: apps.length, accounts: accounts.length },
+    started,
     instance: record.instance,
   };
 });

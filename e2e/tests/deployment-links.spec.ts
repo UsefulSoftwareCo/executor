@@ -2,13 +2,13 @@ import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
   it.effect(scenarios.deploymentLinks.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
@@ -16,6 +16,9 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
         const { metadata } = yield* Target;
         const origin = metadata.origin;
         yield* browser.use("Open the public homepage", (page) => page.goto("/home"));
+        yield* browser.use("Dismiss the first-visit preview notice", (page) =>
+          page.getByRole("dialog").getByRole("button", { name: "Got it", exact: true }).click(),
+        );
         const prompt = yield* browser.use("Read the copied setup prompt", (page) =>
           page.locator("button[data-copy]").first().getAttribute("data-copy"),
         );

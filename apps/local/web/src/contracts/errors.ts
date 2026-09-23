@@ -131,6 +131,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Account selection needs attention",
         "Review this app's account requirements and update its selection.",
       ),
+    AppProviderFailed: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     AppEvaluationFailed: () =>
       message(
         "Tools could not load",

@@ -105,10 +105,16 @@ export function AppDetailLayout({
               )}
             </h1>
           </div>
-          {(actions || setupPicker) && (
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-1 empty:hidden max-[640px]:w-full">
-              {actions}
-              {setupPicker}
+          {(actions || setupPicker || (app === undefined && canInspectSource)) && (
+            <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 max-[740px]:min-h-11 max-[640px]:w-full">
+              {app === undefined && canInspectSource ? (
+                <Skeleton className="h-9 w-28 max-[740px]:h-11" />
+              ) : (
+                <>
+                  {actions}
+                  {setupPicker}
+                </>
+              )}
             </div>
           )}
         </div>

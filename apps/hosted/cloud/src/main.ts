@@ -17,6 +17,7 @@ import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
 /** Cloudflare composition edge. Alchemy owns the Effect runtime and request scopes. */
 import { executorSkillFiles } from "@executor-js/app-templates/executor";
 import authoring from "../.generated/executor-authoring.json" with { type: "json" };
+import { hideRemovedOrganizations } from "./implementation/organization-removal.ts";
 import {
   browserTelemetry,
   hostedOAuthCallback,
@@ -281,6 +282,11 @@ export default Api.make(
       HttpRouter.add("GET", "/", homepage(auth.cookiePrefix, analytics.hero)),
       HttpRouter.add("*", "/api/webhooks/:appId/:subscriptionId", hostedWebhookCallback).pipe(
         HttpRouter.provideRequest(executor),
+      ),
+      HttpRouter.add(
+        "GET",
+        "/api/auth/organization/list",
+        auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
       ),
       HttpRouter.add("*", "/api/auth/*", auth.handler),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),

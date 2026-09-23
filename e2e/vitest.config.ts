@@ -14,9 +14,11 @@ const cloudMode = Schema.decodeUnknownSync(Schema.Literals(["managed", "attached
 export default defineConfig({
   test: {
     name: target,
-    include: filesForTarget(target, suite, cloudMode),
-    fileParallelism: false,
-    maxWorkers: 1,
+    include: filesForTarget(target, suite, cloudMode, process.env.E2E_TEST_NAME ?? ""),
+    fileParallelism: true,
+    maxWorkers: Schema.decodeUnknownSync(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
+    )(Number(process.env.E2E_WORKERS)),
     testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 180000,
     hookTimeout: 60000,
     teardownTimeout: 30000,

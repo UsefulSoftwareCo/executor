@@ -1,16 +1,25 @@
+import { AppProviderFailed } from "@executor-js/sdk";
+import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
 import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { profileMutations } from "../../contracts/profiles.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
 import { Json, type App, type Tool, type Profile, type ProfileId } from "@executor-js/sdk";
-import { Exit, Schema } from "effect";
-import { useState } from "react";
+import { Cause, Exit, Option, Schema } from "effect";
+import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
+import { useId, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Code } from "@executor-js/ui/dashboard/code";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
-import { appToolReadiness, type AccountSummary } from "@executor-js/ui/contracts/dashboard";
+import {
+  appToolReadiness,
+  type AccountSummary,
+  type FailureProps,
+} from "@executor-js/ui/contracts/dashboard";
+import { ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
+import { AppSectionHeader, AppSectionTitle } from "@executor-js/ui/dashboard/app-section-header";
 import { Button } from "@executor-js/ui/components/button";
 import { Textarea } from "@executor-js/ui/components/textarea";
 import { appError, callToolAtom, toolListAtom } from "../../contracts/apps.ts";
@@ -72,7 +81,7 @@ export function AppTools({
           deployment: app.activeDeployment ?? undefined,
           accounts: JSON.stringify(profile?.accounts ?? {}),
         })}
-        Failure={HostedFailure}
+        Failure={ToolsFailure}
         selected={selected}
         onSelect={(tool) => {
           void navigate({
@@ -105,6 +114,35 @@ export function AppTools({
     </>
   );
 }
+
+/** Tool discovery keeps each expected error's explanation and safe recovery prompt. */
+function ToolsFailure<E extends UserFacingError>({ cause, retry, retrying }: FailureProps<E>) {
+  const href = useRouterState({ select: (state) => state.location.href });
+  const error = Option.getOrElse(Cause.findErrorOption(cause), () => new UnexpectedError());
+  const props = {
+    context: `While loading tools for this app and selected profile.\nPage: ${href}`,
+    retry,
+    retrying,
+    retryStatus: "Checking tools",
+    layout: "panel" as const,
+  };
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      <AppSectionHeader>
+        <AppSectionTitle>Tools</AppSectionTitle>
+      </AppSectionHeader>
+      <div className="flex flex-1 items-start justify-center px-6 py-12 max-[740px]:px-4 max-[740px]:py-6">
+        <div className="w-full max-w-lg">
+          {Schema.is(AppProviderFailed)(error) ? (
+            <ProviderErrorNotice {...props} error={error} />
+          ) : (
+            <ErrorNotice {...props} error={error} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function ToolRunner({
   app,
   tool,
@@ -123,7 +161,8 @@ function ToolRunner({
   const [input, setInput] = useState("{}");
   const [pending, setPending] = useState(false);
   const [output, setOutput] = useState<string>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<string | AppProviderFailed>();
+  const inputId = useId();
   return (
     <div className="tool-runner flex flex-col gap-4 mt-6 min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere [&_pre]:text-[11px] [&_pre]:bg-muted [&_pre]:p-[12px] [&_pre]:rounded-[6px]">
       <form
@@ -143,29 +182,42 @@ function ToolRunner({
             expectedProfileRevision: revision,
           });
           setPending(false);
-          if (Exit.isFailure(result)) setError(appError(result.cause));
-          else setOutput(JSON.stringify(result.value, null, 2));
+          if (Exit.isFailure(result)) {
+            const failure = Cause.findErrorOption(result.cause);
+            setError(
+              Option.isSome(failure) && Schema.is(AppProviderFailed)(failure.value)
+                ? failure.value
+                : appError(result.cause),
+            );
+          } else setOutput(JSON.stringify(result.value, null, 2));
         }}
       >
-        <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-          Input
+        <div className="flex flex-col gap-2.25 text-[13px] font-medium">
+          <label htmlFor={inputId}>Input</label>
           <Textarea
+            id={inputId}
             className="font-mono text-xs min-h-40"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             spellCheck={false}
             disabled={pending}
           />
-        </label>
+        </div>
         <Button className="mt-3" disabled={pending}>
           {pending ? "Running…" : "Run tool"}
         </Button>
       </form>
-      {error && (
-        <p role="alert" className="auth-error text-destructive text-[13px]">
-          {error}
-        </p>
-      )}
+      {error !== undefined &&
+        (typeof error === "string" ? (
+          <p role="alert" className="auth-error text-destructive text-[13px]">
+            {error}
+          </p>
+        ) : (
+          <ProviderErrorNotice
+            error={error}
+            context={`While running tool ${tool.name}. Check whether it made changes before trying again.`}
+          />
+        ))}
       {output !== undefined && (
         <section aria-label="Tool result">
           <Code code={output} copyable copyLabel="Copy result" />

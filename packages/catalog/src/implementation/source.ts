@@ -32,6 +32,7 @@ const read = (url: string, egress: HostEgress) =>
     for (let hop = 0; hop <= maximumHops; hop++) {
       if (destination === undefined) return yield* Effect.fail(new DestinationRefused());
       const response = yield* egress.client.get(destination);
+      yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.location;
         // Release the hop's body before issuing the next request.
@@ -48,6 +49,7 @@ const read = (url: string, egress: HostEgress) =>
       if (text.length > 20_000_000)
         return yield* Effect.fail(
           new CatalogImportFailed({
+            code: "document_size",
             reason: "This API definition exceeds the 20 MB import limit.",
           }),
         );
@@ -64,24 +66,34 @@ const read = (url: string, egress: HostEgress) =>
 export const readApiDocument = (url: string, egress: HostEgress) =>
   Effect.gen(function* () {
     const text = yield* read(url, egress).pipe(
-      Effect.mapError(
-        () =>
-          new CatalogImportFailed({
-            reason: "Could not read this API definition. Check the URL and try again.",
-          }),
+      Effect.mapError((error) =>
+        error instanceof CatalogImportFailed
+          ? error
+          : new CatalogImportFailed({
+              code: "document_fetch",
+              reason: "Could not read this API definition. Check the URL and try again.",
+            }),
       ),
     );
     const trimmed = text.trimStart();
     if (trimmed.startsWith("{") || trimmed.startsWith("["))
       return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
         Effect.mapError(
-          () => new CatalogImportFailed({ reason: "This API definition is not valid JSON." }),
+          () =>
+            new CatalogImportFailed({
+              code: "document_json",
+              reason: "This API definition is not valid JSON.",
+            }),
         ),
       );
     const { parse } = yield* Effect.promise(() => import("yaml"));
     return yield* Effect.try({
       try: () => parse(text) as unknown,
-      catch: () => new CatalogImportFailed({ reason: "This API definition is not valid YAML." }),
+      catch: () =>
+        new CatalogImportFailed({
+          code: "document_yaml",
+          reason: "This API definition is not valid YAML.",
+        }),
     });
   });
 
@@ -103,11 +115,13 @@ export const catalogSource = (client: HttpClient.HttpClient): CatalogSource => {
       Effect.gen(function* () {
         if (entry.kind === "mcp")
           return yield* new CatalogImportFailed({
+            code: "document_kind",
             reason: "MCP entries are generated without an API definition.",
           });
         const url = URL.parse(entry.feeds?.[0] ?? entry.connectUrl ?? "");
         if (url === null || url.protocol !== "https:")
           return yield* new CatalogImportFailed({
+            code: "document_url",
             reason: "The catalog must provide a public HTTPS definition URL.",
           });
         // Registry entries are third-party input: they never reach a host-internal destination.

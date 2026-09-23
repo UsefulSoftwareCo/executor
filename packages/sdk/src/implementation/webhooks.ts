@@ -1,3 +1,5 @@
+import { ProviderError } from "apps/contracts";
+import { appProviderFailure } from "./provider-error.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import type { WorkflowHostControls } from "apps/contracts";
 import type { AppDatabases } from "@executor-js/app-data";
@@ -105,11 +107,12 @@ export const makeWebhooks = (
           command,
         })
         .pipe(
-          Effect.mapError(
-            () =>
-              new WebhookFailed({
-                reason: command.operation === "webhook-handle" ? "delivery" : "definition",
-              }),
+          Effect.mapError((error) =>
+            Schema.is(ProviderError)(error)
+              ? appProviderFailure(state, error)
+              : new WebhookFailed({
+                  reason: command.operation === "webhook-handle" ? "delivery" : "definition",
+                }),
           ),
         );
     });
@@ -127,7 +130,11 @@ export const makeWebhooks = (
         })
         .pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
-          Effect.mapError(() => new WebhookFailed({ reason: "definition" })),
+          Effect.mapError((error) =>
+            Schema.is(ProviderError)(error)
+              ? appProviderFailure(state, error)
+              : new WebhookFailed({ reason: "definition" }),
+          ),
         );
     });
   const outsideTransaction = storage.reactivity.inTransaction.pipe(
@@ -291,7 +298,11 @@ export const makeWebhooks = (
           })
           .pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
-            Effect.mapError(() => new WebhookFailed({ reason: "definition" })),
+            Effect.mapError((error) =>
+              Schema.is(ProviderError)(error)
+                ? appProviderFailure(state, error)
+                : new WebhookFailed({ reason: "definition" }),
+            ),
           );
         const hook = catalog.find((hook) => hook.name === parsed.name);
         if (hook === undefined) return yield* new WebhookFailed({ reason: "definition" });

@@ -3,7 +3,6 @@ import { cloudBlobs } from "./blobs.ts";
 import { cloudOrigin } from "./stage.ts";
 import { PgClient } from "@effect/sql-pg";
 import { RuntimeContext } from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { cloudEmulators } from "./emulators.ts";
@@ -11,7 +10,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 import { Onboarding, OnboardingUnavailable, TeamIconNotFound } from "../contracts/onboarding.ts";
 import { companyLookupLive } from "../implementation/company-profile.ts";
 import { makeOnboarding } from "../implementation/onboarding.ts";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 
 /** Resolve the secret at composition; each request owns its SQL client and company request. */
 export const cloudOnboarding = Effect.gen(function* () {
@@ -24,7 +23,7 @@ export const cloudOnboarding = Effect.gen(function* () {
         `${Redacted.value(emulators.value).company.baseUrl}/v1/brand/retrieve`,
       )
     : companyLookupLive(yield* Config.Redacted("CONTEXT_DEV_API_KEY"));
-  const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+  const connection = yield* cloudDatabaseConnection;
   const service = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const url = yield* connection.connectionString;
@@ -63,4 +62,4 @@ export const cloudOnboarding = Effect.gen(function* () {
         ),
     }),
   );
-}).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
+});

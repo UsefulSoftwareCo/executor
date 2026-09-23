@@ -2,6 +2,7 @@ import { Publication } from "@executor-js/app-registry/contracts";
 import type { Query } from "../../contracts/dashboard.ts";
 import type { ComponentType } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";
+import { RemoteAppForm } from "./custom-app.tsx";
 import { AppCreateForm } from "./app-create.tsx";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
@@ -9,7 +10,11 @@ import { useState, type ReactNode } from "react";
 import { Option, Schema } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
-import { McpImportAuth, type CatalogEntry } from "@executor-js/catalog/contracts";
+import {
+  McpImportAuth,
+  graphqlCatalogAuth,
+  type CatalogEntry,
+} from "@executor-js/catalog/contracts";
 import type { App } from "@executor-js/sdk";
 import type { QueryProps, MutationProps, InstallApp } from "../../contracts/dashboard.ts";
 import { Empty, LoadingRows, ProviderIcon, SearchInput } from "./common.tsx";
@@ -23,14 +28,24 @@ import {
 } from "../components/select.tsx";
 
 /** Explain unsupported imports before a user opens their install form. */
-export const catalogUnavailable = (entry: CatalogEntry) =>
-  entry.kind !== "openapi" && entry.kind !== "mcp"
-    ? `${entry.kind === "graphql" ? "GraphQL" : "CLI"} import is coming later`
-    : !entry.connectUrl
-      ? entry.kind === "mcp"
-        ? "No MCP server URL available"
-        : "No API definition available"
-      : undefined;
+export const catalogUnavailable = (entry: CatalogEntry) => {
+  switch (entry.kind) {
+    case "graphql":
+      return undefined;
+    case "cli":
+      return "CLI imports are not supported";
+    case "mcp":
+      return entry.connectUrl ? undefined : "No MCP server URL available";
+    case "openapi":
+      return entry.connectUrl ? undefined : "No API definition available";
+  }
+};
+const catalogKind = (entry: CatalogEntry) =>
+  entry.kind === "graphql"
+    ? "GraphQL"
+    : entry.kind === "openapi"
+      ? "OpenAPI"
+      : entry.kind.toUpperCase();
 /** One discovery list combines published apps and integration templates, with independent failure states. */
 export function CatalogPage<E, P>({
   query,
@@ -66,7 +81,9 @@ export function CatalogPage<E, P>({
       publication,
     })),
     ...(Option.isSome(templates)
-      ? templates.value.map((entry): Row => ({ kind: "template", entry }))
+      ? templates.value
+          .filter((entry) => entry.kind !== "cli")
+          .map((entry): Row => ({ kind: "template", entry }))
       : []),
   ];
   const title = (row: Row) => (row.kind === "publication" ? row.publication.name : row.entry.name);
@@ -175,11 +192,7 @@ export function CatalogPage<E, P>({
                     </span>
                   </div>
                   <span className="catalog-kind text-[12px] text-muted-foreground min-w-18.75 max-[740px]:col-[2] max-[740px]:text-[11px]">
-                    {row.kind === "publication"
-                      ? "App"
-                      : row.entry.kind === "openapi"
-                        ? "OpenAPI"
-                        : row.entry.kind.toUpperCase()}
+                    {row.kind === "publication" ? "App" : catalogKind(row.entry)}
                   </span>
                   {reason ? (
                     <span className="catalog-unavailable text-muted-foreground text-[12px] max-[740px]:col-[2_/_-1]">
@@ -238,64 +251,93 @@ export function CatalogInstall<E>({
           Add app
         </h1>
       </div>
-      <AppCreateForm
-        mutation={mutation}
-        Failure={Failure}
-        initialName={entry.name}
-        input={(name) => ({ entry: entry.id, name, ...(entry.kind === "mcp" ? { mcpAuth } : {}) })}
-        onCreated={onInstalled}
-        label="Add app"
-        onCancel={onBack}
-        beforeName={
-          <>
-            <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
-              <ProviderIcon name={entry.name} url={entry.domain} large />
-              <div>
-                <h2>{entry.name}</h2>
-                <span className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
-                  {entry.kind === "mcp" ? "MCP" : "OpenAPI"} · {entry.domain}
-                </span>
+      {entry.kind === "graphql" ? (
+        <RemoteAppForm
+          kind="graphql"
+          mutation={mutation}
+          Failure={Failure}
+          initial={{
+            name: entry.name,
+            url: entry.connectUrl ?? "",
+            auth: Option.getOrElse(graphqlCatalogAuth(entry), () => ({
+              type: "apiKey" as const,
+              header: "Authorization",
+              prefix: "Bearer ",
+            })),
+          }}
+          input={(source) => ({
+            entry: entry.id,
+            name: source.name,
+            ...(source.kind === "graphql"
+              ? { graphql: { url: source.url, auth: source.auth } }
+              : {}),
+          })}
+          onInstalled={onInstalled}
+        />
+      ) : (
+        <AppCreateForm
+          mutation={mutation}
+          Failure={Failure}
+          initialName={entry.name}
+          input={(name) => ({
+            entry: entry.id,
+            name,
+            ...(entry.kind === "mcp" ? { mcpAuth } : {}),
+          })}
+          onCreated={onInstalled}
+          label="Add app"
+          onCancel={onBack}
+          beforeName={
+            <>
+              <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
+                <ProviderIcon name={entry.name} url={entry.domain} large />
+                <div>
+                  <h2>{entry.name}</h2>
+                  <span className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
+                    {catalogKind(entry)} · {entry.domain}
+                  </span>
+                </div>
               </div>
-            </div>
-            <p className="catalog-description text-muted-foreground text-[13px] leading-[1.6]">
-              {entry.description}
-            </p>
-          </>
-        }
-      >
-        {(pending) => (
-          <>
-            {entry.kind === "mcp" && (
-              <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-                Sign-in method
-                <Select
-                  value={mcpAuth}
-                  disabled={pending}
-                  onValueChange={(value) => {
-                    const parsed = Schema.decodeUnknownOption(McpImportAuth)(value);
-                    if (Option.isSome(parsed)) setMcpAuth(parsed.value);
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">Automatic</SelectItem>
-                    <SelectItem value="oauth">OAuth</SelectItem>
-                    <SelectItem value="apiKey">API key</SelectItem>
-                    <SelectItem value="none">No authentication</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
-            )}
-            <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-              {entry.kind === "mcp"
-                ? "Tools load live with your selected account."
-                : "Creates editable app source from this API definition."}
-            </span>
-          </>
-        )}
-      </AppCreateForm>
+              <p className="catalog-description text-muted-foreground text-[13px] leading-[1.6]">
+                {entry.description}
+              </p>
+            </>
+          }
+        >
+          {(pending) => (
+            <>
+              {entry.kind === "mcp" && (
+                <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+                  Sign-in method
+                  <Select
+                    value={mcpAuth}
+                    disabled={pending}
+                    onValueChange={(value) => {
+                      const parsed = Schema.decodeUnknownOption(McpImportAuth)(value);
+                      if (Option.isSome(parsed)) setMcpAuth(parsed.value);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Automatic</SelectItem>
+                      <SelectItem value="oauth">OAuth</SelectItem>
+                      <SelectItem value="apiKey">API key</SelectItem>
+                      <SelectItem value="none">No authentication</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
+              <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
+                {entry.kind === "mcp"
+                  ? "Tools load live with your selected account."
+                  : "Creates editable app source from this API definition."}
+              </span>
+            </>
+          )}
+        </AppCreateForm>
+      )}
     </div>
   );
 }

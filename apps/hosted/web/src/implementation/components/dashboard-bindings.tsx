@@ -1,3 +1,6 @@
+import { AppProviderFailed } from "@executor-js/sdk";
+import { Cause, Option, Schema } from "effect";
+import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
 import { parseAppSearch } from "../../contracts/navigation.ts";
 import type { ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
@@ -39,19 +42,30 @@ const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
     />
   );
 };
-const AccountLink = ({ account, children }: AccountLinkProps) => {
+const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
   const { slug: organizationSlug } = useOrganizationRoute();
   return (
     <Link
       to="/org/$organizationSlug/accounts/$accountId"
       params={{ organizationSlug, accountId: account }}
+      {...props}
     >
       {children}
     </Link>
   );
 };
 /** Hosted failures keep auth and transport details out of display components. */
-export function HostedFailure({ cause, retry }: FailureProps<HostedError>) {
+export function HostedFailure({ cause, retry, retrying }: FailureProps<HostedError>) {
+  const error = Cause.findErrorOption(cause);
+  if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
+    return (
+      <ProviderErrorNotice
+        error={error.value}
+        context="While using this app and selected profile."
+        retry={retry}
+        retrying={retrying}
+      />
+    );
   return (
     <Alert className="error-state flex items-start gap-2.5 p-[15px] border border-border rounded-[7px] mb-4 [&_>_svg]:text-destructive [&_>_svg]:shrink-0 [&_>_svg]:mt-0.5 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere [&_>_div]:flex-1 [&_strong]:text-[13px] [&_strong]:font-medium [&_p]:text-[12px] [&_p]:text-muted-foreground [&_p]:mt-0.75 max-[740px]:flex-wrap max-[740px]:[&_>_div]:basis-[calc(100%_-_30px)] max-[740px]:[&_>_button]:ml-6.75">
       <div>

@@ -36,6 +36,13 @@ export const organizationRemovalError = (cause: Cause.Cause<OrganizationRemovalE
     onNone: () => "The organization could not be deleted. Try again.",
   });
 
+/** Removal counts include private resources that the normal inventory must omit. */
+export const organizationRemovalPreviewAtom = Atom.family((organization: OrganizationId) =>
+  CloudClient.query("organizationRemoval", "preview", { params: { organization } }).pipe(
+    Atom.refreshOnWindowFocus,
+  ),
+);
+
 /**
  * Publish the removal to every organization reader before the dialog closes, so
  * the entry route cannot send this tab back into an organization that is gone.

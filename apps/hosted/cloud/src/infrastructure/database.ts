@@ -9,8 +9,8 @@ import { adopt } from "alchemy/AdoptPolicy";
 import { retain } from "alchemy/RemovalPolicy";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { developmentDatabase } from "./development.ts";
-import { cloudOrigin, testStage } from "./stage.ts";
-import { previewDatabase } from "./preview-database.ts";
+import { cloudOrigin, testStage, type TestStage } from "./stage.ts";
+import { previewDatabase, previewDatabaseProvider } from "./preview-database.ts";
 import { testStageConnectionLimit } from "../contracts/test-stage-lifetime.ts";
 
 /**
@@ -45,8 +45,113 @@ const migrationUrl = (origin: Planetscale.PostgresOrigin) => {
   return Redacted.make(url.toString());
 };
 
+/** Provision the preview schema and local fixtures before exposing its runtime URL. */
+const preparedPreviewDatabase = (stage: TestStage) =>
+  Effect.gen(function* () {
+    const preview = yield* previewDatabase(stage);
+    const migrations = globalThis.__ALCHEMY_RUNTIME__
+      ? yield* Command.Exec.ref("Migrations")
+      : yield* Command.Exec("Migrations", {
+          command: "node src/migrate.ts",
+          env: {
+            DATABASE_URL: preview.migrationUrl,
+            // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
+            BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
+            BETTER_AUTH_URL: stage.origin,
+          },
+          memo: false,
+          timeout: "5 minutes",
+        });
+    if (!globalThis.__ALCHEMY_RUNTIME__) {
+      const fixtureOutput = yield* Config.String("TEST_STAGE_ACCOUNTS_OUTPUT").pipe(Config.option);
+      const fixtureControl = yield* Config.Redacted("TEST_STAGE_FIXTURE_CONTROL").pipe(
+        Config.option,
+      );
+      if (Option.isSome(fixtureControl)) {
+        if (!stage.name.startsWith("test-e2e-"))
+          return yield* Effect.die(
+            new Error("Fixture control requires a dedicated test-e2e- stage"),
+          );
+        yield* Command.Exec("ScenarioFixtures", {
+          command: "node scripts/configure-test-fixtures.ts",
+          env: {
+            ALCHEMY_STAGE: stage.name,
+            BETTER_AUTH_URL: stage.origin,
+            BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
+            TEST_STAGE_FIXTURE_CONTROL: fixtureControl.value,
+            TEST_STAGE_DATABASE_BRANCH: preview.branchName,
+            TEST_STAGE_DATABASE_USERNAME: preview.username,
+            TEST_STAGE_DATABASE_NAME: preview.databaseName,
+            DATABASE_URL: Output.all(preview.migrationUrl, migrations.hash).pipe(
+              Output.map(([url]) => url),
+            ),
+          },
+          memo: false,
+          timeout: "1 minute",
+        });
+      }
+      if (Option.isSome(fixtureOutput)) {
+        const fixtureOrganization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
+          Config.option,
+        );
+        if (!stage.name.startsWith("test-e2e-"))
+          return yield* Effect.die(
+            new Error("Account fixtures require a dedicated test-e2e- stage"),
+          );
+        yield* Command.Exec("TestAccounts", {
+          command: "node scripts/test-accounts.ts",
+          env: {
+            ALCHEMY_STAGE: stage.name,
+            BETTER_AUTH_URL: stage.origin,
+            BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
+            TEST_STAGE_ACCOUNTS_OUTPUT: fixtureOutput.value,
+            TEST_STAGE_DATABASE_BRANCH: preview.branchName,
+            TEST_STAGE_DATABASE_USERNAME: preview.username,
+            TEST_STAGE_DATABASE_NAME: preview.databaseName,
+            ...(Option.isSome(fixtureOrganization)
+              ? { TEST_STAGE_APP_ORGANIZATION: fixtureOrganization.value }
+              : {}),
+            DATABASE_URL: Output.all(preview.migrationUrl, migrations.hash).pipe(
+              Output.map(([url]) => url),
+            ),
+          },
+          memo: false,
+          timeout: "2 minutes",
+        });
+      }
+    }
+    return {
+      origin: Output.all(preview.origin, migrations.hash).pipe(Output.map(([origin]) => origin)),
+      runtimeUrl: Output.all(preview.runtimeUrl, migrations.hash).pipe(Output.map(([url]) => url)),
+    };
+  });
+
+/** Select the database transport once for every Worker and background consumer. */
+export const databaseInfrastructure = Effect.gen(function* () {
+  const stage = yield* testStage;
+  const context = yield* Effect.serviceOption(AlchemyContext);
+  const dev = Option.isSome(context) && context.value.dev;
+  if (!dev && Option.isSome(stage) && (yield* previewDatabaseProvider) === "neon") {
+    const preview = yield* preparedPreviewDatabase(stage.value);
+    return { kind: "neon" as const, url: preview.runtimeUrl };
+  }
+  return { kind: "hyperdrive" as const, resource: yield* DatabaseConnection };
+}).pipe(Effect.orDie);
+
+/** Bind a private Neon URL or native Hyperdrive connection; callers own their SQL pools. */
+export const cloudDatabaseConnection = Effect.gen(function* () {
+  const database = yield* databaseInfrastructure;
+  switch (database.kind) {
+    case "neon":
+      return { connectionString: yield* Output.named(database.url, "PreviewDatabaseUrl") };
+    case "hyperdrive":
+      return yield* Cloudflare.Hyperdrive.Connect(database.resource);
+  }
+}).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
+
 /**
- * One binding on both paths. Alchemy dev declares only a local Hyperdrive passthrough;
+ * Hyperdrive serves production, explicit PlanetScale previews and local development.
+ * Alchemy dev declares only a local Hyperdrive passthrough;
  * deployment declares PlanetScale resources and a real Hyperdrive connection.
  * Props are resolved during infrastructure evaluation, never inside a Worker request.
  */
@@ -82,56 +187,11 @@ export const DatabaseConnection = Effect.gen(function* () {
       });
       const stage = yield* testStage;
       if (Option.isSome(stage)) {
-        const preview = yield* previewDatabase(stage.value);
-        const migrations = yield* Command.Exec("Migrations", {
-          command: "node src/migrate.ts",
-          env: {
-            DATABASE_URL: preview.migrationUrl,
-            // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
-            BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
-            BETTER_AUTH_URL: stage.value.origin,
-          },
-          memo: false,
-          timeout: "5 minutes",
-        });
-        const fixtureOutput = yield* Config.String("TEST_STAGE_ACCOUNTS_OUTPUT").pipe(
-          Config.option,
-        );
-        if (Option.isSome(fixtureOutput)) {
-          const fixtureOrganization = yield* Config.String("TEST_STAGE_APP_ORGANIZATION").pipe(
-            Config.option,
-          );
-          if (!stage.value.name.startsWith("test-e2e-"))
-            return yield* Effect.die(
-              new Error("Account fixtures require a dedicated test-e2e- stage"),
-            );
-          yield* Command.Exec("TestAccounts", {
-            command: "node scripts/test-accounts.ts",
-            env: {
-              ALCHEMY_STAGE: stage.value.name,
-              BETTER_AUTH_URL: stage.value.origin,
-              BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
-              TEST_STAGE_ACCOUNTS_OUTPUT: fixtureOutput.value,
-              TEST_STAGE_DATABASE_BRANCH: preview.branchName,
-              TEST_STAGE_DATABASE_USERNAME: preview.username,
-              TEST_STAGE_DATABASE_NAME: preview.databaseName,
-              ...(Option.isSome(fixtureOrganization)
-                ? { TEST_STAGE_APP_ORGANIZATION: fixtureOrganization.value }
-                : {}),
-              DATABASE_URL: Output.all(preview.migrationUrl, migrations.hash).pipe(
-                Output.map(([url]) => url),
-              ),
-            },
-            memo: false,
-            timeout: "2 minutes",
-          });
-        }
+        const preview = yield* preparedPreviewDatabase(stage.value);
         const authority = yield* certificateAuthority;
         return {
           // Depending on the migration hash keeps the Worker from serving an empty schema.
-          origin: Output.all(preview.origin, migrations.hash).pipe(
-            Output.map(([origin]) => origin),
-          ),
+          origin: preview.origin,
           originConnectionLimit: testStageConnectionLimit,
           caching: { disabled: true },
           mtls: { sslmode: "verify-full" as const, caCertificateId: authority.mtlsCertificateId },

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
@@ -12,7 +12,7 @@ import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
   it.effect(scenarios.membersRefresh.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;
@@ -55,7 +55,10 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
         yield* checkContent("Waiting member refresh");
         yield* failed.release;
         yield* browser.use("The member read error is visible", (page) =>
-          page.locator(".membership-empty [role=alert]").waitFor({ state: "visible" }),
+          page
+            .locator("[role=alert]")
+            .filter({ hasText: "Members unavailable" })
+            .waitFor({ state: "visible" }),
         );
         yield* checkContent("Failed member refresh");
         yield* browser.checkpoint("Invitation and members survive the read failure");
@@ -65,7 +68,10 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
         yield* checkContent("Retrying member refresh");
         yield* recovery.release;
         yield* browser.use("The member read error clears", (page) =>
-          page.locator(".membership-empty [role=alert]").waitFor({ state: "hidden" }),
+          page
+            .locator("[role=alert]")
+            .filter({ hasText: "Members unavailable" })
+            .waitFor({ state: "hidden" }),
         );
         yield* checkContent("Recovered member refresh");
         yield* browser.checkpoint("Invitation and members survive recovery");
@@ -74,7 +80,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
   );
 
   it.effect(scenarios.queryRefresh.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;

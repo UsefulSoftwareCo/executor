@@ -2,7 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { dashboardLoadingProbe } from "../support/dashboard-loading.ts";
 import { scenarios } from "../test-plan.ts";
 import { SessionHint } from "../support/contracts.ts";
@@ -10,7 +10,7 @@ import { Target } from "../support/platform.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
   it.effect(scenarios.sessionHint.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;
@@ -69,7 +69,7 @@ layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
             );
             expect(response?.status()).toBe(200);
             yield* probe.sessionRequested;
-            yield* probe.inventoryRequested;
+            yield* probe.resourcesRequested;
             yield* browser.use("The hint paints the shell before verification", (page) =>
               page
                 .getByRole("heading", { name: /^Apps(?:\s*\d+)?$/ })

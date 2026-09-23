@@ -40,7 +40,7 @@ filter; filtered cases are not counted as executed cases in the evidence view.
 
 - `Target`: exact origin, runtime, data directory and private configuration.
 - `SessionClients`: native Effect HTTP clients with independent cookie jars.
-- `Actors`: owner/admin/member sessions, shared by the hosted suite's Layer.
+- `Actors`: fresh owner/admin/member sessions and an organization for each hosted case.
 - `Api`: records each real request while preserving the test trace ID.
 - `BrowserDriver`: scoped Playwright process, shared by a suite.
 - `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
@@ -59,19 +59,105 @@ and stop child processes. Owned server process groups get a 15-second graceful
 shutdown window before Effect escalates to SIGKILL. `Effect.forEach` bounds concurrent writes and waits for
 interrupted children. Transport failures are typed and do not expose credentials.
 
-Self-host account setup runs once through real signup/invitation HTTP endpoints
-before Vitest starts. Its synthetic cookie state is stored privately in the run
-directory. Reloading an actor Layer does not repeat sign-in or consume login rate
-limits. Browser login tests still exercise the actual password form.
+Each case owns its fixtures. Self-host runs signup and invitations against a new
+process and PGlite directory. Local uses its own process, database and pairing key.
+Cloud shares one Worker and database while each case owns a random organization
+and three synthetic identities. A runner-owned loopback process provisions Cloud
+fixtures. It keeps database and signing credentials in memory. Neither those
+credentials nor fixture endpoints are installed in the Worker.
+
+Files run in parallel with four workers by default. Use `--workers 1` through
+`--workers 32` to set the bound. A file's cases retain their declared sequence.
+Interactive recordings use one worker. Filters load only applicable files.
+Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
+when operations are independent. Keep dependent actions ordered.
+
+## Shared SDK and interactive CLI
+
+`e2e/sdk/index.ts` exports the same operations used by the runner and CLI.
+`startEnvironment`, `startDeployment`, and `createScenario` require an Effect
+scope. Closing that scope releases the owned resources, including after failure
+or interruption. `runSuite` and `runDeployedSuite` own their complete run scopes.
+`withHostedCase` composes actors inside the case's evidence and cleanup lifetime.
+Tests that start signed out use `withCase`.
+
+Start a foreground environment in one terminal. Keep it running while exploring:
+
+```sh
+bun run testing start --target self-host --handle .local/testing.json
+```
+
+Then use another terminal:
+
+```sh
+bun run testing create --handle .local/testing.json --label 'Account picker'
+# Copy the returned id into SCENARIO_ID. It is an identifier, not a credential.
+bun run testing seed --handle .local/testing.json --id "$SCENARIO_ID" --preset populated
+bun run testing request --handle .local/testing.json --id "$SCENARIO_ID" --role member --path /api/viewer
+bun run testing open --handle .local/testing.json --id "$SCENARIO_ID" --role owner
+bun run testing list --handle .local/testing.json
+bun run testing remove --handle .local/testing.json --id "$SCENARIO_ID"
+bun run testing stop --handle .local/testing.json
+```
+
+The handle is a private file with a generated loopback capability. Do not commit
+or share it. `stop` waits for cleanup. Ctrl-C also closes the environment scope.
+An abrupt machine or process kill cannot run finalizers; temporary deployed
+stages additionally have a lease for scheduled cleanup. Cleanup failures remain
+failures and retain logs. Restarting an environment never adopts another run's
+scenario identities.
+
+Targets are `local`, `self-host`, `cloud` (managed local Worker), and `deployed`.
+Local has no organizations, so it supports paired requests and browser use but
+not organization populations. Deployed environments need the same explicit
+credential launcher as `e2e:deployed`. The CLI stays alive to own their teardown.
+`request` accepts `--method` and a JSON `--body`. All requests stay on the scenario's
+product origin and use its own role session. `start --headless` keeps browser operations unattended. `open` owns an authenticated browser
+and records screenshots, requests and video with the normal evidence adapter.
+
+The `populated` recipe creates eight apps, 32 accounts, two groups, and 1,000
+app records. `large` creates 24 apps, 200 accounts, and 10,000 records. Each recipe
+owns a private GitHub emulator instance and real issued tokens. App queries make
+authenticated HTTP calls to its private repository. Names and data are repeatable;
+identities and emulator instances are unique. Override volumes with:
+
+```sh
+bun run testing seed --handle .local/testing.json --id "$SCENARIO_ID" \
+  --shape '{"seed":7,"apps":3,"accounts":12,"records":500}'
+```
+
+Repeating the same successful recipe returns its receipt. A different recipe or
+a failed seed requires a fresh scenario. Empty-state tests start empty. Other
+tests can opt into realistic data through the same operation:
+
+```ts
+import { seedOrganization, populations } from "../sdk/index.ts";
+// Inside withHostedCase, where Api and Actors are already provided:
+const data = yield * seedOrganization(populations.populated);
+// Use data.apps, data.accounts and data.groups in product API/UI assertions.
+```
+
+Turn an exploration into a committed test in `e2e/tests/` and register its title
+and targets in `test-plan.ts`. Use the same SDK recipe and role API operations,
+then add assertions for the behavior observed. `testing-sdk.spec.ts` proves
+parallel populated organizations, equal resource names, real provider requests,
+cross-organization denial and survival after another scenario fails.
+`testing-cli.spec.ts` exercises the actual CLI through creation, role requests,
+seeding, browser opening and complete teardown.
 
 ## Targets and shared behavior
 
 The self-host release-image check runs against a prebuilt Docker image, outside
 the source-server targets. It covers first-admin setup, an npm-dependent app,
 encrypted account access, and retained login/app execution after replacing the
-container with the same volume. It runs with explicit settings, local defaults,
+container with the same volume. It also compiles an authored frontend with
+Tailwind and checks stored app data before and after replacement. It runs with explicit settings, local defaults,
 and Railway's domain/port variables plus a root-owned volume. It also checks
-non-root execution, generated key permissions, and refusal to replace missing keys:
+non-root execution, generated key permissions, and refusal to replace missing keys.
+The explicit-settings scenario also checks allowed internal imports, preserved Host
+headers, and DNS rejection before any connection, including redirected imports.
+It clones and pushes app source through the image's Git HTTP server, then checks
+the committed files through the workspace API before and after replacement:
 
 ```sh
 EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \
@@ -84,6 +170,12 @@ removes its own container and volume. It does not publish the image.
 Build with `--build-arg EXECUTOR_BUILD_VERSION=<commit-sha>`. The image embeds this
 identity in both dashboard assets and the server environment. The release check
 requires the same version in a delivered server trace before and after restart.
+To check an upgrade, pull the previous image and set
+`EXECUTOR_E2E_DOCKER_PREVIOUS_IMAGE=<previous-tag>`. The scenario creates data with
+that image, replaces it with `EXECUTOR_E2E_DOCKER_IMAGE`, and checks retained
+login, encrypted credentials, app data, frontend availability and execution. It
+reads the previous build version from the image and checks the new version after
+replacement.
 
 | Command                 | Target                                                          | Current coverage                                              |
 | ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
@@ -104,17 +196,22 @@ normal tool prerequisites.
 Setting `E2E_CLOUD_URL` explicitly attaches to that server instead. A failed
 attached target stays failed; it does not fall back to a local instance. The
 report identifies the origin, managed/attached mode and local Worker runtime.
-Deployed-stage role tests use `E2E_CLOUD_ACTORS`; attached onboarding uses the
-stage's generated emulator fixture. Use `bun run e2e:deployed` to let the runner own deployment and teardown automatically.
+Attached role tests require the runner-owned `E2E_FIXTURES` loopback capability;
+attached onboarding uses the stage's generated emulator fixture. Use `bun run e2e:deployed` to let the runner own deployment and teardown automatically.
 
 `tests/hosted-shared.spec.ts` contains one Effect program with no target branches
 in its assertions or UI steps: signed-out rejection, owner/admin/member permissions,
 app deployment, account connection, tool discovery/invocation and both dashboard
 views. A scoped finalizer deletes only its created app/account, including on failure.
 
-Cloud load capacity, cross-tenant coverage and Axiom retrieval remain separate work.
-The cloud report marks remote telemetry as not collected. Do not run the large
-self-host workload on the shared cloud stage database.
+The SDK isolation scenario also runs on the disposable Cloud stage. Deployed
+runs use a scoped Axiom reader for delivered telemetry. This is correctness
+coverage; it does not establish Cloud load capacity.
+
+Neon stages connect directly to Neon's pooled endpoint with verified TLS and
+allocate no Hyperdrive configuration. Explicit PlanetScale stages retain Hyperdrive.
+Realistic concurrent CI coverage of that path is tracked in
+[#508](https://github.com/UsefulSoftwareCo/executor-next/issues/508).
 
 ### MCP server scenarios
 
@@ -146,7 +243,7 @@ credential launcher; never put a real key in a command argument. Optional
 ```sh
 # With model API variables supplied by your private launcher:
 bun run e2e:self-host --test-name 'Claude Code connects'
-# Also supply E2E_CLOUD_URL and E2E_CLOUD_ACTORS for both hosted targets:
+# Supply the Cloud environment attachment for both hosted targets:
 bun run e2e:parity --test-name 'Claude Code connects'
 ```
 
@@ -305,8 +402,8 @@ Each onboarding case begins signed out. Google and GitHub complete OAuth token
 exchanges; email retrieves its actual delivered code from the mail emulator.
 Passkeys use browser WebAuthn and real server registration/assertion endpoints
 with a virtual authenticator. They do not exercise a native password-manager
-sheet. Ordinary role fixtures use the normal running dev server's account-switch
-HTTP action, which keeps setup traffic out of the email sign-in rate limit.
+sheet. Ordinary role fixtures use the runner-owned fixture process, which keeps
+setup traffic out of the email sign-in rate limit.
 Onboarding cases never use those prepared sessions.
 
 The local test origin is `http://localhost:<port>`. Browsers treat localhost as
@@ -357,25 +454,21 @@ its model-endpoint configuration documented above; onboarding does not need it.
 
 ### Signed-in actors for other hosted tests
 
-Deploy to a dedicated stage whose slug starts with `e2e-`, using the normal Alchemy
-stack. Set `TEST_STAGE_ACCOUNTS_OUTPUT` to a new absolute path under ignored `.local/`.
-The separate fixture job runs after migrations, checks the exact stage origin,
-isolated branch name, database name, and migration username. It creates three
-synthetic sessions valid for three hours, covering the deployed job's two-hour
-budget. Alchemy supplies the exact database name and migration role. Production
-branch credentials cannot pass the required stage-branch identity check.
-It writes mode 0600 and refuses to overwrite an existing file. A later deploy with a
-new output path refreshes the sessions. No fixture auth plugin or provisioning route
-is added to the Worker. Fixture setup is not a login test.
+Use `bun run e2e:deployed --test-name 'Testing SDK|hosted roles' --workers 2`.
+The runner deploys one dedicated `test-e2e-*` stage for the whole suite. After
+migrations, a local Alchemy command transfers its database and signing settings
+to the runner's authenticated fixture process. The setup validates the exact
+stage origin, branch, database, and username. Every case then receives new
+identities with one-hour sessions. Tests never receive infrastructure credentials.
 
-```sh
-E2E_CLOUD_URL=https://e2e-your-stage.executor.engineering \
-E2E_CLOUD_ACTORS=/absolute/path/to/.local/cloud-actors.json \
-bun run e2e:parity
-```
+Cloud cleanup restores cleanup authority for only its reserved synthetic
+organization, calls the real product removal endpoint, waits for removal, then
+deletes its synthetic users. This also handles partially failed provisioning and
+membership changes. The enclosing deployment scope removes its stage even when
+setup or tests fail. Existing stages are outside that scope.
 
-Missing, expired or mismatched sessions fail explicitly. For an anonymous check,
-use `bun run e2e:cloud --test-name 'cloud endpoint'` with only `E2E_CLOUD_URL`.
+For an anonymous check, `E2E_CLOUD_URL` alone is sufficient with
+`--test-name 'cloud endpoint'`. Do not pass an old shared actor file to a suite.
 
 ### Workflow durability during a host deployment
 
@@ -389,7 +482,7 @@ The sleep scenario defaults to one second. On a dedicated deployed stage, set
 `E2E_WORKFLOW_HOLD_MS=180000` to provide a three-minute host deployment window:
 
 ```sh
-# Also supply E2E_CLOUD_URL and E2E_CLOUD_ACTORS as above.
+# Supply the running environment attachment as described above.
 E2E_WORKFLOW_HOLD_MS=180000 bun run e2e:cloud --test-name 'workflow sleep preserves'
 ```
 

@@ -5,7 +5,7 @@ import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
@@ -22,7 +22,7 @@ export default defineApp({ accounts: { workspaces: service.many() } }, async ctx
 
 layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
   it.effect(scenarios.sdkQueryBudgets.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

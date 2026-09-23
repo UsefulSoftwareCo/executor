@@ -2,6 +2,7 @@
 export * from "./contracts/index.ts";
 export { createExecutor, createRemoteExecutor } from "./implementation/create.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
+export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
 export { bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
 export { subscribeAppQuery } from "./implementation/live.ts";
 export {

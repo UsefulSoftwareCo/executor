@@ -4,7 +4,7 @@ import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Settings = Schema.Struct({ actor: Schema.String });
@@ -23,7 +23,7 @@ const work = mutation({ input: object({}), approval: always() }, async () => ({ 
 export default defineApp({ accounts: {} }, async () => ({  mutations: { work }, schedules: { review: interval({ minutes: 1 }, work, {}), creator: interval({ minutes: 1 }, work, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
   it.effect(scenarios.hostedSchedules.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

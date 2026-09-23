@@ -386,7 +386,7 @@ export function AppDetailPage({
                 return context === undefined && profile !== undefined ? (
                   empty
                 ) : (
-                  <div className="max-w-3xl p-5 max-[740px]:p-4">
+                  <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
                     <AppAccounts
                       key={context?.key ?? "default"}
                       app={current.app}

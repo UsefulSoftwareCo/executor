@@ -132,7 +132,7 @@ export const appAtom = Atom.family((app: AppId) =>
 /** Immutable retained source follows the deployment selected by its live app atom. */
 export const sourceAtom = Atom.family(
   (key: { readonly app: AppId; readonly deployment: DeploymentId }) =>
-    DashboardClient.query("dashboard", "source", { params: key }),
+    DashboardClient.query("dashboard", "source", { params: key, query: { format: "display" } }),
 );
 
 /** Tool discovery reruns only when this app's execution inputs change. */

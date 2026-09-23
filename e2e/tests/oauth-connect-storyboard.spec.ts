@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
@@ -21,7 +21,7 @@ const App = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
   it.effect(scenarios.oauthConnectStoryboard.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

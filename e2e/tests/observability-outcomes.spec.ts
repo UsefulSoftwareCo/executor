@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -39,7 +39,7 @@ const SentryEvent = Schema.fromJsonString(
 
 layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) => {
   it.effect(scenarios.observabilityOutcomes.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -89,10 +89,13 @@ export default defineApp({ accounts: {} }, async () => {
               return id;
             }),
           );
-        const waitFor = (id: string, name: string) =>
+        const waitFor = (id: string, name: string, providerSpans?: number) =>
           telemetry.query(id).pipe(
             Effect.flatMap((result) =>
-              result.data.some(({ span }) => span.operationName === name)
+              result.data.some(({ span }) => span.operationName === name) &&
+              (providerSpans === undefined ||
+                result.data.filter(({ span }) => span.operationName === "provider.http.request")
+                  .length === providerSpans)
                 ? Effect.succeed(result)
                 : Effect.fail(new Error(`Missing delivered ${name} span`)),
             ),
@@ -161,14 +164,8 @@ export default defineApp({ accounts: {} }, async () => {
         );
         expect(bulk.status).toBe(200);
         expect(bulk.body).toEqual({ requests: 340 });
-        const bulkTrace = yield* waitFor(yield* latestTrace(), "sdk.tools.call").pipe(
-          Effect.filterOrFail(
-            (result) =>
-              result.data.filter(({ span }) => span.operationName === "provider.http.request")
-                .length === 340,
-            () => new Error("The large invocation lost provider spans"),
-          ),
-        );
+        // App and host spans arrive in separate export batches. Wait for the complete trace.
+        const bulkTrace = yield* waitFor(yield* latestTrace(), "sdk.tools.call", 340);
         expect(
           bulkTrace.data.filter(({ span }) => span.operationName === "provider.http.request"),
         ).toHaveLength(340);

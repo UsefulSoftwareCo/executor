@@ -75,7 +75,7 @@ const deploymentsQuery = Atom.family((key: AppKey) =>
 const sourceQuery = Atom.family((key: SourceKey) =>
   HostedClient.query("apps", "source", {
     params: { organization: key.organization, app: key.app },
-    query: { deployment: key.deployment },
+    query: { deployment: key.deployment, format: "display" },
   }),
 );
 /** One page evaluates the current app/account catalog. */

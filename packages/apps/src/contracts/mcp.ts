@@ -1,7 +1,8 @@
+import type { ProviderError } from "./provider-error.ts";
 /** MCP protocol data uses Effect Schema; executable tool methods use Effect. */
 import { type Effect, type Redacted, Schema } from "effect";
 import type { Elicit, ElicitationFailed } from "./elicitation.ts";
-import { HttpUrl } from "./schema.ts";
+import { AccountId, HttpUrl } from "./schema.ts";
 import { JsonObject, type JsonValue } from "./schema.ts";
 
 /** Upstream MCP resource bounds, independent of the outer codemode execution budget. */
@@ -27,6 +28,7 @@ export const mcpSdkTimerCeilingMs = 2_147_483_647;
 /** Server and headers for this selected account. Headers are a credential snapshot. */
 export const McpToolsOptions = Schema.Struct({
   url: HttpUrl,
+  accountId: Schema.optional(AccountId),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   signal: Schema.optional(Schema.instanceOf(AbortSignal)),
   timeoutMs: Schema.optional(
@@ -82,7 +84,7 @@ export interface McpTool extends McpToolMetadata {
   readonly run: (
     context: McpToolContext,
     input: JsonValue,
-  ) => Effect.Effect<McpToolResult, McpError | ElicitationFailed>;
+  ) => Effect.Effect<McpToolResult, McpError | ProviderError | ElicitationFailed>;
 }
 /** The discovered catalog keyed by remote tool name. */
 export type McpTools = Readonly<Record<string, McpTool>>;

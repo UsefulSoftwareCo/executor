@@ -1,3 +1,5 @@
+import { ProviderError } from "./provider-error.ts";
+export { ProviderError } from "./provider-error.ts";
 import {
   WorkflowCommand,
   WorkflowFailure,
@@ -223,6 +225,7 @@ export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
 export const HostRequirementsError = Schema.Union([HostRequestInvalid, HostDeclarationInvalid]);
 /** Inspection can fail while binding accounts or evaluating the live definition. */
 export const HostInspectError = Schema.Union([
+  ProviderError,
   HostRequestInvalid,
   HostDeclarationInvalid,
   HostAccountsInvalid,
@@ -247,6 +250,7 @@ export const HostDataError = HostCallError;
 
 /** Safe error envelope; no author exception, source, account fields or stack is serialized. */
 export const HostError = Schema.Union([
+  ProviderError,
   WorkflowFailure,
   HostRequestInvalid,
   HostAccountsInvalid,

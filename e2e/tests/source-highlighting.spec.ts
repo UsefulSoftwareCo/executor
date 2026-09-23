@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -62,7 +62,7 @@ A **bold** description with \`inline code\`.
 
 layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => {
   it.effect(scenarios.sourceHighlighting.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;

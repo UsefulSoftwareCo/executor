@@ -8,7 +8,13 @@ export const sourceFiles = (
   files: readonly { readonly path: string; readonly content: string }[],
 ) =>
   Schema.decodeUnknownEffect(SourceFiles)(files).pipe(
-    Effect.mapError(() => new TemplateError({ reason: "The app source could not be generated." })),
+    Effect.mapError(
+      () =>
+        new TemplateError({
+          code: "source_generation",
+          reason: "The app source could not be generated.",
+        }),
+    ),
   );
 
 /** Retain package identity and dependencies. Host-provided apps and Effect are not installed twice. */

@@ -5,19 +5,21 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Inventory } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
+import { seedOrganization } from "../sdk/index.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
   it.effect(scenarios.dashboardLoading.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
           api = yield* Api,
           browser = yield* Browser,
           evidence = yield* Evidence;
+        yield* seedOrganization({ seed: 7, apps: 2, accounts: 4, records: 20 });
         const inventory = yield* body(
           Inventory,
           yield* api.request(
@@ -49,7 +51,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                 yield* browser.use(`Open ${section}`, (page) =>
                   page.goto(`/org/${actors.organization.slug}/${section}`),
                 );
-                yield* probe.inventoryRequested;
+                yield* probe.resourcesRequested;
                 yield* probe.sessionRequested;
                 yield* browser.use("The destination heading is visible", (page) =>
                   page
@@ -66,7 +68,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                 );
                 const requests = probe.requests;
                 expect(requests).toContain(
-                  `/api/organizations/${actors.organization.slug}/inventory`,
+                  `/api/organizations/${actors.organization.slug}/resources`,
                 );
                 expect(requests.some((path) => path.includes("passkey"))).toBe(false);
                 expect(

@@ -55,6 +55,37 @@ instructions for your client. MCP uses browser sign-in.
 
 The health endpoint is [http://localhost:4400/health](http://localhost:4400/health).
 
+### Runtime packaging
+
+The Docker build produces a standalone server bundle. It prepares the trusted
+Worker host and framework once; authored apps still compile inside workerd.
+The image retains PGlite, one native workerd binary, the dashboard, and a small native host for Git, keys, locks, and HTTP. Executor,
+authored apps, workflows, and Motel share one workerd executable. Neither Bun nor
+Node ships in the runtime image. Build tools
+and the workspace dependency tree stay in the build stage.
+
+The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
+their shared libraries, and the small set of tools used to prepare data volumes.
+Perl, package managers, Git's optional scripts, and their dependencies stay in a
+separate build stage. `/usr/share/runtime-system-packages.txt` records the copied
+system package versions; their license notices remain under `/usr/share`.
+
+Effect composes product services inside workerd. The native host forwards public
+HTTP to a private Worker socket. Outbound requests use the shared URL policy and
+workerd's network services, which check resolved destinations before connecting.
+HTTP Host and TLS server names are retained. Protocol adapters check each redirect.
+
+`/app/runtime-packages.txt` lists bundled and external dependencies. License
+notices and server source maps ship with the image. `/app/runtime-size.json`
+reports each component's uncompressed bytes. Packaging fails above a 600 MiB
+runtime payload or if an asset link escapes the package. This payload budget
+excludes system layers; it is not the compressed download size. Image layer measurements also include the system files and native host.
+
+The **Executor releases** workflow can verify a branch with its `channel`
+input set to `build`. Publishing requires an explicit release dispatch.
+Both native architectures must pass the Docker release scenarios before the
+workflow updates a channel tag. See the [release check](../../../e2e/README.md#targets-and-shared-behavior).
+
 ## Railway
 
 Create an image service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`,
@@ -65,7 +96,7 @@ Deploy, or redeploy if the service already started, so it picks up the new
 public domain. Open the domain and create the first administrator.
 
 Executor derives its HTTPS origin from `RAILWAY_PUBLIC_DOMAIN`, generates keys,
-and prepares Railway's root-owned mount before dropping to the `node` user.
+and prepares Railway's root-owned mount before dropping to the `executor` user.
 No secret variables, external database, custom start command, or
 `RAILWAY_RUN_UID` override are needed. Use one replica. For a custom domain,
 set `BETTER_AUTH_URL` to its exact HTTPS origin. App web pages still require
@@ -74,7 +105,12 @@ wildcard DNS as described below.
 ## Data and updates
 
 The named `pglite-data` volume stores the database, app source, builds, app data,
-diagnostics, and generated `auth-secret.key` and `encryption.key` files under `/app/data`. Keep one server instance per data volume.
+and generated `auth-secret.key` and `encryption.key` files under `/app/data`. Keep one server instance per data volume.
+
+Motel uses a separate store at `/app/motel-data`. Container replacement discards
+telemetry by default. Mount a separate volume there only if retention is wanted.
+Product upgrades do not import old Motel data. See [workerd storage and rollback](../../../notes/self-host-workerd.md)
+for the native PostgreSQL import and an export that preserves later product writes.
 
 Before an upgrade, stop the server and back up the whole volume, including the
 key files. Keep any explicit secret overrides in your secret manager. An existing

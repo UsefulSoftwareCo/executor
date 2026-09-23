@@ -1,6 +1,7 @@
+import type { ProviderError } from "./provider-error.ts";
 /** GraphQL discovery contracts. Catalogs are evaluated with the selected account. */
 import { Schema, type Effect } from "effect";
-import { HttpUrl, JsonObject, type JsonValue } from "./schema.ts";
+import { AccountId, HttpUrl, JsonObject, type JsonValue } from "./schema.ts";
 
 /** Provider timeout policy, independent of any enclosing operation deadline. */
 export const GraphqlClientLimits = Schema.Struct({
@@ -17,6 +18,7 @@ export const defaultGraphqlClientLimits = GraphqlClientLimits.make({
 /** Endpoint and credential snapshot for one app evaluation. */
 export const GraphqlToolsOptions = Schema.Struct({
   url: HttpUrl,
+  accountId: Schema.optional(AccountId),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   signal: Schema.optional(Schema.instanceOf(AbortSignal)),
   timeoutMs: Schema.optional(
@@ -113,7 +115,10 @@ export interface GraphqlTool {
   readonly description: string;
   readonly readOnly: boolean;
   readonly input: Schema.Decoder<JsonValue>;
-  readonly run: (context: unknown, input: JsonValue) => Effect.Effect<JsonValue, GraphqlError>;
+  readonly run: (
+    context: unknown,
+    input: JsonValue,
+  ) => Effect.Effect<JsonValue, GraphqlError | ProviderError>;
 }
 /** One tool per root field; subscriptions require a separate long-lived host. */
 export type GraphqlTools = Readonly<Record<string, GraphqlTool>>;

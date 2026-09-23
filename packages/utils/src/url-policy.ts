@@ -64,9 +64,9 @@ export const httpsOnlyUrlPolicy: UrlPolicy = { allowLoopbackHttp: false, allowed
 
 /**
  * What a host needs to fetch a URL a user supplied: the rule, and the client that enforces it.
- * A Node host passes the connect-time client from `@executor-js/utils/safe-fetch`, which
- * re-checks every resolved address. Cloudflare has no dispatcher seam, so it passes the
- * platform fetch client and relies on `global_fetch_strictly_public` and `parseDestination`.
+ * Native hosts pass a checked client: Node checks DNS at connection time; Bun pins fetch
+ * to a checked address while preserving Host and TLS identity. Cloudflare passes the platform
+ * fetch client and relies on `global_fetch_strictly_public` and `parseDestination`.
  */
 export interface HostEgress {
   readonly policy: UrlPolicy;

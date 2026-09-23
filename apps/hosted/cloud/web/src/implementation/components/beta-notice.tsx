@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { betaNoticeDismissalKey } from "@executor-js/ui/contracts/early-preview";
+import { betaNoticeDismissalKey, earlyPreview } from "@executor-js/ui/contracts/early-preview";
 import { EarlyPreviewNotice } from "@executor-js/ui/components/early-preview-notice";
 import rhysAvatar from "../assets/rhys-sullivan.jpg";
 
@@ -52,6 +52,15 @@ export function BetaNotice() {
               className="min-h-8 cursor-pointer font-semibold underline underline-offset-2 hover:text-[#765b21] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]"
             >
               Learn more
+            </button>
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-controls="early-preview-notice"
+              onClick={openPreview}
+              className="min-h-8 cursor-pointer font-semibold underline underline-offset-2 hover:text-[#765b21] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]"
+            >
+              {earlyPreview.migration.title}
             </button>
           </div>
           <button

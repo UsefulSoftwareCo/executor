@@ -1,7 +1,8 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
-import { Schema, type Effect } from "effect";
+import { Option, Schema, type Effect } from "effect";
+import { TemplateErrorCode } from "@executor-js/app-templates";
 import { JsonObject, SourceFiles } from "@executor-js/sdk";
-import type { CustomAppInput } from "./imports.ts";
+import { ImportAuth, ImportUrl, type CustomAppInput } from "./imports.ts";
 
 /** Public integrations.sh v1 entries; only metadata consumed by the importer is retained. */
 export const CatalogEntry = Schema.Struct({
@@ -25,10 +26,27 @@ export type CatalogEntry = typeof CatalogEntry.Type;
 /** MCP imports can use the catalog's auth hints or an explicit user choice. */
 export const McpImportAuth = Schema.Literals(["auto", "none", "oauth", "apiKey"]);
 export type McpImportAuth = typeof McpImportAuth.Type;
+/** GraphQL endpoints and auth settings can be completed before connecting an account. */
+export const GraphqlImport = Schema.Struct({ url: ImportUrl, auth: ImportAuth });
+export type GraphqlImport = typeof GraphqlImport.Type;
+/** Translate a catalog header template into credential-free settings, refusing unknown hints. */
+export const graphqlCatalogAuth = (entry: CatalogEntry): Option.Option<ImportAuth> => {
+  if (entry.auth === undefined || ["none", "public"].includes(entry.auth.kind))
+    return Option.some({ type: "none" });
+  const header = /^([!#$%&'*+.^_`|~A-Za-z0-9-]+):[ \t]*([^{}\r\n]*)\{[A-Za-z0-9_]+\}$/.exec(
+    entry.auth.header ?? "",
+  );
+  return Schema.decodeUnknownOption(ImportAuth)({
+    type: "apiKey",
+    header: header?.[1],
+    prefix: header?.[2],
+  });
+};
 /** A catalog choice contains no owner, workspace, account selection or credential. */
 export const CatalogImport = Schema.Struct({
   entry: Schema.NonEmptyString,
   mcpAuth: Schema.optional(McpImportAuth),
+  graphql: Schema.optional(GraphqlImport),
 });
 export type CatalogImport = typeof CatalogImport.Type;
 /** Ordinary source files ready for a product to save or deploy using its own rules. */
@@ -43,6 +61,34 @@ export const CatalogFeed = Schema.Struct({
 export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>()(
   "CatalogImportFailed",
   {
+    code: Schema.Union([
+      TemplateErrorCode,
+      Schema.Literals([
+        "entry_missing",
+        "graphql_settings",
+        "cli_unsupported",
+        "destination_blocked",
+        "base_url_blocked",
+        "package_name",
+        "patch_operation",
+        "patch_path",
+        "patch_mismatch",
+        "patch_value",
+        "mcp_url",
+        "mcp_probe",
+        "mcp_timeout",
+        "mcp_auth_missing",
+        "mcp_discovery",
+        "mcp_entry",
+        "mcp_auth_header",
+        "document_size",
+        "document_fetch",
+        "document_json",
+        "document_yaml",
+        "document_kind",
+        "document_url",
+      ]),
+    ]),
     reason: Schema.String,
   },
   { httpApiStatus: 422 },

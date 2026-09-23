@@ -1,4 +1,5 @@
 /** Translate custom import configuration to ordinary deployable source files. */
+import { catalogStage } from "./diagnostics.ts";
 import { Effect } from "effect";
 import type { CustomAppInput } from "../contracts/imports.ts";
 import { generateApp } from "./generate.ts";
@@ -14,9 +15,11 @@ import { parseDestination, type HostEgress } from "@executor-js/utils/url-policy
  */
 export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
   Effect.gen(function* () {
+    yield* Effect.annotateCurrentSpan("catalog.entry.kind", input.kind);
     if (input.kind === "mcp-stdio") return yield* generateStdioApp(input);
     if (parseDestination(input.url, egress.policy) === undefined)
       return yield* new CatalogImportFailed({
+        code: "destination_blocked",
         reason: "This URL is not an allowed destination. Use a public HTTPS URL and try again.",
       });
     const entry = {
@@ -33,16 +36,18 @@ export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
         parseDestination(input.baseUrl, egress.policy) === undefined
       )
         return yield* new CatalogImportFailed({
+          code: "base_url_blocked",
           reason:
             "This API base URL is not an allowed destination. Use a public HTTPS URL and try again.",
         });
       return yield* generateApp(
         entry,
-        yield* readApiDocument(input.url, egress),
+        yield* readApiDocument(input.url, egress).pipe(catalogStage("document")),
         input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl },
-      );
+      ).pipe(catalogStage("generate"));
     }
-    if (input.auth.type === "auto") return yield* generateMcpApp(entry, egress, "auto");
+    if (input.auth.type === "auto")
+      return yield* generateMcpApp(entry, egress, "auto").pipe(catalogStage("mcp"));
     let auth: RemoteAuth;
     switch (input.auth.type) {
       case "none":
@@ -69,6 +74,7 @@ export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
     return yield* generateRemoteApp(input.name, input.url, input.kind, auth);
   }).pipe(
     Effect.catchTag("TemplateError", (error) =>
-      Effect.fail(new CatalogImportFailed({ reason: error.reason })),
+      Effect.fail(new CatalogImportFailed({ code: error.code, reason: error.reason })),
     ),
+    catalogStage("custom"),
   );

@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
   it.effect(scenarios.emptyStates.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -80,7 +80,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
         // Controlled HTTP results exercise first-use states without deleting the built-in app or its token.
         yield* browser.use("Provide an empty authorized resource directory", (page) =>
           page.route("**/api/organizations/*/resources*", (route) =>
-            route.fulfill({ json: { apps: [], accounts: [] } }),
+            route.fulfill({ json: { apps: [], accounts: [], pendingApp: false } }),
           ),
         );
         yield* browser.use("Provide an empty personal token list", (page) =>

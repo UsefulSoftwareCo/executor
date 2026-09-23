@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { waitForAppUrl } from "../support/app-pages.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
@@ -22,7 +23,7 @@ export const who=query({input:object({})},async ctx=>({context:{auth:"auth" in c
 export default defineApp({accounts:{service,extra:service.many()}},{queries:{who}});`;
 layer(HostedLive, { excludeTestServices: true })("Profile picker", (it) => {
   it.effect(scenarios.profilePicker.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -334,9 +335,18 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
         );
         expect(saved.accounts.service).toBe(first.accounts.service);
         expect(saved.accounts.extra).toEqual([second.accounts.service]);
-        expect((yield* api.request(actors.owner, "GET", path)).body).toMatchObject({
-          accounts: {},
-        });
+        expect(
+          yield* body(
+            Setup,
+            yield* api.request(actors.member, "GET", `${path}/profiles/${second.id}`),
+          ),
+        ).toEqual(second);
+        expect(
+          yield* body(
+            Schema.Array(Schema.Unknown),
+            yield* api.request(actors.owner, "GET", `${path}/profiles`),
+          ),
+        ).toEqual([]);
         const changed = yield* saveAndDeploy(actors.owner, path, {
           files: files.map((file) =>
             file.path === "index.ts"
@@ -369,19 +379,16 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
         yield* browser.use("Return to a desktop before opening the authored app", (page) =>
           page.setViewportSize({ width: 1440, height: 960 }),
         );
+        const appUrl = yield* waitForAppUrl(actors.member, `${path}/ui`);
         const selectedAppUrl = yield* browser.use(
           "The Open app link carries the selected profile",
           (page) => page.getByRole("link", { name: "Open app", exact: true }).getAttribute("href"),
         );
         if (selectedAppUrl === null) return yield* Effect.die(new Error("Missing Open app link"));
         expect(new URL(selectedAppUrl).searchParams.get("profile")).toBe(first.id);
-        const location = yield* body(
-          Schema.Struct({ url: Schema.String }),
-          yield* api.request(actors.member, "GET", `${path}/ui`),
-        );
         yield* browser.omitNetworkTrace;
         yield* browser.use("Open an app bookmark without a selected account", (page) =>
-          page.goto(`${location.url}/inbox?folder=unread#message`),
+          page.goto(`${appUrl}/inbox?folder=unread#message`),
         );
         yield* browser.use("Choose an account before authored UI runs", (page) =>
           page.getByRole("heading", { name: `Open ${app.name}`, exact: true }).waitFor(),
@@ -414,7 +421,7 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
           page.context().newPage(),
         );
         yield* browser.use("Open Work directly in its own tab", () =>
-          secondTab.goto(`${location.url}/?profile=${second.id}`),
+          secondTab.goto(`${appUrl}/?profile=${second.id}`),
         );
         yield* browser.use("Work app tab is ready", () =>
           secondTab.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
@@ -473,7 +480,7 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
           })).status,
         ).toBe(200);
         yield* browser.use("A sole enabled account opens directly", (page) =>
-          page.goto(`${location.url}/inbox?folder=sent`),
+          page.goto(`${appUrl}/inbox?folder=sent`),
         );
         yield* browser.use("Sole account authored UI is ready", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
@@ -485,7 +492,7 @@ const client=createAppClient();client.query(queryReference<typeof who>("who"),{}
         ).toBe(first.id);
         const disabledPage = yield* browser.use(
           "Disabled explicit app account is rejected",
-          (page) => page.goto(`${location.url}/?profile=${second.id}`),
+          (page) => page.goto(`${appUrl}/?profile=${second.id}`),
         );
         expect(disabledPage?.status()).toBe(403);
       }),

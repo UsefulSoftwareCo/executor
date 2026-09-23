@@ -30,6 +30,35 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  toolsErrorState: {
+    file: "tools-error-state.spec.ts",
+    title: "Tools errors explain discovery failures and preserve retry on desktop and mobile",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The hosted Tools page owns this error presentation."),
+    },
+  },
+  testingCli: {
+    file: "testing-cli.spec.ts",
+    title: "Testing CLI owns scenario creation, role requests, population and teardown",
+    targets: {
+      "self-host": scheduled,
+      local: scheduled,
+      cloud: na(
+        "CLI transport uses local products; shared SDK Cloud operations are covered by the populated scenario.",
+      ),
+    },
+  },
+  testingSdk: {
+    file: "testing-sdk.spec.ts",
+    title: "Testing SDK isolates overlapping populated organizations and cleans failed scenarios",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organizations; its scenario lifecycle uses independent processes."),
+    },
+  },
   cloudSsoOidc: {
     file: "cloud-sso.spec.ts",
     title: "Cloud SSO OIDC setup preserves drafts and binds verified identities to one team",
@@ -380,6 +409,24 @@ export const scenarios = {
       local: na("Local has no organizations or groups."),
     },
   },
+  providerErrors: {
+    file: "provider-errors.spec.ts",
+    title: "Provider failures retain safe reasons and account recovery across protocols",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses controlled loopback providers through the shared runtime contract."),
+      local: na("Shared error views and SDK are exercised through hosted APIs."),
+    },
+  },
+  graphqlCatalogImport: {
+    file: "graphql-catalog.spec.ts",
+    title: "GraphQL catalog import hides CLI entries and connects account tools",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback GraphQL upstream to verify the shared catalog importer."),
+      local: na("The shared catalog form is exercised through hosted installation."),
+    },
+  },
   cloudCatalogInstall: {
     file: "cloud-compiler.spec.ts",
     title: "Cloud catalog installs Axiom through the browser and reaches account setup",
@@ -405,6 +452,34 @@ export const scenarios = {
       cloud: scheduled,
       "self-host": na("Cloudflare lifecycle spans belong to the cloud host."),
       local: na("Cloudflare lifecycle spans belong to the cloud host."),
+    },
+  },
+  oauthCompatibility: {
+    file: "oauth-compatibility.spec.ts",
+    title:
+      "OAuth accepts valid HTTP 200 registration and advertised ES256 tokens without weakening validation",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
+      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
+    },
+  },
+  setupDiagnostics: {
+    file: "setup-diagnostics.spec.ts",
+    title: "Setup failures deliver safe catalog and OAuth diagnostics",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer to provoke safe diagnostic failures."),
+      local: na("Exercises shared catalog and OAuth instrumentation through hosted APIs."),
+    },
+  },
+  mcpAuthDiscovery: {
+    file: "mcp-auth-discovery.spec.ts",
+    title: "MCP imports and OAuth setup honor POST authentication challenges",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback MCP issuer."),
+      local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
     },
   },
   oauthUrlPolicy: {
@@ -912,6 +987,15 @@ export const scenarios = {
       cloud: na("Local pairing journey."),
     },
   },
+  localSourceFormatting: {
+    file: "local-source-formatting.spec.ts",
+    title: "local source views receive server-formatted text and preserve raw source",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local paired source routes."),
+      cloud: na("Local paired source routes."),
+    },
+  },
   codeFormatting: {
     file: "code-formatting.spec.ts",
     title: "code blocks format source and copy without changing stored content",
@@ -1279,10 +1363,15 @@ export const filesForTarget = (
   target: typeof Target.Type,
   suite: "all" | "hosted",
   cloudMode: "managed" | "attached" = "managed",
+  filter = "",
 ) => [
   ...new Set(
     scenariosForSuite(suite, cloudMode)
-      .filter((scenario) => scenario.targets[target].status === "scheduled")
+      .filter(
+        (scenario) =>
+          scenario.targets[target].status === "scheduled" &&
+          new RegExp(filter).test(scenario.title),
+      )
       .map((scenario) => `e2e/tests/${scenario.file}`),
   ),
 ];

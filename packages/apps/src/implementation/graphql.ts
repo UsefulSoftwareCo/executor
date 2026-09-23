@@ -1,3 +1,5 @@
+import { httpProviderError, graphqlProviderError, accountProviderError } from "./provider-error.ts";
+import { ProviderError } from "../contracts/provider-error.ts";
 /** Discover GraphQL tools live; transport, decoding and cancellation stay in Effect. */
 import { Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -146,7 +148,7 @@ function selection(text: string): SelectionSetNode {
 /** Resolve schema and calls per account evaluation; never cache credentials or tools globally. */
 export const graphqlToolsEffect = (
   input: GraphqlToolsOptions,
-): Effect.Effect<GraphqlTools, GraphqlError> =>
+): Effect.Effect<GraphqlTools, GraphqlError | ProviderError> =>
   Effect.gen(function* () {
     const options = yield* Schema.decodeUnknownEffect(GraphqlToolsOptions)(input).pipe(
       Effect.mapError(() => new GraphqlError({ phase: "discover", reason: "invalid_input" })),
@@ -161,23 +163,27 @@ export const graphqlToolsEffect = (
           const client = yield* HttpClient.HttpClient;
           const response = yield* HttpClient.withScope(client).execute(
             HttpClientRequest.post(url.href).pipe(
+              // GitHub requires this header; Workers do not supply one by default.
+              HttpClientRequest.setHeader("user-agent", "Executor"),
               HttpClientRequest.setHeaders(Redacted.value(headers)),
               HttpClientRequest.bodyJsonUnsafe({ query, variables }),
             ),
           );
           if (response.status < 200 || response.status >= 300)
-            return yield* new GraphqlError({
-              phase,
-              reason: [401, 403].includes(response.status) ? "unauthorized" : "request",
-              status: response.status,
-            });
+            return yield* (
+              httpProviderError(response.status, response.headers) ??
+                new GraphqlError({ phase, reason: "request", status: response.status })
+            );
           const result = yield* response.json.pipe(
             Effect.withSpan("provider.http.response.read"),
             Effect.flatMap(Schema.decodeUnknownEffect(GraphqlResponse)),
             Effect.mapError(() => new GraphqlError({ phase, reason: "invalid_response" })),
           );
           if (result.errors?.length)
-            return yield* new GraphqlError({ phase, reason: "execution", status: response.status });
+            return yield* (
+              graphqlProviderError(result.errors, response.status) ??
+                new GraphqlError({ phase, reason: "execution", status: response.status })
+            );
           if (result.data == null)
             return yield* new GraphqlError({ phase, reason: "invalid_response" });
           return result.data;
@@ -197,13 +203,17 @@ export const graphqlToolsEffect = (
           orElse: () => Effect.fail(new GraphqlError({ phase, reason: "timeout" })),
         }),
         Effect.mapError((error) =>
-          error instanceof GraphqlError ? error : new GraphqlError({ phase, reason: "request" }),
+          error instanceof ProviderError && options.accountId !== undefined
+            ? accountProviderError(error, options.accountId)
+            : error instanceof GraphqlError || error instanceof ProviderError
+              ? error
+              : new GraphqlError({ phase, reason: "request" }),
         ),
       );
     const catalog = yield* request("discover", getIntrospectionQuery()).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GraphqlIntrospection)),
       Effect.mapError((error) =>
-        error instanceof GraphqlError
+        error instanceof GraphqlError || error instanceof ProviderError
           ? error
           : new GraphqlError({ phase: "discover", reason: "invalid_response" }),
       ),

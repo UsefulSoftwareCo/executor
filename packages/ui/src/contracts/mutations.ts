@@ -59,13 +59,13 @@ export const invalidate = <A, E>(
   get.registry.refresh(query);
 };
 
-/** Unknown derived data (tools or authority) cannot reuse success during refresh. */
+/** Derived data cannot reuse success during refresh; a known failure stays visible while retrying. */
 export const currentQuery = <A, E>(source: Atom.Atom<AsyncResult.AsyncResult<A, E>>) =>
   Atom.map(source, (result) =>
-    result.waiting
-      ? AsyncResult.initial<A, E>(true)
-      : AsyncResult.isFailure(result)
-        ? AsyncResult.failure<A, E>(result.cause)
+    AsyncResult.isFailure(result)
+      ? AsyncResult.failure<A, E>(result.cause, { waiting: result.waiting })
+      : result.waiting
+        ? AsyncResult.initial<A, E>(true)
         : result,
   );
 

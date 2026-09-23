@@ -1,30 +1,18 @@
 /** Build a portable, platform-specific npm package. Nothing is published. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Console, Effect, FileSystem, Path } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { emit } from "./emit.ts";
-import { nativePlatform, platformVersion, release } from "./config.ts";
+import { bundleLocalRuntime } from "./runtime-bundle.ts";
+import {
+  nativePlatform,
+  npmArchiveBudgetBytes,
+  platformArchive,
+  platformVersion,
+  release,
+} from "./config.ts";
 import { installWindowsGitHttpBackend } from "./windows-git.ts";
 
-const Manifest = Schema.Struct({
-  name: Schema.String,
-  type: Schema.optional(Schema.String),
-  version: Schema.optional(Schema.String),
-  exports: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  peerDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  peerDependenciesMeta: Schema.optional(
-    Schema.Record(Schema.String, Schema.Struct({ optional: Schema.optional(Schema.Boolean) })),
-  ),
-});
-const readManifest = (file: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    return yield* fs
-      .readFileString(file)
-      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest))));
-  });
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -63,98 +51,14 @@ const build = Effect.gen(function* () {
   if (yield* fs.exists(stage)) yield* fs.remove(stage, { recursive: true });
   yield* fs.makeDirectory(stage);
 
-  const packages = new Map<string, { directory: string; manifest: typeof Manifest.Type }>();
-  for (const name of yield* fs.readDirectory(path.join(root, "packages"))) {
-    const directory = path.join(root, "packages", name);
-    if (yield* fs.exists(path.join(directory, "package.json"))) {
-      const manifest = yield* readManifest(path.join(directory, "package.json"));
-      packages.set(manifest.name, { directory, manifest });
-    }
-  }
-  const local = yield* readManifest(path.join(root, "apps/local/server/package.json"));
-  const dependencies: Record<string, string> = {};
-  const included = new Set<string>();
-  const collect = (
-    entries: Readonly<Record<string, string>>,
-  ): Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path> =>
-    Effect.gen(function* () {
-      for (const [name, requested] of Object.entries(entries)) {
-        if (included.has(name)) continue;
-        included.add(name);
-        const internal = packages.get(name);
-        if (internal === undefined) {
-          dependencies[name] = requested;
-          continue;
-        }
-        const relative = `packages/${path.basename(internal.directory)}`;
-        const destination = path.join(stage, relative);
-        dependencies[name] = `file:./${relative}`;
-        yield* emit(path.join(internal.directory, "src"), path.join(destination, "src"));
-        // Public package resources (for example authoring skills) live outside src.
-        for (const exported of Object.values(internal.manifest.exports ?? {})) {
-          if (exported.startsWith("./src/") || exported.includes("*")) continue;
-          const target = path.join(destination, exported);
-          yield* fs.makeDirectory(path.dirname(target), { recursive: true });
-          yield* fs.copy(path.join(internal.directory, exported), target, { overwrite: true });
-        }
-        for (const resource of ["skills", "executor", "dist/motel", "LICENSE", "LICENSE.md"]) {
-          const from = path.join(internal.directory, resource);
-          if (yield* fs.exists(from))
-            yield* fs.copy(from, path.join(destination, resource), { overwrite: true });
-        }
-        yield* fs.writeFileString(
-          path.join(destination, "package.json"),
-          JSON.stringify(
-            {
-              ...internal.manifest,
-              version,
-              private: true,
-              exports: Object.fromEntries(
-                Object.entries(internal.manifest.exports ?? {}).map(([key, value]) => [
-                  key,
-                  value.replace(/\.tsx?$/, ".js"),
-                ]),
-              ),
-              // The enclosing artifact owns a single locked dependency tree.
-              dependencies: undefined,
-            },
-            null,
-            2,
-          ),
-        );
-        yield* collect(internal.manifest.dependencies ?? {});
-        yield* collect(
-          Object.fromEntries(
-            Object.entries(internal.manifest.peerDependencies ?? {}).filter(
-              ([peer]) => internal.manifest.peerDependenciesMeta?.[peer]?.optional !== true,
-            ),
-          ),
-        );
-      }
-    });
-  yield* collect(local.dependencies ?? {});
-  yield* emit(path.join(root, "apps/local/server/src"), path.join(stage, "apps/local/server/src"));
-  yield* fs.copy(path.join(root, "apps/local/web/dist"), path.join(stage, "apps/local/web/dist"));
-  yield* fs.copy(path.join(root, "patches"), path.join(stage, "patches"));
+  const dependencies = yield* bundleLocalRuntime(root, stage);
   yield* fs.copyFile(
     path.join(root, "scripts/releases/runtime-env.mjs"),
     path.join(stage, "runtime-env.mjs"),
   );
-  yield* fs.copy(path.join(root, "scripts/releases/licenses"), path.join(stage, "licenses"));
-  const rootManifest = yield* fs.readFileString(path.join(root, "package.json")).pipe(
-    Effect.flatMap(
-      Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            devDependencies: Schema.Struct({ dugite: Schema.NonEmptyString }),
-            overrides: Schema.Record(Schema.String, Schema.String),
-            patchedDependencies: Schema.Record(Schema.String, Schema.String),
-          }),
-        ),
-      ),
-    ),
-  );
-  dependencies.dugite = rootManifest.devDependencies.dugite;
+  yield* fs.copy(path.join(root, "scripts/releases/licenses"), path.join(stage, "licenses"), {
+    overwrite: true,
+  });
   const manifest = {
     name: "executor",
     version: platformVersion(target),
@@ -176,49 +80,24 @@ const build = Effect.gen(function* () {
       "apps",
       "packages",
       "licenses",
-      "bun.lock",
+      "runtime",
+      "alchemy-workers",
+      "runtime-packages.txt",
       "README.md",
       "LICENSE",
     ],
     dependencies,
     bundledDependencies: Object.keys(dependencies),
-    overrides: rootManifest.overrides,
-    patchedDependencies: rootManifest.patchedDependencies,
-    // These pinned build dependencies install their platform executables into the artifact.
-    // App dependency installs still disable lifecycle scripts in the runtime.
-    trustedDependencies: ["bun", "dugite", "esbuild"],
+    imports: { "#cloudflare-runtime-core-worker/*": "./alchemy-workers/*.mjs" },
   };
   yield* fs.writeFileString(path.join(stage, "package.json"), JSON.stringify(manifest, null, 2));
   yield* fs.writeFileString(
     path.join(stage, "bin.mjs"),
-    `#!/usr/bin/env node\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\nawait import("./apps/local/server/src/bin.js");\n`,
+    `#!/usr/bin/env node\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\nawait import("./runtime/cli.mjs");\n`,
   );
   yield* fs.chmod(path.join(stage, "bin.mjs"), 0o755);
   yield* fs.copyFile(path.join(root, "scripts/releases/README.md"), path.join(stage, "README.md"));
   yield* fs.copyFile(path.join(root, "apps/cli/LICENSE"), path.join(stage, "LICENSE"));
-  // Reuse the repository's resolved versions/integrities when projecting the runtime closure.
-  yield* fs.copyFile(path.join(root, "bun.lock"), path.join(stage, "bun.lock"));
-  yield* run("bun", ["install", "--lockfile-only"], stage);
-  yield* run(
-    "bun",
-    [
-      "install",
-      "--production",
-      "--frozen-lockfile",
-      // Archives must not depend on hard links into a shared cache or forward-link extraction.
-      process.platform === "darwin" ? "--backend=clonefile" : "--backend=copyfile",
-    ],
-    stage,
-  );
-  const bun = path.join(stage, "node_modules/bun/bin/bun.exe");
-  const bunx = path.join(stage, "node_modules/bun/bin/bunx.exe");
-  // Bun's postinstall hardlinks this alias even with --backend=copyfile.
-  // node-tar's async hardlink queue can deadlock while npm packs the archive.
-  // Keep both executable names, with independent files in the release staging tree.
-  yield* fs.remove(bunx);
-  yield* fs.copyFile(bun, bunx);
-  yield* run(bun, ["--version"], stage);
-  yield* run(bunx, ["--version"], stage);
   yield* installWindowsGitHttpBackend(stage);
   yield* run(
     "node",
@@ -259,6 +138,17 @@ if (backend.status !== 0 || !backend.stdout.includes("Status: 404")) {
     [...npm.prefix, "pack", "--ignore-scripts", "--pack-destination", output],
     stage,
   );
-  yield* Console.log(`Native artifact: ${output}`);
+  // Guard each native target before its offline tests or any publication can run.
+  const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
+  const budgetBytes = npmArchiveBudgetBytes;
+  yield* fs.writeFileString(
+    path.join(output, "npm-size.json"),
+    JSON.stringify({ bytes, budgetBytes }, null, 2),
+  );
+  if (bytes > budgetBytes)
+    return yield* Effect.die(
+      new Error(`npm archive exceeds the 180 MiB release budget: ${bytes} bytes`),
+    );
+  yield* Console.log(`Native artifact: ${output} (${(bytes / 1024 / 1024).toFixed(1)} MiB)`);
 });
 NodeRuntime.runMain(Effect.scoped(build).pipe(Effect.provide(NodeServices.layer)));

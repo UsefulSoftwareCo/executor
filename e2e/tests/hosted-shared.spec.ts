@@ -8,7 +8,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
 
 const files = [
@@ -31,7 +31,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
 
 layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
   it.effect(scenarios.hosted.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -220,7 +220,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
     ),
   );
   it.effect(scenarios.remoteMcp.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,

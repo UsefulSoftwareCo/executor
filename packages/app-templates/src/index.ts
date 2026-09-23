@@ -1,5 +1,10 @@
 /** Effect-native source generators. The host owns catalog lookup, auth discovery and deployment. */
-export { TemplateError, type RemoteAuth, type StdioAppInput } from "./contracts/templates.ts";
+export {
+  TemplateError,
+  TemplateErrorCode,
+  type RemoteAuth,
+  type StdioAppInput,
+} from "./contracts/templates.ts";
 export type { OpenApiImport } from "./contracts/openapi.ts";
 export { generateRemoteApp } from "./implementation/remote.ts";
 export { generateStdioApp } from "./implementation/stdio.ts";

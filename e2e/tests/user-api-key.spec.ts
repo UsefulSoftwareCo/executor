@@ -5,7 +5,7 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors, password } from "../support/actors.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 
 const Key = Schema.Struct({ key: Schema.RedactedFromValue(Schema.NonEmptyString) });
 const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
@@ -13,7 +13,7 @@ const Resource = Schema.Struct({ id: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("User API keys", (it) => {
   it.effect(scenarios.userApiKey.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -180,8 +180,8 @@ layer(HostedLive, { excludeTestServices: true })("User API keys", (it) => {
               (yield* api.request(
                 anonymous,
                 "POST",
-                `${prefix}/apps/deploy`,
-                { name: "Denied", files: [{ path: "index.ts", content: "" }] },
+                `${prefix}/groups`,
+                { name: "Denied group", description: "", memberIds: [] },
                 memberHeaders,
               )).status,
             ).toBe(403);

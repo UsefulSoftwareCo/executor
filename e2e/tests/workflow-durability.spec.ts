@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { durabilityFiles } from "../support/workflow-durability.ts";
 import { WorkflowApp, WorkflowRun } from "../support/workflow-app.ts";
@@ -102,7 +102,7 @@ const fixture = Effect.gen(function* () {
 
 layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => {
   it.effect(scenarios.workflowTimeout.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const app = yield* fixture;
@@ -140,7 +140,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
   it.effect(
     scenarios.workflowSleep.title,
     (context) =>
-      withCase(
+      withHostedCase(
         context,
         Effect.gen(function* () {
           const hold = yield* Config.Number("E2E_WORKFLOW_HOLD_MS").pipe(

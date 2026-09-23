@@ -27,6 +27,7 @@ export const EvidenceEntry = Schema.Struct({
   title: Schema.String,
   file: Schema.String,
   target: Target,
+  origin: Schema.optional(Schema.String),
   status: Schema.String,
   duration: Schema.Number,
   errors: Schema.Array(Schema.String),

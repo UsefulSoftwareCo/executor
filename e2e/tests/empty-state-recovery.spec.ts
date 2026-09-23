@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -14,7 +14,7 @@ export default defineApp({ accounts: {} }, async () => ({ queries: {} }));`;
 
 layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) => {
   it.effect(scenarios.emptyStateRecovery.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -131,16 +131,14 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
           yield* browser.use("Open deployed empty overview", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}`),
           );
-          for (const title of [
-            "No accounts required",
-            "No tools",
-            "No skills yet",
-            "No workflows",
-          ]) {
+          for (const title of ["No accounts required", "No tools", "No skills yet"]) {
             yield* browser.use(`Wait for ${title}`, (page) =>
               page.getByRole("heading", { name: title, exact: true }).waitFor(),
             );
           }
+          yield* browser.use("The empty workflow result is explicit", (page) =>
+            page.getByText("This app has no workflows.", { exact: true }).waitFor(),
+          );
           yield* browser.use("Wait for source preview", (page) =>
             page.getByText("View the files that make this app work.", { exact: true }).waitFor(),
           );
@@ -181,9 +179,9 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
                 }),
               ),
           );
-          expect(layout).toHaveLength(4);
+          expect(layout).toHaveLength(3);
           for (const card of layout) {
-            expect(card.height).toBe(320);
+            expect(card.height).toBe(240);
             expect(card.verticalOffset).toBeLessThanOrEqual(1);
             expect(card.horizontalOffset).toBeLessThanOrEqual(1);
           }
@@ -241,7 +239,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
   );
 
   it.effect(scenarios.emptyAccountSearch.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -298,7 +296,7 @@ export default defineApp({ accounts: { primary: service, many: service.many() } 
         yield* browser.use("Open saved accounts", (page) =>
           page
             .getByRole("region", { name: "Search accounts (many)", exact: true })
-            .getByRole("button", { name: "Use saved account", exact: true })
+            .getByRole("button", { name: "Add Search accounts account", exact: true })
             .click(),
         );
         yield* browser.use("Keep an unsaved account choice", (page) =>

@@ -1,6 +1,11 @@
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { ApiKeyHeader, RemoteCustomAppInput, ImportUrl } from "@executor-js/catalog/contracts";
+import {
+  ApiKeyHeader,
+  RemoteCustomAppInput,
+  ImportUrl,
+  type ImportAuth,
+} from "@executor-js/catalog/contracts";
 import type { App } from "@executor-js/sdk";
 import { Exit, Option, Schema } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -27,26 +32,52 @@ const fields = {
 };
 
 /** Remote source form shared by products; the host owns installation and follow-up navigation. */
-export function CustomAppForm<E>({
+export function CustomAppForm<E>(
+  props: MutationProps<RemoteCustomAppInput, App, E> & {
+    readonly kind: typeof CustomAppKind.Type;
+    readonly onInstalled: (app: App) => void | Promise<void>;
+  },
+) {
+  return <RemoteAppForm {...props} input={(source) => source} />;
+}
+
+/** Editable remote settings shared by catalog and custom imports; callers own the command. */
+export function RemoteAppForm<Command, E>({
   kind,
   mutation,
   Failure,
   onInstalled,
-}: MutationProps<RemoteCustomAppInput, App, E> & {
+  initial,
+  input: command,
+}: MutationProps<Command, App, E> & {
   readonly kind: typeof CustomAppKind.Type;
+  readonly initial?: { readonly name: string; readonly url: string; readonly auth: ImportAuth };
+  readonly input: (source: RemoteCustomAppInput) => Command;
   readonly onInstalled: (app: App) => void | Promise<void>;
 }) {
   const result = useAtomValue(mutation);
   const add = useAtomSet(mutation, { mode: "promiseExit" });
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [url, setUrl] = useState(initial?.url ?? "");
   const [baseUrl, setBaseUrl] = useState("");
-  const [auth, setAuth] = useState<typeof Auth.Type>(kind === "mcp" ? "auto" : "none");
-  const [header, setHeader] = useState("Authorization");
-  const [prefix, setPrefix] = useState("Bearer ");
-  const [authorizationUrl, setAuthorizationUrl] = useState("");
-  const [tokenUrl, setTokenUrl] = useState("");
-  const [scopes, setScopes] = useState("");
+  const [auth, setAuth] = useState<typeof Auth.Type>(
+    initial?.auth.type ?? (kind === "mcp" ? "auto" : "none"),
+  );
+  const [header, setHeader] = useState(
+    initial?.auth.type === "apiKey" ? initial.auth.header : "Authorization",
+  );
+  const [prefix, setPrefix] = useState(
+    initial?.auth.type === "apiKey" ? initial.auth.prefix : "Bearer ",
+  );
+  const [authorizationUrl, setAuthorizationUrl] = useState(
+    initial?.auth.type === "oauth" ? initial.auth.authorizationUrl : "",
+  );
+  const [tokenUrl, setTokenUrl] = useState(
+    initial?.auth.type === "oauth" ? initial.auth.tokenUrl : "",
+  );
+  const [scopes, setScopes] = useState(
+    initial?.auth.type === "oauth" ? initial.auth.scopes.join(" ") : "",
+  );
   const [pending, setPending] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string>();
@@ -102,7 +133,7 @@ export function CustomAppForm<E>({
         }
         setPending(true);
         setSubmitted(true);
-        void add(input.value).then((exit) => {
+        void add(command(input.value)).then((exit) => {
           setPending(false);
           if (Exit.isSuccess(exit)) {
             void onInstalled(exit.value);

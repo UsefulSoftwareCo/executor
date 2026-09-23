@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
 const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
@@ -49,7 +49,7 @@ const files = (version: string) => [
 
 layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
   it.effect(scenarios.appSkills.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

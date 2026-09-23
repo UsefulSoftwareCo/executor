@@ -1,3 +1,4 @@
+export { ProviderError } from "./contracts/provider-error.ts";
 /**
  * Public author API. Native contracts live in contracts/; this boundary
  * exposes ordinary declarations, schema helpers and Promise operations.

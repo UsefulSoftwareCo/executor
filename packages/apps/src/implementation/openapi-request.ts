@@ -1,3 +1,5 @@
+import { httpProviderError, accountProviderError } from "./provider-error.ts";
+import { ProviderError } from "../contracts/provider-error.ts";
 /** HTTP serialization for normalized OpenAPI operations. */
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -137,7 +139,10 @@ export function createRequest(config: {
         });
         const response = yield* HttpClient.withScope(client).execute(request);
         if (response.status < 200 || response.status >= 300)
-          return yield* new OpenapiError({ reason: "request", status: response.status });
+          return yield* (
+            httpProviderError(response.status, response.headers) ??
+              new OpenapiError({ reason: "request", status: response.status })
+          );
         if (response.status === 204 || prepared.method === "HEAD") return null;
         return yield* (
           response.headers["content-type"]?.includes("json") ? response.json : response.text
@@ -150,7 +155,11 @@ export function createRequest(config: {
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
       Effect.provide(FetchHttpClient.layer),
       Effect.mapError((error) =>
-        error instanceof OpenapiError ? error : new OpenapiError({ reason: "request" }),
+        error instanceof ProviderError && account?.id !== undefined
+          ? accountProviderError(error, account.id)
+          : error instanceof OpenapiError || error instanceof ProviderError
+            ? error
+            : new OpenapiError({ reason: "request" }),
       ),
     );
   return {
