@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
 /** One native Cloudflare workflow routes every run to its retained Dynamic Worker app build. */
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
@@ -96,7 +97,10 @@ const runWorkflow = (input: {
 export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
   "AppWorkflows",
   Effect.gen(function* () {
-    const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+    const executor = yield* cloudExecutor(
+      yield* AppDataSupervisor,
+      yield* cloudArtifactsTokensLive,
+    );
     const analytics = yield* cloudAnalytics;
     const report = yield* cloudSentry;
     return (input: { run: string }) =>

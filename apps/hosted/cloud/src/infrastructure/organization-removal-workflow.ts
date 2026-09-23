@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 /**
  * Organization removal as one durable workflow. It is the same mechanism as
  * `AppWorkflows`: an Alchemy `Cloudflare.Workflow` class hosted by the API
@@ -56,7 +57,10 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
     const reportErrors = yield* cloudSentry;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send);
-    const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+    const executor = yield* cloudExecutor(
+      yield* AppDataSupervisor,
+      yield* cloudArtifactsTokensLive,
+    );
     const billing = yield* billingLive.pipe(Effect.orDie);
     // Cancellation reaches the workflow as the host's billing service, not as a
     // branch on the deployment. A host without one keeps the inert default.

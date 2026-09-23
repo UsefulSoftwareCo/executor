@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 /** Native host workflows bootstrap teams before any authored app exists. */
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -23,7 +24,10 @@ import { cloudAnalytics } from "../implementation/product-analytics.ts";
 export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
   "Provisioning",
   Effect.gen(function* () {
-    const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+    const executor = yield* cloudExecutor(
+      yield* AppDataSupervisor,
+      yield* cloudArtifactsTokensLive,
+    );
     const emails = yield* cloudWelcomeEmails((yield* cloudEmail.pipe(Effect.orDie)).welcome);
     const domains = yield* AppDomainCoordinator;
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));

@@ -37,6 +37,7 @@ import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { cachedBuildAssets } from "../implementation/asset-cache.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
+import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudBlobs } from "./blobs.ts";
 import { cloudWorkflows } from "./workflows.ts";
 import { cloudRuntime } from "./runtime.ts";
@@ -57,6 +58,7 @@ export const cloudEgress = Effect.gen(function* () {
 });
 
 /**
+ * Callers select the API-owned token coordinator explicitly, including across Workers.
  * Alchemy owns one concrete Effect SQL client per invocation, closed with that invocation.
  * Its SQL.PostgresLayer currently returns a lazy proxy: FumaDB's synchronous Statement.join
  * cannot inspect those deferred fragments. Resolve the native client before composing ORM
@@ -64,6 +66,7 @@ export const cloudEgress = Effect.gen(function* () {
  */
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
+  tokens: ArtifactsTokens,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
@@ -82,7 +85,7 @@ export const cloudExecutor = Effect.fn(function* (
       cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
     ),
   );
-  const { sources, repositories } = yield* cloudAppSources;
+  const { sources, repositories } = yield* cloudAppSources(tokens);
   // App storage and hosted permission checks use the same database. Share its
   // client only inside this execution; the event scope owns all connections.
   const database = yield* makeExecutionMemo(

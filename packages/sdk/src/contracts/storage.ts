@@ -9,6 +9,7 @@ import {
   ApprovalRequestId,
   WebhookId,
   AccountId,
+  AppCodeId,
   OwnerId,
   JsonObject,
   CredentialsError,
@@ -66,11 +67,12 @@ export const StoredConnectionTarget = Schema.Struct({
 }).pipe(Schema.encodeKeys({ profile: "installation" }));
 export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
 
-/** The host owns encryption and key custody. Ciphertexts are bound to the account, client, attempt, or approval-request identity. */
+/** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
 export interface Credentials {
   readonly encrypt: (
     identity:
       | AccountId
+      | AppCodeId
       | OAuthClientId
       | OAuthAttemptId
       | ApprovalRequestId
@@ -81,6 +83,7 @@ export interface Credentials {
   readonly decrypt: (
     identity:
       | AccountId
+      | AppCodeId
       | OAuthClientId
       | OAuthAttemptId
       | ApprovalRequestId

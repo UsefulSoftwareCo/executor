@@ -1,13 +1,12 @@
-/** Alchemy's managed Artifacts binding, with Git edits performed by a standard Git client. */
-import type { ReadWriteNamespaceClient } from "alchemy/Cloudflare/Artifacts";
-import { RuntimeContext } from "alchemy";
+/** Git access to Cloudflare Artifacts through host-owned repository credentials. */
 import { protectGit } from "./implementation/protected-git.ts";
-import { Context, Effect, Exit, Option, Redacted, Schedule, Schema, Scope } from "effect";
+import { Context, Effect, Exit, Redacted, Schema, Scope, Stream } from "effect";
 import { captureTelemetry, pendingSpan, traceHeaders } from "@executor-js/telemetry";
 import * as Git from "isomorphic-git";
 import { Volume, createFsFromVolume } from "memfs";
 import { SourceFiles } from "@executor-js/sdk/core";
 import {
+  AppCodeId,
   SourceError,
   Branch,
   GitCommit,
@@ -16,6 +15,15 @@ import {
   sourceFits,
   type RepositoryBackend,
 } from "./contracts/repositories.ts";
+
+import type { ArtifactsTokens } from "./contracts/artifacts-tokens.ts";
+export type { ArtifactsToken, ArtifactsTokens } from "./contracts/artifacts-tokens.ts";
+
+interface RepositoryAccess {
+  readonly remote: string;
+  readonly token: Redacted.Redacted<string>;
+  readonly refresh: Effect.Effect<Redacted.Redacted<string>, SourceError>;
+}
 
 const remoteSchema = Schema.String.check(
   Schema.makeFilter((value) => {
@@ -87,210 +95,186 @@ const observeFailure = (error: SourceError) =>
     });
   });
 
-/** Release RPC results while the event is still alive. Plain metadata needs no disposal. */
-const disposeRpc = (value: unknown) =>
-  Effect.sync(() => {
-    if (
-      ((typeof value === "object" && value !== null) || typeof value === "function") &&
-      Symbol.dispose in value
-    ) {
-      const dispose = value[Symbol.dispose];
-      if (typeof dispose === "function") dispose.call(value);
-    }
-  });
-
-/** Managed repository token never leaves this adapter or enters a Git remote URL. */
+/** Managed repository credentials remain behind the host-owned token coordinator. */
 export const cloudflareRepositories = (
-  namespace: ReadWriteNamespaceClient,
+  tokens: ArtifactsTokens,
   settings: { readonly accountId: string; readonly namespace: string },
 ): RepositoryBackend => {
-  const access = (id: string, write: boolean, repository = namespace.get(id)) =>
-    Effect.scoped(
+  const remote = (id: AppCodeId) =>
+    Schema.decodeUnknownEffect(remoteSchema)(
+      `https://${settings.accountId}.artifacts.cloudflare.net/git/${settings.namespace}/${id}.git`,
+    ).pipe(Effect.mapError(failure));
+  const access = (id: AppCodeId): Effect.Effect<RepositoryAccess, SourceError> =>
+    Effect.gen(function* () {
+      const credential = yield* tokens.acquire(id, null);
+      return {
+        remote: yield* remote(id),
+        token: credential.token,
+        refresh: tokens.acquire(id, credential.generation).pipe(Effect.map((value) => value.token)),
+      };
+    });
+  const create = (id: AppCodeId) =>
+    Effect.gen(function* () {
+      const token = yield* tokens.create(id);
+      if (token === null) return null;
+      return {
+        remote: yield* remote(id),
+        token,
+        refresh: tokens.acquire(id, null).pipe(Effect.map((value) => value.token)),
+      };
+    });
+  // Artifacts rejects invalid/expired/revoked credentials with this exact 403 body.
+  // Other denials and provider failures retain their original semantics and push reconciliation.
+  const authenticatedFetch = (value: RepositoryAccess) => {
+    let token = value.token;
+    let refreshed = false;
+    return (url: URL | string, init: RequestInit) =>
       Effect.gen(function* () {
-        const repo = yield* Effect.acquireRelease(
-          repository.pipe(Effect.withSpan("source.repository.open")),
-          (repo) => disposeRpc(repo.raw),
-        );
-        const remote = yield* Schema.decodeUnknownEffect(remoteSchema)(
-          `https://${settings.accountId}.artifacts.cloudflare.net/git/${settings.namespace}/${id}.git`,
-        );
-        const token = yield* Effect.acquireRelease(
-          repo
-            .createToken(write ? "write" : "read", 300)
-            .pipe(Effect.withSpan("source.repository.token")),
-          (value) => disposeRpc(value),
-        );
-        const plaintext = yield* Effect.tryPromise({
-          try: async () => token.plaintext,
+        // The Git bridge supplies its operation's signal so streamed bodies share its lifetime.
+        const send = Effect.tryPromise({
+          try: (signal) =>
+            fetch(url, {
+              ...init,
+              signal: init.signal ?? signal,
+              redirect: "manual",
+              headers: { ...init.headers, authorization: `Bearer ${Redacted.value(token)}` },
+            }),
           catch: failure,
-        }).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)),
-          Effect.withSpan("source.repository.token.read"),
-        );
-        return { remote, token: Redacted.make(plaintext) };
-      }),
-    ).pipe(
-      Effect.provide(RuntimeContext.phantom),
-      Effect.mapError(failure),
-      Effect.tapError(observeFailure),
-    );
-  const create = (id: string) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const created = yield* Effect.acquireRelease(
-          namespace.create(id, { setDefaultBranch: "main" }).pipe(
-            Effect.withSpan("source.repository.create"),
-            Effect.catchTag("ArtifactsError", (error) =>
-              Option.isSome(
-                Schema.decodeUnknownOption(
-                  Schema.Struct({ code: Schema.Literal("ALREADY_EXISTS") }),
-                )(error.cause),
-              )
-                ? Effect.succeed(null)
-                : Effect.fail(error),
-            ),
-          ),
-          (value) => disposeRpc(value),
-        );
-        if (created === null) return null;
-        const remote = yield* Schema.decodeUnknownEffect(remoteSchema)(created.remote);
-        const token = yield* Effect.tryPromise({
-          try: async () => created.token,
+        });
+        const response = yield* send;
+        if (refreshed) return response;
+        const rejected =
+          response.status === 401 ||
+          (response.status === 403 &&
+            (yield* Effect.tryPromise({
+              try: () => response.clone().text(),
+              catch: failure,
+            })) === "Invalid or expired token");
+        if (!rejected) return response;
+        refreshed = true;
+        yield* Effect.tryPromise({
+          try: async () => {
+            await response.body?.cancel();
+          },
           catch: failure,
-        }).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)),
-          Effect.map(Redacted.make),
-          Effect.withSpan("source.repository.initial-token.read"),
+        });
+        token = yield* value.refresh.pipe(
+          Effect.withSpan("source.repository.token.refresh", {
+            attributes: { "source.token.rejected_status": response.status },
+          }),
         );
-        return { remote, token };
-      }),
-    ).pipe(
-      Effect.provide(RuntimeContext.phantom),
-      Effect.mapError(failure),
-      Effect.tapError(observeFailure),
-    );
-  // The RPC exposes creation-in-progress only as this message. Honor its interval
-  // after ALREADY_EXISTS; ordinary reads and other provider failures never retry.
-  const openedAfterCreation = (id: string) =>
-    namespace.get(id).pipe(
-      Effect.retry({
-        while: (error) =>
-          error.message ===
-          `Repository "${id}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
-        schedule: Schedule.spaced("5 seconds"),
-        times: 2,
-      }),
-    );
+        return yield* send;
+      });
+  };
   const client = (
-    token: string,
-    remote: string,
+    value: RepositoryAccess,
     signal: AbortSignal,
     context: Context.Context<Scope.Scope>,
-  ): Git.HttpClient => ({
-    request: async (request) => {
-      const url = new URL(request.url);
-      if (
-        url.origin !== new URL(remote).origin ||
-        !url.pathname.startsWith(`${new URL(remote).pathname}/`)
-      )
-        throw new Error("Unexpected Git destination");
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      if (request.body !== undefined)
-        for await (const chunk of request.body) {
-          size += chunk.length;
-          if (size > 32 * 1024 * 1024) throw new Error("Git request too large");
-          chunks.push(chunk);
-        }
-      const body = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.length;
-      }
-      const run = Effect.runPromiseWith(context);
-      const { response, headersSpan } = await run(
-        Effect.gen(function* () {
-          const headersSpan = yield* Effect.currentSpan;
-          const propagation = yield* traceHeaders;
-          const response = yield* Effect.tryPromise({
-            try: () =>
-              fetch(url, {
-                method: request.method ?? "GET",
-                headers: { ...request.headers, ...propagation, authorization: `Bearer ${token}` },
-                ...(request.body === undefined ? {} : { body }),
-                redirect: "manual",
-                signal,
-              }),
-            catch: failure,
-          });
-          yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-          return { response, headersSpan };
-        }).pipe(
-          Effect.withSpan("source.git.http.headers", {
-            kind: "client",
-            attributes: {
-              "http.request.method": request.method ?? "GET",
-              "source.git.route": url.pathname.endsWith("/info/refs")
-                ? "refs"
-                : url.pathname.endsWith("/git-upload-pack")
-                  ? "read-pack"
-                  : "write-pack",
-            },
-          }),
-        ),
-        { signal },
-      );
-      const stream = async function* () {
-        if (response.body === null) return;
-        const observed = await run(pendingSpan("source.git.http.body", { parent: headersSpan }));
-        const reader = response.body.getReader();
-        let total = 0;
-        let exit: Exit.Exit<unknown, unknown> = Exit.void;
-        let cleanupFailure: SourceError | undefined;
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            total += next.value.length;
-            if (total > 32 * 1024 * 1024) throw new Error("Git repository too large");
-            yield next.value;
+  ): Git.HttpClient => {
+    const remote = value.remote;
+    const fetchWithToken = authenticatedFetch(value);
+    return {
+      request: async (request) => {
+        const url = new URL(request.url);
+        if (
+          url.origin !== new URL(remote).origin ||
+          !url.pathname.startsWith(`${new URL(remote).pathname}/`)
+        )
+          throw new Error("Unexpected Git destination");
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        if (request.body !== undefined)
+          for await (const chunk of request.body) {
+            size += chunk.length;
+            if (size > 32 * 1024 * 1024) throw new Error("Git request too large");
+            chunks.push(chunk);
           }
-        } catch (error) {
-          exit = Exit.fail(failure(error));
-          throw error;
-        } finally {
-          observed.span.attribute("source.git.response.bytes", total);
+        const body = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const run = Effect.runPromiseWith(context);
+        const { response, headersSpan } = await run(
+          Effect.gen(function* () {
+            const headersSpan = yield* Effect.currentSpan;
+            const propagation = yield* traceHeaders;
+            const response = yield* fetchWithToken(url, {
+              method: request.method ?? "GET",
+              headers: { ...request.headers, ...propagation },
+              ...(request.body === undefined ? {} : { body }),
+              redirect: "manual",
+              signal,
+            });
+            yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+            return { response, headersSpan };
+          }).pipe(
+            Effect.withSpan("source.git.http.headers", {
+              kind: "client",
+              attributes: {
+                "http.request.method": request.method ?? "GET",
+                "source.git.route": url.pathname.endsWith("/info/refs")
+                  ? "refs"
+                  : url.pathname.endsWith("/git-upload-pack")
+                    ? "read-pack"
+                    : "write-pack",
+              },
+            }),
+          ),
+          { signal },
+        );
+        const stream = async function* () {
+          if (response.body === null) return;
+          const observed = await run(pendingSpan("source.git.http.body", { parent: headersSpan }));
+          const reader = response.body.getReader();
+          let total = 0;
+          let exit: Exit.Exit<unknown, unknown> = Exit.void;
+          let cleanupFailure: SourceError | undefined;
           try {
-            await reader.cancel();
+            for (;;) {
+              const next = await reader.read();
+              if (next.done) break;
+              total += next.value.length;
+              if (total > 32 * 1024 * 1024) throw new Error("Git repository too large");
+              yield next.value;
+            }
           } catch (error) {
-            cleanupFailure = failure(error);
-            exit = Exit.fail(cleanupFailure);
+            exit = Exit.fail(failure(error));
+            throw error;
           } finally {
-            reader.releaseLock();
-            await run(observed.finish(exit));
+            observed.span.attribute("source.git.response.bytes", total);
+            try {
+              await reader.cancel();
+            } catch (error) {
+              cleanupFailure = failure(error);
+              exit = Exit.fail(cleanupFailure);
+            } finally {
+              reader.releaseLock();
+              await run(observed.finish(exit));
+            }
           }
-        }
-        if (cleanupFailure !== undefined) throw cleanupFailure;
-      };
-      return {
-        url: response.url,
-        statusCode: response.status,
-        statusMessage: response.statusText,
-        headers: (() => {
-          const headers: Record<string, string> = {};
-          response.headers.forEach((value, key) => {
-            headers[key] = value;
-          });
-          return headers;
-        })(),
-        body: stream(),
-      };
-    },
-  });
+          if (cleanupFailure !== undefined) throw cleanupFailure;
+        };
+        return {
+          url: response.url,
+          statusCode: response.status,
+          statusMessage: response.statusText,
+          headers: (() => {
+            const headers: Record<string, string> = {};
+            response.headers.forEach((value, key) => {
+              headers[key] = value;
+            });
+            return headers;
+          })(),
+          body: stream(),
+        };
+      },
+    };
+  };
   const withGit = <A>(
     name: string,
-    value: { readonly token: Redacted.Redacted<string>; readonly remote: string },
+    value: RepositoryAccess,
     work: (http: Git.HttpClient) => Promise<A>,
   ) =>
     Effect.gen(function* () {
@@ -298,7 +282,7 @@ export const cloudflareRepositories = (
       const scope = yield* Scope.Scope;
       const context = Context.add(telemetry.context, Scope.Scope, scope);
       return yield* Effect.tryPromise({
-        try: (signal) => work(client(Redacted.value(value.token), value.remote, signal, context)),
+        try: (signal) => work(client(value, signal, context)),
         catch: failure,
       });
     }).pipe(Effect.withSpan(name), Effect.scoped);
@@ -309,7 +293,7 @@ export const cloudflareRepositories = (
   return protectGit({
     history: (id) =>
       Effect.gen(function* () {
-        const value = yield* session(access(id, false));
+        const value = yield* session(access(id));
         const rows = yield* withGit("source.git.history", value, async (http) => {
           const options = { fs: value.fs, dir: value.dir };
           await Git.clone({
@@ -335,7 +319,7 @@ export const cloudflareRepositories = (
     head: (id, branch) =>
       Effect.gen(function* () {
         const name = yield* Schema.decodeUnknownEffect(Branch)(branch);
-        const value = yield* access(id, false);
+        const value = yield* access(id);
         const refs = yield* withGit("source.git.refs", value, (http) =>
           Git.listServerRefs({
             http,
@@ -350,7 +334,7 @@ export const cloudflareRepositories = (
       Effect.gen(function* () {
         if (!Schema.is(Commit)(ref) && !Schema.is(Branch)(ref))
           return yield* new SourceError({ reason: "invalid-source" });
-        const value = yield* session(access(id, false));
+        const value = yield* session(access(id));
         const options = { fs: value.fs, dir: value.dir };
         const requested = Schema.is(Commit)(ref) ? ref : `refs/heads/${ref}`;
         // Request only this snapshot, including when its SHA is no longer a branch tip.
@@ -416,12 +400,10 @@ export const cloudflareRepositories = (
           input.expected === null
             ? create(input.id).pipe(
                 Effect.flatMap((created) =>
-                  created === null
-                    ? access(input.id, true, openedAfterCreation(input.id))
-                    : Effect.succeed(created),
+                  created === null ? access(input.id) : Effect.succeed(created),
                 ),
               )
-            : access(input.id, true);
+            : access(input.id);
         const value = yield* session(credentials);
         return yield* withGit("source.git.commit", value, async (http) => {
           const options = { fs: value.fs, dir: value.dir };
@@ -535,25 +517,38 @@ export const cloudflareRepositories = (
               ? "/git-receive-pack"
               : null;
         if (suffix === null) return new Response(null, { status: 404 });
-        const write =
-          suffix === "/git-receive-pack" || url.searchParams.get("service") === "git-receive-pack";
-        const { remote, token } = yield* access(id, write);
-        const headers = new Headers();
-        headers.set("authorization", `Bearer ${Redacted.value(token)}`);
+        const value = yield* access(id);
+        const headers: Record<string, string> = {};
         for (const name of ["content-type", "git-protocol", "content-encoding"]) {
-          const value = request.headers.get(name);
-          if (value !== null) headers.set(name, value);
+          const header = request.headers.get(name);
+          if (header !== null) headers[name] = header;
         }
-        const response = yield* Effect.tryPromise({
-          try: (signal) =>
-            fetch(remote + suffix + url.search, {
-              method: request.method,
-              headers,
-              body: request.body,
-              redirect: "manual",
-              signal,
-            }),
-          catch: failure,
+        const body = yield* Effect.gen(function* () {
+          const stream = request.body;
+          if (stream === null) return undefined;
+          const chunks: Uint8Array[] = [];
+          let length = 0;
+          yield* Stream.fromReadableStream({ evaluate: () => stream, onError: failure }).pipe(
+            Stream.runForEach((chunk) =>
+              Effect.gen(function* () {
+                length += chunk.length;
+                if (length > 32 * 1024 * 1024) return yield* new SourceError({ reason: "limit" });
+                chunks.push(chunk);
+              }),
+            ),
+          );
+          const bytes = new Uint8Array(length);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.length;
+          }
+          return bytes;
+        });
+        const response = yield* authenticatedFetch(value)(value.remote + suffix + url.search, {
+          method: request.method,
+          headers,
+          ...(body === undefined ? {} : { body }),
         });
         if (response.status >= 300 && response.status < 400) {
           yield* Effect.tryPromise({
@@ -565,6 +560,6 @@ export const cloudflareRepositories = (
           return yield* failure();
         }
         return response;
-      }),
+      }).pipe(Effect.scoped),
   });
 };

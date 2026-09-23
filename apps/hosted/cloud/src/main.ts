@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
 import { Provisioning, dispatchProvisioning } from "./infrastructure/provisioning.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { executorCloudApiDocument } from "./contracts/api.ts";
@@ -156,7 +157,10 @@ export default Api.make(
     yield* AppWorkflows;
     yield* Provisioning;
     yield* OrganizationRemoval;
-    const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+    const executor = yield* cloudExecutor(
+      yield* AppDataSupervisor,
+      yield* cloudArtifactsTokensLive,
+    );
     const schedules = yield* cloudSchedules;
     const dispatch = dispatchProvisioning.pipe(
       Effect.provide(executor),

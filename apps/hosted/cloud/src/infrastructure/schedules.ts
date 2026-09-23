@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
@@ -26,7 +27,7 @@ import { BillingMeter } from "../contracts/billing-meter.ts";
 const makeScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
-  const resources = yield* cloudExecutor(yield* AppDataSupervisor);
+  const resources = yield* cloudExecutor(yield* AppDataSupervisor, yield* cloudArtifactsTokensLive);
   const billing = yield* billingLive;
   const meter = yield* BillingMeter.pipe(Effect.provide(billing));
   const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(

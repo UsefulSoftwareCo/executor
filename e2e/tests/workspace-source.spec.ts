@@ -1,6 +1,7 @@
 /** Source snapshots and optimistic writes are verified through the real hosted API and delivered traces. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -46,22 +47,62 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
             expect(response.status).toBe(200);
             return yield* body(Workspace, response);
           });
-        const trace = (label: string) =>
+        const trace = (
+          label: string,
+          reuse = false,
+          received?: {
+            readonly traceId: string;
+            readonly method: string;
+            readonly completedSpan?: string;
+          },
+        ) =>
           Effect.gen(function* () {
-            const request = (yield* evidence.requests).at(-1);
+            const request = received ?? (yield* evidence.requests).at(-1);
             if (request === undefined)
               return yield* Effect.fail(new Error("Missing request evidence"));
             const result = yield* telemetry.query(request.traceId).pipe(
               Effect.flatMap((result) =>
                 result.data.some(
-                  ({ span }) => span.operationName === `http.server ${request.method}`,
-                )
+                  ({ span }) =>
+                    span.operationName ===
+                    (received?.completedSpan ?? `http.server ${request.method}`),
+                ) &&
+                (target.metadata.target !== "cloud" ||
+                  result.data.some(
+                    ({ span }) =>
+                      span.operationName ===
+                      (reuse ? "source.repository.token.acquire" : "source.repository.initialize"),
+                  ))
                   ? Effect.succeed(result)
                   : Effect.fail(new Error("Missing completed workspace request trace")),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
+              Effect.tapError(() =>
+                telemetry.query(request.traceId).pipe(
+                  Effect.flatMap((result) =>
+                    evidence.json(`${label}-incomplete-trace.json`, {
+                      traceId: request.traceId,
+                      ...result,
+                    }),
+                  ),
+                  Effect.ignore,
+                ),
+              ),
             );
             yield* evidence.json(`${label}-trace.json`, result);
+            if (reuse && target.metadata.target === "cloud") {
+              const acquisitions = result.data.filter(
+                ({ span }) => span.operationName === "source.repository.token.acquire",
+              );
+              expect(acquisitions).toHaveLength(1);
+              expect(acquisitions[0]?.span.tags["source.token.reused"]).toBe("true");
+              expect(
+                result.data.some(({ span }) => span.operationName === "source.repository.token"),
+              ).toBe(false);
+              expect(
+                result.data.some(({ span }) => span.operationName === "source.repository.open"),
+              ).toBe(false);
+            }
             return result.data.map(({ span }) => span.operationName);
           });
 
@@ -82,21 +123,15 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
           expect(initialized).not.toContain("source.repository.token");
         }
 
+        // Preparation is asynchronous. Complete one acquisition before asserting warm reuse.
         expect(yield* read(path)).toEqual(initial);
-        const existing = yield* trace("existing");
+        expect(yield* read(path)).toEqual(initial);
+        const existing = yield* trace("existing", true);
         expect(existing.filter((name) => name === "source.workspace.read")).toHaveLength(1);
         expect(existing).not.toContain("source.initial.read");
         expect(existing).not.toContain("source.git.refs");
         if (target.metadata.target === "cloud") {
-          for (const name of [
-            "source.repository.open",
-            "source.repository.token",
-            "source.git.clone",
-          ])
-            expect(
-              existing.filter((operation) => operation === name),
-              name,
-            ).toHaveLength(1);
+          expect(existing.filter((operation) => operation === "source.git.clone")).toHaveLength(1);
         }
 
         let winner = initial;
@@ -113,7 +148,7 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
             { concurrency: 4 },
           );
           expect(writes.map((response) => response.status).sort()).toEqual([200, 409, 409, 409]);
-          const saved = yield* trace(`saved-${round}`);
+          const saved = yield* trace(`saved-${round}`, true);
           expect(saved).not.toContain("source.repository.create");
           const accepted = writes.find((response) => response.status === 200);
           if (accepted === undefined)
@@ -122,6 +157,57 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
           expect(winner.revision.commit).not.toBe(previous.revision.commit);
           expect(yield* read(path)).toEqual(winner);
         }
+        const history = yield* api.request(actors.owner, "GET", `${path}/history`);
+        expect(history.status).toBe(200);
+        expect(
+          yield* body(Schema.Array(Schema.Struct({ commit: Schema.String })), history),
+        ).toHaveLength(4);
+        yield* trace("history", true);
+
+        const keyResponse = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+          name: "Git source verification",
+        });
+        expect(keyResponse.status).toBe(200);
+        const key = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+          keyResponse,
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        const git = yield* body(
+          Schema.Struct({ path: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${path}/git`),
+        );
+        const http = yield* HttpClient.HttpClient;
+        for (const service of ["git-upload-pack", "git-receive-pack"]) {
+          const traceId = randomUUID().replaceAll("-", "");
+          const spanId = randomUUID().replaceAll("-", "").slice(0, 16);
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const response = yield* http.execute(
+                HttpClientRequest.get(
+                  `${target.metadata.origin}${git.path}/info/refs?service=${service}`,
+                ).pipe(
+                  HttpClientRequest.bearerToken(key.key),
+                  HttpClientRequest.setHeader("traceparent", `00-${traceId}-${spanId}-01`),
+                ),
+              );
+              expect(response.status).toBe(200);
+              expect(yield* response.text).toContain(winner.revision.commit);
+            }).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false)),
+          );
+          if (target.metadata.target === "cloud")
+            // The streamed proxy body has completed above. Its coordinator span is the credential boundary.
+            yield* trace(`proxy-${service}`, true, {
+              traceId,
+              method: "GET",
+              completedSpan: "source.repository.credentials",
+            });
+        }
+
         const stale = yield* api.request(actors.owner, "POST", `${path}/commits`, {
           expected: initial.revision.commit,
           files: files("stale write"),

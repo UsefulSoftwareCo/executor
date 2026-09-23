@@ -18,6 +18,10 @@ import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import { cloudEmail } from "./infrastructure/email.ts";
 import { cloudExecutor } from "./infrastructure/executor.ts";
+import {
+  cloudArtifactsTokens,
+  ArtifactsTokenCoordinator,
+} from "./infrastructure/artifacts-tokens.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { AppDataSupervisor } from "./infrastructure/app-data.ts";
@@ -75,7 +79,10 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const analytics = yield* cloudAnalytics;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send);
-    const executor = yield* cloudExecutor(yield* AppDataSupervisor.from(Api));
+    const executor = yield* cloudExecutor(
+      yield* AppDataSupervisor.from(Api),
+      yield* cloudArtifactsTokens(yield* ArtifactsTokenCoordinator.from(Api)).pipe(Effect.orDie),
+    );
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
     const appUi = hostedAppUi(appAddresses(auth.origin, base));
     const services = requestServices(Layer.mergeAll(auth.appSessions, executor));

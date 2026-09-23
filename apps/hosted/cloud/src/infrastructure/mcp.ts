@@ -1,3 +1,4 @@
+import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { ExecutionRejected } from "@executor-js/mcp";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
@@ -35,7 +36,7 @@ const admitExecution = Context.Reference<Effect.Effect<void, ExecutionRejected>>
 const makeMcpSessions = Effect.gen(function* () {
   const reportErrors = yield* cloudSentry;
   const auth = yield* cloudAuth(unavailableAuthEmail);
-  const executor = yield* cloudExecutor(yield* AppDataSupervisor);
+  const executor = yield* cloudExecutor(yield* AppDataSupervisor, yield* cloudArtifactsTokensLive);
   const analytics = yield* cloudAnalytics;
   const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
   return Effect.gen(function* () {
