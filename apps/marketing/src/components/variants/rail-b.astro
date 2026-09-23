@@ -4,12 +4,17 @@
 // meta lines (open source, YC), and a numbered mono index. The rail does not
 // sell; the hero owns the call to action. A full-height hairline closes the
 // right edge.
+import discordLogo from "../../assets/logos/discord.svg?url";
+import gmailLogo from "../../assets/logos/gmail.svg?url";
+import slackLogo from "../../assets/logos/slack.svg?url";
+import xLogo from "../../assets/logos/x.svg?url";
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
 
 // The brand mark resolves against the build's base, so the docs build (mounted
 // at /docs) serves its own copy instead of reaching for the marketing root.
 const MARK = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/favicon-192.png`;
 
+const DISCORD_URL = "https://discord.gg/eF29HBHwM6";
 const X_URL = "https://x.com/RhysSullivan";
 const EMAIL = "rhys@executor.sh";
 
@@ -91,20 +96,26 @@ const pad = (index: number) => String(index + 1).padStart(2, "0");
       </div>
       <ul class="rail__contact-list [.rail--b_&]:grid [.rail--b_&]:gap-2 [.rail--b_&_a]:flex [.rail--b_&_a]:flex-col [.rail--b_&_a]:gap-0.25 [.rail--b_&_a]:my-0 [.rail--b_&_a]:mx-[-6px] [.rail--b_&_a]:py-[4px] [.rail--b_&_a]:px-[6px] [.rail--b_&_a]:rounded-[5px] [.rail--b_&_a]:text-[12.5px] [.rail--b_&_a]:leading-[1.35] [.rail--b_&_a]:[transition:background_0.15s_ease] [.rail--b_&_a:hover]:[background:var(--color-surface-2)]">
         <li>
+          <a href={DISCORD_URL} target="_blank" rel="noopener noreferrer">
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={discordLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Discord</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">Join the community</span>
+          </a>
+        </li>
+        <li>
           <a href={`mailto:${EMAIL}?subject=Executor`}>
-            <span class="rail__contact-k [.rail--b_&]:text-ink [.rail--b_&]:font-medium">Email</span>
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={gmailLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Email</span>
             <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">{EMAIL}</span>
           </a>
         </li>
         <li>
           <a href={`mailto:${EMAIL}?subject=slack%20connect%20invite%20for%20Executor`}>
-            <span class="rail__contact-k [.rail--b_&]:text-ink [.rail--b_&]:font-medium">Shared Slack</span>
-            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">send a slack connect invite to {EMAIL}</span>
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={slackLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Shared Slack</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">send a slack connect</span>
           </a>
         </li>
         <li>
           <a href={X_URL} target="_blank" rel="me noopener">
-            <span class="rail__contact-k [.rail--b_&]:text-ink [.rail--b_&]:font-medium">X</span>
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={xLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />X</span>
             <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">@RhysSullivan</span>
           </a>
         </li>
