@@ -39,11 +39,11 @@ layer(WelcomeEmailTarget.layer, { excludeTestServices: true })("Cloud welcome em
 
 i'm rhys, founder of executor - thanks for signing up!
 
-quick heads up: i hate getting emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.
-
-on to the useful part. if you're still working out where to start, here's a prompt you can hand to your agent:
+if you're still working out where to start, here's a prompt you can hand to your agent:
 
 "add the executor mcp server at ${target.origin}/mcp, then read the executor docs at ${target.origin}/docs and work out how you can best use executor to help me."
+
+candidly, i hate getting these emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.
 
 if you get stuck or have questions, just reply. this was an automated email but replies go straight to me, and i'd love to hear what you're using executor for.`);
         expect(welcome?.html).toContain("<p>hey Taylor,</p>");

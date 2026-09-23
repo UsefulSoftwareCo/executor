@@ -109,9 +109,9 @@ export const welcomeEmailMessage = (
   const paragraphs = [
     greeting,
     "i'm rhys, founder of executor - thanks for signing up!",
-    "quick heads up: i hate getting emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.",
-    "on to the useful part. if you're still working out where to start, here's a prompt you can hand to your agent:",
+    "if you're still working out where to start, here's a prompt you can hand to your agent:",
     `"${starterPrompt}"`,
+    "candidly, i hate getting these emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.",
     "if you get stuck or have questions, just reply. this was an automated email but replies go straight to me, and i'd love to hear what you're using executor for.",
   ];
   const unsubscribeLead = "and if you'd rather not get these at all, the unsubscribe link is";
