@@ -1,7 +1,7 @@
 /** Native Git backend. All processes and temporary indexes belong to the calling Effect scope. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { SourceFiles } from "@executor-js/sdk/core";
-import { Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { Effect, FileSystem, Path, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { protectGit } from "./implementation/protected-git.ts";
 import {
@@ -93,12 +93,34 @@ const text = (
 
 /** Create a lazy native implementation over private bare repositories; users clone ordinary working copies. */
 export const nativeRepositories = (directory: string): RepositoryBackend => {
+  // Git initialization rewrites config; serialize setup within this host while ref writes stay concurrent.
+  const initialization = Semaphore.makeUnsafe(1);
   const location = (id: string) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       return path.resolve(directory, `${id}.git`);
     });
   const provide = Effect.provide(NodeServices.layer);
+  const create = (id: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const repo = yield* location(id);
+      yield* fs.makeDirectory(repo, { recursive: true, mode: 0o700 });
+      yield* run([
+        "init",
+        "--bare",
+        "--object-format=sha1",
+        "--initial-branch=main",
+        "--template=",
+        repo,
+      ]);
+      yield* run(["--git-dir", repo, "config", "http.receivepack", "true"]);
+      yield* run(["--git-dir", repo, "config", "gc.auto", "0"]);
+    }).pipe(
+      initialization.withPermits(1),
+      Effect.mapError(() => new SourceError({ reason: "git" })),
+      provide,
+    );
   return protectGit({
     history: (id) =>
       Effect.gen(function* () {
@@ -122,25 +144,7 @@ export const nativeRepositories = (directory: string): RepositoryBackend => {
         Effect.mapError(() => new SourceError({ reason: "git" })),
         provide,
       ),
-    create: (id) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const repo = yield* location(id);
-        yield* fs.makeDirectory(repo, { recursive: true, mode: 0o700 });
-        yield* run([
-          "init",
-          "--bare",
-          "--object-format=sha1",
-          "--initial-branch=main",
-          "--template=",
-          repo,
-        ]);
-        yield* run(["--git-dir", repo, "config", "http.receivepack", "true"]);
-        yield* run(["--git-dir", repo, "config", "gc.auto", "0"]);
-      }).pipe(
-        Effect.mapError(() => new SourceError({ reason: "git" })),
-        provide,
-      ),
+    create,
     head: (id, branch) =>
       Effect.gen(function* () {
         const name = yield* Schema.decodeUnknownEffect(Branch)(branch);
@@ -171,13 +175,20 @@ export const nativeRepositories = (directory: string): RepositoryBackend => {
         const resolved = Schema.is(Commit)(ref)
           ? ref
           : `refs/heads/${yield* Schema.decodeUnknownEffect(Branch)(ref)}`;
-        const commit = yield* text([
+        const revision = yield* git([
           "--git-dir",
           repo,
           "rev-parse",
           "--verify",
+          "--quiet",
           `${resolved}^{commit}`,
-        ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Commit)));
+        ]);
+        if (revision.code === 1 && !Schema.is(Commit)(ref))
+          return yield* new SourceError({ reason: "not-found" });
+        if (revision.code !== 0) return yield* new SourceError({ reason: "git" });
+        const commit = yield* decode(revision.output).pipe(
+          Effect.flatMap((value) => Schema.decodeUnknownEffect(Commit)(value.trimEnd())),
+        );
         const tree = yield* text(["--git-dir", repo, "ls-tree", "-rz", commit]);
         const files: Array<{ path: string; content: string }> = [];
         let total = 0;
@@ -212,6 +223,7 @@ export const nativeRepositories = (directory: string): RepositoryBackend => {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const repo = yield* location(input.id);
+          if (input.expected === null) yield* create(input.id);
           const files = yield* sourceFiles(input.files);
           const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "executor-git-" });
           const environment = {

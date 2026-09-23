@@ -41,10 +41,12 @@ export interface RepositoryBackend {
   ) => Effect.Effect<ReadonlyArray<typeof GitCommit.Type>, SourceError>;
   readonly create: (id: AppCodeId) => Effect.Effect<void, SourceError>;
   readonly head: (id: AppCodeId, branch: string) => Effect.Effect<string | null, SourceError>;
+  /** Read one coherent snapshot; an absent branch fails with not-found, never another branch's files. */
   readonly read: (
     id: AppCodeId,
     ref: string,
   ) => Effect.Effect<{ readonly commit: string; readonly files: SourceFiles }, SourceError>;
+  /** Create the repository for an initial write; existing writes must match the supplied revision. */
   readonly commit: (input: {
     readonly id: AppCodeId;
     readonly branch: string;

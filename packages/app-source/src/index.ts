@@ -18,21 +18,18 @@ export const encodeSource = (files: SourceFiles) =>
 /** Each protected ref pins a complete snapshot; ordinary Git pushes cannot change it. */
 export const gitSourceStorage = (repositories: RepositoryBackend): AppSourceStorage => ({
   workspace: (code) =>
-    repositories.head(code, "main").pipe(
-      Effect.flatMap((commit) =>
-        commit === null
-          ? Effect.succeed(null)
-          : repositories.read(code, commit).pipe(
-              Effect.map((snapshot) => ({
-                revision: { code, commit: snapshot.commit },
-                files: snapshot.files,
-              })),
-            ),
+    repositories.read(code, "main").pipe(
+      Effect.map((snapshot) => ({
+        revision: { code, commit: snapshot.commit },
+        files: snapshot.files,
+      })),
+      Effect.catchTag("SourceError", (error) =>
+        error.reason === "not-found" ? Effect.succeed(null) : Effect.fail(error),
       ),
+      Effect.withSpan("source.workspace.read"),
     ),
   commit: (input) =>
     Effect.gen(function* () {
-      yield* repositories.create(input.code);
       const commit = yield* repositories.commit({
         id: input.code,
         branch: "main",

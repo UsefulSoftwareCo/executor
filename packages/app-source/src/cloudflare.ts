@@ -2,7 +2,7 @@
 import type { ReadWriteNamespaceClient } from "alchemy/Cloudflare/Artifacts";
 import { RuntimeContext } from "alchemy";
 import { protectGit } from "./implementation/protected-git.ts";
-import { Context, Effect, Exit, Option, Schema, Scope } from "effect";
+import { Context, Effect, Exit, Option, Redacted, Schedule, Schema, Scope } from "effect";
 import { captureTelemetry, pendingSpan, traceHeaders } from "@executor-js/telemetry";
 import * as Git from "isomorphic-git";
 import { Volume, createFsFromVolume } from "memfs";
@@ -67,10 +67,24 @@ const failure = (cause?: unknown) => {
   }
   return error;
 };
+/** Only the requested missing branch is an empty workspace; object and transport failures stay errors. */
+const branchFailure = (cause: unknown, ref: string): SourceError =>
+  cause instanceof Git.Errors.NotFoundError && cause.data.what === ref
+    ? new SourceError({ reason: "not-found" })
+    : failure(cause);
 const observeFailure = (error: SourceError) =>
-  Effect.logWarning("Managed Git operation failed", {
-    reason: error.reason,
-    ...failures.get(error),
+  Effect.gen(function* () {
+    const details = failures.get(error);
+    yield* Effect.annotateCurrentSpan("source.error.reason", error.reason);
+    if (details !== undefined) {
+      yield* Effect.annotateCurrentSpan("source.error.type", details.type);
+      if (details.status !== undefined)
+        yield* Effect.annotateCurrentSpan("source.error.http_status", details.status);
+    }
+    yield* Effect.logWarning("Managed Git operation failed", {
+      reason: error.reason,
+      ...details,
+    });
   });
 
 /** Release RPC results while the event is still alive. Plain metadata needs no disposal. */
@@ -90,11 +104,11 @@ export const cloudflareRepositories = (
   namespace: ReadWriteNamespaceClient,
   settings: { readonly accountId: string; readonly namespace: string },
 ): RepositoryBackend => {
-  const access = (id: string, write: boolean) =>
+  const access = (id: string, write: boolean, repository = namespace.get(id)) =>
     Effect.scoped(
       Effect.gen(function* () {
         const repo = yield* Effect.acquireRelease(
-          namespace.get(id).pipe(Effect.withSpan("source.repository.open")),
+          repository.pipe(Effect.withSpan("source.repository.open")),
           (repo) => disposeRpc(repo.raw),
         );
         const remote = yield* Schema.decodeUnknownEffect(remoteSchema)(
@@ -113,12 +127,59 @@ export const cloudflareRepositories = (
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)),
           Effect.withSpan("source.repository.token.read"),
         );
-        return { remote, token: plaintext };
+        return { remote, token: Redacted.make(plaintext) };
       }),
     ).pipe(
       Effect.provide(RuntimeContext.phantom),
       Effect.mapError(failure),
       Effect.tapError(observeFailure),
+    );
+  const create = (id: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const created = yield* Effect.acquireRelease(
+          namespace.create(id, { setDefaultBranch: "main" }).pipe(
+            Effect.withSpan("source.repository.create"),
+            Effect.catchTag("ArtifactsError", (error) =>
+              Option.isSome(
+                Schema.decodeUnknownOption(
+                  Schema.Struct({ code: Schema.Literal("ALREADY_EXISTS") }),
+                )(error.cause),
+              )
+                ? Effect.succeed(null)
+                : Effect.fail(error),
+            ),
+          ),
+          (value) => disposeRpc(value),
+        );
+        if (created === null) return null;
+        const remote = yield* Schema.decodeUnknownEffect(remoteSchema)(created.remote);
+        const token = yield* Effect.tryPromise({
+          try: async () => created.token,
+          catch: failure,
+        }).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.NonEmptyString)),
+          Effect.map(Redacted.make),
+          Effect.withSpan("source.repository.initial-token.read"),
+        );
+        return { remote, token };
+      }),
+    ).pipe(
+      Effect.provide(RuntimeContext.phantom),
+      Effect.mapError(failure),
+      Effect.tapError(observeFailure),
+    );
+  // The RPC exposes creation-in-progress only as this message. Honor its interval
+  // after ALREADY_EXISTS; ordinary reads and other provider failures never retry.
+  const openedAfterCreation = (id: string) =>
+    namespace.get(id).pipe(
+      Effect.retry({
+        while: (error) =>
+          error.message ===
+          `Repository "${id}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
+        schedule: Schedule.spaced("5 seconds"),
+        times: 2,
+      }),
     );
   const client = (
     token: string,
@@ -229,7 +290,7 @@ export const cloudflareRepositories = (
   });
   const withGit = <A>(
     name: string,
-    value: { readonly token: string; readonly remote: string },
+    value: { readonly token: Redacted.Redacted<string>; readonly remote: string },
     work: (http: Git.HttpClient) => Promise<A>,
   ) =>
     Effect.gen(function* () {
@@ -237,18 +298,18 @@ export const cloudflareRepositories = (
       const scope = yield* Scope.Scope;
       const context = Context.add(telemetry.context, Scope.Scope, scope);
       return yield* Effect.tryPromise({
-        try: (signal) => work(client(value.token, value.remote, signal, context)),
+        try: (signal) => work(client(Redacted.value(value.token), value.remote, signal, context)),
         catch: failure,
       });
     }).pipe(Effect.withSpan(name), Effect.scoped);
-  const session = (id: string, write: boolean) =>
-    access(id, write).pipe(
+  const session = (credentials: ReturnType<typeof access>) =>
+    credentials.pipe(
       Effect.map((access) => ({ ...access, fs: createFsFromVolume(new Volume()), dir: "/repo" })),
     );
   return protectGit({
     history: (id) =>
       Effect.gen(function* () {
-        const value = yield* session(id, false);
+        const value = yield* session(access(id, false));
         const rows = yield* withGit("source.git.history", value, async (http) => {
           const options = { fs: value.fs, dir: value.dir };
           await Git.clone({
@@ -270,32 +331,7 @@ export const cloudflareRepositories = (
         });
         return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
       }).pipe(Effect.mapError(failure)),
-    create: (id) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const created = yield* Effect.acquireRelease(
-            namespace
-              .create(id, { setDefaultBranch: "main" })
-              .pipe(
-                Effect.catchTag("ArtifactsError", (error) =>
-                  Option.isSome(
-                    Schema.decodeUnknownOption(
-                      Schema.Struct({ code: Schema.Literal("ALREADY_EXISTS") }),
-                    )(error.cause),
-                  )
-                    ? Effect.succeed(null)
-                    : Effect.fail(error),
-                ),
-              ),
-            (value) => disposeRpc(value),
-          );
-          if (created !== null) yield* Schema.decodeUnknownEffect(remoteSchema)(created.remote);
-        }),
-      ).pipe(
-        Effect.provide(RuntimeContext.phantom),
-        Effect.mapError(failure),
-        Effect.tapError(observeFailure),
-      ),
+    create: (id) => create(id).pipe(Effect.asVoid),
     head: (id, branch) =>
       Effect.gen(function* () {
         const name = yield* Schema.decodeUnknownEffect(Branch)(branch);
@@ -314,39 +350,34 @@ export const cloudflareRepositories = (
       Effect.gen(function* () {
         if (!Schema.is(Commit)(ref) && !Schema.is(Branch)(ref))
           return yield* new SourceError({ reason: "invalid-source" });
-        const value = yield* session(id, false);
+        const value = yield* session(access(id, false));
         const options = { fs: value.fs, dir: value.dir };
-        const refs = yield* withGit("source.git.refs", value, (http) =>
-          Git.listServerRefs({
-            http,
-            url: value.remote,
-            prefix: "refs/heads/",
-          }),
-        );
-        const exact = refs.find(
-          (entry) =>
-            entry.ref.startsWith("refs/heads/") &&
-            (entry.ref === `refs/heads/${ref}` || entry.oid === ref),
-        );
-        const head = exact ?? refs.find((entry) => entry.ref === "refs/heads/main") ?? refs[0];
-        if (head === undefined) return yield* new SourceError({ reason: "not-found" });
+        const requested = Schema.is(Commit)(ref) ? ref : `refs/heads/${ref}`;
+        // Request only this snapshot, including when its SHA is no longer a branch tip.
         yield* withGit("source.git.clone", value, (http) =>
           Git.clone({
             ...options,
             http,
             url: value.remote,
-            ref: head.ref,
+            ref: requested,
             noCheckout: true,
-            singleBranch: exact !== undefined,
-            ...(exact === undefined ? {} : { depth: 1 }),
+            singleBranch: true,
+            depth: 1,
             noTags: true,
+          }).catch((cause) => {
+            throw Schema.is(Commit)(ref) ? failure(cause) : branchFailure(cause, requested);
           }),
         );
         const result = yield* Effect.tryPromise({
           try: async () => {
             const commit = Schema.is(Commit)(ref)
               ? ref
-              : await Git.resolveRef({ ...options, ref: `refs/remotes/origin/${ref}` });
+              : await Git.resolveRef({ ...options, ref: `refs/remotes/origin/${ref}` }).catch(
+                  (cause) => {
+                    // An empty repository makes clone succeed without writing a remote branch.
+                    throw branchFailure(cause, `refs/remotes/origin/${ref}`);
+                  },
+                );
             const files: Array<{ path: string; content: string }> = [];
             let total = 0;
             const walk = async (oid: string, prefix: string): Promise<void> => {
@@ -381,7 +412,17 @@ export const cloudflareRepositories = (
     commit: (input) =>
       Effect.gen(function* () {
         const files = yield* sourceFiles(input.files);
-        const value = yield* session(input.id, true);
+        const credentials =
+          input.expected === null
+            ? create(input.id).pipe(
+                Effect.flatMap((created) =>
+                  created === null
+                    ? access(input.id, true, openedAfterCreation(input.id))
+                    : Effect.succeed(created),
+                ),
+              )
+            : access(input.id, true);
+        const value = yield* session(credentials);
         return yield* withGit("source.git.commit", value, async (http) => {
           const options = { fs: value.fs, dir: value.dir };
           if (input.expected === null) {
@@ -450,19 +491,32 @@ export const cloudflareRepositories = (
             value: commit,
             force: true,
           });
-          const result = await Git.push({
-            ...options,
-            http,
-            url: value.remote,
-            ref: input.branch,
-            remoteRef: input.branch,
-            onPrePush: ({ remoteRef }) => {
-              if (remoteRef.oid !== (input.expected ?? "0".repeat(40)))
-                throw new SourceError({ reason: "conflict" });
-              return true;
-            },
-          });
-          if (!result.ok) throw new SourceError({ reason: "conflict" });
+          try {
+            const result = await Git.push({
+              ...options,
+              http,
+              url: value.remote,
+              ref: input.branch,
+              remoteRef: input.branch,
+              onPrePush: ({ remoteRef }) => {
+                if (remoteRef.oid !== (input.expected ?? "0".repeat(40)))
+                  throw new SourceError({ reason: "conflict" });
+                return true;
+              },
+            });
+            if (!result.ok) throw new SourceError({ reason: "git" });
+          } catch (cause) {
+            if (Schema.is(SourceError)(cause) && cause.reason === "conflict") throw cause;
+            // A rejected push or lost acknowledgment has several protocol error shapes.
+            // Reconcile the actual ref: our commit succeeded, another writer won,
+            // or the expected ref still holds and the original failure must surface.
+            const ref = `refs/heads/${input.branch}`;
+            const refs = await Git.listServerRefs({ http, url: value.remote, prefix: ref });
+            const current = refs.find((entry) => entry.ref === ref)?.oid ?? null;
+            if (current === commit) return commit;
+            if (current !== input.expected) throw new SourceError({ reason: "conflict" });
+            throw cause;
+          }
           return commit;
         }).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Commit)),
@@ -485,7 +539,7 @@ export const cloudflareRepositories = (
           suffix === "/git-receive-pack" || url.searchParams.get("service") === "git-receive-pack";
         const { remote, token } = yield* access(id, write);
         const headers = new Headers();
-        headers.set("authorization", `Bearer ${token}`);
+        headers.set("authorization", `Bearer ${Redacted.value(token)}`);
         for (const name of ["content-type", "git-protocol", "content-encoding"]) {
           const value = request.headers.get(name);
           if (value !== null) headers.set(name, value);

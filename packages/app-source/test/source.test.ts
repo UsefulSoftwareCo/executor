@@ -24,6 +24,10 @@ test("retained Git revisions survive author edits and reject deletion through Gi
         const first = yield* store.retain(code, before);
         const again = yield* store.retain(code, before);
         assert.deepEqual(again, first);
+        // A retained snapshot must not become the editable workspace when main is still absent.
+        assert.equal(yield* store.workspace(code), null);
+        const absent = yield* repos.read(code, "main").pipe(Effect.flip);
+        assert.equal(absent.reason, "not-found");
         const main = yield* repos.commit({
           id: code,
           branch: "main",

@@ -56,7 +56,7 @@ A **bold** description with \`inline code\`.
   {
     path: "config.json",
     content:
-      '{\n  "name": "Example",\n  "enabled": true,\n  "count": 42,\n  "tags": ["source", "highlighting"],\n  "options": null\n}',
+      '{\n  "name": "Example",\n  "enabled": true,\n  "count": 42,\n  "tags": [\n    "source",\n    "highlighting"\n  ],\n  "options": null\n}',
   },
 ];
 

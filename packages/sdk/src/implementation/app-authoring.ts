@@ -1,5 +1,5 @@
 /** Drafts and source edits belong to the same app identities as running deployments. */
-import { Clock, Crypto, Effect } from "effect";
+import { Clock, Crypto, Effect, Option } from "effect";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
 import { appSlug } from "../contracts/app-slug.ts";
@@ -63,8 +63,10 @@ export const makeAppAuthoring = (
     workspace: (input: Parameters<Executor["apps"]["workspace"]>[0]) =>
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
-        yield* initializeAppRepository(db, sources, blobs, app);
-        const source = yield* sources.workspace(app.code);
+        const initialized = yield* initializeAppRepository(db, sources, blobs, app);
+        const source = Option.isSome(initialized)
+          ? initialized.value
+          : yield* sources.workspace(app.code);
         if (source === null) return yield* new SourceError({ reason: "not-found" });
         return source;
       }),

@@ -25,9 +25,9 @@ export const readInitialSource = (blobs: BlobStorage, code: AppCodeId) =>
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
       new TextDecoder().decode(value.value),
     ).pipe(Effect.mapError(() => new SourceError({ reason: "invalid-source" })));
-  });
+  }).pipe(Effect.withSpan("source.initial.read"));
 
-/** Initialize main once, preserve an existing head, and publish readiness only after Git confirms it. */
+/** Initialize main once and return its confirmed snapshot; concurrent winners supply their own files. */
 export const initializeAppRepository = (
   db: Query,
   sources: AppSourceStorage,
@@ -35,9 +35,9 @@ export const initializeAppRepository = (
   app: Pick<StoredApp, "id" | "code" | "repository">,
 ) =>
   Effect.gen(function* () {
-    if (app.repository !== null) return;
+    if (app.repository !== null) return Option.none();
     const files = yield* readInitialSource(blobs, app.code);
-    yield* sources
+    const source = yield* sources
       .commit({ code: app.code, expected: null, files, message: "Create app" })
       .pipe(
         Effect.catchTag("SourceError", (error) =>
@@ -59,6 +59,7 @@ export const initializeAppRepository = (
         set: { repository: app.code },
       }),
     );
+    return Option.some(source);
   }).pipe(Effect.withSpan("apps.repository.initialize"));
 
 /** Retry pending repository creation with bounded parallel work; one unavailable repository does not stop the rest. */

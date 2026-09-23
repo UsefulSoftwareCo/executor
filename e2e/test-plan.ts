@@ -389,6 +389,24 @@ export const scenarios = {
     title: "OAuth resources are provisioned before client registration",
     targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
   },
+  workspaceSource: {
+    file: "workspace-source.spec.ts",
+    title: "Workspace reads reuse confirmed source and preserve concurrent writes",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
+  historicalSource: {
+    file: "historical-source.spec.ts",
+    title: "Historical source deploys without downloading later revisions",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
   appCopies: {
     file: "app-copies.spec.ts",
     title: "App copies use running source and remain independent through edits and navigation",

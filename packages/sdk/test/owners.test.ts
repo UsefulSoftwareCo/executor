@@ -294,7 +294,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("1.9.1") as unknown as AnyTable;
+          const db = options.storage.orm("3.0.0") as unknown as AnyTable;
           const owned = (table: string, owner: OwnerId) =>
             db.findMany(table, {
               select: ["id"],
@@ -306,12 +306,20 @@ test(
           for (const [owner, populated] of [
             [alice, mine],
             [bob, theirs],
-          ] as const)
+          ] as const) {
+            yield* executor.apps.profiles.create({
+              app: populated.app.id,
+              owner,
+              subject: "user:synthetic",
+              accounts: {},
+              idempotencyKey: "owner-purge",
+            });
             yield* seedRows(db, owner, {
               app: populated.app.id,
               account: populated.account.id,
               deployment: populated.app.activeDeployment,
             });
+          }
 
           // The fixture must reach every owner-bearing table, or "empty afterwards"
           // would pass for a table nothing ever wrote to.
@@ -345,7 +353,7 @@ test(
         Effect.gen(function* () {
           const options = yield* fixture;
           const executor = yield* createExecutor(options);
-          const db = options.storage.orm("1.9.1") as unknown as AnyTable;
+          const db = options.storage.orm("3.0.0") as unknown as AnyTable;
           const mine = yield* populate(executor, alice);
 
           // With no work in flight the check passes and reports the owner it read.
