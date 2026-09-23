@@ -2,6 +2,9 @@
 import { Schema } from "effect";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
 
+/** Conservative compressed archive budget, checked before npm receives any upload. */
+export const npmArchiveBudgetBytes = 180 * 1024 * 1024;
+
 /** Native platforms supported by the packaged runtime. */
 export const platforms = [
   {

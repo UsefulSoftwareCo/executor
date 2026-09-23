@@ -146,7 +146,7 @@ const desktop = Effect.gen(function* () {
           cwd: root,
           directory: path.resolve(directory),
           collectorBundle: app.isPackaged
-            ? path.join(root, "node_modules/@executor-js/telemetry/dist/motel")
+            ? path.join(root, "packages/telemetry/dist/motel")
             : path.join(__dirname, "motel"),
           development: !app.isPackaged && process.argv.includes("--dev"),
           token,

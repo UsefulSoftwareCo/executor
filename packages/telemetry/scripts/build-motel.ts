@@ -3,6 +3,8 @@ import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { realpath } from "node:fs";
+import { promisify } from "node:util";
 
 const build = Effect.gen(function* () {
   if (process.versions.bun !== "1.3.11")
@@ -26,7 +28,13 @@ const build = Effect.gen(function* () {
       ),
     ),
   );
-  const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "executor-motel-build-" });
+  // Windows TEMP can use an 8.3 alias. Bun resolves workspace members to long
+  // paths, so canonicalize their root too before it compares the frozen lock.
+  const scratch = yield* fs
+    .makeTempDirectoryScoped({ prefix: "executor-motel-build-" })
+    .pipe(
+      Effect.flatMap((directory) => Effect.tryPromise(() => promisify(realpath.native)(directory))),
+    );
   const command = (binary: string, args: readonly string[]) =>
     processes
       .exitCode(

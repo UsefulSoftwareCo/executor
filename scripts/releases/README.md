@@ -45,6 +45,13 @@ bun run release:wrapper
 Native artifacts are under `.local/releases/<version>-<platform>-<arch>/`.
 The npm launcher is under `.local/releases/<version>/wrapper/` and uses exact
 native version aliases. These build commands do not publish anything.
+The native package bundles the CLI and desktop server together. The app compiler
+and framework are prepared for workerd at build time. Native libraries, Git,
+Motel and authoring references remain included. No runtime download is needed.
+Each compressed native archive must fit within 180 MiB before publication.
+This is a release budget with margin, not a documented npm registry limit.
+External source maps stay in the separate CI artifact for release diagnostics.
+
 The prepared packages retain dependency licenses. Public releases also include
 checksum-pinned source archives for the bundled Git distribution.
 

@@ -55,6 +55,10 @@ export const runSuite = ({
       const fs = yield* FileSystem.FileSystem,
         path = yield* Path.Path,
         processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
+        Config.option,
+      );
+      const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(Config.option);
       const targets =
         selected === "all"
           ? (["self-host", "local", "cloud"] as const)
@@ -135,7 +139,9 @@ export const runSuite = ({
                     ? managedCloud
                       ? "Local Cloud Worker + Postgres · no saved credentials"
                       : "Cloud endpoint"
-                    : "Node + PGlite per scenario",
+                    : target === "local" && Option.isSome(packagedEntry)
+                      ? "Installed npm CLI + PGlite per scenario"
+                      : "Node + PGlite per scenario",
                 commit,
                 dirty,
                 startedAt,
@@ -153,7 +159,7 @@ export const runSuite = ({
               });
               yield* fs.writeFileString(`${directory}/run.json`, JSON.stringify(metadata, null, 2));
               yield* Console.log(
-                `Testing ${target}: ${target === "cloud" ? origin : "isolated server per scenario"}`,
+                `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"}`,
               );
               const code = yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -192,6 +198,12 @@ export const runSuite = ({
                           ...(process.env.TMPDIR === undefined
                             ? {}
                             : { TMPDIR: process.env.TMPDIR }),
+                          ...(Option.isSome(packagedEntry)
+                            ? { EXECUTOR_E2E_LOCAL_ENTRY: packagedEntry.value }
+                            : {}),
+                          ...(Option.isSome(runtimePath)
+                            ? { EXECUTOR_E2E_RUNTIME_PATH: runtimePath.value }
+                            : {}),
                           ...(process.env.E2E_CLAUDE_BASE_URL === undefined
                             ? {}
                             : { E2E_CLAUDE_BASE_URL: process.env.E2E_CLAUDE_BASE_URL }),

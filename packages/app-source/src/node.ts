@@ -16,18 +16,24 @@ const git = (
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const process = yield* spawner.spawn(
-        ChildProcess.make("git", ["-c", "core.hooksPath=/dev/null", ...args], {
-          stdin: input === undefined ? "ignore" : Stream.succeed(input),
-          stdout: "pipe",
-          stderr: "ignore",
-          extendEnv: true,
-          env: {
-            GIT_TERMINAL_PROMPT: "0",
-            GIT_CONFIG_NOSYSTEM: "1",
-            GIT_CONFIG_GLOBAL: "/dev/null",
-            ...environment,
+        // Receive-pack adds a quarantine directory beneath the repository. Let
+        // Git use Windows extended paths for those deeper object filenames.
+        ChildProcess.make(
+          "git",
+          ["-c", "core.hooksPath=/dev/null", "-c", "core.longpaths=true", ...args],
+          {
+            stdin: input === undefined ? "ignore" : Stream.succeed(input),
+            stdout: "pipe",
+            stderr: "ignore",
+            extendEnv: true,
+            env: {
+              GIT_TERMINAL_PROMPT: "0",
+              GIT_CONFIG_NOSYSTEM: "1",
+              GIT_CONFIG_GLOBAL: "/dev/null",
+              ...environment,
+            },
           },
-        }),
+        ),
       );
       const chunks: Uint8Array[] = [];
       let length = 0;
