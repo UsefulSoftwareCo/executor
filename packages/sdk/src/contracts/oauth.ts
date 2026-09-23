@@ -220,13 +220,20 @@ export const OAuthSetupFailed = UserFacingError.define({
 /** Parsed OAuthSetupFailed failure. */
 export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
 /** The saved grant cannot supply a fresh token. Its account identity remains available for reconnection. */
-export class OAuthReconnectRequired extends Schema.TaggedError<OAuthReconnectRequired>()(
-  "OAuthReconnectRequired",
-  {
-    account: AccountId,
+export const OAuthReconnectRequired = UserFacingError.define({
+  tag: "OAuthReconnectRequired",
+  status: 409,
+  fields: { account: AccountId },
+  title: "An account needs to reconnect",
+  description: "The saved sign-in can no longer be used for this account.",
+  recovery: {
+    action: "Open Accounts and reconnect the affected account, then return to Tools.",
+    instructions:
+      "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and profile bindings, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
   },
-  { httpApiStatus: 409 },
-) {}
+});
+/** Parsed expired or revoked account sign-in. */
+export type OAuthReconnectRequired = typeof OAuthReconnectRequired.Type;
 
 /** Registration and attempt IDs also bind encrypted data to the record which owns it. */
 export const OAuthClientId = Schema.NonEmptyString.pipe(Schema.brand("OAuthClientId"));

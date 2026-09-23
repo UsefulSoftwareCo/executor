@@ -112,6 +112,7 @@ export interface AccountLinkProps {
 export interface FailureProps<E> {
   readonly cause: Cause.Cause<E>;
   readonly retry?: (() => void) | undefined;
+  readonly retrying?: boolean | undefined;
 }
 /** Only error-independent presentation belongs in context. Queries keep their own error types. */
 export interface DashboardBindings {

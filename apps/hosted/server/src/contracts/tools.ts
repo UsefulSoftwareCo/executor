@@ -46,7 +46,6 @@ const discoveryErrors = [
   AppNotFound,
   AppNotDeployed,
   DeploymentNotFound,
-  DeploymentId,
   AppEvaluationFailed,
   AccountNotFound,
   AccountRequired,

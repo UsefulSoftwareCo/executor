@@ -58,7 +58,7 @@ export const ProfileNotFound = UserFacingError.define({
   title: "Account selection unavailable",
   description: "The saved account selection for this app could not be found.",
   recovery: {
-    action: "Close this form and reopen the app’s account selection.",
+    action: "Open the app’s Accounts tab and choose an available profile.",
     instructions:
       "Read the current app’s account requirements and saved account selection. Reopen setup to establish the intended selection through the supported account flow. Do not invent missing bindings or reuse a stale profile reference.",
   },
@@ -73,9 +73,8 @@ export const ProfileConflict = UserFacingError.define({
     profile: ProfileId,
     reason: Schema.Literals(["revision", "idempotency", "inactive", "active-resources"]),
   },
-  title: "Account selection could not be updated",
-  description:
-    "The saved account selection is out of date or cannot be changed in its current state.",
+  title: "Account selection needs attention",
+  description: "The saved account selection changed or is not available for this action.",
   recovery: {
     action: "Reload the current account selection and review it before making changes.",
     instructions:

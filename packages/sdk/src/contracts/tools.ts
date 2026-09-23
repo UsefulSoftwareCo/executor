@@ -1,4 +1,5 @@
 import { ProfileId } from "./shared.ts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Existing tool call seam, using the configured app's saved accounts. Discovery design is deferred. */
 import { Schema } from "effect";
@@ -81,14 +82,21 @@ export const ToolPage = Schema.Struct({
 export type ToolPage = typeof ToolPage.Type;
 
 /** Evaluating the app's live definition failed before any tool ran. */
-export class AppEvaluationFailed extends Schema.TaggedError<AppEvaluationFailed>()(
-  "AppEvaluationFailed",
-  { app: AppId, deployment: DeploymentId, reason: Schema.String },
-  {
-    httpApiStatus: 502,
-    description: "App evaluation failed. The reason is sanitized, without source or secrets.",
+export const AppEvaluationFailed = UserFacingError.define({
+  tag: "AppEvaluationFailed",
+  status: 502,
+  fields: { app: AppId, deployment: DeploymentId, reason: Schema.String },
+  title: "Tools could not be loaded",
+  description: "Executor could not load this app’s tool definitions.",
+  recovery: {
+    action: "Try again. If this continues, copy the fix prompt to investigate the app.",
+    instructions:
+      "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.",
   },
-) {}
+  retryable: true,
+});
+/** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
+export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;
 
 /** This evaluated app does not expose the named tool. */
 export class ToolNotFound extends Schema.TaggedError<ToolNotFound>()(

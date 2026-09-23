@@ -137,11 +137,20 @@ export const AppNotFound = UserFacingError.define({
 export type AppNotFound = typeof AppNotFound.Type;
 
 /** A draft has source but no active executable deployment. */
-export class AppNotDeployed extends Schema.TaggedError<AppNotDeployed>()(
-  "AppNotDeployed",
-  { app: AppId },
-  { httpApiStatus: 409 },
-) {}
+export const AppNotDeployed = UserFacingError.define({
+  tag: "AppNotDeployed",
+  status: 409,
+  fields: { app: AppId },
+  title: "This app is not deployed",
+  description: "The app has no active deployment to load.",
+  recovery: {
+    action: "Open Source and deploy the app before using its tools or accounts.",
+    instructions:
+      "Check the current app’s source and deployment status. Resolve any build errors and deploy the intended source through the supported app flow. Verify tool discovery after deployment.",
+  },
+});
+/** Parsed undeployed-app failure. */
+export type AppNotDeployed = typeof AppNotDeployed.Type;
 
 /** Adding a configured copy must not overwrite an existing app with that name. */
 export class AppNameTaken extends Schema.TaggedError<AppNameTaken>()(
@@ -164,9 +173,10 @@ export class AppSlugTaken extends Schema.TaggedError<AppSlugTaken>()(
 ) {}
 
 /** A saved selection does not match the app's declared provider or cardinality. */
-export class AccountSelectionInvalid extends Schema.TaggedError<AccountSelectionInvalid>()(
-  "AccountSelectionInvalid",
-  {
+export const AccountSelectionInvalid = UserFacingError.define({
+  tag: "AccountSelectionInvalid",
+  status: 422,
+  fields: {
     app: AppId,
     slot: Schema.String,
     reason: Schema.Literals([
@@ -177,18 +187,32 @@ export class AccountSelectionInvalid extends Schema.TaggedError<AccountSelection
       "duplicate_account",
     ]),
   },
-  { httpApiStatus: 422, description: "Select accounts that match the app requirement." },
-) {}
+  title: "Account selection needs attention",
+  description: "The selected accounts do not match this app’s requirements.",
+  recovery: {
+    action: "Open Accounts and review the selected profile’s account choices.",
+    instructions:
+      "Compare the current app requirements with the selected profile’s saved account bindings. Identify the missing slot, wrong provider, duplicate account, or incorrect number of accounts. Ask for the intended account choice when it is unclear; never substitute another identity automatically. Verify tool discovery with the corrected selection.",
+  },
+});
+/** Parsed invalid account selection. */
+export type AccountSelectionInvalid = typeof AccountSelectionInvalid.Type;
 
 /** A required account selection is missing; a new app can be configured before it can run. */
-export class AccountRequired extends Schema.TaggedError<AccountRequired>()(
-  "AccountRequired",
-  { app: AppId, deployment: DeploymentId, slot: Schema.String },
-  {
-    httpApiStatus: 409,
-    description: "Select accounts for every app requirement before running it.",
+export const AccountRequired = UserFacingError.define({
+  tag: "AccountRequired",
+  status: 409,
+  fields: { app: AppId, deployment: DeploymentId, slot: Schema.String },
+  title: "Choose an account to continue",
+  description: "This app needs an account that has not been selected yet.",
+  recovery: {
+    action: "Open Accounts and connect or select an account for each requirement.",
+    instructions:
+      "Read the current app’s account requirements and selected profile. Guide the user to connect or select the intended account for each missing requirement. Preserve existing choices and verify tool discovery when the selection is complete.",
   },
-) {}
+});
+/** Parsed missing account selection. */
+export type AccountRequired = typeof AccountRequired.Type;
 
 /** Stop and clean up webhook subscriptions before deleting their configured app. */
 export class AppWebhooksActive extends Schema.TaggedError<AppWebhooksActive>()(

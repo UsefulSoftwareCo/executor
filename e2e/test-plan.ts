@@ -30,6 +30,15 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  toolsErrorState: {
+    file: "tools-error-state.spec.ts",
+    title: "Tools errors explain discovery failures and preserve retry on desktop and mobile",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The hosted Tools page owns this error presentation."),
+    },
+  },
   testingCli: {
     file: "testing-cli.spec.ts",
     title: "Testing CLI owns scenario creation, role requests, population and teardown",
