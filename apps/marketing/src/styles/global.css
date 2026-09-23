@@ -4,6 +4,7 @@
 @source "../**/*.astro";
 
 @source "../**/*.tsx";
+@source "../../../../packages/ui/src/implementation/components/early-preview-notice.tsx";
 
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;

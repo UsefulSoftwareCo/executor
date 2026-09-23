@@ -1,50 +1,36 @@
 ---
 import rhysAvatar from "../assets/rhys-sullivan.jpg";
-import { earlyPreview } from "@executor-js/ui/contracts/early-preview";
+import { EarlyPreviewNotice } from "@executor-js/ui/components/early-preview-notice";
 ---
 
-<dialog
-  id="early-preview-notice"
-  aria-labelledby="early-preview-title"
-  aria-describedby="early-preview-description"
-  class="fixed inset-0 m-auto max-h-[calc(100dvh_-_2rem)] w-[calc(100%_-_2rem)] max-w-[520px] overflow-y-auto overscroll-contain rounded-2xl border border-rule bg-surface p-6 text-ink shadow-[0_24px_100px_#00000026] backdrop:bg-black/25 backdrop:backdrop-blur-sm sm:p-8"
->
-  <p class="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-ink-3">Early preview</p>
-  <h2 id="early-preview-title" class="text-[26px] font-semibold leading-tight tracking-[-0.035em]">{earlyPreview.title}</h2>
-  <div id="early-preview-description" class="mt-5 space-y-4 text-[15px] leading-[1.65] text-ink-2">
-    {earlyPreview.paragraphs.map((paragraph) => <p>{paragraph}</p>)}
-  </div>
-  <form method="dialog" class="mt-7 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-    <div class="flex items-center gap-3">
-      <img src={rhysAvatar.src} alt="" width="40" height="40" class="size-10 rounded-full object-cover ring-1 ring-rule" />
-      <div class="text-sm leading-snug">
-        <p class="font-medium">Rhys Sullivan</p>
-        <p class="mt-0.5 text-ink-3">Founder, Executor</p>
-      </div>
-    </div>
-    <button
-      type="submit"
-      autofocus
-      class="min-h-11 w-full cursor-pointer rounded-lg bg-ink px-5 py-2.5 text-sm font-medium text-surface transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ink sm:w-auto"
-    >Got it</button>
-  </form>
-</dialog>
+<EarlyPreviewNotice avatarSrc={rhysAvatar.src} />
 
-<!-- The banner opens the same dialog on demand, without waiting for a client bundle. -->
+<!-- Show the original first-visit notice immediately; the banner can reopen it later. -->
 <script is:inline>
   {
     const dialog = document.getElementById("early-preview-notice");
+    const storageKey = "executor-v2-early-preview-dismissed";
+    let dismissed = false;
+    try {
+      dismissed = localStorage.getItem(storageKey) === "true";
+    } catch {}
+
     if (dialog instanceof HTMLDialogElement) {
-      const previousOverflow = document.documentElement.style.overflow;
+      let previousOverflow = "";
       dialog.addEventListener("close", () => {
         document.documentElement.style.overflow = previousOverflow;
+        try {
+          localStorage.setItem(storageKey, "true");
+        } catch {}
       });
       const openDialog = () => {
         if (dialog.open) return;
+        previousOverflow = document.documentElement.style.overflow;
         dialog.showModal();
         document.documentElement.style.overflow = "hidden";
       };
       document.querySelector("[data-early-preview-open]")?.addEventListener("click", openDialog);
+      if (!dismissed) openDialog();
     }
   }
 </script>

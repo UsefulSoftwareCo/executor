@@ -15,10 +15,24 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
 
         yield* browser.use("Open the homepage", (page) => page.goto("/home"));
         expect(
-          yield* browser.use("Check the preview starts closed", (page) =>
+          yield* browser.use("Check the first-visit preview opens", (page) =>
             page.locator("#early-preview-notice").evaluate((dialog) => dialog.hasAttribute("open")),
           ),
-        ).toBe(false);
+        ).toBe(true);
+        expect(
+          yield* browser.use("Read the original preview copy", (page) =>
+            page.getByRole("dialog").innerText(),
+          ),
+        ).toContain("Migration from v1 to v2 will happen automatically");
+        yield* browser.checkpoint("Homepage first-visit preview");
+        yield* browser.use("Dismiss the first-visit preview", (page) =>
+          page.getByRole("button", { name: "Got it", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Check the preview choice was saved", (page) =>
+            page.evaluate(() => localStorage.getItem("executor-v2-early-preview-dismissed")),
+          ),
+        ).toBe("true");
         expect(
           yield* browser.use("Read the homepage banner", (page) =>
             page.locator('aside[aria-label="Beta notice"]').innerText(),
@@ -48,11 +62,19 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
           yield* browser.use("Read the homepage preview", (page) =>
             page.getByRole("dialog").innerText(),
           ),
-        ).toContain("You may run into bugs or changes");
+        ).toContain("Expect bugs. If you find one or have an idea");
         yield* browser.checkpoint("Homepage beta banner and preview");
         yield* browser.use("Close the homepage preview", (page) =>
           page.getByRole("button", { name: "Got it", exact: true }).click(),
         );
+        yield* browser.use("Reload the homepage after dismissing the preview", (page) =>
+          page.reload(),
+        );
+        expect(
+          yield* browser.use("Check the preview stays closed on reload", (page) =>
+            page.locator("#early-preview-notice").evaluate((dialog) => dialog.hasAttribute("open")),
+          ),
+        ).toBe(false);
 
         yield* browser.login(actors.owner);
         yield* browser.use("Open the cloud dashboard", (page) =>
@@ -79,9 +101,6 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
         expect(dashboardBanner.y).toBe(0);
         expect(dashboardBanner.width).toBe(dashboardBanner.viewport);
         expect(dashboardBanner.height).toBeLessThanOrEqual(36);
-        yield* browser.use("Wait for the dashboard content", (page) =>
-          page.locator("[data-slot=skeleton]").first().waitFor({ state: "hidden" }),
-        );
         yield* browser.checkpoint("Cloud dashboard beta banner");
         yield* browser.use("Open the dashboard preview", (page) =>
           page.getByRole("button", { name: "Learn more" }).click(),
@@ -90,7 +109,14 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
           yield* browser.use("Read the dashboard preview", (page) =>
             page.getByRole("dialog").innerText(),
           ),
-        ).toContain("You may run into bugs or changes");
+        ).toContain("Expect bugs. If you find one or have an idea");
+        expect(
+          yield* browser.use("Check the dashboard uses the marketing dialog", (page) =>
+            page
+              .locator("#early-preview-notice")
+              .evaluate((dialog) => dialog instanceof HTMLDialogElement),
+          ),
+        ).toBe(true);
         yield* browser.use("Wait for the dashboard preview animation", (page) =>
           page
             .getByRole("dialog")
