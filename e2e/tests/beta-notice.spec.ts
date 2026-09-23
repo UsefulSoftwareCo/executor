@@ -23,7 +23,9 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
           yield* browser.use("Read the original preview copy", (page) =>
             page.getByRole("dialog").innerText(),
           ),
-        ).toContain("Migration from v1 to v2 will happen automatically");
+        ).toContain(
+          "Migration from v1 to v2 is not implemented yet, if you want to play with the product early you can now, otherwise v1 will migrate over automatically in about a week",
+        );
         yield* browser.checkpoint("Homepage first-visit preview");
         yield* browser.use("Dismiss the first-visit preview", (page) =>
           page.getByRole("button", { name: "Got it", exact: true }).click(),
