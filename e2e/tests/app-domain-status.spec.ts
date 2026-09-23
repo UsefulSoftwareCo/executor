@@ -7,12 +7,12 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { waitForAppUrl } from "../support/app-pages.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
 layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) => {
   it.effect(scenarios.appDomainStatus.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

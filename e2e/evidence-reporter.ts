@@ -71,7 +71,7 @@ export const collectEvidence = (directory: string) =>
               ),
             ),
           );
-        const joined = yield* renderFocusedRecording(folder, run.origin);
+        const joined = yield* renderFocusedRecording(folder, entry.origin ?? run.origin);
         if (!joined) return [entry];
         const filmstrip = yield* renderRecordingFilmstrip(folder, joined.video);
         const states = yield* renderStateEvidence(folder);

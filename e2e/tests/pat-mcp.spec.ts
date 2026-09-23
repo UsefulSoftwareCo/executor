@@ -1,15 +1,20 @@
+import { managementApp } from "../support/management-app.ts";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Redacted, Result, Schema } from "effect";
+import { Clock, Effect, Redacted, Result, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
-const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
+const Token = Schema.Struct({
+  key: Schema.RedactedFromValue(Schema.String),
+  id: Schema.String,
+  expiresAt: Schema.NullOr(Schema.DateFromString),
+});
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
@@ -22,7 +27,7 @@ const BrowserPending = Schema.Struct({ ...Pending.fields, approvalUrl: Schema.St
 
 layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
   it.effect(scenarios.patMcp.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -155,7 +160,7 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
         expect(yield* native.elicitationCount).toBe(1);
         const memberClient = yield* mcp.connect(member.key, "pat-member", { organization });
         const denied = yield* memberClient.use(
-          "A member PAT cannot execute an admin-only tool",
+          "A member PAT cannot use the owner’s private app",
           (client, signal) =>
             client.callTool({ name: "execute", arguments: { code: code("echo") } }, undefined, {
               signal,
@@ -169,10 +174,14 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
           Effect.gen(function* () {
             const admin = yield* create(actors.admin);
             const adminClient = yield* mcp.connect(admin.key, "pat-role-change", { organization });
-            const before = yield* adminClient.use("An admin PAT can execute", (client, signal) =>
-              client.callTool({ name: "execute", arguments: { code: code("echo") } }, undefined, {
-                signal,
-              }),
+            const { profile } = yield* managementApp(actors.admin);
+            const inspect = `return await tools.executor.profiles[${JSON.stringify(profile.id)}].queries.appManagement_source(${JSON.stringify({ path: { organization, app: app.id } })})`;
+            const before = yield* adminClient.use(
+              "An admin PAT can inspect app source",
+              (client, signal) =>
+                client.callTool({ name: "execute", arguments: { code: inspect } }, undefined, {
+                  signal,
+                }),
             );
             expect(
               (yield* Schema.decodeUnknownEffect(Completed)(before.structuredContent)).execution.ok,
@@ -201,7 +210,7 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
                     "Downgrade takes effect without reconnecting",
                     (client, signal) =>
                       client.callTool(
-                        { name: "execute", arguments: { code: code("echo") } },
+                        { name: "execute", arguments: { code: inspect } },
                         undefined,
                         { signal },
                       ),
@@ -341,9 +350,14 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
           (client) => client.listTools(),
         );
         expect(remaining.tools.map((tool) => tool.name)).toContain("execute");
-        const expiring = yield* create(actors.owner, 3);
+        // The token must remain valid for the two-request network handshake.
+        // Wait for its server-issued expiry, not a fixed delay after connecting.
+        const expiring = yield* create(actors.owner, 10);
         const expiringClient = yield* mcp.connect(expiring.key, "pat-expiry", { organization });
-        yield* Effect.sleep("3100 millis");
+        if (expiring.expiresAt === null) return yield* Effect.die("Missing token expiry");
+        const remainingMs = expiring.expiresAt.getTime() - (yield* Clock.currentTimeMillis);
+        expect(remainingMs).toBeGreaterThan(0);
+        yield* Effect.sleep(remainingMs + 100);
         expect(
           (yield* api.request(anonymous, "GET", "/mcp", undefined, {
             ...headers,

@@ -30,6 +30,26 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  testingCli: {
+    file: "testing-cli.spec.ts",
+    title: "Testing CLI owns scenario creation, role requests, population and teardown",
+    targets: {
+      "self-host": scheduled,
+      local: scheduled,
+      cloud: na(
+        "CLI transport uses local products; shared SDK Cloud operations are covered by the populated scenario.",
+      ),
+    },
+  },
+  testingSdk: {
+    file: "testing-sdk.spec.ts",
+    title: "Testing SDK isolates overlapping populated organizations and cleans failed scenarios",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organizations; its scenario lifecycle uses independent processes."),
+    },
+  },
   cloudSsoOidc: {
     file: "cloud-sso.spec.ts",
     title: "Cloud SSO OIDC setup preserves drafts and binds verified identities to one team",
@@ -1288,10 +1308,15 @@ export const filesForTarget = (
   target: typeof Target.Type,
   suite: "all" | "hosted",
   cloudMode: "managed" | "attached" = "managed",
+  filter = "",
 ) => [
   ...new Set(
     scenariosForSuite(suite, cloudMode)
-      .filter((scenario) => scenario.targets[target].status === "scheduled")
+      .filter(
+        (scenario) =>
+          scenario.targets[target].status === "scheduled" &&
+          new RegExp(filter).test(scenario.title),
+      )
       .map((scenario) => `e2e/tests/${scenario.file}`),
   ),
 ];

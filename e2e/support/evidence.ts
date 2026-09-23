@@ -131,6 +131,10 @@ export class TelemetryUnavailable extends Schema.TaggedError<TelemetryUnavailabl
 
 /** Build a fresh evidence store for a single Vitest case. Its scope writes the final outcome. */
 export const evidenceLayer = (context: TestContext) =>
+  scenarioEvidence({ file: context.task.file.name, name: context.task.name });
+
+/** Record the same evidence for an interactive scenario or a committed Vitest case. */
+export const scenarioEvidence = (identity: { readonly file: string; readonly name: string }) =>
   Layer.effect(
     Evidence,
     Effect.gen(function* () {
@@ -140,10 +144,14 @@ export const evidenceLayer = (context: TestContext) =>
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const id = createHash("sha256")
-        .update(`${target.metadata.target}:${context.task.file.name}:${context.task.name}`)
+        .update(`${target.metadata.target}:${identity.file}:${identity.name}`)
         .digest("hex")
         .slice(0, 16);
-      const directory = path.join(target.directory, "report/evidence", id);
+      const directory = path.join(
+        target.evidenceDirectory ?? target.directory,
+        "report/evidence",
+        id,
+      );
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const started = yield* Clock.currentTimeMillis;
       const attachments: (typeof EvidenceEntries.Type)[number]["attachments"][number][] = [];
@@ -167,6 +175,12 @@ export const evidenceLayer = (context: TestContext) =>
         }).pipe(Effect.orDie);
       const json = (name: string, contents: unknown) =>
         attach(name, "application/json", JSON.stringify(contents, null, 2));
+      yield* json("scenario.json", {
+        id: target.scenarioId,
+        label: target.scenarioLabel,
+        origin: target.metadata.origin,
+        directory: target.directory,
+      });
       const flush = Effect.gen(function* () {
         const rows = yield* Ref.get(requests);
         yield* json("requests.json", rows);
@@ -231,9 +245,10 @@ export const evidenceLayer = (context: TestContext) =>
             JSON.stringify(
               {
                 id,
-                title: context.task.name,
-                file: path.basename(context.task.file.name),
+                title: identity.name,
+                file: path.basename(identity.file),
                 target: target.metadata.target,
+                origin: target.metadata.origin,
                 status: Exit.isSuccess(exit) ? "passed" : "failed",
                 duration: ended - started,
                 errors: Exit.isFailure(exit) ? [Cause.pretty(exit.cause)] : [],

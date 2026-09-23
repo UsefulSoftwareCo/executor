@@ -4,14 +4,14 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appBrowserFiles, checkAppBrowser } from "../support/app-browser.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
   it.effect(scenarios.appBrowser.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

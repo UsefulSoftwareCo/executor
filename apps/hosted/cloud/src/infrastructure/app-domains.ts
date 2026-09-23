@@ -17,7 +17,7 @@ import { cloudAppUiBase } from "../contracts/app-ui.ts";
 import { appDomainState } from "../implementation/app-domain-state.ts";
 import { reconcileAppDomainStack } from "../implementation/app-domain-stack.ts";
 import { sharedAppDomainZone } from "./app-domain-zone.ts";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 import { appDomainControlSecret } from "./app-domain-control.ts";
 import { AppDomainZoneSettings } from "../contracts/app-domains.ts";
 
@@ -75,7 +75,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
   const secret = tokenBinding.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Redacted(Schema.NonEmptyString))),
   );
-  const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+  const connection = yield* cloudDatabaseConnection;
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const lifetime = yield* previewLifetime;
@@ -237,7 +237,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
         }),
     };
   });
-}).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding), Effect.orDie);
+}).pipe(Effect.orDie);
 
 /** A single durable object serializes desired-state reconciliation for this deployed stage. */
 export class AppDomainCoordinator extends Cloudflare.DurableObject<

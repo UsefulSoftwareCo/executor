@@ -6,7 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Workspace, saveAndDeploy } from "../support/app-authoring.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { holdQuery } from "../support/query-transition.ts";
 
@@ -32,7 +32,7 @@ const files = (message: string) => [
 
 layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) => {
   it.effect(scenarios.appCopies.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

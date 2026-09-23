@@ -8,7 +8,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Inventory, Organization, Resource } from "../support/contracts.ts";
 
 /** Public projections owned by this scenario; no server or SDK implementation is imported. */
@@ -48,7 +48,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
 
 layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) => {
   it.effect(scenarios.organizationRemoval.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -182,6 +182,10 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
           Effect.gen(function* () {
             expect((yield* api.request(actors.admin, "DELETE", prefix)).status).toBe(403);
             expect((yield* api.request(actors.member, "DELETE", prefix)).status).toBe(403);
+            expect((yield* api.request(actors.admin, "GET", `${prefix}/removal`)).status).toBe(403);
+            expect((yield* api.request(actors.member, "GET", `${prefix}/removal`)).status).toBe(
+              403,
+            );
             // The admin is a real member here, so 403 is about the role and not the membership.
             expect((yield* api.request(actors.admin, "GET", `${prefix}/inventory`)).status).toBe(
               200,
@@ -198,19 +202,18 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             .getByRole("heading", { name: "Organization name", exact: true })
             .waitFor({ state: "visible" }),
         );
+        yield* browser.use("Admin can see the restricted removal card", (page) =>
+          page.getByRole("heading", { name: "Delete organization", exact: true }).waitFor(),
+        );
         expect(
-          yield* browser.use("Admin has no removal card", (page) =>
-            page.getByRole("heading", { name: "Delete organization", exact: true }).count(),
+          yield* browser.use("Admin cannot activate removal", (page) =>
+            page.getByRole("button", { name: "Delete organization", exact: true }).isDisabled(),
           ),
-        ).toBe(0);
-        expect(
-          yield* browser.use("Admin has no removal control", (page) =>
-            page.getByRole("button", { name: "Delete organization", exact: true }).count(),
-          ),
-        ).toBe(0);
-        yield* browser.checkpoint("Admin organization settings without a danger zone");
+        ).toBe(true);
+        yield* browser.checkpoint("Admin organization settings with disabled removal");
 
-        // Read the authoritative inventory last, so the card and the removal report describe it.
+        // Each user sees only their usable resources. Removal must count both
+        // users' private accounts without exposing those accounts to the other.
         const held = yield* evidence.step(
           "Record everything the organization owns before removal",
           Effect.gen(function* () {
@@ -219,10 +222,20 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             const inventory = yield* body(Inventory, response);
             expect(inventory.apps.map((entry) => entry.id)).toContain(state.app);
             expect(inventory.accounts.map((entry) => entry.id)).toContain(state.account);
+            const adminResponse = yield* api.request(actors.admin, "GET", `${prefix}/inventory`);
+            expect(adminResponse.status).toBe(200);
+            const adminInventory = yield* body(Inventory, adminResponse);
             const counts = {
-              apps: inventory.apps.length,
-              accounts: inventory.accounts.length,
+              apps: new Set([...inventory.apps, ...adminInventory.apps].map((entry) => entry.id))
+                .size,
+              accounts: new Set(
+                [...inventory.accounts, ...adminInventory.accounts].map((entry) => entry.id),
+              ).size,
             };
+            expect(counts.accounts).toBeGreaterThan(inventory.accounts.length);
+            const preview = yield* api.request(actors.owner, "GET", `${prefix}/removal`);
+            expect(preview.status).toBe(200);
+            expect(preview.body).toEqual({ organization: created.id, ...counts });
             yield* evidence.json("inventory-before-removal.json", counts);
             return counts;
           }),
@@ -239,6 +252,11 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
               { exact: true },
             )
             .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Show the complete deletion counts", (page) =>
+          page
+            .getByRole("button", { name: "Delete organization", exact: true })
+            .scrollIntoViewIfNeeded(),
         );
         yield* browser.checkpoint("Owner organization settings with the danger zone");
 

@@ -1,4 +1,4 @@
-import { createProfile } from "../support/profiles.ts";
+import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 /** Members keep a stable app overview and discover restricted actions without gaining authority. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -7,7 +7,7 @@ import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
@@ -27,7 +27,7 @@ const bounds = (page: Page) =>
 
 layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
   it.effect(scenarios.memberControls.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -94,6 +94,15 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
+        const memberProfile = yield* createProfile(actors.member, `${prefix}/apps/${app.id}`);
+        expect(
+          (yield* selectProfileAccounts(
+            actors.member,
+            `${prefix}/apps/${app.id}`,
+            memberProfile.id,
+            { service: [account.id] },
+          )).status,
+        ).toBe(200);
         const viewer = yield* body(
           Schema.Struct({ userId: Schema.String }),
           yield* api.request(actors.member, "GET", "/api/viewer"),
@@ -147,7 +156,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 { allRequests: true },
               );
               yield* browser.use("Open member overview before permissions resolve", (page) =>
-                page.goto(url),
+                page.goto(`${url}?view=overview`),
               );
               yield* authority.requested;
               yield* inventory.requested;
@@ -245,7 +254,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               );
               yield* browser.use("Keyboard users receive the reason", (page) =>
                 page
-                  .getByRole("tooltip")
+                  .locator('[role="tooltip"]:not([data-state="closed"])')
                   .filter({ hasText: "Only the app creator and organization admins" })
                   .waitFor(),
               );
@@ -257,14 +266,14 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 yield* browser.use("Still on overview", (page) =>
                   page.evaluate(() => new URL(window.location.href).searchParams.get("view")),
                 ),
-              ).toBe(null);
+              ).toBe("overview");
               yield* browser.use("Dismiss tooltip", (page) => page.keyboard.press("Escape"));
               yield* browser.use("Hover the disabled source preview", (page) =>
                 page.getByRole("link", { name: "View files", exact: true }).locator("..").hover(),
               );
               yield* browser.use("Hover explains the disabled link", (page) =>
                 page
-                  .getByRole("tooltip")
+                  .locator('[role="tooltip"]:not([data-state="closed"])')
                   .filter({ hasText: "Only the app creator and organization admins" })
                   .waitFor(),
               );
@@ -277,7 +286,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               );
               yield* browser.use("Tap opens the explanation", (page) =>
                 page
-                  .getByRole("tooltip")
+                  .locator('[role="tooltip"]:not([data-state="closed"])')
                   .filter({ hasText: "Only the app creator and organization admins" })
                   .waitFor(),
               );
@@ -285,7 +294,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 yield* browser.use("Disabled preview never navigates", (page) =>
                   page.evaluate(() => new URL(window.location.href).searchParams.get("view")),
                 ),
-              ).toBe(null);
+              ).toBe("overview");
               yield* browser.use("Dismiss preview tooltip", (page) =>
                 page.keyboard.press("Escape"),
               );
@@ -381,7 +390,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
         ).toBe(403);
         // Enabled manager controls still navigate and preserve their existing interactions.
         yield* browser.login(actors.owner);
-        yield* browser.use("Owner opens the same app", (page) => page.goto(url));
+        yield* browser.use("Owner opens the same app", (page) => page.goto(`${url}?view=overview`));
         yield* browser.use("Owner source tab is enabled", (page) =>
           page
             .getByRole("navigation", { name: "App navigation" })

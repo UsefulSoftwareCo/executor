@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 
 const files = [
@@ -88,7 +88,7 @@ const Subscription = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => {
   it.effect(scenarios.appContext.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -180,7 +180,7 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           actors.owner,
           "POST",
           `${prefix}/apps/${app}/webhooks`,
-          { name: "messages", key: name, config: {} },
+          { name: "messages", key: name, config: {}, profile: profile.id },
         );
         expect(registered.status).toBe(200);
         const subscription = yield* body(Subscription, registered);

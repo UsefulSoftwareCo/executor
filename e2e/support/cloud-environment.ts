@@ -5,6 +5,7 @@ import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { startOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
+import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 
 class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
   operation: Schema.String,
@@ -272,5 +273,14 @@ export const startCloudEnvironment = (input: {
         ),
       ),
     );
-    return { emulators };
+    const fixtures = yield* startFixtureControl(input.origin, directory);
+    yield* fixtureRequest(fixtures, "/configure", {
+      origin: input.origin,
+      stage: "local",
+      database: `postgres://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor`,
+      secret: env.BETTER_AUTH_SECRET,
+      databaseName: "executor",
+      databaseUsername: "executor",
+    });
+    return { emulators, fixtures, origin: input.origin };
   });

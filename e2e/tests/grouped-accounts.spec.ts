@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
@@ -16,7 +16,7 @@ export default defineApp({accounts:{service}},async ctx=>({queries:ctx.accounts.
 
 layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
   it.effect(scenarios.groupedAccounts.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -89,7 +89,8 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
           yield* browser.use(`Summary includes ${name}`, (page) =>
             page
               .getByRole("region", { name: "App tools preview" })
-              .getByRole("link", { name, exact: true })
+              .getByRole("link")
+              .filter({ has: page.getByText(name, { exact: true }) })
               .waitFor({ state: "visible" }),
           );
         expect(
@@ -115,7 +116,8 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
           yield* browser.use("Duplicate tools appear once in the summary", (page) =>
             page
               .getByRole("region", { name: "App tools preview" })
-              .getByRole("link", { name: "queries.common", exact: true })
+              .getByRole("link")
+              .filter({ has: page.getByText("queries.common", { exact: true }) })
               .count(),
           ),
         ).toBe(1);

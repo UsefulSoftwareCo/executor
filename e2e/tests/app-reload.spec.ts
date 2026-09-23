@@ -8,7 +8,7 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
@@ -60,7 +60,7 @@ createRoot(document.getElementById("root")).render(<main><h1>Static version</h1>
 
 layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
   it.effect(scenarios.appReload.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

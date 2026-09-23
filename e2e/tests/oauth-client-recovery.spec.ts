@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -27,7 +27,7 @@ const Redirect = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("OAuth client recovery", (it) => {
   it.effect(scenarios.oauthClientRecovery.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

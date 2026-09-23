@@ -67,6 +67,7 @@
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run e2e:check",
     "e2e:prepare": "bun run apps:build && bun run telemetry:build && bun run hosted:self-host:web:build && bun run web:build",
+    "testing": "node e2e/cli.ts",
     "e2e": "node e2e/check-boundary.ts && bun run e2e:viewer:build && node e2e/run.ts",
     "e2e:inspect": "E2E_INTERACTIVE=1 bun run e2e",
     "e2e:check": "node e2e/check-boundary.ts && tsc --noEmit -p e2e",

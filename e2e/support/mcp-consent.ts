@@ -24,13 +24,15 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const url = new URL(Redacted.value(request.url));
         const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
+        const state = url.searchParams.get("state");
         if (
+          !state ||
           !callback ||
           callback.protocol !== "http:" ||
           !["localhost", "127.0.0.1", "[::1]"].includes(callback.hostname)
         )
           return yield* new ConsentFailed({
-            operation: "Client did not request a loopback OAuth callback",
+            operation: "Client did not request a loopback OAuth callback with state",
           });
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -105,15 +107,25 @@ const make = Effect.gen(function* () {
           page.getByRole("option", { name: organization.name, exact: true }).click(),
         );
         yield* browser.checkpoint("Approve Claude Code's connection");
-        yield* browser.use("Authorize Claude Code", (page) =>
-          page.getByRole("button", { name: "Connect", exact: true }).click(),
+        // Claude can close its callback listener after accepting the code, before
+        // the browser finishes loading. Observe the exact request, then let the
+        // caller verify Claude's authenticated connection and real tool result.
+        yield* browser.use("Authorize Claude Code and return to its callback", (page) =>
+          Promise.all([
+            page.waitForRequest((request) => {
+              const returned = new URL(request.url());
+              return (
+                request.isNavigationRequest() &&
+                returned.origin === callback.origin &&
+                returned.pathname === callback.pathname &&
+                returned.searchParams.get("state") === state &&
+                Boolean(returned.searchParams.get("code")) &&
+                !returned.searchParams.has("error")
+              );
+            }),
+            page.getByRole("button", { name: "Connect", exact: true }).click(),
+          ]).then(() => undefined),
         );
-        yield* browser.use("Return to Claude's own callback", (page) =>
-          page.waitForURL(
-            (url) => url.origin === callback.origin && url.pathname === callback.pathname,
-          ),
-        );
-        yield* browser.checkpoint("Claude received the browser callback");
       }),
   };
 });

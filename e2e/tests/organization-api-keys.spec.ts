@@ -6,7 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Organization } from "../support/contracts.ts";
 
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
@@ -23,7 +23,7 @@ class Pending extends Error {}
 
 layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) => {
   it.effect(scenarios.organizationApiKeys.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

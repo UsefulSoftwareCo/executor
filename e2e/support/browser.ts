@@ -1,17 +1,6 @@
 /** Promise APIs are confined to this driver adapter; Effect owns browser and context scopes. */
 import { chromium, type Browser as NativeBrowser, type Page } from "playwright";
-import {
-  Cause,
-  Clock,
-  Console,
-  Context,
-  Effect,
-  Exit,
-  FileSystem,
-  Layer,
-  Redacted,
-  Result,
-} from "effect";
+import { Cause, Clock, Console, Context, Effect, Exit, Layer, Redacted, Result } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
 import type { Session } from "./api.ts";
@@ -24,7 +13,7 @@ const launchBrowser = (purpose: "capture" | "render") =>
     return yield* Effect.acquireRelease(
       driver("launch browser", () =>
         chromium.launch({
-          headless: !target.metadata.interactive,
+          headless: target.headless ?? !target.metadata.interactive,
           slowMo: purpose === "capture" ? target.recordingPaceMs : 0,
         }),
       ),
@@ -61,8 +50,7 @@ export class Browser extends Context.Service<
       const browser = yield* BrowserDriver,
         target = yield* Target,
         evidence = yield* Evidence,
-        recording = yield* RecordingFocus,
-        fs = yield* FileSystem.FileSystem;
+        recording = yield* RecordingFocus;
       const clock = yield* Clock.Clock;
       const scope = yield* Effect.scope;
       const navigations: { at: string; url: string; elapsedMs: number; page: number }[] = [];
@@ -117,10 +105,11 @@ export class Browser extends Context.Service<
             Promise.all(failureReads),
           ).pipe(Effect.orDie);
           if (video) {
-            const source = yield* driver("resolve recording", () => video.path()).pipe(
-              Effect.orDie,
-            );
-            yield* fs.copyFile(source, `${evidence.directory}/raw.webm`).pipe(Effect.orDie);
+            // A scenario can close its page before context cleanup. saveAs waits
+            // for that page's encoder; path alone can still point at an empty file.
+            yield* driver("save completed recording", () =>
+              video.saveAs(`${evidence.directory}/raw.webm`),
+            ).pipe(Effect.orDie);
             yield* evidence.artifact("Browser recording", "video/webm", "raw.webm");
           }
           yield* evidence.json("navigation.json", navigations);

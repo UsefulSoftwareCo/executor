@@ -5,20 +5,8 @@ import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
 import { Target, type Response } from "./platform.ts";
 
-/** Serialized browser cookies are always wrapped as redacted values outside their driver. */
-export const BrowserCookies = Schema.Array(
-  Schema.Struct({
-    name: Schema.String,
-    value: Schema.String,
-    domain: Schema.String,
-    path: Schema.String,
-    httpOnly: Schema.Boolean,
-    secure: Schema.Boolean,
-    sameSite: Schema.Literals(["Strict", "Lax", "None"]),
-    expires: Schema.Number,
-  }),
-);
-export type BrowserCookies = typeof BrowserCookies.Type;
+import { BrowserCookies } from "../sdk/contracts.ts";
+export { BrowserCookies } from "../sdk/contracts.ts";
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 /** Each actor owns its cookie jar; no session state can bleed into another actor. */
 export interface Session {
@@ -34,9 +22,14 @@ export interface Session {
 export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestFailed", {
   method: Schema.String,
   path: Schema.String,
+  status: Schema.optional(Schema.Number),
   reason: Schema.Literals(["origin", "timeout", "request"]),
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
-}) {}
+}) {
+  override get message() {
+    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}`;
+  }
+}
 /** A server response may be decoded only against its public contract. */
 export const body = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response) =>
   Schema.decodeUnknownEffect(schema)(response.body);
@@ -123,7 +116,19 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                   const response = yield* http.execute(request);
                   const text = yield* response.text;
                   const parsed = text.length
-                    ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text)
+                    ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+                        text,
+                      ).pipe(
+                        Effect.mapError(
+                          () =>
+                            new RequestFailed({
+                              method,
+                              path: url.pathname,
+                              status: response.status,
+                              reason: "request",
+                            }),
+                        ),
+                      )
                     : null;
                   return { status: response.status, body: parsed };
                 }),

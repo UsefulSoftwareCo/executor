@@ -128,6 +128,16 @@ export const OrganizationBilling = Context.Reference<{
 /** Owner-only and irreversible: the request refuses or commits, then a workflow finishes it. */
 export const HostedOrganizationRemoval = HttpApiGroup.make("organizationRemoval")
   .add(
+    HttpApiEndpoint.get("preview", "/api/organizations/:organization/removal", {
+      params: { organization: OrganizationReference },
+      success: OrganizationRemoved,
+      error: [OrganizationForbidden, AuthenticationUnavailable, StorageError],
+    }).annotate(
+      OpenApi.Description,
+      "Count everything organization removal will delete, including private resources. Requires the owner role. Returns counts without exposing resource names or credentials.",
+    ),
+  )
+  .add(
     HttpApiEndpoint.delete("remove", "/api/organizations/:organization", {
       params: { organization: OrganizationReference },
       success: OrganizationRemoved,

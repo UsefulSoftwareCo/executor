@@ -2,7 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -13,7 +13,7 @@ const viewports = [
 
 layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) => {
   it.effect(scenarios.settingsLoading.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;
@@ -100,7 +100,7 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
   );
 
   it.effect(scenarios.apiKeysLoading.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;

@@ -6,7 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { deployMcpApp } from "../support/mcp-app.ts";
@@ -20,7 +20,7 @@ const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.S
 
 layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) => {
   it.effect(scenarios.sharedAuthorization.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

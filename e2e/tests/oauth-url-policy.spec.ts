@@ -4,7 +4,7 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { App, Resource } from "../support/contracts.ts";
@@ -12,7 +12,7 @@ import { Target } from "../support/platform.ts";
 
 layer(HostedLive, { excludeTestServices: true })("OAuth URL policy", (it) => {
   it.effect(scenarios.oauthUrlPolicy.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors;

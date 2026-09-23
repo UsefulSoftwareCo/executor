@@ -15,8 +15,10 @@ const writeAndWait = mutation({ input: object({ key: string(), wait: number() })
   return row.id;
 });
 const inserted = workflow({ input: object({ key: string(), row: string() }) }, async (_ctx, input) => input);
+// The control run uses the ordinary deadline, including cold database setup.
+// Only the delayed mutation uses the short deadline that tests engine cancellation.
 const write = workflow({ input: object({ key: string(), wait: number() }) }, async (ctx, input) =>
-  ctx.step.runMutation("write", writeAndWait, input, { timeout: 5000, retries: { limit: 0, delay: 0 } }));
+  ctx.step.runMutation("write", writeAndWait, input, { ...(input.wait > 0 ? { timeout: 2000 } : {}), retries: { limit: 0, delay: 0 } }));
 const sleep = workflow({ input: object({ hold: number() }) }, async (ctx, input) => {
   const before = await ctx.step.runMutation("before", save, { label: "before" });
   const deadline = await ctx.step.do("deadline", async () => Date.now() + input.hold);

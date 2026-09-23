@@ -295,7 +295,7 @@ function App() {
         <div className="run">
           <span className="target">{targetNames[activeRun.target]}</span>
           <span>{activeRun.mode === "managed" ? "Started for this run" : "Attached server"}</span>
-          <code>{activeRun.origin}</code>
+          <code>{active?.origin ?? activeRun.origin}</code>
           <span>{activeRun.runtime}</span>
           <span className="revision">
             Test code {activeRun.commit.slice(0, 7)}

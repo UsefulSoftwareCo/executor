@@ -1,3 +1,4 @@
+import { managementApp } from "../support/management-app.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -6,8 +7,8 @@ import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
-import { App, Inventory } from "../support/contracts.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
+import { App } from "../support/contracts.ts";
 
 const Key = Schema.Struct({
   key: Schema.RedactedFromValue(Schema.NonEmptyString),
@@ -34,7 +35,7 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
 
 layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) => {
   it.effect(scenarios.namedApiKeys.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -209,9 +210,9 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
             expect(
               (yield* api.request(
                 anonymous,
-                "POST",
-                `${prefix}/apps/deploy`,
-                { name: "Denied", files: source },
+                "GET",
+                `${prefix}/apps/${app.id}/workspace`,
+                undefined,
                 headers(memberToken.key),
               )).status,
             ).toBe(403);
@@ -226,18 +227,12 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
             expect(yield* body(Schema.Struct({ _tag: Schema.String }), approved)).toEqual({
               _tag: "ToolApprovalRequired",
             });
-            const inventory = yield* body(
-              Inventory,
-              yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
-            );
-            const executor = inventory.apps.find((entry) => entry.name === "Executor");
-            if (executor === undefined)
-              return yield* Effect.fail(new Error("Default Executor app missing"));
+            const { app: executor, profile } = yield* managementApp(actors.owner);
             const context = yield* api.request(
               anonymous,
               "POST",
               `${prefix}/apps/${executor.id}/tools/call`,
-              { tool: "queries.context_get", input: {} },
+              { tool: "queries.context_get", profile: profile.id, input: {} },
               headers(owner.key),
             );
             expect(context.status).toBe(200);

@@ -9,7 +9,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Workspace } from "../support/app-authoring.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 
 const Package = Schema.fromJsonString(
@@ -49,7 +49,7 @@ const upstream = Effect.gen(function* () {
 
 layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) => {
   it.effect(scenarios.appPackageMetadata.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api;

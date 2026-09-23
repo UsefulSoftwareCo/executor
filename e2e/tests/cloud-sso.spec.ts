@@ -1,7 +1,7 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
@@ -433,7 +433,7 @@ const completed = (destination: string) =>
 
 layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
   it.effect(scenarios.cloudSsoOidc.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -727,7 +727,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
   );
 
   it.effect(scenarios.cloudSsoSaml.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,

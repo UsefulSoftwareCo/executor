@@ -6,7 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { Organization } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
@@ -33,7 +33,7 @@ const Groups = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) => {
   it.effect(scenarios.groupFormErrors.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -175,7 +175,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) => 
   );
 
   it.effect(scenarios.groups.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -441,7 +441,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) => 
   );
 
   it.effect(scenarios.groupsIsolation.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,

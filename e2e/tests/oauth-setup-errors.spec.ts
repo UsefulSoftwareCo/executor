@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -20,7 +20,7 @@ const Failure = Schema.Struct({
 
 layer(HostedLive, { excludeTestServices: true })("OAuth setup errors", (it) => {
   it.effect(scenarios.oauthSetupErrors.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

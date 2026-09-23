@@ -2,7 +2,7 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { scenarios } from "../test-plan.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { ClaudeClient } from "../support/claude-client.ts";
 import { McpConsent } from "../support/mcp-consent.ts";
 import { deployMcpApp } from "../support/mcp-app.ts";
@@ -10,7 +10,7 @@ import { Evidence } from "../support/evidence.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Claude Code MCP", (it) => {
   it.effect(scenarios.mcp.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const claude = yield* ClaudeClient,

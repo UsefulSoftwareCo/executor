@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { saveAndDeploy, Workspace } from "../support/app-authoring.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
@@ -12,7 +12,7 @@ import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
   it.effect(scenarios.appAccountPicker.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -408,7 +408,7 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
   );
 
   it.effect(scenarios.appAccountOAuth.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,

@@ -7,8 +7,9 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
+import { managementApp } from "../support/management-app.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -37,7 +38,7 @@ const Document = Schema.Struct({ content: Schema.String, deployment: Schema.Stri
 
 layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => {
   it.effect(scenarios.frameworkAuthoring.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -47,14 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => 
         const oauth = yield* McpOAuth,
           mcp = yield* McpClient;
         yield* browser.login(actors.owner);
-        // Inventory provisions the existing managed account through the public product path.
-        expect(
-          (yield* api.request(
-            actors.owner,
-            "GET",
-            `/api/organizations/${actors.organization.id}/inventory`,
-          )).status,
-        ).toBe(200);
+        const { profile } = yield* managementApp(actors.owner);
         const grant = yield* oauth.authorize;
         yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
         const client = yield* mcp.connect(
@@ -75,31 +69,32 @@ layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => 
           'return await tools.search({query: "framework", limit: 20});',
         );
         yield* evidence.json("framework-tool-discovery.json", discovered);
+        const queries = `tools.executor.profiles[${JSON.stringify(profile.id)}].queries`;
         const tools = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             items: Schema.Array(Schema.Struct({ path: Schema.String, signature: Schema.String })),
           }),
         )(discovered);
         const search = tools.items.find(
-          (item) => item.path === "tools.executor.queries.framework_search",
+          (item) =>
+            item.path.endsWith(".queries.framework_search") && item.path.includes(profile.id),
         );
         expect(search?.signature).toContain("remaining: number");
         expect(search?.signature).toContain("digest: string");
         expect(
-          tools.items.some((item) => item.path === "tools.executor.queries.framework_describe"),
+          tools.items.some(
+            (item) =>
+              item.path.endsWith(".queries.framework_describe") && item.path.includes(profile.id),
+          ),
         ).toBe(true);
         const imported = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ items: Schema.Array(Schema.Struct({ signature: Schema.String })) }),
-        )(
-          yield* execute(
-            'return await tools.search({query: "tools.executor.queries.context_get", limit: 1});',
-          ),
-        );
+        )(yield* execute('return await tools.search({query: "context_get", limit: 1});'));
         expect(imported.items[0]?.signature).toContain("organization: string");
         expect(imported.items[0]?.signature).toContain("slug: string");
         const current = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ organization: Schema.String }),
-        )(yield* execute("return await tools.executor.queries.context_get({});"));
+        )(yield* execute(`return await ${queries}.context_get({});`));
         expect(current.organization).toBe(actors.organization.id);
         const found = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
@@ -108,7 +103,7 @@ layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => 
           }),
         )(
           yield* execute(
-            'return await tools.executor.queries.framework_search({query: "withOptimisticUpdate"});',
+            `return await ${queries}.framework_search({query: "withOptimisticUpdate"});`,
           ),
         );
         expect(found.items.map((item) => item.symbol)).toContain(
@@ -116,7 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => 
         );
         const describe = (symbol: string) =>
           execute(
-            `return await tools.executor.queries.framework_describe(${JSON.stringify({ symbol, ...found.reference })});`,
+            `return await ${queries}.framework_describe(${JSON.stringify({ symbol, ...found.reference })});`,
           ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Description)));
         const hook = yield* describe("apps/react.useAppQuery");
         expect(hook.entry.signatures.join(" ")).toContain("data: A | undefined");

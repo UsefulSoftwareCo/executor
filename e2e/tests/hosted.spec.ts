@@ -1,4 +1,4 @@
-import { createProfile } from "../support/profiles.ts";
+import { createProfile, Profile } from "../support/profiles.ts";
 import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 import { expect, layer } from "@effect/vitest";
@@ -8,7 +8,7 @@ import { Actors, password } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
 
 const files = [
@@ -23,7 +23,7 @@ export default defineApp({accounts:{service:service.many()}},async()=>({mutation
 ];
 layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
   it.effect(scenarios.password.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -73,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
     ),
   );
   it.effect(scenarios.scale.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -89,6 +89,16 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(App, deployed);
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
+        );
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: access.revision,
+            audience: { kind: "everyone" },
+          })).status,
+        ).toBe(200);
         yield* browser.login(actors.owner);
         yield* browser.use("Open account inventory", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts`),
@@ -105,7 +115,11 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                   actor,
                   "POST",
                   `${prefix}/apps/${app.id}/connections`,
-                  { requirement: "service", profile: profile.id },
+                  {
+                    requirement: "service",
+                    profile: profile.id,
+                    destination: { kind: "shared", audience: { kind: "everyone" } },
+                  },
                 );
                 expect(connection.status).toBe(200);
                 const { id } = yield* body(Resource, connection);
@@ -120,7 +134,17 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                   },
                 );
                 expect(saved.status).toBe(200);
-                return (yield* body(Resource, saved)).id;
+                const account = (yield* body(Resource, saved)).id;
+                const selected = yield* body(
+                  Profile,
+                  yield* api.request(
+                    actor,
+                    "GET",
+                    `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+                  ),
+                );
+                expect(selected.accounts.service).toEqual([account]);
+                return account;
               }),
             { concurrency: 4 },
           ),
@@ -143,18 +167,6 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             expect((yield* Clock.currentTimeMillis) - start, "inventory read budget").toBeLessThan(
               5000,
             );
-            const selected = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`);
-            expect(selected.status).toBe(200);
-            expect(
-              [
-                ...(yield* body(
-                  Schema.Struct({
-                    accounts: Schema.Struct({ service: Schema.Array(Schema.String) }),
-                  }),
-                  selected,
-                )).accounts.service,
-              ].sort(),
-            ).toEqual([...ids].sort());
           }),
         );
         yield* browser.use("Reload the large inventory", (page) => page.reload());
@@ -166,7 +178,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
     ),
   );
   it.effect(scenarios.telemetry.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
@@ -189,7 +201,9 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                 (entry) =>
                   entry.traceId === request.traceId &&
                   entry.span.serviceName === "executor-selfhost" &&
-                  entry.span.tags["http.route"] === "/api/organizations/:organization/inventory" &&
+                  entry.span.tags["url.path"] ===
+                    `/api/organizations/${actors.organization.id}/inventory` &&
+                  entry.span.tags["http.request.method"] === "GET" &&
                   entry.span.tags["http.response.status_code"] === "200",
               )
                 ? Effect.succeed(value)

@@ -7,7 +7,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 
@@ -43,7 +43,7 @@ createRoot(document.getElementById("root")).render(<App />);`,
 
 layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) => {
   it.effect(scenarios.appUiFailures.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -204,7 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
   );
 
   it.effect(scenarios.appUiFailureTelemetry.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -265,11 +265,18 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
             }),
         );
         yield* browser.use("Open the second report", (page) =>
-          page.getByText("Error details", { exact: true }).click(),
+          page
+            .getByRole("dialog", { name: "This app stopped working" })
+            .getByText("Error details", { exact: true })
+            .click(),
         );
         const second = yield* browser.use("Read the second diagnostic ID", (page) =>
-          page.getByRole("textbox", { name: "Error details" }).inputValue(),
+          page
+            .getByRole("dialog", { name: "This app stopped working" })
+            .getByRole("textbox", { name: "Error details" })
+            .inputValue(),
         );
+        yield* browser.checkpoint("The second app error remains visible after closing the first");
         const nextId = second.match(/Diagnostic ID: ([a-f0-9]{32})/)?.[1];
         expect(nextId).not.toBe(traceId);
         if (nextId === undefined) return yield* Effect.die("Second diagnostic ID missing");

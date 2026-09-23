@@ -1,8 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
 import type { SendWelcomeEmail } from "../contracts/email.ts";
 import { cloudOrigin } from "./stage.ts";
@@ -12,7 +11,7 @@ import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-pr
 /** The cron invocation owns its database connection and closes it after the batch. */
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
   Effect.gen(function* () {
-    const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+    const connection = yield* cloudDatabaseConnection;
     const origin = yield* cloudOrigin.pipe(Effect.orDie);
     const secrets = yield* cloudSecrets.pipe(Effect.orDie);
     const database = Layer.unwrap(
@@ -50,4 +49,4 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
         ),
       ),
     };
-  }).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
+  });

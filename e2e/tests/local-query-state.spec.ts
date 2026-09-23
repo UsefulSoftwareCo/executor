@@ -143,12 +143,12 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
         );
         expect(
           yield* browser.use("The failed live read keeps account selection", (page) =>
-            page.getByRole("combobox").count(),
+            page.getByRole("dialog").getByRole("combobox").count(),
           ),
         ).toBe(1);
         expect(
           yield* browser.use("The unsaved selection remains available", (page) =>
-            page.getByRole("combobox").textContent(),
+            page.getByRole("dialog").getByRole("combobox").textContent(),
           ),
         ).toContain("Second draft account");
         yield* browser.checkpoint("Local account selection survives a live read failure");

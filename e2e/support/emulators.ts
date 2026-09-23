@@ -3,7 +3,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { randomUUID } from "node:crypto";
 import { Target } from "./platform.ts";
 
-const BaseUrl = Schema.String.check(
+export const BaseUrl = Schema.String.check(
   Schema.makeFilter((value) => {
     const url = URL.parse(value);
     return (

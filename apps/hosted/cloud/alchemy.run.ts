@@ -13,7 +13,7 @@ import { cloudAppUiBase } from "./src/contracts/app-ui.ts";
 import ApiLive, { Api } from "./src/main.ts";
 import AppCompilerLive from "./src/compiler.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
-import { DatabaseConnection } from "./src/infrastructure/database.ts";
+import { databaseInfrastructure } from "./src/infrastructure/database.ts";
 import { developmentWeb } from "./src/infrastructure/development.ts";
 import { authEmailInfrastructure } from "./src/infrastructure/email.ts";
 import { uploadCloudSourceMaps } from "./src/infrastructure/sentry.ts";
@@ -49,7 +49,7 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     // Provisioning settings resolve outside Worker initialization and are not bound into it.
-    yield* DatabaseConnection;
+    yield* databaseInfrastructure;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);

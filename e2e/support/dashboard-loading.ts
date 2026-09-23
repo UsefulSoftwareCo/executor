@@ -6,7 +6,7 @@ import { driver } from "./platform.ts";
 /** Hold real responses independently; scope cleanup releases and drains every intercepted request. */
 export const dashboardLoadingProbe = Effect.gen(function* () {
   const browser = yield* Browser;
-  const inventoryRequested = yield* Deferred.make<void>();
+  const resourcesRequested = yield* Deferred.make<void>();
   const content = yield* Deferred.make<void>();
   const metadata = yield* Deferred.make<void>();
   const session = yield* Deferred.make<void>();
@@ -22,8 +22,8 @@ export const dashboardLoadingProbe = Effect.gen(function* () {
           yield* Deferred.succeed(sessionRequested, undefined);
           yield* Deferred.await(session);
         }
-        if (path.endsWith("/inventory")) {
-          yield* Deferred.succeed(inventoryRequested, undefined);
+        if (path.endsWith("/resources")) {
+          yield* Deferred.succeed(resourcesRequested, undefined);
           yield* Deferred.await(content);
         }
         if (path.endsWith("/access") || path === "/api/auth/organization/list")
@@ -52,7 +52,7 @@ export const dashboardLoadingProbe = Effect.gen(function* () {
   );
   return {
     requests,
-    inventoryRequested: Deferred.await(inventoryRequested).pipe(Effect.timeout("30 seconds")),
+    resourcesRequested: Deferred.await(resourcesRequested).pipe(Effect.timeout("30 seconds")),
     sessionRequested: Deferred.await(sessionRequested).pipe(Effect.timeout("30 seconds")),
     releaseContent: Deferred.succeed(content, undefined),
     releaseMetadata: Deferred.succeed(metadata, undefined),

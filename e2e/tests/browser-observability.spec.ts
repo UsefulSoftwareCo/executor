@@ -8,7 +8,7 @@ import {
 } from "../support/browser-observability.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 const Failure = Schema.fromJsonString(
@@ -33,7 +33,7 @@ const Event = Schema.fromJsonString(
 );
 layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) => {
   it.effect(scenarios.browserObservability.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser,

@@ -6,6 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { Evidence } from "../support/evidence.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -153,6 +154,11 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
               { signal },
             ),
         );
+        yield* (yield* Evidence).json("framework-contracts.json", contracts.structuredContent);
+        expect(contracts.structuredContent).toMatchObject({
+          status: "completed",
+          execution: { ok: true },
+        });
         const described = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             status: Schema.Literal("completed"),

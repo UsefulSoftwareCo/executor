@@ -38,29 +38,65 @@ export const cloudflareRedirects = (): {
   readonly routes: GeneratorPlugin;
   readonly assets: Plugin;
 } => {
-  let paths: ReadonlyArray<string> | undefined;
+  let patterns: ReadonlyArray<string> | undefined;
 
   return {
     routes: {
       name: "cloudflare-dashboard-routes",
       onRouteTreeChanged({ routeNodes }) {
-        paths = routeNodes.map(inferFullPath);
+        patterns = [
+          ...new Set(
+            routeNodes
+              .map(inferFullPath)
+              .flatMap((path) =>
+                path === "/" ? [] : [path.startsWith("/org/") ? "/org/*" : rewritePath(path)],
+              ),
+          ),
+        ];
       },
     },
     assets: {
       name: "cloudflare-dashboard-redirects",
-      apply: "build",
+      config: () => ({ appType: "mpa" }),
+      configureServer(server) {
+        // Run after asset/API middleware, before HTML transformation. Only page
+        // paths from the same route tree used for deployment receive the SPA.
+        return () =>
+          server.middlewares.use((request, _response, next) => {
+            if (patterns === undefined)
+              return next(new Error("TanStack did not supply the dashboard route tree."));
+            const segments = new URL(request.url ?? "/", "http://localhost").pathname
+              .replace(/\/$/, "")
+              .split("/");
+            if (
+              (request.method === "GET" || request.method === "HEAD") &&
+              patterns.some((pattern) => {
+                const parts = pattern.split("/");
+                return (
+                  (parts.at(-1) === "*"
+                    ? segments.length >= parts.length - 1
+                    : segments.length === parts.length) &&
+                  parts.every(
+                    (part, index) =>
+                      part === "*" ||
+                      (part.startsWith(":") ? Boolean(segments[index]) : part === segments[index]),
+                  )
+                );
+              })
+            )
+              request.url = "/index.html";
+            next();
+          });
+      },
       generateBundle() {
-        if (paths === undefined)
+        if (patterns === undefined)
           return this.error("TanStack did not supply the dashboard route tree.");
         const rewrites = new Set<string>();
-        for (const path of paths) {
+        for (const pattern of patterns) {
           // The Worker selects marketing or dashboard HTML at the root.
           // The dashboard entry is kept separate from the public index.html.
-          if (path === "/") continue;
           // Organization pages share one SPA entry. A single namespace rewrite
           // keeps new dashboard pages within Cloudflare's 100 dynamic-rule limit.
-          const pattern = path.startsWith("/org/") ? "/org/*" : rewritePath(path);
           rewrites.add(`${pattern} /dashboard.html 200`);
           if (!pattern.endsWith("*")) rewrites.add(`${pattern}/ /dashboard.html 200`);
         }

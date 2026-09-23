@@ -13,7 +13,11 @@ export const serverControl = (
     const target = yield* Target,
       client = yield* HttpClient.HttpClient,
       evidence = yield* Evidence;
-    const origin = yield* Config.String("EXECUTOR_E2E_CONTROL_ORIGIN").pipe(
+    const origin = yield* (
+      target.controlOrigin === undefined
+        ? Config.String("EXECUTOR_E2E_CONTROL_ORIGIN")
+        : Effect.succeed(target.controlOrigin)
+    ).pipe(
       Effect.flatMap(
         Schema.decodeUnknownEffect(
           Schema.String.check(

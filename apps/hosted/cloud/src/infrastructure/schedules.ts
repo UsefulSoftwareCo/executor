@@ -8,7 +8,6 @@ import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
-import { CloudflareHyperdrive } from "@alchemy.run/better-auth/CloudflareHyperdrive";
 import { Config, Clock, Effect, Layer, Schema, Semaphore } from "effect";
 import {
   HostedExecutor,
@@ -19,7 +18,7 @@ import {
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudExecutor } from "./executor.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./app-data.ts";
-import { DatabaseConnection } from "./database.ts";
+import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudTelemetry } from "./telemetry.ts";
 import { billingLive } from "../implementation/billing.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
@@ -157,9 +156,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
     };
   });
 }).pipe(
-  Effect.provide(
-    Layer.mergeAll(AppDataSupervisorLive, CloudflareHyperdrive(DatabaseConnection), cloudTelemetry),
-  ),
+  Effect.provide(Layer.mergeAll(AppDataSupervisorLive, cloudAuthDatabase, cloudTelemetry)),
   Effect.orDie,
 );
 

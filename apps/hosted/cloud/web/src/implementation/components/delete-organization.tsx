@@ -22,15 +22,26 @@ import {
 } from "@executor-js/ui/components/dialog";
 import { Input } from "@executor-js/ui/components/input";
 import { useOrganization } from "@executor-js/hosted-web/organization";
-import { inventoryAtom, organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
+import type { OrganizationId } from "@executor-js/hosted-server/organization";
+import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { forgetOrganization } from "@executor-js/hosted-web/session-hint";
 import {
   deleteOrganizationAtom,
   organizationRemovalError,
+  organizationRemovalPreviewAtom,
 } from "../../contracts/organization-removal.ts";
 
 const count = (value: number, noun: string) => `${value} ${noun}${value === 1 ? "" : "s"}`;
+const removalDescription = "Everything this organization owns is deleted with it.";
+
+function RemovalCounts({ organization }: { readonly organization: OrganizationId }) {
+  const preview = useAtomValue(organizationRemovalPreviewAtom(organization));
+  const held = Option.getOrUndefined(AsyncResult.value(preview));
+  return held === undefined
+    ? removalDescription
+    : `${count(held.apps, "app")} and ${count(held.accounts, "account")}, with their saved credentials, are deleted with it.`;
+}
 
 export function DeleteOrganization() {
   const organization = useOrganization();
@@ -39,13 +50,11 @@ export function DeleteOrganization() {
     mode: "promiseExit",
   });
   const state = useAtomValue(deleteOrganizationAtom(organization.organization));
-  const inventory = useAtomValue(inventoryAtom(organization.organization));
   const organizations = useAtomValue(organizationsAtom);
   const session = useAtomValue(sessionAtom);
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string>();
-  const held = Option.getOrUndefined(AsyncResult.value(inventory));
   const remaining = Option.getOrUndefined(AsyncResult.value(organizations))?.filter(
     (entry) => entry.id !== organization.organization,
   );
@@ -67,9 +76,11 @@ export function DeleteOrganization() {
           <h2>Delete organization</h2>
         </CardTitle>
         <CardDescription>
-          {held === undefined
-            ? "Everything this organization owns is deleted with it."
-            : `${count(held.apps.length, "app")} and ${count(held.accounts.length, "account")}, with their saved credentials, are deleted with it.`}
+          {organization.role === "owner" ? (
+            <RemovalCounts organization={organization.organization} />
+          ) : (
+            removalDescription
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-4 pb-4">

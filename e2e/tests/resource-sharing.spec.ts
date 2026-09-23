@@ -1,12 +1,13 @@
 /** Sharing drafts and revision conflicts are checked through real hosted forms. */
+import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
-import { App } from "../support/contracts.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
+import { App, Resource } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Access = Schema.Struct({ revision: Schema.String });
@@ -17,7 +18,7 @@ export default defineApp({accounts:{service:service.many()}},{name:"Sharing fixt
 
 layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
   it.effect(scenarios.resourceSharing.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
@@ -106,6 +107,12 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("Reset to current settings", (page) =>
             page.getByRole("button", { name: "Reset changes", exact: true }).click(),
           );
+          yield* browser.use("The fresh audience replaces the stale draft", (page) =>
+            page
+              .getByRole("combobox", { name: "Who can use this app?" })
+              .filter({ hasText: "Everyone" })
+              .waitFor(),
+          );
           expect(
             yield* browser.use("Show current audience", (page) =>
               page.getByRole("combobox", { name: "Who can use this app?" }).textContent(),
@@ -131,23 +138,29 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         }
         for (const kind of ["personal", "shared"] as const) {
           const label = `${kind} ${suffix}`;
-          yield* browser.use("Open account selections", (page) =>
-            page.goto(`/org/${actors.organization.slug}/apps/${app.id}/setup`),
-          );
-          yield* browser.use("Add another account", (page) =>
-            page.getByRole("button", { name: "Add account", exact: true }).click(),
-          );
-          if (kind === "shared") {
-            yield* browser.use("Choose account ownership", (page) =>
-              page.getByRole("combobox", { name: "Account ownership" }).click(),
+          if (kind === "personal") {
+            yield* browser.use("Open account selections", (page) =>
+              page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
             );
-            yield* browser.use("Choose shared account", (page) =>
-              page.getByRole("option", { name: "Shared account", exact: true }).click(),
+            yield* browser.use("Add a personal account", (page) =>
+              page
+                .getByRole("button", { name: "Add Sharing fixture account", exact: true })
+                .click(),
+            );
+          } else {
+            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
+            const connection = yield* body(
+              Resource,
+              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+                profile: profile.id,
+                requirement: "service",
+                destination: { kind: "shared", audience: { kind: "everyone" } },
+              }),
+            );
+            yield* browser.use("Open the shared connection handoff", (page) =>
+              page.goto(`/org/${actors.organization.slug}/connections/${connection.id}`),
             );
           }
-          yield* browser.use("Continue account setup", (page) =>
-            page.getByRole("button", { name: "Continue", exact: true }).click(),
-          );
           yield* browser.use("Name the account", (page) =>
             page.getByLabel("Account name", { exact: true }).fill(label),
           );
@@ -158,14 +171,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
             page.getByRole("button", { name: "Connect account", exact: true }).click(),
           );
           yield* browser.use("Wait for account setup to finish", (page) =>
-            page.waitForURL(
-              (url) =>
-                url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
-                url.searchParams.get("view") === "tools",
-            ),
-          );
-          yield* browser.use("Open selected accounts", (page) =>
-            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+            page.getByRole("dialog").waitFor({ state: "hidden" }),
           );
           yield* browser.use("See the connected account", (page) =>
             page.getByRole("link", { name: label, exact: true }).waitFor(),
@@ -198,8 +204,19 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         yield* browser.use("Start deleting the account", (page) =>
           page.getByRole("link", { name: "Delete account", exact: true }).click(),
         );
-        yield* browser.use("Confirm account deletion", (page) =>
-          page.getByRole("button", { name: "Delete account", exact: true }).click(),
+        const deleted = yield* browser.use("Confirm account deletion", (page) =>
+          Promise.all([
+            page.waitForResponse(
+              (response) =>
+                response.request().method() === "DELETE" &&
+                new URL(response.url()).pathname === `${prefix}/accounts/${deleting}`,
+            ),
+            page.getByRole("button", { name: "Delete account", exact: true }).click(),
+          ]).then(([response]) => response.status()),
+        );
+        expect(deleted).toBe(200);
+        yield* browser.use("Deletion returns to the account list", (page) =>
+          page.waitForURL(`**/org/${actors.organization.slug}/accounts`),
         );
         yield* browser.use("Deleted accounts leave the list", (page) =>
           page

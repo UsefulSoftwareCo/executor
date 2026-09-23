@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -22,7 +22,7 @@ export default defineApp({accounts:{service:service.many()}},{queries:{status:qu
 
 layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
   it.effect(scenarios.memberGroupVisibility.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

@@ -4,7 +4,7 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 const Keys = Schema.Struct({ apiKeys: Schema.Array(Schema.Struct({ id: Schema.String })) });
@@ -13,7 +13,7 @@ const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.Stri
 
 layer(HostedLive, { excludeTestServices: true })("Membership API keys", (it) => {
   it.effect(scenarios.memberApiKeys.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

@@ -69,7 +69,8 @@ export const makeOnboardingStore = Effect.gen(function* () {
     coalesce((select jsonb_agg(jsonb_build_object(
       'id', o.id, 'name', o.name, 'slug', o.slug, 'logo', o.logo
     ) order by o."createdAt", o.id) from organization o join member m on m."organizationId" = o.id
-      where m."userId" = ${id}), '[]'::jsonb) as organizations,
+      where m."userId" = ${id}
+        and not exists (select 1 from hosted_organization_removal r where r.organization_id = o.id)), '[]'::jsonb) as organizations,
     (select id from invitation where lower(email) = lower(${email}) and status = 'pending'
       and "expiresAt" > now() order by "expiresAt", id limit 1) as invitation,
     (exists(select 1 from cloud_organization_setup where user_id = ${id})

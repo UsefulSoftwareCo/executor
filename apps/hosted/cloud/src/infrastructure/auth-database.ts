@@ -1,10 +1,9 @@
 /** The hosted auth database is Postgres; other SQL drivers do not belong in this Worker. */
 import { Database } from "@alchemy.run/better-auth/Database";
 import { openPostgresPool } from "alchemy/SQL/PostgresDriver";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer, Option, Schema } from "effect";
 import { Kysely, PostgresDialect, type QueryId } from "kysely";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 
 const DriverCode = Schema.Struct({
   code: Schema.String.check(Schema.isPattern(/^(?:[0-9A-Z]{5}|E[A-Z_]{2,40})$/)),
@@ -13,10 +12,10 @@ class AuthDatabaseFailed extends Schema.TaggedError<AuthDatabaseFailed>()("AuthD
   code: Schema.String,
 }) {}
 
-/** Resolve the native Hyperdrive binding once; Postgres keeps its pool in the invocation scope. */
+/** Resolve the selected database transport once; Postgres keeps its pool in the invocation scope. */
 export const cloudAuthDatabase = Layer.unwrap(
   Effect.gen(function* () {
-    const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+    const connection = yield* cloudDatabaseConnection;
     return Layer.succeed(
       Database,
       Database.of({
@@ -79,4 +78,4 @@ export const cloudAuthDatabase = Layer.unwrap(
       }),
     );
   }),
-).pipe(Layer.provide(Cloudflare.Hyperdrive.ConnectBinding));
+);

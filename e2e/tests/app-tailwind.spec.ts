@@ -7,7 +7,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 
@@ -72,7 +72,7 @@ createRoot(document.getElementById("root")).render(<main>
 
 layer(HostedLive, { excludeTestServices: true })("App Tailwind styles", (it) => {
   it.effect(scenarios.appTailwind.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,

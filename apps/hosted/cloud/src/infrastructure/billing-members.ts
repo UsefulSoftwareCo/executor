@@ -1,11 +1,10 @@
 /** Request-owned database reads for billing. No identity or email fields leave this adapter. */
 import { PgClient } from "@effect/sql-pg";
 import { OrganizationId } from "@executor-js/hosted-server";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer, Schema } from "effect";
-import { DatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 import { BillingUnavailable } from "../contracts/billing.ts";
 
 const Counts = Schema.Array(
@@ -13,7 +12,7 @@ const Counts = Schema.Array(
 );
 /** Each read takes a fresh authoritative member count; pending invitations are not seats. */
 export const billingMembers = Effect.gen(function* () {
-  const connection = yield* Cloudflare.Hyperdrive.Connect(yield* DatabaseConnection);
+  const connection = yield* cloudDatabaseConnection;
   const sql = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const services = yield* Layer.build(
@@ -39,4 +38,4 @@ export const billingMembers = Effect.gen(function* () {
       Effect.mapError(() => new BillingUnavailable()),
     );
   return { read };
-}).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
+});

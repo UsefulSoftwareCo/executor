@@ -7,7 +7,7 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Workspace } from "../support/app-authoring.ts";
-import { HostedLive, withCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 
@@ -19,7 +19,7 @@ const files = (value: string) => [
 
 layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
   it.effect(scenarios.workspaceSource.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const api = yield* Api,
