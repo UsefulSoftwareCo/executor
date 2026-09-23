@@ -2238,10 +2238,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         }
       }
 
-      const usePkce = shouldUsePkce(client.authorizationUrl, client.clientSecret);
+      const requiresPkce = shouldUsePkce(client.authorizationUrl, client.clientSecret);
       // Every authorization-code flow except LinkedIn's confidential web flow
       // requires the verifier minted by `start`. Missing one is a corrupt row.
-      if (usePkce && session.pkceVerifier == null) {
+      if (requiresPkce && session.pkceVerifier == null) {
         return yield* new OAuthCompleteError({
           message: `OAuth session ${input.state} is missing its PKCE code verifier; restart the flow.`,
           restartRequired: true,
@@ -2263,7 +2263,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         clientId: client.clientId,
         clientSecret: client.clientSecret,
         redirectUrl: session.redirectUrl,
-        codeVerifier: usePkce ? (session.pkceVerifier ?? undefined) : undefined,
+        // The persisted verifier records the request that actually started.
+        // Keep using it if client settings change while that request is open.
+        codeVerifier: session.pkceVerifier ?? undefined,
         code: input.code,
         clientAuth: client.tokenEndpointAuthMethod,
         requestFormat: client.tokenRequestFormat,
