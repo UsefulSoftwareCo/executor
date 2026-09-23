@@ -1,7 +1,7 @@
 import { Grant, GrantId, type ApprovalMode } from "@executor-js/mcp-auth";
 import { Context, Schema } from "effect";
 import type { Effect } from "effect";
-import { OrganizationAccess } from "./organization.ts";
+import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
 import { AuthenticationUnavailable } from "./auth.ts";
 
 /** MCP authority from OAuth or a PAT and current membership. Tokens never become browser sessions. */
@@ -26,6 +26,7 @@ export class McpAuthentication extends Context.Service<
     readonly authenticate: (
       headers: Headers,
       mode?: ApprovalMode,
+      organization?: OrganizationReference,
     ) => Effect.Effect<McpAccess, McpUnauthorized | McpForbidden | AuthenticationUnavailable>;
     readonly browserGrant: (
       headers: Headers,

@@ -37,7 +37,8 @@ A full-account token can access your other organizations. Each request checks yo
 current membership and role. Changing the organization URL does not grant access
 to an organization you do not belong to. Tool approval rules still apply.
 
-For `GET /api/context`, supply the `X-Executor-Organization` header instead.
+For `GET /api/context`, pass `?organization=<organization-id-or-slug>` instead. A token
+limited to one organization can omit it.
 Invalid, expired, or revoked tokens return `401`. Insufficient access returns `403`.
 
 ## Expiry and revocation
@@ -53,18 +54,15 @@ the saved connection. Revoked tokens are removed from the list.
 
 ## Connect an MCP client
 
-Use your PAT as the bearer token and choose the organization with a header:
+Use your PAT as the bearer token. The organization URL names where calls run:
 
 ```json
 {
   "mcpServers": {
     "executor": {
       "type": "http",
-      "url": "https://v2.executor.sh/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_PAT>",
-        "X-Executor-Organization": "<organization-id-or-slug>"
-      }
+      "url": "https://v2.executor.sh/org/<organization-id-or-slug>/mcp",
+      "headers": { "Authorization": "Bearer <YOUR_PAT>" }
     }
   }
 }
@@ -72,8 +70,12 @@ Use your PAT as the bearer token and choose the organization with a header:
 
 The **API keys** page fills in your server URL and current organization. For
 self-host, use your own origin. Keep the token in your client's private config
-or secret store. The organization header selects where calls run; it does not
-limit the token to that organization.
+or secret store.
+
+A token limited to one organization also works on the bare `/mcp` URL with no
+extra configuration. A full-account token on `/mcp` must say which organization
+to use with an `X-Executor-Organization` header. A token limited to one
+organization is rejected on any other organization's URL.
 
 The same token works with model, native, and browser approval delivery. Add
 `?elicitation_mode=native` or `?elicitation_mode=browser` to the MCP URL when

@@ -108,11 +108,8 @@ function PersonalAccessTokens() {
       mcpServers: {
         executor: {
           type: "http",
-          url: `${window.location.origin}/mcp`,
-          headers: {
-            Authorization: "Bearer <YOUR_PAT>",
-            "X-Executor-Organization": organization.organization,
-          },
+          url: `${window.location.origin}/org/${encodeURIComponent(organization.slug)}/mcp`,
+          headers: { Authorization: "Bearer <YOUR_PAT>" },
         },
       },
     },
@@ -273,7 +270,8 @@ function PersonalAccessTokens() {
         <div>
           <h2 className="text-sm font-medium">Connect an MCP client</h2>
           <p className="my-2 text-sm text-muted-foreground">
-            Replace the placeholder with your token. This config targets {organization.name}.
+            Replace the placeholder with your token. The URL names {organization.name}, so no
+            organization header is needed.
           </p>
           <pre className="overflow-x-auto rounded-lg border bg-muted/30 p-4 text-xs">
             <code>{mcpExample}</code>

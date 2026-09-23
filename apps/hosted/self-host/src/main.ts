@@ -118,6 +118,7 @@ export const selfHostRoutes = Effect.gen(function* () {
   );
   const mcpRoutes = Layer.mergeAll(
     HttpRouter.add("*", "/mcp", mcp.http),
+    HttpRouter.add("*", "/org/:organization/mcp", mcp.http),
     HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
     HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
     HttpRouter.add("GET", "/.well-known/oauth-authorization-server", mcpAuthorizationServer),

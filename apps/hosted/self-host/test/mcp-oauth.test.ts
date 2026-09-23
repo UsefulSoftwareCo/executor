@@ -31,6 +31,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { betterAuth } from "better-auth";
 import { makeSignature } from "better-auth/crypto";
 import { ConfigProvider, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
@@ -276,6 +277,9 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               HttpRouter.add("*", "/api/auth/*", hosted.handler),
               HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback),
               HttpRouter.add("*", "/mcp", mcp.http).pipe(HttpRouter.provideRequest(sdk)),
+              HttpRouter.add("*", "/org/:organization/mcp", mcp.http).pipe(
+                HttpRouter.provideRequest(sdk),
+              ),
               HttpRouter.add("GET", "/api/mcp/approvals/:requestId", mcp.approvals).pipe(
                 HttpRouter.provideRequest(sdk),
               ),
@@ -449,6 +453,34 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
               );
               assert.deepEqual(access.grant.target, { kind: "mcp", mode });
               assert.deepEqual(access.grant.policy, { kind: "all" });
+              // An organization-pathed URL must match the grant's organization.
+              for (const [reference, status] of [
+                [a.slug, 200],
+                [b.slug, 403],
+              ] as const) {
+                const pathed = yield* Effect.promise(() =>
+                  auth.api
+                    .getMcpAccess({
+                      headers: new Headers({
+                        authorization: `Bearer ${state.tokens?.access_token}`,
+                      }),
+                      query: {
+                        mode,
+                        organization: Schema.decodeUnknownSync(OrganizationReference)(reference),
+                      },
+                      asResponse: true,
+                    })
+                    .then((response) => response.status),
+                );
+                assert.equal(pathed, status, `OAuth grant on /org/${reference}/mcp`);
+              }
+              assert.equal(
+                (yield* request(`/org/${b.slug}/mcp?elicitation_mode=${mode}`, {
+                  headers: { authorization: `Bearer ${state.tokens.access_token}` },
+                })).status,
+                403,
+                "an organization-pathed URL for another organization",
+              );
               const wrongMode = yield* request("/mcp", {
                 headers: { authorization: `Bearer ${state.tokens.access_token}` },
               });

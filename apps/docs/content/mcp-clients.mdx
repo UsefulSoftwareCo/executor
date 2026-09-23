@@ -15,7 +15,7 @@ The endpoint is your origin plus `/mcp`:
 | Self-host | `<your origin>/mcp` |
 | Local | `http://127.0.0.1:4312/mcp` |
 
-You can also connect with a [personal access token](/api-keys#connect-an-mcp-client) by setting the Authorization and X-Executor-Organization headers.
+You can also connect with a [personal access token](/api-keys#connect-an-mcp-client) as the Authorization bearer on `<your origin>/org/<organization>/mcp`.
 
 Most clients load MCP servers only at startup. After you add Executor, restart
 the client or open a new session before its tools appear.

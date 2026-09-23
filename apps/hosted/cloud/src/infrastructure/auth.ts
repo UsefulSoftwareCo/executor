@@ -181,13 +181,13 @@ export const cloudAuth = (send: SendAuthEmail) =>
       Effect.gen(function* () {
         return McpAuthentication.of({
           origin: settings.url,
-          authenticate: (headers, mode) =>
+          authenticate: (headers, mode, organization) =>
             auth.auth
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
                 Effect.flatMap((native) =>
                   Effect.tryPromise({
-                    try: () => native.api.getMcpAccess({ headers, query: { mode } }),
+                    try: () => native.api.getMcpAccess({ headers, query: { mode, organization } }),
                     catch: mcpAuthenticationError,
                   }),
                 ),

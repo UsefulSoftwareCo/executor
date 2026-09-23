@@ -106,6 +106,63 @@ const parsePatGrant = (id: GrantId) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PatGrant))),
     Effect.mapError(() => new APIError("UNAUTHORIZED")),
   );
+/** The organization a request names: the URL or query first, then the header. Both must agree. */
+const requestedOrganization = (
+  ctx: GenericEndpointContext & {
+    readonly query?: { readonly organization?: OrganizationReference | undefined } | undefined;
+  },
+) =>
+  Effect.gen(function* () {
+    const header = ctx.headers?.get("x-executor-organization") ?? undefined;
+    const headerReference =
+      header === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(OrganizationReference)(header).pipe(
+            Effect.mapError(() => new APIError("FORBIDDEN")),
+          );
+    const url = ctx.query?.organization;
+    const fromUrl = url === undefined ? undefined : yield* resolveReference(ctx.context, url);
+    const fromHeader =
+      headerReference === undefined
+        ? undefined
+        : yield* resolveReference(ctx.context, headerReference);
+    if (fromUrl !== undefined && fromHeader !== undefined && fromUrl !== fromHeader)
+      return yield* Effect.fail(
+        new APIError("FORBIDDEN", {
+          message: "The URL and X-Executor-Organization name different organizations.",
+        }),
+      );
+    return fromUrl ?? fromHeader;
+  });
+
+/** An OAuth grant is bound to one organization; a request may only name that one. */
+const requireRequestedOrganization = (
+  ctx: Parameters<typeof requestedOrganization>[0],
+  organization: OrganizationId,
+) =>
+  requestedOrganization(ctx).pipe(
+    Effect.flatMap((requested) =>
+      requested === undefined || requested === organization
+        ? Effect.void
+        : Effect.fail(new APIError("FORBIDDEN")),
+    ),
+  );
+
+/** A PAT targets the named organization, else the organization it is pinned to. */
+const selectPatOrganization = (
+  ctx: Parameters<typeof requestedOrganization>[0],
+  identity: { readonly organization: OrganizationId | undefined },
+  missing: { readonly message: string },
+) =>
+  requestedOrganization(ctx).pipe(
+    Effect.flatMap((requested) => {
+      const organization = requested ?? identity.organization;
+      return organization === undefined
+        ? Effect.fail(new APIError("FORBIDDEN", missing))
+        : Effect.succeed(organization);
+    }),
+  );
+
 /** Stable metadata identifies the PAT/organization/mode partition; it is never a credential. */
 const projectPatAccess = (
   ctx: GenericEndpointContext,
@@ -181,27 +238,28 @@ export const mcpOAuthPlugins = (origin: string) => {
           requireHeaders: true,
           metadata: { SERVER_ONLY: true },
           query: Schema.toStandardSchemaV1(
-            Schema.optional(Schema.Struct({ mode: Schema.optional(ApprovalMode) })),
+            Schema.optional(
+              Schema.Struct({
+                mode: Schema.optional(ApprovalMode),
+                organization: Schema.optional(OrganizationReference),
+              }),
+            ),
           ),
         },
         (ctx) =>
           runAuth(
             Effect.gen(function* () {
               const token = ctx.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
-              if (token === undefined || !isApiKey(token)) return yield* access(ctx, "mcp");
+              if (token === undefined || !isApiKey(token)) {
+                const grant = yield* access(ctx, "mcp");
+                yield* requireRequestedOrganization(ctx, grant.access.organization);
+                return grant;
+              }
               const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-              const reference = yield* Schema.decodeUnknownEffect(OrganizationReference)(
-                ctx.headers.get("x-executor-organization"),
-              ).pipe(
-                Effect.mapError(
-                  () =>
-                    new APIError("FORBIDDEN", {
-                      message:
-                        "Set X-Executor-Organization when using a personal access token with MCP.",
-                    }),
-                ),
-              );
-              const organization = yield* resolveReference(ctx.context, reference);
+              const organization = yield* selectPatOrganization(ctx, identity, {
+                message:
+                  "Use /org/<organization>/mcp, or set X-Executor-Organization, when using a full-account token with MCP.",
+              });
               return yield* projectPatAccess(
                 ctx,
                 identity,
@@ -228,10 +286,10 @@ export const mcpOAuthPlugins = (origin: string) => {
               const identity = yield* Effect.gen(function* () {
                 if (token !== undefined && isApiKey(token)) {
                   const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-                  const reference = yield* Schema.decodeUnknownEffect(OrganizationReference)(
-                    ctx.query.organization ?? ctx.headers.get("x-executor-organization"),
-                  ).pipe(Effect.mapError(() => new APIError("FORBIDDEN")));
-                  const organization = yield* resolveReference(ctx.context, reference);
+                  const organization = yield* selectPatOrganization(ctx, identity, {
+                    message:
+                      "Set the organization query parameter, or X-Executor-Organization, when using a full-account token.",
+                  });
                   yield* requirePinnedOrganization(identity, organization);
                   const member = yield* membership(ctx.context, identity.userId, organization);
                   return {
@@ -246,12 +304,7 @@ export const mcpOAuthPlugins = (origin: string) => {
                   };
                 }
                 const grant = yield* access(ctx, "api");
-                if (
-                  ctx.query.organization !== undefined &&
-                  grant.access.organization !==
-                    (yield* resolveReference(ctx.context, ctx.query.organization))
-                )
-                  return yield* Effect.fail(new APIError("FORBIDDEN"));
+                yield* requireRequestedOrganization(ctx, grant.access.organization);
                 return {
                   userId: grant.userId,
                   access: grant.access,

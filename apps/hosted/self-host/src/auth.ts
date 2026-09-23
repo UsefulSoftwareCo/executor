@@ -71,9 +71,9 @@ export const selfHostAuth = Effect.gen(function* () {
   });
   const mcpIdentity = Layer.succeed(McpAuthentication, {
     origin: settings.url,
-    authenticate: (headers, mode) =>
+    authenticate: (headers, mode, organization) =>
       Effect.tryPromise({
-        try: () => auth.api.getMcpAccess({ headers, query: { mode } }),
+        try: () => auth.api.getMcpAccess({ headers, query: { mode, organization } }),
         catch: mcpAuthenticationError,
       }).pipe(Effect.withSpan("auth.authenticate")),
     browserGrant: (headers, id) =>

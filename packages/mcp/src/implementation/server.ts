@@ -230,28 +230,36 @@ export const makeMcp = (options: McpOptions) =>
     const model = yield* handler("model"),
       native = yield* handler("native"),
       browser = yield* handler("browser");
-    const http = Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-      Schema.decodeUnknownEffect(query)(
-        HttpServerRequest.searchParamsFromURL(new URL(request.url, "http://mcp.internal")),
-      ),
-    ).pipe(
-      Effect.matchEffect({
-        onFailure: () =>
-          Effect.succeed(
-            HttpServerResponse.jsonUnsafe(
-              { error: "Unsupported elicitation_mode. Use model, native or browser." },
-              { status: 400 },
+    const http = Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
+      const url = new URL(request.url, "http://mcp.internal");
+      return Schema.decodeUnknownEffect(query)(HttpServerRequest.searchParamsFromURL(url)).pipe(
+        Effect.matchEffect({
+          onFailure: () =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe(
+                { error: "Unsupported elicitation_mode. Use model, native or browser." },
+                { status: 400 },
+              ),
             ),
-          ),
-        onSuccess: ({ elicitation_mode }) =>
-          Match.value(elicitation_mode ?? "model").pipe(
-            Match.when("model", () => model),
-            Match.when("native", () => native),
-            Match.when("browser", () => browser),
-            Match.exhaustive,
-          ),
-      }),
-    );
+          onSuccess: ({ elicitation_mode }) =>
+            Match.value(elicitation_mode ?? "model")
+              .pipe(
+                Match.when("model", () => model),
+                Match.when("native", () => native),
+                Match.when("browser", () => browser),
+                Match.exhaustive,
+              )
+              .pipe(
+                // Hosts may mount the transport under another path, such as an organization
+                // URL; the protocol router itself is fixed at /mcp.
+                Effect.provideService(
+                  HttpServerRequest.HttpServerRequest,
+                  request.modify({ url: `/mcp${url.search}` }),
+                ),
+              ),
+        }),
+      );
+    });
     const approvals: BrowserApprovals = {
       get: (product, address) =>
         executions.browserView(identity(product, "browser", address.sessionId), address.requestId),

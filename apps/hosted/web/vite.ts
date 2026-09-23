@@ -62,6 +62,7 @@ export const dashboardViteConfig = ({
         "/health": apiUrl,
         "/openapi.json": apiUrl,
         "^/mcp$": apiUrl,
+        "^/org/[^/]+/mcp$": apiUrl,
         "/.well-known": apiUrl,
       },
     },

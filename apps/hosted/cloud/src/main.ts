@@ -137,6 +137,7 @@ export default Api.make(
           "/health",
           "/openapi.json",
           "/mcp",
+          "/org/*/mcp",
           "/git/*",
           "/.well-known/*",
         ],
@@ -224,6 +225,7 @@ export default Api.make(
     );
     const mcpRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/mcp", mcp.http),
+      HttpRouter.add("*", "/org/:organization/mcp", mcp.http),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-authorization-server", mcpAuthorizationServer),

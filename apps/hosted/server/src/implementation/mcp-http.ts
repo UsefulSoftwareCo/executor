@@ -12,7 +12,7 @@ import {
   mcpResourceMetadataUrl,
 } from "@executor-js/mcp-auth";
 import { defaultMcpLimits, makeMcp, type McpBackend, type McpOptions } from "@executor-js/mcp";
-import { Context, Effect } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import { ElicitationFailed } from "@executor-js/sdk/core";
 import { McpProtocol } from "effect/unstable/ai";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -22,7 +22,7 @@ import {
   McpForbidden,
   type McpAccess,
 } from "../contracts/mcp.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
+import { CurrentOrganization, OrganizationReference } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { hostedMcpBackend } from "./mcp.ts";
 
@@ -92,6 +92,16 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
     ],
   }).pipe(Effect.orDie);
 
+/** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */
+export const requestedMcpOrganization = (url: URL): OrganizationReference | undefined => {
+  const match = /^\/org\/([^/]+)\/mcp$/.exec(url.pathname);
+  if (match === null) return undefined;
+  const reference = Schema.decodeUnknownOption(OrganizationReference)(
+    decodeURIComponent(match[1] ?? ""),
+  );
+  return Option.getOrUndefined(reference);
+};
+
 /** A session belongs to a user/client/organization grant, never to a browser's active organization. */
 export const mcpSessionKey = ({ userId, clientId, access, grant }: McpAccess) =>
   JSON.stringify([userId, clientId, access.organization, grant.id]);
@@ -104,7 +114,9 @@ export const dispatchHostedMcp = <E, R>(
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const mode = requestedMcpMode(new URL(request.url, authentication.origin));
+    const url = new URL(request.url, authentication.origin);
+    const mode = requestedMcpMode(url);
+    const organization = requestedMcpOrganization(url);
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
         if (
@@ -127,7 +139,7 @@ export const dispatchHostedMcp = <E, R>(
     // Native elicitation can wait inside this HTTP request. Recheck the grant and
     // membership before each dispatch, including calls following the approved one.
     const current = authentication
-      .authenticate(new Headers(request.headers), mode)
+      .authenticate(new Headers(request.headers), mode, organization)
       .pipe(Effect.flatMap(scoped), Effect.provideContext(services));
     const authorized: McpBackend<RequestError> = {
       ...backend,
@@ -174,13 +186,18 @@ export const authenticatedMcp = <E, R>(
     // Programmatic clients have no Origin. Untrusted browser pages cannot call MCP.
     if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
       return HttpServerResponse.empty({ status: 403 });
-    const mode = requestedMcpMode(new URL(request.url, auth.origin));
+    const url = new URL(request.url, auth.origin);
+    const mode = requestedMcpMode(url);
     if (mode === undefined)
       return HttpServerResponse.jsonUnsafe(
         { error: "Unsupported elicitation_mode." },
         { status: 400 },
       );
-    const access = yield* auth.authenticate(new Headers(request.headers), mode);
+    const access = yield* auth.authenticate(
+      new Headers(request.headers),
+      mode,
+      requestedMcpOrganization(url),
+    );
     return yield* handle(access);
   }).pipe(
     Effect.catchTag("McpUnauthorized", () =>

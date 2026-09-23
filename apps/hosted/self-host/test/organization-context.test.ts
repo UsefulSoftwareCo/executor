@@ -1,5 +1,6 @@
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { ApiKeyMetadata } from "@executor-js/hosted-server/api-keys";
+import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AppManagementHost, AppSourceView } from "@executor-js/app-management";
 import { gitSourceStorage } from "@executor-js/app-source";
 import { nativeRepositories } from "@executor-js/app-source/node";
@@ -348,23 +349,43 @@ test(
               );
               assert.equal(response.status, status, `pinned key in ${reference}`);
             }
-            for (const [organization, status] of [
-              [a.id, 200],
-              [b.id, 403],
-            ] as const) {
-              const access = yield* Effect.promise(() =>
+            const mcpStatus = (
+              key: string,
+              options: { readonly header?: string; readonly url?: string },
+            ) =>
+              Effect.promise(() =>
                 auth.api
                   .getMcpAccess({
                     headers: new Headers({
-                      authorization: `Bearer ${pinned.key}`,
-                      "x-executor-organization": organization,
+                      authorization: `Bearer ${key}`,
+                      ...(options.header === undefined
+                        ? {}
+                        : { "x-executor-organization": options.header }),
                     }),
+                    query:
+                      options.url === undefined
+                        ? undefined
+                        : {
+                            organization: Schema.decodeUnknownSync(OrganizationReference)(
+                              options.url,
+                            ),
+                          },
                     asResponse: true,
                   })
                   .then((response) => response.status),
               );
-              assert.equal(access, status, `pinned key MCP access in ${organization}`);
-            }
+            // A pinned key already names its organization: no header, the URL, or both agreeing.
+            assert.equal(yield* mcpStatus(pinned.key, {}), 200, "pinned key without a header");
+            assert.equal(yield* mcpStatus(pinned.key, { header: a.id }), 200);
+            assert.equal(yield* mcpStatus(pinned.key, { url: a.slug }), 200);
+            assert.equal(yield* mcpStatus(pinned.key, { url: a.id, header: a.slug }), 200);
+            assert.equal(yield* mcpStatus(pinned.key, { header: b.id }), 403);
+            assert.equal(yield* mcpStatus(pinned.key, { url: b.slug }), 403);
+            assert.equal(
+              yield* mcpStatus(pinned.key, { url: a.id, header: b.id }),
+              403,
+              "URL and header disagree",
+            );
             // Browser-created PATs may pin one organization the creator belongs to.
             const handPinned = yield* json(
               yield* request("/api/auth/api-key/create", {
@@ -374,6 +395,9 @@ test(
               Schema.Struct({ key: Schema.String, metadata: ApiKeyMetadata }),
             );
             assert.equal(handPinned.metadata.organization, b.id);
+            assert.equal(yield* mcpStatus(handPinned.key, {}), 200, "hand-pinned key on bare /mcp");
+            assert.equal(yield* mcpStatus(handPinned.key, { url: b.slug }), 200);
+            assert.equal(yield* mcpStatus(handPinned.key, { url: a.slug }), 403);
             for (const [reference, status] of [
               [b.id, 200],
               [a.id, 403],
