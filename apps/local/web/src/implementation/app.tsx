@@ -97,9 +97,11 @@ function Connect({
               ? "Check that your local server is running, then refresh this page."
               : expired
                 ? "This connection link has expired or was already used."
-                : "Use a connection link from your terminal to sign in. If it opens another tab, return here afterward."}
+                : "In Executor desktop, choose File → Open in browser. With the CLI, run its pair command and open the link. Then return to this tab."}
         </p>
-        {!pending && !unavailable && <code>executor pair</code>}
+        {expired && !pending && !unavailable && (
+          <p>Choose File → Open in browser in Executor desktop, or run the CLI’s pair command.</p>
+        )}
         {unavailable && <Button onClick={() => window.location.reload()}>Retry</Button>}
       </div>
     </div>

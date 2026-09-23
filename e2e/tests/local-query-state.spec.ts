@@ -136,7 +136,10 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
           (yield* session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers)).status,
         ).toBe(200);
         yield* browser.use("The live app query reports removal", (page) =>
-          page.locator(".setup-page .error-state").waitFor({ state: "visible" }),
+          page
+            .getByRole("dialog", { name: "Choose accounts", exact: true })
+            .getByText("App not found", { exact: true })
+            .waitFor({ state: "visible" }),
         );
         expect(
           yield* browser.use("The failed live read keeps account selection", (page) =>

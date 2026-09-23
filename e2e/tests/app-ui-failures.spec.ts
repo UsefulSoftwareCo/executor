@@ -250,18 +250,19 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         expect(span?.tags["code.file.path"]).toMatch(/^\/_executor\/assets\/.*\.js$/);
         expect(Number(span?.tags["code.line.number"])).toBeGreaterThan(0);
         expect(JSON.stringify(delivered)).not.toContain("Fixture boot failure");
-        yield* browser.use("Close the first report", (page) =>
-          page.getByRole("button", { name: "Close", exact: true }).click(),
-        );
-        yield* browser.use("Trigger a second distinct failure without reloading", (page) =>
-          page.evaluate(() => {
-            window.dispatchEvent(
-              new ErrorEvent("error", {
-                error: new TypeError("Second private failure"),
-                message: "Second private failure",
-              }),
-            );
-          }),
+        yield* browser.use(
+          "Close the first report and immediately report another failure",
+          (page) =>
+            page.getByRole("button", { name: "Close", exact: true }).evaluate((button) => {
+              if (!(button instanceof HTMLButtonElement)) throw new Error("Close button missing");
+              button.click();
+              window.dispatchEvent(
+                new ErrorEvent("error", {
+                  error: new TypeError("Second private failure"),
+                  message: "Second private failure",
+                }),
+              );
+            }),
         );
         yield* browser.use("Open the second report", (page) =>
           page.getByText("Error details", { exact: true }).click(),
@@ -272,6 +273,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         const nextId = second.match(/Diagnostic ID: ([a-f0-9]{32})/)?.[1];
         expect(nextId).not.toBe(traceId);
         if (nextId === undefined) return yield* Effect.die("Second diagnostic ID missing");
+        yield* browser.checkpoint("Second error report remains visible after closing the first");
         const next = yield* telemetry.query(nextId).pipe(
           Effect.flatMap((result) =>
             result.data.some(({ span }) => span.operationName === "ui.app.failure")

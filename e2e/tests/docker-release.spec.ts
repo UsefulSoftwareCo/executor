@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, Exit, Schema, Schedule } from "effect";
+import { Config, Console, Effect, Exit, Redacted, Schema, Schedule } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { driver } from "../support/platform.ts";
+import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
+import { chromium } from "playwright";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 for (const mode of ["explicit", "local", "railway"] as const)
   it.live(`released image keeps login and encrypted credentials across restart (${mode})`, () =>
@@ -168,7 +172,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
         const organizations = yield* request("/api/auth/organization/list", undefined, cookie);
         expect(organizations.status).toBe(200);
         const parsed = yield* Schema.decodeUnknownEffect(
-          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String, slug: Schema.String })),
         )(yield* driver("organization response", () => organizations.json()));
         const prefix = `/api/organizations/${parsed[0].id}`;
         const deployed = yield* request(
@@ -192,9 +196,9 @@ for (const mode of ["explicit", "local", "railway"] as const)
           deployed.status,
           yield* driver("deployment result", () => deployed.clone().text()),
         ).toBe(200);
-        const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-          yield* driver("deployment response", () => deployed.json()),
-        );
+        const app = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ id: Schema.String, slug: Schema.String }),
+        )(yield* driver("deployment response", () => deployed.json()));
         const profileResponse = yield* request(
           `${prefix}/apps/${app.id}/profiles`,
           { accounts: {}, idempotencyKey: randomUUID() },
@@ -219,6 +223,39 @@ for (const mode of ["explicit", "local", "railway"] as const)
           cookie,
         );
         expect(connected.status).toBe(200);
+        const token =
+          mode === "explicit"
+            ? yield* Effect.gen(function* () {
+                const browser = yield* Effect.acquireRelease(
+                  driver("launch the image login browser", () => chromium.launch()),
+                  (browser) =>
+                    driver("close the image browser", () => browser.close()).pipe(Effect.orDie),
+                );
+                const page = yield* driver("new browser session", () => browser.newPage());
+                yield* driver("open image sign-in", () => page.goto(`${origin}/login`));
+                yield* driver("enter the setup user's email", () =>
+                  page.getByLabel("Email", { exact: true }).fill("release@example.test"),
+                );
+                yield* driver("enter the setup user's password", () =>
+                  page
+                    .getByLabel("Password", { exact: true })
+                    .fill("Synthetic-release-password-123!"),
+                );
+                yield* driver("sign in through the image dashboard", () =>
+                  page.getByRole("button", { name: "Sign in", exact: true }).click(),
+                );
+                yield* driver("sign-in reaches the intended organization", () =>
+                  page.waitForURL(
+                    (url) =>
+                      url.origin === origin && url.pathname === `/org/${parsed[0].slug}/apps`,
+                  ),
+                );
+                yield* driver("the image dashboard is authenticated", () =>
+                  page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+                );
+                return yield* authorizeBrowserMcp(page, origin);
+              })
+            : undefined;
         for (const restart of [false, true]) {
           if (restart) {
             yield* run(["stop", "--time", "15", id]);
@@ -278,6 +315,45 @@ fetch(collector.url + "/api/traces/" + process.argv[1] + "/spans").then((r) => r
           );
           expect(called.status).toBe(200);
           expect(yield* driver("query response", () => called.json())).toBe(true);
+          if (token !== undefined) {
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const client = yield* Effect.acquireRelease(
+                  Effect.sync(() => new Client({ name: "image-release", version: "1" })),
+                  (client) =>
+                    driver("close image MCP client", () => client.close()).pipe(Effect.orDie),
+                );
+                const transport: Omit<StreamableHTTPClientTransport, "sessionId"> =
+                  new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+                    requestInit: { headers: { authorization: `Bearer ${Redacted.value(token)}` } },
+                  });
+                yield* driver("connect to image with the saved OAuth token", () =>
+                  client.connect(transport),
+                );
+                const result = yield* driver(
+                  "call the account-backed app through image MCP",
+                  (signal) =>
+                    client.callTool(
+                      {
+                        name: "execute",
+                        arguments: {
+                          code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.check({})`,
+                        },
+                      },
+                      undefined,
+                      { signal },
+                    ),
+                );
+                const completed = yield* Schema.decodeUnknownEffect(
+                  Schema.Struct({
+                    status: Schema.Literal("completed"),
+                    execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+                  }),
+                )(result.structuredContent);
+                expect(completed.execution.value).toBe(true);
+              }),
+            );
+          }
         }
         if (mode !== "explicit") {
           yield* run(["stop", "--time", "15", id]);

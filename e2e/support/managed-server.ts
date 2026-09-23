@@ -3,11 +3,13 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
+  Config,
   Deferred,
   Effect,
   Exit,
   FileSystem,
   Layer,
+  Option,
   Redacted,
   Schedule,
   Schema,
@@ -31,17 +33,36 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
   target: typeof Target.Service,
-  entry: "product" | "development" = "product",
+  mode: "product" | "development" = "product",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
       http = yield* HttpClient.HttpClient;
     const port = new URL(target.metadata.origin).port;
+    const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
+      Config.withDefault(process.env.PATH ?? ""),
+    );
+    const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
+      Config.option,
+    );
+    const entry =
+      target.metadata.target === "local" && Option.isSome(packagedEntry)
+        ? { command: [packagedEntry.value, "serve"], cwd: target.directory }
+        : {
+            command: [
+              target.metadata.target === "local"
+                ? "apps/local/server/src/main.ts"
+                : mode === "development"
+                  ? "apps/hosted/testing/self-host.ts"
+                  : "apps/hosted/self-host/src/main.ts",
+            ],
+          };
+
     const gate = yield* Semaphore.make(1);
     let current: Scope.Closeable | undefined;
     const env = {
-      PATH: process.env.PATH ?? "",
+      PATH: runtimePath,
       NODE_ENV: "test",
       HOST: "127.0.0.1",
       PORT: port,
@@ -79,24 +100,15 @@ export const startManagedServer = (
       current = scope;
       yield* Effect.gen(function* () {
         const child = yield* processes.spawn(
-          ChildProcess.make(
-            "node",
-            [
-              target.metadata.target === "local"
-                ? "apps/local/server/src/main.ts"
-                : entry === "development"
-                  ? "apps/hosted/testing/self-host.ts"
-                  : "apps/hosted/self-host/src/main.ts",
-            ],
-            {
-              extendEnv: false,
-              env,
-              stdout: "pipe",
-              stderr: "pipe",
-              killSignal: "SIGTERM",
-              forceKillAfter: "15 seconds",
-            },
-          ),
+          ChildProcess.make("node", entry.command, {
+            extendEnv: false,
+            ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
+            env,
+            stdout: "pipe",
+            stderr: "pipe",
+            killSignal: "SIGTERM",
+            forceKillAfter: "15 seconds",
+          }),
         );
         const ready = yield* Deferred.make<void>();
         yield* Stream.merge(child.stdout, child.stderr).pipe(
@@ -139,7 +151,20 @@ export const startManagedServer = (
             ),
           ),
         ).pipe(Effect.timeout("90 seconds"));
-      }).pipe(Scope.provide(scope));
+      }).pipe(
+        Scope.provide(scope),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit)
+            ? Scope.close(scope, exit).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (current === scope) current = undefined;
+                  }),
+                ),
+              )
+            : Effect.void,
+        ),
+      );
     });
     const control = (action: "start" | "stop" | "restart") =>
       Effect.gen(function* () {

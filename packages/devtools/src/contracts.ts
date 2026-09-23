@@ -1,25 +1,5 @@
 /** Local-only dev tools protocol shared by the three product shells. */
-import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import { Schema } from "effect";
-
-/** Reserved loopback origins are the only eligible hosts for development shortcuts. */
-export const LoopbackOrigin = Schema.String.check(
-  Schema.makeFilter(
-    (value) => {
-      try {
-        const url = new URL(value);
-        return (
-          ["http:", "https:"].includes(url.protocol) &&
-          url.origin === value &&
-          isLoopbackHostname(url.hostname)
-        );
-      } catch {
-        return false;
-      }
-    },
-    { message: "Dev tools require an exact loopback HTTP(S) origin" },
-  ),
-);
 
 /** Test membership roles supported by hosted products. Local has no account roles. */
 export const TestRole = Schema.Literals(["member", "admin", "owner"]);

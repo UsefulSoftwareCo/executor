@@ -16,7 +16,6 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Command, Flag } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
-import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
 import { patternForTarget, scenariosForSuite } from "./test-plan.ts";
 import { collectEvidence, writeEvidenceReport } from "./evidence-reporter.ts";
@@ -27,30 +26,10 @@ import { provisionSelfHostActors } from "./support/actors.ts";
 import { provisionCloudActors } from "./support/actors.ts";
 import { startCloudEnvironment } from "./support/cloud-environment.ts";
 import { startManagedServer } from "./support/managed-server.ts";
-import { Target, driver, RecordingPaceMs } from "./support/platform.ts";
+import { Target, RecordingPaceMs } from "./support/platform.ts";
+import { freePort } from "./support/ports.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
-const freePort = Effect.scoped(
-  Effect.gen(function* () {
-    const server = yield* Effect.acquireRelease(
-      Effect.sync(() => createServer()),
-      (server) =>
-        Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
-    );
-    return yield* driver(
-      "allocate isolated port",
-      () =>
-        new Promise<number>((resolve, reject) => {
-          server.once("error", reject);
-          server.listen(0, "127.0.0.1", () => {
-            const address = server.address();
-            if (address === null || typeof address === "string") reject(new Error("No test port"));
-            else resolve(address.port);
-          });
-        }),
-    );
-  }),
-);
 const CloudOrigin = Schema.String.check(
   Schema.makeFilter(
     (text) => {
@@ -65,6 +44,7 @@ const CloudOrigin = Schema.String.check(
     { message: "Set E2E_CLOUD_URL to the exact test stage origin." },
   ),
 );
+
 const command = Command.make("e2e", {
   target: Flag.Literals("target", ["self-host", "local", "cloud", "all", "hosted"]).pipe(
     Flag.withDefault("self-host"),

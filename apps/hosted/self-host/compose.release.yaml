@@ -1,0 +1,6 @@
+# Overlay compose.yaml with an explicitly selected immutable release image.
+# No default channel is moved and no source checkout is built.
+services:
+  server:
+    image: ${EXECUTOR_IMAGE:?Set an approved version tag or digest}
+    build: !reset null

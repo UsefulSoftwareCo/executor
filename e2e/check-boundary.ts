@@ -63,6 +63,9 @@ const check = Effect.gen(function* () {
             allowed.has(specifier)
           )
             return;
+          // This adapter observes the real OS store, never an application implementation.
+          if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
+            return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
           if (
             specifier.startsWith(".") &&

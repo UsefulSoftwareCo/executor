@@ -5,7 +5,10 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Redacted, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { config } from "../../server/src/contracts/config.ts";
+import {
+  localConfiguration,
+  LocalConfigurationError,
+} from "../../server/src/implementation/bootstrap.ts";
 import {
   readDesktopBootstrap,
   startLocalServer,
@@ -14,7 +17,7 @@ import {
 import { DesktopCallback, DesktopFailed } from "./contracts/desktop.ts";
 
 const server = Effect.gen(function* () {
-  const settings = yield* config;
+  const settings = yield* localConfiguration(process.platform);
   const bootstrap = yield* readDesktopBootstrap;
   const callbackPipe = yield* Effect.acquireRelease(
     Effect.sync(() => {
@@ -109,8 +112,12 @@ const server = Effect.gen(function* () {
 NodeRuntime.runMain(
   Effect.scoped(server).pipe(
     Effect.provide(NodeServices.layer),
-    Effect.catch(() =>
-      Console.error("Executor desktop server could not start. Check its configuration.").pipe(
+    Effect.catch((error) =>
+      Console.error(
+        Schema.is(LocalConfigurationError)(error)
+          ? error.message
+          : "Executor desktop server could not start. Check its configuration.",
+      ).pipe(
         Effect.andThen(
           Effect.sync(() => {
             process.exitCode = 1;

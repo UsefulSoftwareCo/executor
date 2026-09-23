@@ -6,7 +6,7 @@ import { authOptions } from "@executor-js/hosted-server";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 /** Local provisioning must never target a public origin. */
-export { LoopbackOrigin as TestOrigin } from "@executor-js/devtools/contracts";
+export { LoopbackOrigin as TestOrigin } from "@executor-js/utils/url-policy";
 
 /** Stable fixture names are also valid organization slugs and synthetic email components. */
 export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));

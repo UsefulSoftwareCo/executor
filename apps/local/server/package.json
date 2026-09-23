@@ -27,19 +27,21 @@
     "@executor-js/app-source": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/catalog": "workspace:*",
-    "@executor-js/devtools": "workspace:*",
     "@executor-js/mcp": "workspace:*",
     "@executor-js/mcp-auth": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
+    "@napi-rs/keyring": "2.1.0",
     "apps": "workspace:*",
     "better-auth": "1.7.5",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "fumadb-effect": "workspace:*"
+    "fumadb-effect": "workspace:*",
+    "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/proper-lockfile": "4.1.4",
     "graphql": "16.11.0",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3"
   }

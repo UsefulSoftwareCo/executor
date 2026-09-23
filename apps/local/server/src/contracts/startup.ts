@@ -49,7 +49,7 @@ export const executorCommand = Command.make("executor", {
   ),
 }).pipe(
   Command.withDescription(
-    "Start the local server and open its dashboard. Configure EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY in the environment.",
+    "Start the local server and open its dashboard. First launch saves keys in the OS credential store.",
   ),
 );
 

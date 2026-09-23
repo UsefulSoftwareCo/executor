@@ -1,6 +1,6 @@
 /** This bootstrap must run before authored modules and must not depend on their framework. */
 const installAppFailureUI = () => {
-  let dialogOpen = false;
+  let activeDialog: HTMLDialogElement | undefined;
   let windowStart = Date.now(),
     reports = 0,
     dropped = 0;
@@ -69,11 +69,11 @@ const installAppFailureUI = () => {
     let status: HTMLParagraphElement | undefined;
     let deliveryMessage = "Sending error report…";
     const show = () => {
-      if (dialogOpen) return;
-      dialogOpen = true;
+      if (activeDialog?.open) return;
       const host = document.createElement("div");
       const root = host.attachShadow({ mode: "open" });
       const dialog = document.createElement("dialog");
+      activeDialog = dialog;
       dialog.setAttribute("aria-labelledby", "executor-failure-title");
       const title = document.createElement("h2");
       title.id = "executor-failure-title";
@@ -108,7 +108,7 @@ const installAppFailureUI = () => {
       close.textContent = "Close";
       close.addEventListener("click", () => dialog.close());
       dialog.addEventListener("close", () => {
-        dialogOpen = false;
+        if (activeDialog === dialog) activeDialog = undefined;
         host.remove();
       });
       dialog.append(title, message, warning, disclosure, status, reload, close);

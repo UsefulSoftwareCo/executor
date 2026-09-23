@@ -14,6 +14,25 @@ export const isLoopbackHostname = (hostname: string): boolean => {
   );
 };
 
+/** Reserved loopback origins are the only eligible hosts for development shortcuts. */
+export const LoopbackOrigin = Schema.String.check(
+  Schema.makeFilter(
+    (value) => {
+      try {
+        const url = new URL(value);
+        return (
+          ["http:", "https:"].includes(url.protocol) &&
+          url.origin === value &&
+          isLoopbackHostname(url.hostname)
+        );
+      } catch {
+        return false;
+      }
+    },
+    { message: "Dev tools require an exact loopback HTTP(S) origin" },
+  ),
+);
+
 /** An exact HTTP origin, including its port. No paths, credentials, wildcards, query or fragment. */
 export const HttpOrigin = Schema.String.check(
   Schema.makeFilter(

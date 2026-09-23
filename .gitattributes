@@ -1,0 +1,3 @@
+# Bun preserves patch line endings when inserting lines into dependency files.
+patches/*.patch text eol=lf
+bun.lock text eol=lf

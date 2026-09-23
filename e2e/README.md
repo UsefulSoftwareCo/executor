@@ -485,3 +485,31 @@ the reason. They remain in local CI. Claude Code's model-dependent scenario is
 excluded by the deployed runner's default filter. A filter that executes no
 scenarios is a failure. See [test stages](../notes/test-stages.md) for retained
 previews, shared infrastructure, background pause/resume, and cleanup.
+
+### Installed CLI artifact
+
+To verify the installed CLI artifact through the same local scenarios, set
+`EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
+`bun run e2e:local`. The harness starts that entry from its isolated data directory,
+with synthetic secrets. Pairing, dashboard loading and app deployment/call use
+real HTTP requests against the installed package.
+
+The desktop artifact smoke uses the packaged executable, synthetic secrets and a
+fresh profile/data directory. It deploys a dependency-using app, calls it, closes
+the app, then calls the retained app after restart:
+
+```sh
+EXECUTOR_E2E_DESKTOP_EXECUTABLE='/path/to/Executor Preview.app/Contents/MacOS/Executor Preview' \
+  bunx vitest run --config e2e/desktop-release.config.ts
+```
+
+Verify a locally built image without pushing it:
+
+```sh
+EXECUTOR_E2E_DOCKER_IMAGE=executor-next-release:preview \
+EXECUTOR_E2E_DOCKER_ARCH=arm64 \
+  bunx vitest run --config e2e/docker-release.config.ts
+```
+
+Use `amd64` on an amd64 runner. The test checks the actual architecture, uses the
+normal image command, and removes its own synthetic container and volume.

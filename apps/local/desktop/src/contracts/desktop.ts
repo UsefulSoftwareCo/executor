@@ -55,3 +55,12 @@ export const externalUrl = (value: string): URL | undefined => {
     return undefined;
   }
 };
+
+/** Update-provider failures never expose raw release-feed responses. */
+export class UpdateFailed extends Schema.TaggedError<UpdateFailed>()("UpdateFailed", {}) {}
+
+/** Browser launch failures never expose pairing links, session cookies or server responses. */
+export class BrowserOpenFailed extends Schema.TaggedError<BrowserOpenFailed>()(
+  "BrowserOpenFailed",
+  {},
+) {}

@@ -184,7 +184,7 @@ export const requestOrigin = (
     ? config.browserOrigin
     : `http://127.0.0.1:${config.port}`;
 
-/** Exchange one-use links for HttpOnly cookies; bearer keys can only mint links from non-browser clients. */
+/** Pair another browser from an authenticated dashboard or a programmatic bearer client. */
 export const authHandlers = (auth: LocalAuth, config: ServerConfig) => {
   const name = sessionCookie(config.port);
   const options = { httpOnly: true, sameSite: "strict" as const, path: "/" };
@@ -230,9 +230,12 @@ export const authHandlers = (auth: LocalAuth, config: ServerConfig) => {
       .handle("pair", () =>
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin);
-          if (request.headers.origin !== undefined) return yield* new AuthForbidden();
-          if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
-            return yield* new PairingUnauthorized();
+          if (request.headers.origin === undefined) {
+            if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
+              return yield* new PairingUnauthorized();
+          } else if (!(yield* auth.valid(request.cookies[name]))) {
+            return yield* new AuthForbidden();
+          }
           const issued = yield* auth.issue();
           return {
             url: pairingUrl(

@@ -4,7 +4,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { LocalAuthApi } from "../contracts/auth.ts";
-import { config } from "../contracts/config.ts";
+import { localConfiguration } from "./bootstrap.ts";
 import { StartupFailed, type LaunchMode } from "../contracts/startup.ts";
 import { readDesktopBootstrap, startLocalServer } from "../node.ts";
 
@@ -24,7 +24,7 @@ const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
 /** Start headless/browser/desktop using one server; pairing an existing server never opens storage. */
 export const launch = (mode: LaunchMode, platform: string) =>
   Effect.gen(function* () {
-    const settings = yield* config;
+    const settings = yield* localConfiguration(platform);
     if (mode === "pair") {
       const client = yield* HttpApiClient.make(LocalAuthApi, {
         baseUrl: `http://127.0.0.1:${settings.port}`,

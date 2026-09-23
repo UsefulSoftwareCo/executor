@@ -1,4 +1,4 @@
-/** Local host configuration. Secrets are supplied explicitly, never generated on startup. */
+/** Parsed local host configuration. The composition root resolves keys before this contract. */
 import { UrlPolicy, defaultUrlPolicy, urlPolicyConfig } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
 import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";

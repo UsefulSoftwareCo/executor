@@ -3,12 +3,14 @@ import { build } from "esbuild";
 import ts from "typescript";
 import { generateFrameworkReference } from "./reference.mjs";
 import { readFile, writeFile, mkdir, rm, readdir, copyFile, realpath } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const packages = resolve(root, "..");
 const out = join(root, "dist");
+// TypeScript reports source file names with POSIX separators on every platform.
+const packagesPrefix = packages.split("\\").join("/") + "/";
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const entries = Object.fromEntries(
   Object.entries(manifest.exports)
@@ -54,7 +56,7 @@ const program = ts.createProgram(
     .filter(
       (file) =>
         !file.isDeclarationFile &&
-        file.fileName.startsWith(packages + "/") &&
+        file.fileName.startsWith(packagesPrefix) &&
         !file.fileName.includes("/node_modules/"),
     )
     .map((file) => file.fileName),
@@ -93,7 +95,7 @@ async function declarations(directory) {
     let rewritten = content;
     for (const [, specifier] of specifiers) {
       const source = await realpath(fileURLToPath(import.meta.resolve(specifier)));
-      if (!source.startsWith(packages + "/"))
+      if (!source.startsWith(packages + sep))
         throw new Error(`Unbundled declaration: ${specifier}`);
       const target = join(out, "types", relative(packages, source)).replace(/\.ts$/, ".js");
       let local = relative(dirname(file), target).split("\\").join("/");

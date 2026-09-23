@@ -22,17 +22,37 @@ import {
 import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
 import { DesktopFailed, externalUrl } from "./contracts/desktop.ts";
 import { startBackend } from "./implementation/backend.ts";
+import { release } from "../../../../scripts/releases/config.ts";
+import { makeUpdateAction } from "./implementation/updates.ts";
+import { makeOpenBrowserAction } from "./implementation/browser.ts";
+import { startupUrl } from "./implementation/startup.ts";
 
-const root = resolve(__dirname, "../../../..");
-app.setName("Executor (Dev)");
-app.setPath("userData", resolve(root, ".local/desktop-shell"));
+const root = app.isPackaged
+  ? resolve(process.resourcesPath, "runtime")
+  : resolve(__dirname, "../../../..");
+app.setName(app.isPackaged ? release.desktop.productName : "Executor (Dev)");
+if (process.env.EXECUTOR_DESKTOP_PROFILE_DIR !== undefined)
+  app.setPath("userData", resolve(process.env.EXECUTOR_DESKTOP_PROFILE_DIR));
+else
+  app.setPath(
+    "userData",
+    app.isPackaged
+      ? resolve(app.getPath("appData"), release.desktop.dataName)
+      : resolve(root, ".local/desktop-shell"),
+  );
+
+let installUpdate: (() => void) | undefined;
 
 const desktop = Effect.gen(function* () {
   const quit = yield* Deferred.make<void, DesktopFailed>();
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const directory = yield* Config.String("EXECUTOR_DESKTOP_DATA_DIR").pipe(
-    Config.withDefault(path.join(root, ".local/desktop")),
+    Config.withDefault(
+      app.isPackaged
+        ? path.join(app.getPath("userData"), "data")
+        : path.join(root, ".local/desktop"),
+    ),
   );
   yield* fs.makeDirectory(directory, { recursive: true });
   const file = yield* rotatingJsonLogger(path.join(directory, "diagnostics"), "executor-desktop");
@@ -73,6 +93,42 @@ const desktop = Effect.gen(function* () {
           try: () => app.whenReady(),
           catch: () => new DesktopFailed({ stage: "window" }),
         });
+        const browserSession = session.fromPartition("executor-desktop");
+        browserSession.setPermissionRequestHandler((_contents, _permission, callback) =>
+          callback(false),
+        );
+        browserSession.setPermissionCheckHandler(() => false);
+        const windowOptions = {
+          width: 1180,
+          height: 800,
+          minWidth: 760,
+          minHeight: 540,
+          title: "Executor",
+          backgroundColor: "#111111",
+          show: false,
+          webPreferences: {
+            backgroundThrottling: false,
+            session: browserSession,
+            sandbox: true,
+            contextIsolation: true,
+            nodeIntegration: false,
+            webSecurity: true,
+          },
+        };
+        const startupWindow = yield* Effect.acquireRelease(
+          Effect.sync(() => new BrowserWindow(windowOptions)),
+          (current) =>
+            Effect.sync(() => {
+              if (!current.isDestroyed()) current.destroy();
+            }),
+        );
+        startupWindow.once("closed", stop);
+        startupWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        yield* Effect.tryPromise({
+          try: () => startupWindow.loadURL(startupUrl),
+          catch: () => new DesktopFailed({ stage: "window" }),
+        });
+        if (!startupWindow.isDestroyed()) startupWindow.show();
         yield* Effect.logInfo("Starting the local server");
         const token = Redacted.make(
           Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
@@ -80,19 +136,21 @@ const desktop = Effect.gen(function* () {
           ).join(""),
         );
         const backend = yield* startBackend({
-          executable: process.execPath,
-          entry: path.join(root, "apps/local/desktop/src/server.ts"),
+          executable: app.isPackaged
+            ? path.join(root, "node", process.platform === "win32" ? "node.exe" : "node")
+            : process.execPath,
+          entry: path.join(
+            root,
+            app.isPackaged ? "desktop-server.mjs" : "apps/local/desktop/src/server.ts",
+          ),
           cwd: root,
           directory: path.resolve(directory),
-          collectorBundle: path.join(__dirname, "motel"),
-          development: process.argv.includes("--dev"),
+          collectorBundle: app.isPackaged
+            ? path.join(root, "node_modules/@executor-js/telemetry/dist/motel")
+            : path.join(__dirname, "motel"),
+          development: !app.isPackaged && process.argv.includes("--dev"),
           token,
         });
-        const browserSession = session.fromPartition("executor-desktop");
-        browserSession.setPermissionRequestHandler((_contents, _permission, callback) =>
-          callback(false),
-        );
-        browserSession.setPermissionCheckHandler(() => false);
         let window: BrowserWindow | undefined;
         let firstWindow = true;
         let pendingOAuthState: string | undefined;
@@ -113,24 +171,7 @@ const desktop = Effect.gen(function* () {
             window.focus();
             return;
           }
-          const current = new BrowserWindow({
-            width: 1180,
-            height: 800,
-            minWidth: 760,
-            minHeight: 540,
-            title: "Executor",
-            backgroundColor: "#111111",
-            show: false,
-            // Like T3, keep the hidden renderer unthrottled while its first page loads.
-            webPreferences: {
-              backgroundThrottling: false,
-              session: browserSession,
-              sandbox: true,
-              contextIsolation: true,
-              nodeIntegration: false,
-              webSecurity: true,
-            },
-          });
+          const current = firstWindow ? startupWindow : new BrowserWindow(windowOptions);
           window = current;
           if (process.argv.includes("--devtools"))
             current.webContents.openDevTools({ mode: "detach" });
@@ -196,16 +237,37 @@ const desktop = Effect.gen(function* () {
             for (const current of BrowserWindow.getAllWindows()) current.destroy();
           }),
         );
+        const checkForUpdates = yield* makeUpdateAction((install) => {
+          installUpdate = install;
+          stop();
+        });
+        const openBrowser = yield* makeOpenBrowserAction(browserSession, backend.origin);
         Menu.setApplicationMenu(
           Menu.buildFromTemplate([
             ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),
-            { role: "fileMenu" },
+            {
+              label: "File",
+              submenu: [
+                { label: "Open in browser", click: () => run(openBrowser) },
+                { type: "separator" },
+                { role: process.platform === "darwin" ? "close" : "quit" },
+              ],
+            },
+            ...(app.isPackaged
+              ? [
+                  {
+                    label: "Updates",
+                    submenu: [{ label: "Check for updates…", click: () => run(checkForUpdates) }],
+                  },
+                ]
+              : []),
             { role: "editMenu" },
             { role: "viewMenu" },
             { role: "windowMenu" },
           ]),
         );
         createWindow();
+        startupWindow.removeListener("closed", stop);
         yield* backend.callbacks.pipe(
           Stream.runForEach(({ url }) =>
             Effect.gen(function* () {
@@ -260,9 +322,12 @@ else
         console.error(`Executor desktop failed at ${stage}.`);
         dialog.showErrorBox(
           "Executor could not continue",
-          "The desktop window or its local server stopped. Check the configured keys and restart with bun run desktop:dev.",
+          app.isPackaged
+            ? "The desktop window or its local server stopped. Check the configured keys and restart Executor Preview."
+            : "The desktop window or its local server stopped. Check the configured keys and restart with bun run desktop:dev.",
         );
       }
-      app.exit(Exit.isFailure(result) ? 1 : 0);
+      if (Exit.isSuccess(result) && installUpdate !== undefined) installUpdate();
+      else app.exit(Exit.isFailure(result) ? 1 : 0);
     },
   );

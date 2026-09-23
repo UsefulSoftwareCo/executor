@@ -1,5 +1,5 @@
 import { Config, Effect, Schema } from "effect";
-import { LoopbackOrigin } from "@executor-js/devtools/contracts";
+import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 
 /** Stable cloud origin; self-host keeps its existing origin on port 5394. */
 export const cloudDevelopmentOrigin = "https://127.0.0.1:5395";

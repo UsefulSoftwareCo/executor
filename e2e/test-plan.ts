@@ -48,6 +48,18 @@ export const scenarios = {
       local: na("Cloud customer SSO"),
     },
   },
+  localBootstrap: {
+    file: "local-bootstrap.spec.ts",
+    title: "local first launch saves OS credentials, survives restart and refuses missing keys",
+    targets: {
+      local: {
+        status: "not-run",
+        reason: "Runs against the installed release archive with local-bootstrap.config.ts.",
+      },
+      cloud: na("Local OS credential setup"),
+      "self-host": na("Local OS credential setup"),
+    },
+  },
   memberControls: {
     file: "member-controls.spec.ts",
     title: "Member restrictions keep controls visible and the app overview stable",
@@ -1207,6 +1219,17 @@ export const scenarios = {
       local: scheduled,
       "self-host": na("Self-host uses hosted sign-in rather than local device pairing."),
       cloud: na("Cloud uses hosted sign-in rather than local device pairing."),
+    },
+  },
+  localStartupRecovery: {
+    file: "local-startup-recovery.spec.ts",
+    title: "local startup can recover after a real port conflict",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "This case exercises the runner's Local process control and readiness protocol.",
+      ),
+      cloud: na("This case exercises the runner's Local process control and readiness protocol."),
     },
   },
   cloud: {

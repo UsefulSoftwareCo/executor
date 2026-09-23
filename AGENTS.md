@@ -83,7 +83,8 @@ The check job also verifies bounded OTLP export, partial rejection, privacy,
 seven-day local retrieval, Sentry and usage receivers. Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
-and teardown. Docker builds remain separate and run only for manual publication.
+and teardown. The release workflow builds and tests Docker images on release PRs
+and manual dispatch. Publication requires an explicit channel dispatch from main.
 
 A failed e2e job uploads its `.local/e2e` evidence directory as an artifact.
 Private `actors.json` session files are excluded.

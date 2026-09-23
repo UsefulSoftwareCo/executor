@@ -130,6 +130,15 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         expect(
           (yield* Schema.decodeUnknownEffect(Document)(topic.structuredContent)).content,
         ).toContain("withOptimisticUpdate");
+        const profiles = yield* body(
+          Schema.Array(Schema.Struct({ id: Schema.String })),
+          yield* session.send("GET", `/v1/apps/${guide.app.id}/profiles`, undefined, headers),
+        );
+        expect(profiles).toHaveLength(1);
+        const profile = profiles[0];
+        if (profile === undefined)
+          return yield* Effect.die("The local Executor profile is missing");
+        const referenceTools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
         const contracts = yield* client.use(
           "Discover local framework types through the installed app",
           (client, signal) =>
@@ -137,7 +146,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: 'const found = await tools.executor.queries.framework_search({query: "withOptimisticUpdate"}); return await tools.executor.queries.framework_describe({symbol: "AppMutation.withOptimisticUpdate", ...found.reference});',
+                  code: `const found = await ${referenceTools}.queries.framework_search({query: "withOptimisticUpdate"}); return await ${referenceTools}.queries.framework_describe({symbol: "AppMutation.withOptimisticUpdate", ...found.reference});`,
                 },
               },
               undefined,

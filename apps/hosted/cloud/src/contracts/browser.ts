@@ -1,6 +1,6 @@
 import { getSessionCookie } from "better-auth/cookies";
 import { cloudDevelopmentOrigin } from "./development.ts";
-import { LoopbackOrigin } from "@executor-js/devtools/contracts";
+import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Schema } from "effect";
 
 /** Browsers share cookies across ports, so local cloud and self-host use different names. */

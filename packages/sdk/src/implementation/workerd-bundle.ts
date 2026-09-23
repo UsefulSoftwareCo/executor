@@ -57,7 +57,8 @@ export const bundleWorkerdHost = Effect.gen(function* () {
   const outdir = path.join(directory, ".runtime-host");
   const compiled = yield* Effect.tryPromise(() =>
     build({
-      entryPoints: { main: path.join(directory, "workerd-entry.ts") },
+      // esbuild resolves .js to .ts in a checkout; installed packages contain the emitted .js.
+      entryPoints: { main: path.join(directory, "workerd-entry.js") },
       outdir,
       bundle: true,
       format: "esm",

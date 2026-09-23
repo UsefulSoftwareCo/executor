@@ -1,3 +1,4 @@
+import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 /** Shared floating shell; each development server supplies its own capabilities. */
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Input } from "@executor-js/ui/components/input";
@@ -7,7 +8,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { Popover } from "radix-ui";
 import { useState } from "react";
-import { DevtoolsState, DevtoolsSuccess, LoopbackOrigin } from "./contracts.ts";
+import { DevtoolsState, DevtoolsSuccess } from "./contracts.ts";
 
 class DevtoolsUnavailable extends Schema.TaggedError<DevtoolsUnavailable>()(
   "DevtoolsUnavailable",

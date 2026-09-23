@@ -15,7 +15,7 @@ export class PairingRejected extends Schema.TaggedError<PairingRejected>()(
   {
     httpApiStatus: 401,
     description:
-      "This connection link has expired or was already used. Run executor pair for a new link.",
+      "This connection link has expired or was already used. Open a new link from Executor desktop or the CLI.",
   },
 ) {}
 /** Browser requests must come from this server's exact loopback origin. */
@@ -32,7 +32,7 @@ export const AuthForbidden = UserFacingError.define({
 });
 /** Parsed AuthForbidden failure. */
 export type AuthForbidden = typeof AuthForbidden.Type;
-/** Only a programmatic client with the local API key can issue a fresh pairing link. */
+/** Programmatic pairing requires the local API key. Browser pairing uses a verified session. */
 export class PairingUnauthorized extends Schema.TaggedError<PairingUnauthorized>()(
   "PairingUnauthorized",
   {},
@@ -83,7 +83,7 @@ export interface BrowserSessions {
 }
 /** Authentication state exposes no session or bootstrap credential. */
 export const BrowserSession = Schema.Struct({ authenticated: Schema.Boolean });
-/** Explicitly requested one-use link returned only to the local CLI. */
+/** Explicitly requested one-use link returned to a trusted CLI or an authenticated dashboard. */
 export const PairingLink = Schema.Struct({
   url: Schema.RedactedFromValue(Schema.String),
   expiresAt: Schema.Date,
@@ -122,7 +122,7 @@ export const LocalAuthApi = HttpApi.make("local-auth").add(
     .add(
       HttpApiEndpoint.post("pair", "/auth/pair", {
         success: PairingLink,
-        error: [PairingUnauthorized, AuthForbidden],
+        error: [PairingUnauthorized, AuthForbidden, AuthStorageError],
       }),
     ),
 );

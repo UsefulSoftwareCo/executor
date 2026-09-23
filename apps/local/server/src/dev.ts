@@ -2,13 +2,13 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Redacted } from "effect";
-import { config } from "./contracts/config.ts";
+import { localConfiguration } from "./implementation/bootstrap.ts";
 import { developmentWeb } from "./implementation/development.ts";
 import { localDevtools } from "./implementation/devtools.ts";
 import { startLocalServer } from "./node.ts";
 
 const development = Effect.gen(function* () {
-  const settings = yield* config;
+  const settings = yield* localConfiguration(process.platform);
   const web = yield* developmentWeb(settings);
   const server = yield* startLocalServer(settings, undefined, { web, devtools: localDevtools });
   const link = yield* server.issuePairingLink;

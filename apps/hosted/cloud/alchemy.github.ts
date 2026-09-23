@@ -9,7 +9,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { retain } from "alchemy/RemovalPolicy";
-import { Config, Effect, Layer, Option } from "effect";
+import { Config, Effect, Layer } from "effect";
 import { stackState } from "./src/infrastructure/state.ts";
 
 /**
@@ -63,20 +63,6 @@ const productionVariables = [
   "SENTRY_ORG",
   "SENTRY_TEAM",
   "SENTRY_URL",
-] as const;
-
-/**
- * Publish credentials. `NPM_TOKEN` is deliberately absent: npm trusted publishing gives the
- * release workflow a short-lived OIDC credential and provenance, and needs no stored token.
- * See notes/ci.md for the one-line change if a scoped token is chosen instead.
- */
-const releaseSecrets = [
-  "APPLE_API_ISSUER",
-  "APPLE_API_KEY",
-  "APPLE_API_KEY_ID",
-  "CSC_KEY_PASSWORD",
-  "CSC_LINK",
-  "RELEASE_PAT",
 ] as const;
 
 /**
@@ -146,7 +132,6 @@ export default Alchemy.Stack(
      * variables scope to the environment by name.
      */
     const production = "production";
-    const release = "release";
 
     /**
      * The CI deployment token. Cloudflare returns its value once, on creation, so Alchemy is
@@ -242,26 +227,6 @@ export default Alchemy.Stack(
       ),
     );
 
-    // Distribution is deferred, so a missing release secret is skipped rather than fatal. The
-    // release environment exists from the first apply; its secrets arrive when publishing resumes.
-    yield* Effect.forEach(releaseSecrets, (secret) =>
-      Config.Redacted(secret).pipe(
-        Config.option,
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.logWarning(`release secret ${secret} is not configured; skipped`),
-            onSome: (value) =>
-              GitHub.Secret(`release-${secret}`, {
-                ...target,
-                name: secret,
-                value,
-                environment: release,
-              }).pipe(retain()),
-          }),
-        ),
-      ),
-    );
-
     // Rulesets are unavailable on private repositories under the GitHub Free plan, so
     // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.
     const ruleset =
@@ -310,7 +275,7 @@ export default Alchemy.Stack(
       publicBranch,
       publicRulesetId: publicRuleset.rulesetId,
       repositoryId: repository.repoId,
-      environments: [production, release],
+      environments: [production],
       deployTokenId: deployToken.tokenId,
       rulesetId: ruleset?.rulesetId,
       rulesetEnforcement: enforcement,

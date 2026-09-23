@@ -52,14 +52,19 @@ for the vault setup. The server itself does not depend on 1Password.
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `EXECUTOR_DATA_DIR`             | Directory containing `executor.pglite/`, `browser-auth.pglite/`, and `builds/`; defaults to `.local/executor`.  |
 | `EXECUTOR_PORT`                 | Loopback listener port; defaults to `4312`.                                                                     |
-| `EXECUTOR_API_KEY`              | Required bearer token, at least 32 characters.                                                                  |
-| `EXECUTOR_ENCRYPTION_KEY`       | Required AES key, exactly 64 hexadecimal characters.                                                            |
+| `EXECUTOR_API_KEY`              | Optional supplied bearer token; set with the encryption key. At least 32 characters.                            |
+| `EXECUTOR_ENCRYPTION_KEY`       | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                             |
 | `EXECUTOR_MCP_TIMEOUT_MS`       | Catalog discovery plus program timeout; defaults to `30000`.                                                    |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`   | Admitted calls per execute, including search; defaults to `100`.                                                |
 | `EXECUTOR_MCP_MAX_OUTPUT_BYTES` | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead. |
 
-Keys are never created or silently replaced on startup. Keep the encryption key
-with backups; changing it does not re-encrypt existing accounts. Database rows
+First launch saves generated keys in the OS credential store and records the
+installation ID in `installation.json`. Linux requires a persistent Secret
+Service. There is no plaintext or kernel-keyring fallback. Existing data with
+missing keys stops with a restore instruction. Explicit environment keys stay
+supported and are never persisted. A directory keeps its chosen key source.
+Back up the OS credential and installation record with the data, or retain both
+supplied keys. Changing an encryption key does not re-encrypt existing accounts. Database rows
 contain encrypted bytes, and each ciphertext is bound to its account ID.
 
 SDK routes, including `/mcp` and `/openapi.json`, require `Authorization: Bearer …`.
@@ -88,9 +93,13 @@ bun run server
 `bun run executor` starts the server and opens a one-use connection link.
 `bun run executor serve` (or `bun run server`) prints the link without opening a
 browser. `bun run executor pair` prints a fresh link for the running server.
-Installed local launchers use the same `executor`, `executor serve`, and
-`executor pair` commands. This scaffold runs TypeScript source through Node;
-packaging an installed binary remains deferred.
+A paired dashboard can also issue a new link through `POST /auth/pair`, with its
+session cookie and a valid local Origin. Executor desktop uses this for **File →
+Open in browser**. A bearer key alone still cannot mint a link from browser requests.
+Repository commands run TypeScript source through Node. The npm beta uses
+`executor`, `executor serve`, and `executor pair`, with data in
+`~/.executor/v2/cli`. Build it with `bun run release:cli`; see
+[release packaging](../../../scripts/releases/README.md).
 
 The link expires after five minutes and is consumed once. Its token is carried
 in the URL fragment, removed from browser history before exchange, and replaced

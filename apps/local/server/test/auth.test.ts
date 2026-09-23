@@ -6,7 +6,13 @@ import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Redacted, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { LocalAuthApi, DesktopBootstrap, ServerReady, SessionHash } from "../src/contracts/auth.ts";
+import {
+  LocalAuthApi,
+  DesktopBootstrap,
+  ServerReady,
+  SessionHash,
+  PairingLink,
+} from "../src/contracts/auth.ts";
 import { AppId, ExecutorApi, OwnerId, SourceFiles } from "@executor-js/sdk";
 import { appOrigin } from "../src/contracts/app-ui.ts";
 import { pgliteLayer } from "fumadb-effect/pglite";
@@ -228,6 +234,43 @@ test(
                 (await Effect.runPromise(Effect.flip(browserBearer.auth.pair())))._tag,
                 "AuthForbidden",
               );
+              const browserPair = await fetch(`${server.url}/auth/pair`, {
+                method: "POST",
+                headers: { cookie, origin: server.url },
+              });
+              assert.equal(browserPair.status, 200, "A paired dashboard can pair another browser");
+              const issued = Schema.decodeUnknownSync(Schema.toCodecJson(PairingLink))(
+                await browserPair.json(),
+              );
+              const browserToken = new URL(Redacted.value(issued.url)).hash.slice("#pair=".length);
+              const second = await fetch(`${server.url}/auth/exchange`, {
+                method: "POST",
+                headers: { origin: server.url, "content-type": "application/json" },
+                body: JSON.stringify({ token: browserToken }),
+              });
+              assert.equal(second.status, 200);
+              const secondCookie = second.headers.get("set-cookie")?.split(";")[0];
+              assert.ok(secondCookie);
+              assert.notEqual(secondCookie, cookie);
+              const secondBrowser = await client(server.url, {
+                cookie: secondCookie,
+                origin: server.url,
+              });
+              assert.deepEqual(await Effect.runPromise(secondBrowser.auth.session()), {
+                authenticated: true,
+              });
+              const noOrigin = await fetch(`${server.url}/auth/pair`, {
+                method: "POST",
+                headers: { cookie },
+              });
+              assert.equal(noOrigin.status, 401);
+              await noOrigin.body?.cancel();
+              const foreignPair = await fetch(`${server.url}/auth/pair`, {
+                method: "POST",
+                headers: { cookie, origin: "https://example.com" },
+              });
+              assert.equal(foreignPair.status, 403);
+              await foreignPair.body?.cancel();
               await Effect.runPromise(authenticated.auth.logout());
               assert.deepEqual(await Effect.runPromise(authenticated.auth.session()), {
                 authenticated: false,

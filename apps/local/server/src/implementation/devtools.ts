@@ -1,5 +1,5 @@
 /** Browser-pairing shortcuts mounted only by the local development entry point. */
-import { LoopbackOrigin } from "@executor-js/devtools/contracts";
+import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import type { ServerConfig } from "../contracts/config.ts";

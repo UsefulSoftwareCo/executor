@@ -203,6 +203,9 @@ export const checkAppLoading = (input: {
             yield* browser.use("Manager navigation resolves while metadata is held", (page) =>
               page.getByRole("link", { name: "Source", exact: true }).waitFor(),
             );
+            yield* browser.use("Typography is ready before comparing data-loading layout", (page) =>
+              page.evaluate(() => document.fonts.ready.then(() => undefined)),
+            );
             expect(
               yield* browser.use("Only functional pane headings appear below the tabs", (page) =>
                 page.getByRole("heading", { name: title, exact: true, level: 2 }).count(),

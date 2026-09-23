@@ -1,5 +1,6 @@
 /** OAuth runs through the public server and recorded consent UI. Tokens stay private. */
 import { createServer } from "node:http";
+import type { Page } from "playwright";
 import { createHash, randomBytes } from "node:crypto";
 import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -97,6 +98,88 @@ const callback = (state: string) =>
       url: `http://127.0.0.1:${port}/callback`,
       code: Deferred.await(received).pipe(Effect.timeout("30 seconds")),
     };
+  });
+
+/** Authorize the official MCP client through a signed-in browser, without an API key. */
+export const authorizeBrowserMcp = (page: Page, origin: string) =>
+  Effect.gen(function* () {
+    const state = randomBytes(24).toString("hex");
+    const verifier = randomBytes(32).toString("base64url");
+    const receiver = yield* callback(state);
+    const registration = yield* driver("register release MCP client", () =>
+      fetch(`${origin}/api/auth/oauth2/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Release verification",
+          redirect_uris: [receiver.url],
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        }),
+      }),
+    );
+    if (registration.status !== 201)
+      return yield* new OAuthFailed({
+        operation: "register",
+        status: registration.status,
+      });
+    const { client_id } = yield* driver("read MCP client registration", () =>
+      registration.json(),
+    ).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.Struct({ client_id: Schema.NonEmptyString })),
+      ),
+    );
+    const resource = `${origin}/mcp`;
+    const authorization = new URL(`${origin}/api/auth/oauth2/authorize`);
+    authorization.search = new URLSearchParams({
+      response_type: "code",
+      client_id,
+      redirect_uri: receiver.url,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+      scope: "mcp offline_access",
+      resource,
+      state,
+    }).toString();
+    yield* driver("open release MCP consent", () => page.goto(authorization.href));
+    yield* driver("verify the requesting MCP client", () =>
+      page.getByText("Release verification", { exact: true }).waitFor({ state: "visible" }),
+    );
+    yield* driver("approve release MCP connection", () =>
+      page.getByRole("button", { name: "Connect", exact: true }).click(),
+    );
+    const code = yield* receiver.code;
+    yield* driver("OAuth returns to the MCP client", () =>
+      page.getByRole("heading", { name: "Connected to Executor" }).waitFor({ state: "visible" }),
+    );
+    const response = yield* driver("exchange release MCP code", () =>
+      fetch(`${origin}/api/auth/oauth2/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id,
+          code: Redacted.value(code),
+          code_verifier: verifier,
+          redirect_uri: receiver.url,
+          resource,
+        }),
+      }),
+    );
+    if (response.status !== 200)
+      return yield* new OAuthFailed({ operation: "token", status: response.status });
+    const tokens = yield* driver("read release MCP token", () => response.json()).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
+          }),
+        ),
+      ),
+    );
+    return tokens.access_token;
   });
 
 const make = Effect.gen(function* () {

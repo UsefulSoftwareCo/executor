@@ -1,5 +1,5 @@
 /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
-import { Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
+import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
 import { Cookies, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
@@ -30,10 +30,12 @@ export interface Session {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
-/** Network failures expose only the operation, never authorization headers or payloads. */
+/** Request failures expose safe context; underlying errors remain redacted. */
 export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestFailed", {
   method: Schema.String,
   path: Schema.String,
+  reason: Schema.Literals(["origin", "timeout", "request"]),
+  cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
 }) {}
 /** A server response may be decoded only against its public contract. */
 export const body = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response) =>
@@ -113,6 +115,7 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                     return yield* new RequestFailed({
                       method,
                       path: "cross-origin request rejected",
+                      reason: "origin",
                     });
                   let request = HttpClientRequest.make(method)(url, { headers });
                   if (data !== undefined)
@@ -127,8 +130,15 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
               ).pipe(
                 Effect.provideService(HttpClient.TracerPropagationEnabled, false),
                 Effect.timeout("60 seconds"),
-                Effect.mapError(
-                  () => new RequestFailed({ method, path: new URL(path, origin).pathname }),
+                Effect.mapError((cause) =>
+                  Schema.is(RequestFailed)(cause)
+                    ? cause
+                    : new RequestFailed({
+                        method,
+                        path: new URL(path, origin).pathname,
+                        reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
+                        cause: Redacted.make(cause),
+                      }),
                 ),
               ),
           } satisfies Session;

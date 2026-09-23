@@ -54,6 +54,9 @@ export default defineApp({ accounts: {} }, async () => ({
         expect(pairing.status).toBe(200);
         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
         yield* browser.use("Pair the local browser", (page) => page.goto(url));
+        yield* browser.use("Pairing completes before checking app navigation", (page) =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        );
         yield* checkAppLoading({
           url: `/apps/${app.id}`,
           name,

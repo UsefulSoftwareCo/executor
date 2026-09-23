@@ -5,7 +5,10 @@ import { Target } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
 
 /** Control calls never touch a shared developer preview or production service. */
-export const serverControl = (action: "start" | "stop" | "restart") =>
+export const serverControl = (
+  action: "start" | "stop" | "restart",
+  expectedStatus: 200 | 500 = 200,
+) =>
   Effect.gen(function* () {
     const target = yield* Target,
       client = yield* HttpClient.HttpClient,
@@ -36,7 +39,10 @@ export const serverControl = (action: "start" | "stop" | "restart") =>
               HttpClientRequest.bearerToken(target.apiKey),
             ),
           );
-          if (response.status !== 200) return yield* Effect.die(`Product process ${action} failed`);
+          if (response.status !== expectedStatus)
+            return yield* Effect.die(
+              `Product process ${action} returned ${response.status}, expected ${expectedStatus}`,
+            );
           yield* response.text;
         }),
       ),

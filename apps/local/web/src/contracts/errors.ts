@@ -88,7 +88,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
       account: error.account,
     }),
     DashboardUnauthorized: () =>
-      message("Session ended", "Run executor pair and open its connection link."),
+      message(
+        "Session ended",
+        "Restart Executor desktop, or run the CLI’s pair command and open its link.",
+      ),
     DashboardForbidden: () =>
       message("Open this server directly", "Use the dashboard at http://127.0.0.1:4312."),
     AppNotDeployed: () =>
@@ -218,7 +221,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
     AuthStorageError: () =>
       message("Session could not load", "Check the local server, then retry."),
     PairingUnauthorized: () =>
-      message("Connection link expired", "Run executor pair and open a new connection link."),
+      message(
+        "Sign-in required",
+        "Open Executor desktop, or run the CLI’s pair command to sign in.",
+      ),
     UiUnauthorized: () => message("Session ended", "Reopen the app URL to sign in again."),
     UiForbidden: () => message("App access denied", "This sign-in request cannot access the app."),
     UiFailed: () =>

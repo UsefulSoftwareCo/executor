@@ -25,7 +25,6 @@ export const startBackend = (options: {
           cwd: options.cwd,
           env: {
             ELECTRON_RUN_AS_NODE: "1",
-            EXECUTOR_PORT: "0",
             EXECUTOR_DATA_DIR: options.directory,
             EXECUTOR_MOTEL_BUNDLE: options.collectorBundle,
             EXECUTOR_DESKTOP_DEV: options.development ? "1" : "0",

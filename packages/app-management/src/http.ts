@@ -15,7 +15,7 @@ import {
   HttpApiGroup,
   HttpApiMiddleware,
 } from "effect/unstable/httpapi";
-import { Protocol } from "alchemy/Git/Api/Protocol";
+import { AppGitProtocol } from "./contracts/git.ts";
 import {
   AppId,
   AppSlug,
@@ -339,7 +339,7 @@ export const registryRoutes = (() => {
 
 /** Resolve readable app slugs inside the authenticated owner's inventory before opening Git source. */
 export const gitRoutes = (() => {
-  const api = HttpApi.make("app-git").add(Protocol.prefix("/git"));
+  const api = HttpApi.make("app-git").add(AppGitProtocol.prefix("/git"));
   const handle = Effect.gen(function* () {
     const params = yield* HttpRouter.params;
     const request = yield* HttpServerRequest.HttpServerRequest;

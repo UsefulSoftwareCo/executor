@@ -3,9 +3,10 @@ import { appsCommand, appCommandFailure } from "@executor-js/app-management/cli"
 /** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, Option } from "effect";
+import { Console, Effect, Option, Schema } from "effect";
 import { CliError, Command } from "effect/unstable/cli";
 import { executorCommand, pairCommand, serveCommand } from "./contracts/startup.ts";
+import { LocalConfigurationError } from "./implementation/bootstrap.ts";
 import { launch } from "./implementation/launcher.ts";
 
 const cli = executorCommand.pipe(
@@ -20,7 +21,7 @@ const cli = executorCommand.pipe(
 );
 
 NodeRuntime.runMain(
-  Command.run(cli, { version: "0.0.0" }).pipe(
+  Command.run(cli, { version: process.env.EXECUTOR_BUILD_VERSION ?? "0.0.0-dev" }).pipe(
     Effect.scoped,
     Effect.provide(NodeServices.layer),
     // Effect CLI renders argument errors and supplies the exit status for help.
@@ -29,7 +30,8 @@ NodeRuntime.runMain(
       CliError.isCliError(error)
         ? Effect.fail(error)
         : Console.error(
-            appCommandFailure(error) ??
+            (Schema.is(LocalConfigurationError)(error) ? error.message : undefined) ??
+              appCommandFailure(error) ??
               "Executor could not start. Check the configured keys and whether the port is already in use.",
           ).pipe(
             Effect.andThen(
