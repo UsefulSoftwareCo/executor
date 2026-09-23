@@ -518,6 +518,14 @@ export {
   LEGACY_BIGINT_STORAGE_CLASS_COLUMNS,
   type BigintStorageClassColumn,
 } from "./sqlite-bigint-storage-class-migration";
+// Rewrite `''` left in nullable `json` columns by pre-FumaDB builds, which the
+// json row mapper cannot parse (issue #2092).
+export {
+  emptyJsonSqliteMigration,
+  runSqliteEmptyJsonMigration,
+  NULLABLE_JSON_COLUMNS,
+  type EmptyJsonColumn,
+} from "./sqlite-empty-json-migration";
 export {
   authToolFailure,
   isUnauthorizedToolFailure,
