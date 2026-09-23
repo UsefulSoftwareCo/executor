@@ -60,6 +60,7 @@ export const localApi = (
   existingAuth?: LocalAuth,
   options: LocalServerOptions = {},
   sharedAuthDatabase?: LocalAuthDatabase,
+  sharedStorage?: Effect.Success<ReturnType<typeof openStorage>>,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -67,7 +68,7 @@ export const localApi = (
         existingAuth ?? (yield* makeLocalAuth(crypto, config.directory, sharedAuthDatabase?.sql));
       const path = yield* Path.Path;
       const directory = path.resolve(config.directory);
-      const storage = yield* openStorage(directory);
+      const storage = sharedStorage ?? (yield* openStorage(directory));
       const credentialStore = yield* credentials(config.encryptionKey, crypto);
       // Node can hook connect, so every host-side fetch re-checks the addresses a name resolves
       // to. The agent lives for this layer's scope, which is the process.
@@ -166,7 +167,7 @@ export const localApi = (
           return yield* httpEffect;
         }),
       );
-      const oauth = yield* makeLocalMcpOAuth(config, auth, crypto, sharedAuthDatabase?.pglite);
+      const oauth = yield* makeLocalMcpOAuth(config, auth, crypto, sharedAuthDatabase);
       const mcp = yield* localMcp(executor, config.mcp, config, oauth);
       const programmatic = Layer.mergeAll(
         HttpRouter.add(

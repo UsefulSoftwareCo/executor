@@ -29,6 +29,7 @@ import {
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
+import { importMcpAuth, type LocalAuthDatabase } from "./auth-database.ts";
 
 /** Invalid credentials never fall back to browser cookies or administrative authority. */
 export class LocalMcpUnauthorized extends Schema.TaggedError<LocalMcpUnauthorized>()(
@@ -50,14 +51,14 @@ export const makeLocalMcpOAuth = (
   config: ServerConfig,
   pairing: LocalAuth,
   crypto: Crypto,
-  sharedPglite?: PgliteClient.PgliteClient,
+  sharedDatabase?: LocalAuthDatabase,
 ) =>
   Effect.gen(function* () {
     const origin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path;
     const pglite =
-      sharedPglite ??
+      sharedDatabase?.pglite ??
       (yield* Effect.gen(function* () {
         const directory = path.join(config.directory, "mcp-auth.pglite");
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
@@ -107,6 +108,7 @@ export const makeLocalMcpOAuth = (
       },
       catch: () => new LocalMcpAuthUnavailable(),
     });
+    if (sharedDatabase?.main) yield* importMcpAuth(config.directory, sharedDatabase);
     const auth = betterAuth(options);
     const context = yield* Effect.tryPromise({
       try: () => auth.$context,

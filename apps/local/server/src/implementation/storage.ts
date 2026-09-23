@@ -2,6 +2,7 @@
 import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { startupPhase } from "./startup-diagnostics.ts";
 import { pgliteLayer } from "fumadb-effect/pglite";
+import { PgliteClient } from "@effect/sql-pglite";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 
@@ -20,5 +21,5 @@ export const openStorage = (directory: string) =>
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     yield* storage.migrate;
-    return storage;
+    return { ...storage, sql, pglite: Context.get(context, PgliteClient.PgliteClient) };
   }).pipe(startupPhase("storage"));
