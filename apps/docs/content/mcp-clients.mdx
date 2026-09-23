@@ -1,0 +1,124 @@
+---
+title: Add an MCP client
+description: "Connect an MCP client with browser sign-in, a personal access token, or a local server key."
+---
+
+The dashboard's **Connect an agent** page shows these commands with your own
+endpoint already filled in. Open it at `/org/<your-organization>/connect` on
+hosted and self-host, or **Connect** in the local dashboard.
+
+The endpoint is your origin plus `/mcp`:
+
+| Where | Endpoint |
+| --- | --- |
+| Hosted | `https://v2.executor.sh/mcp` |
+| Self-host | `<your origin>/mcp` |
+| Local | `http://127.0.0.1:4312/mcp` |
+
+You can also connect with a [personal access token](/api-keys#connect-an-mcp-client) as the Authorization bearer on `<your origin>/org/<organization>/mcp`.
+
+Most clients load MCP servers only at startup. After you add Executor, restart
+the client or open a new session before its tools appear.
+
+## Claude Code
+
+Claude Code has its own command. `--scope user` adds Executor for every project.
+
+<Steps>
+  <Step title="Add the server">
+    ```bash
+    claude mcp add --transport http --scope user executor 'https://v2.executor.sh/mcp'
+    ```
+  </Step>
+  <Step title="Run /mcp inside Claude Code">
+    It opens Executor in your browser.
+  </Step>
+  <Step title="Sign in and approve">
+    Choose an organization, then approve the connection.
+  </Step>
+</Steps>
+
+## Cursor, Codex and other clients
+
+Use the installer. It detects the client and writes its configuration for you.
+
+<CodeGroup>
+
+```bash Installer
+npx add-mcp 'https://v2.executor.sh/mcp' --transport http --name executor
+```
+
+```json By hand
+{
+  "mcpServers": {
+    "executor": {
+      "type": "http",
+      "url": "https://v2.executor.sh/mcp"
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+If your client does not accept the installer, merge the configuration above into
+its MCP file by hand.
+
+The same entry works for Cursor and for Codex. Both read a `mcpServers` map, and
+Executor needs nothing beyond a streamable HTTP URL. Sign-in happens in your
+browser the first time the client connects.
+
+## Connecting to a local server
+
+A local server has no browser sign-in. It authenticates with the API key you
+configured as `EXECUTOR_API_KEY`, sent as a bearer token:
+
+<CodeGroup>
+
+```bash Installer
+npx add-mcp 'http://127.0.0.1:4312/mcp' --transport http --name executor \
+  --header 'Authorization: Bearer <key>'
+```
+
+```json By hand
+{
+  "mcpServers": {
+    "executor": {
+      "type": "http",
+      "url": "http://127.0.0.1:4312/mcp",
+      "headers": {
+        "Authorization": "Bearer <key>"
+      }
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+The local Connect page shows this with your real key. Keep the local server
+running while the client is connected.
+
+## Choosing where approvals appear
+
+By default the agent relays an approval request to you and answers on your
+behalf with `resume`. To answer in your browser instead, add the mode to the URL
+before you connect:
+
+```bash
+claude mcp add --transport http --scope user executor 'https://v2.executor.sh/mcp?elicitation_mode=browser'
+```
+
+The mode is fixed when the connection is approved. To change it, connect again
+with the new URL. See [The MCP endpoint](/mcp) for what each mode does.
+
+## Check that it worked
+
+Ask the agent to run this:
+
+```js
+return await tools.search({ query: "Executor" });
+```
+
+It should return callable paths for the Executor app itself. If the tool list is
+empty, the client has not reconnected since you added the server.

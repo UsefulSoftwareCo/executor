@@ -1,0 +1,908 @@
+{
+  "binary": {
+    "platform": "win32-x64",
+    "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-windows-x64.tar.gz",
+    "sha256": "7b76bc5c32c0d7c5984efdc2a8a32697cf1e8a43bc55176fbf9869c0ee995130",
+    "packages": [
+      {
+        "name": "bash",
+        "version": "5.2.037-1"
+      },
+      {
+        "name": "coreutils",
+        "version": "8.32-5"
+      },
+      {
+        "name": "dash",
+        "version": "0.5.13.1-1"
+      },
+      {
+        "name": "diffutils",
+        "version": "3.12-1"
+      },
+      {
+        "name": "file",
+        "version": "5.46-2"
+      },
+      {
+        "name": "filesystem",
+        "version": "2025.05.08-2"
+      },
+      {
+        "name": "findutils",
+        "version": "4.10.0-2"
+      },
+      {
+        "name": "gawk",
+        "version": "5.3.2-1"
+      },
+      {
+        "name": "gcc-libs",
+        "version": "15.2.0-1"
+      },
+      {
+        "name": "gmp",
+        "version": "6.3.0-2"
+      },
+      {
+        "name": "grep",
+        "version": "1~3.0-7"
+      },
+      {
+        "name": "heimdal-libs",
+        "version": "7.8.0-5"
+      },
+      {
+        "name": "libbz2",
+        "version": "1.0.8-4"
+      },
+      {
+        "name": "libcbor",
+        "version": "0.11.0-1"
+      },
+      {
+        "name": "libfido2",
+        "version": "1.15.0-1"
+      },
+      {
+        "name": "libiconv",
+        "version": "1.18-2"
+      },
+      {
+        "name": "libintl",
+        "version": "0.22.5-1"
+      },
+      {
+        "name": "liblzma",
+        "version": "5.8.2-1"
+      },
+      {
+        "name": "libopenssl",
+        "version": "3.5.5-1"
+      },
+      {
+        "name": "libpcre",
+        "version": "8.45-5"
+      },
+      {
+        "name": "libreadline",
+        "version": "8.3.003-1"
+      },
+      {
+        "name": "libsasl",
+        "version": "2.1.28-5"
+      },
+      {
+        "name": "libsqlite",
+        "version": "3.51.2-1"
+      },
+      {
+        "name": "libutil-linux",
+        "version": "2.40.2-2"
+      },
+      {
+        "name": "libxcrypt",
+        "version": "4.5.2-1"
+      },
+      {
+        "name": "libzstd",
+        "version": "1.5.7-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-brotli",
+        "version": "1.2.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-ca-certificates",
+        "version": "20250419-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-curl-openssl-alternate",
+        "version": "8.18.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-curl-winssl",
+        "version": "8.18.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-expat",
+        "version": "2.7.4-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-gcc-libs",
+        "version": "15.2.0-11"
+      },
+      {
+        "name": "mingw-w64-x86_64-gettext-runtime",
+        "version": "1.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-credential-manager",
+        "version": "2.9.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-credential-wincred",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-extra",
+        "version": "1.1.687.f502a63dc-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-for-windows-addons",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-gui",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-perl",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-send-email",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-git-subtree",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-gitk",
+        "version": "2.52.0.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-libffi",
+        "version": "3.5.2-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-libiconv",
+        "version": "1.18-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-libidn2",
+        "version": "2.3.8-4"
+      },
+      {
+        "name": "mingw-w64-x86_64-libpsl",
+        "version": "0.21.5-3"
+      },
+      {
+        "name": "mingw-w64-x86_64-libssh2-wincng",
+        "version": "1.11.1-2"
+      },
+      {
+        "name": "mingw-w64-x86_64-libtasn1",
+        "version": "4.21.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-libunistring",
+        "version": "1.3-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-libwinpthread",
+        "version": "13.0.0.r488.g3fedac280-2"
+      },
+      {
+        "name": "mingw-w64-x86_64-nghttp2",
+        "version": "1.68.0-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-openssl",
+        "version": "3.5.5-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-pcre2",
+        "version": "10.47-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-zlib",
+        "version": "1.3.1-1"
+      },
+      {
+        "name": "mingw-w64-x86_64-zstd",
+        "version": "1.5.7-1"
+      },
+      {
+        "name": "mpfr",
+        "version": "4.2.2-1"
+      },
+      {
+        "name": "msys2-runtime",
+        "version": "3.6.6-1"
+      },
+      {
+        "name": "ncurses",
+        "version": "6.6-1"
+      },
+      {
+        "name": "openssh",
+        "version": "10.2p1-1"
+      },
+      {
+        "name": "openssl",
+        "version": "3.5.5-1"
+      },
+      {
+        "name": "rebase",
+        "version": "4.5.0-5"
+      },
+      {
+        "name": "sed",
+        "version": "4.9-1"
+      },
+      {
+        "name": "zlib",
+        "version": "1.3.1-1"
+      }
+    ]
+  },
+  "sources": [
+    {
+      "file": "bash-5.2.037-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2024-09-24T09-17-25.000Z/bash-5.2.037-1.src.tar.gz",
+      "sha256": "826eb11e20a6d0a9b2cb84c4579242a0abf02830a5d67c1448fa07dcd72ef1ec",
+      "packages": [
+        {
+          "name": "bash",
+          "version": "5.2.037-1"
+        }
+      ]
+    },
+    {
+      "file": "coreutils-8.32-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/coreutils-8.32-5.src.tar.zst",
+      "sha256": "2b8689413bc50367a9995adf50ea84cd3caaff0ec68a8f32d8328842c3f83835",
+      "packages": [
+        {
+          "name": "coreutils",
+          "version": "8.32-5"
+        }
+      ]
+    },
+    {
+      "file": "dash-0.5.13.1-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/dash-0.5.13.1-1.src.tar.zst",
+      "sha256": "a3a424eaefdec373ad800a3963fb9b17c177e92d2896996619a40c6381bb26f6",
+      "packages": [
+        {
+          "name": "dash",
+          "version": "0.5.13.1-1"
+        }
+      ]
+    },
+    {
+      "file": "diffutils-3.12-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/diffutils-3.12-1.src.tar.zst",
+      "sha256": "474c4a3528a2afbb8d9608c65ad1bdbbd81ff42c143a438d7d56272a61b1bfac",
+      "packages": [
+        {
+          "name": "diffutils",
+          "version": "3.12-1"
+        }
+      ]
+    },
+    {
+      "file": "file-5.46-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/file-5.46-2.src.tar.zst",
+      "sha256": "fa5960ee27bdf5f142e6621c436d1ee04cf4cc5a57a028d1e7d018d7341018d2",
+      "packages": [
+        {
+          "name": "file",
+          "version": "5.46-2"
+        }
+      ]
+    },
+    {
+      "file": "filesystem-2025.05.08-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/filesystem-2025.05.08-2.src.tar.zst",
+      "sha256": "d31be47d5ab0a03627956a4a25e2c7e4bd47c497e9fe019314f4e1da8d49c016",
+      "packages": [
+        {
+          "name": "filesystem",
+          "version": "2025.05.08-2"
+        }
+      ]
+    },
+    {
+      "file": "findutils-4.10.0-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/findutils-4.10.0-2.src.tar.zst",
+      "sha256": "e19640714a3c1f43c250aaebc6a2e94aec43a67a031c31ff675edbc166d333d3",
+      "packages": [
+        {
+          "name": "findutils",
+          "version": "4.10.0-2"
+        }
+      ]
+    },
+    {
+      "file": "gawk-5.3.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gawk-5.3.2-1.src.tar.zst",
+      "sha256": "0b62bc9cc7c1d1371b8ada968449e5dcd0088a66ce57b11bd4affefbb7c69bdf",
+      "packages": [
+        {
+          "name": "gawk",
+          "version": "5.3.2-1"
+        }
+      ]
+    },
+    {
+      "file": "gcc-15.2.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gcc-15.2.0-1.src.tar.zst",
+      "sha256": "711af8f46db0d55c092c2444c13f5e07fed02833944a4852b6b5023ed2eb1604",
+      "packages": [
+        {
+          "name": "gcc-libs",
+          "version": "15.2.0-1"
+        }
+      ]
+    },
+    {
+      "file": "gmp-6.3.0-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gmp-6.3.0-2.src.tar.zst",
+      "sha256": "02356ca25ce362edb883ce7c060050de2cec5f2b1227a1c56ef7c0a0f99ff667",
+      "packages": [
+        {
+          "name": "gmp",
+          "version": "6.3.0-2"
+        }
+      ]
+    },
+    {
+      "file": "grep-1~3.0-7.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/grep-1~3.0-7.src.tar.zst",
+      "sha256": "acba43b9b2c3eb393f9a75d02a1eca34fa23d959541150a7ac4ffbafce3cae4e",
+      "packages": [
+        {
+          "name": "grep",
+          "version": "1~3.0-7"
+        }
+      ]
+    },
+    {
+      "file": "heimdal-7.8.0-5.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2025-02-17T19-44-32.968336700Z/heimdal-7.8.0-5.src.tar.gz",
+      "sha256": "beb950ac5f0d11e18bbcb81a9e7e6ef9446cc2fa9ebb486ee2fb5670b06fd9e5",
+      "packages": [
+        {
+          "name": "heimdal-libs",
+          "version": "7.8.0-5"
+        }
+      ]
+    },
+    {
+      "file": "bzip2-1.0.8-4.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/bzip2-1.0.8-4.src.tar.zst",
+      "sha256": "a7e9ea6335ef2902508de0bbbb70e2e9909b6b7b6d05fc207f8fdf0cf44ad053",
+      "packages": [
+        {
+          "name": "libbz2",
+          "version": "1.0.8-4"
+        }
+      ]
+    },
+    {
+      "file": "libcbor-0.11.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/libcbor-0.11.0-1.src.tar.zst",
+      "sha256": "1144913c5258eeaad1c553091eacf59b910161c42da305b275ff8182e98ad46e",
+      "packages": [
+        {
+          "name": "libcbor",
+          "version": "0.11.0-1"
+        }
+      ]
+    },
+    {
+      "file": "libfido2-1.15.0-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2024-06-14T09-31-36.000Z/libfido2-1.15.0-1.src.tar.gz",
+      "sha256": "bf12ccd31a868bfb20a66cbfb7147b9d683bc31f30dca30ad70f38d6e935300e",
+      "packages": [
+        {
+          "name": "libfido2",
+          "version": "1.15.0-1"
+        }
+      ]
+    },
+    {
+      "file": "libiconv-1.18-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/libiconv-1.18-2.src.tar.zst",
+      "sha256": "e8f699f04dad8cb6894e5d9d92177988286b8b36684e793d841e76fff4665ae0",
+      "packages": [
+        {
+          "name": "libiconv",
+          "version": "1.18-2"
+        }
+      ]
+    },
+    {
+      "file": "gettext-0.22.5-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/gettext-0.22.5-1.src.tar.zst",
+      "sha256": "e07a0b3e6716aae86dc0edd2dcdc8864731d56051345592b53659a3840ccfbd8",
+      "packages": [
+        {
+          "name": "libintl",
+          "version": "0.22.5-1"
+        }
+      ]
+    },
+    {
+      "file": "xz-5.8.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/xz-5.8.2-1.src.tar.zst",
+      "sha256": "c660a4639c406f50df43e3b228c423cd0e13c4b73b17950dc8be680f81bc9162",
+      "packages": [
+        {
+          "name": "liblzma",
+          "version": "5.8.2-1"
+        }
+      ]
+    },
+    {
+      "file": "openssl-3.5.5-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-01-27T17-20-29.895194200Z/openssl-3.5.5-1.src.tar.gz",
+      "sha256": "b9cd320c0d604edd1e36aa57ff8f5f29921a897b3e24f9de50732ba286f4e00c",
+      "packages": [
+        {
+          "name": "libopenssl",
+          "version": "3.5.5-1"
+        },
+        {
+          "name": "openssl",
+          "version": "3.5.5-1"
+        }
+      ]
+    },
+    {
+      "file": "pcre-8.45-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/pcre-8.45-5.src.tar.zst",
+      "sha256": "f7104aa31f29655689b404ead9923332e2fa6aadfe97c060d0dfc02f4661d6b5",
+      "packages": [
+        {
+          "name": "libpcre",
+          "version": "8.45-5"
+        }
+      ]
+    },
+    {
+      "file": "readline-8.3.003-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/readline-8.3.003-1.src.tar.zst",
+      "sha256": "8b9e2370bf80d30cdb1bfeb00be1e2be2c9ec8b92838ffcb5ddc4805ac0a899e",
+      "packages": [
+        {
+          "name": "libreadline",
+          "version": "8.3.003-1"
+        }
+      ]
+    },
+    {
+      "file": "cyrus-sasl-2.1.28-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/cyrus-sasl-2.1.28-5.src.tar.zst",
+      "sha256": "5b94ab5e9c21e41b37635db88f131aeb760e4ca0bdf7bf0400335304cd8af718",
+      "packages": [
+        {
+          "name": "libsasl",
+          "version": "2.1.28-5"
+        }
+      ]
+    },
+    {
+      "file": "sqlite-3.51.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/sqlite-3.51.2-1.src.tar.zst",
+      "sha256": "93c882947ddb2daeb3678627068227930a6759c45c5a7862528d32cbcbbeb91b",
+      "packages": [
+        {
+          "name": "libsqlite",
+          "version": "3.51.2-1"
+        }
+      ]
+    },
+    {
+      "file": "util-linux-2.40.2-2.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/util-linux-2.40.2-2.src.tar.zst",
+      "sha256": "ea018e116866c0e2d9a3d6cee3f0d09801e6725789b6f99fd1979dfc7a68b703",
+      "packages": [
+        {
+          "name": "libutil-linux",
+          "version": "2.40.2-2"
+        }
+      ]
+    },
+    {
+      "file": "libxcrypt-4.5.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/libxcrypt-4.5.2-1.src.tar.zst",
+      "sha256": "dc3e44cea067417ff61c25c981d7d58bb0f343b824ba10fd2a0a3b8badc55746",
+      "packages": [
+        {
+          "name": "libxcrypt",
+          "version": "4.5.2-1"
+        }
+      ]
+    },
+    {
+      "file": "zstd-1.5.7-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/zstd-1.5.7-1.src.tar.zst",
+      "sha256": "19e11d517b005cba22d0f04969a74ffa08443429ff9dc80596d323b9483534f5",
+      "packages": [
+        {
+          "name": "libzstd",
+          "version": "1.5.7-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-brotli-1.2.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-brotli-1.2.0-1.src.tar.zst",
+      "sha256": "2f0f93875aac21990d20f1eaf0ad8b970eb6f186c663c77ae47aaaf9e5711fcf",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-brotli",
+          "version": "1.2.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-ca-certificates-20250419-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-ca-certificates-20250419-1.src.tar.zst",
+      "sha256": "71a8bc9648d58361845b985fb5073ff7a35ff536661c9072453a692d04d9c9f5",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-ca-certificates",
+          "version": "20250419-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-curl-8.18.0-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-01-07T21-55-10.690988000Z/mingw-w64-curl-8.18.0-1.src.tar.gz",
+      "sha256": "f91343dd888182f73da6c434c11f42167e8c238d7daca447ccce7f3c62c343eb",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-curl-openssl-alternate",
+          "version": "8.18.0-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-curl-winssl",
+          "version": "8.18.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-expat-2.7.4-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-expat-2.7.4-1.src.tar.zst",
+      "sha256": "bfafe5d0751a705941510e4f0ebfd52d38ea4a20d6c132c66f3953a12f17f633",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-expat",
+          "version": "2.7.4-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-gcc-15.2.0-11.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-15.2.0-11.src.tar.zst",
+      "sha256": "a27c7024383d51d6cb5817eaeea51f97ab1abecb6f07bf41cbeeb00af8e876d7",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-gcc-libs",
+          "version": "15.2.0-11"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-gettext-1.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+      "sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-gettext-runtime",
+          "version": "1.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-git-2.52.0.1-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.4/mingw-w64-git-2.52.0.1-1.src.tar.gz",
+      "sha256": "2b364194004b9d889157162a41120c2400e05d23e3aecb790391da97d7df6ca5",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-git",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-credential-wincred",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-for-windows-addons",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-gui",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-perl",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-send-email",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-git-subtree",
+          "version": "2.52.0.1-1"
+        },
+        {
+          "name": "mingw-w64-x86_64-gitk",
+          "version": "2.52.0.1-1"
+        }
+      ]
+    },
+    {
+      "file": "git-credential-manager-2.9.0.tar.gz",
+      "url": "https://codeload.github.com/git-ecosystem/git-credential-manager/tar.gz/194ba290ce533465310d50f811684ab180536ae7",
+      "sha256": "26c67fbc391bc421632037bcd77f8a54c5e8633d4430f9bc54c350bf1df4134b",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-git-credential-manager",
+          "version": "2.9.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-git-extra-1.1.687.f502a63dc-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-01-09T11-45-08.990663400Z/mingw-w64-git-extra-1.1.687.f502a63dc-1.src.tar.gz",
+      "sha256": "9d5a8dde06c5ec8602f06d3a4304143545ccad175b6d80d42c746c43930b6678",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-git-extra",
+          "version": "1.1.687.f502a63dc-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libffi-3.5.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libffi-3.5.2-1.src.tar.zst",
+      "sha256": "bfe3f7d5bf9b09ab22e42ccd527d1a5a94277547b04524177a1c46e1cd930172",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libffi",
+          "version": "3.5.2-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libiconv-1.18-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.18-1.src.tar.zst",
+      "sha256": "d40dc594479c0fba9aa492c5cbf63dd81a7cc4b91cc1d93619bb43c622d04709",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libiconv",
+          "version": "1.18-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+      "sha256": "cd83e8514fbeb6a4499299b88691b9b9ecc3114cca1e2be4f6c54aab6ae9ddd0",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libidn2",
+          "version": "2.3.8-4"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libpsl-0.21.5-3.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libpsl-0.21.5-3.src.tar.zst",
+      "sha256": "102b4ab4c60322162e808c5c81f545438c346c659e8fb63e0851066f07a0e76b",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libpsl",
+          "version": "0.21.5-3"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libssh2-1.11.1-2.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libssh2-1.11.1-2.src.tar.zst",
+      "sha256": "bb78f8354441190221ece18a96c09f631fe02648f5dd7d1e247ae8d00a9fea5f",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libssh2-wincng",
+          "version": "1.11.1-2"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+      "sha256": "c626129c5131eef0a45c736274f0844747605a105161cc0f7d39f6e1c70ed0ff",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libtasn1",
+          "version": "4.21.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-libunistring-1.3-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libunistring-1.3-1.src.tar.zst",
+      "sha256": "b5f564e63acd3d5a3c56a040d81aa47d8fa9d4e11dc60aa64fc28d038717afff",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libunistring",
+          "version": "1.3-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-winpthreads-13.0.0.r488.g3fedac280-2.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-13.0.0.r488.g3fedac280-2.src.tar.zst",
+      "sha256": "6ff438f105deea9f76fc4e38da0bbf59f1adb2f72c961742378d073bca26ec89",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-libwinpthread",
+          "version": "13.0.0.r488.g3fedac280-2"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-nghttp2-1.68.0-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-nghttp2-1.68.0-1.src.tar.zst",
+      "sha256": "aeccef14fc24153d6bd852284e9836342db3ff49519e59d2f2a8e5f9fd0387fa",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-nghttp2",
+          "version": "1.68.0-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-openssl-3.5.5-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-01-27T20-36-22.546922300Z/mingw-w64-openssl-3.5.5-1.src.tar.gz",
+      "sha256": "bbb69c364a12ed14ddf925dd2dbfaefbc32614e1901ea2aa6e7d54fca9112378",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-openssl",
+          "version": "3.5.5-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-pcre2-10.47-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2025-11-04T09-21-59.197225000Z/mingw-w64-pcre2-10.47-1.src.tar.gz",
+      "sha256": "4517735dbcc0e37d92d847e7aac60b263bf3bf78505bc47645b339f87435eed6",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-pcre2",
+          "version": "10.47-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-zlib-1.3.1-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.1-1.src.tar.zst",
+      "sha256": "9f274086ee2aa74e449908443f5e225855a4fe20f2abddadb4d18c0194c1ceff",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-zlib",
+          "version": "1.3.1-1"
+        }
+      ]
+    },
+    {
+      "file": "mingw-w64-zstd-1.5.7-1.src.tar.zst",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-1.src.tar.zst",
+      "sha256": "0e369f559046468bb605c8f4c8d93c7a4e7e88e8dc412226ebbad92ac1d5bd28",
+      "packages": [
+        {
+          "name": "mingw-w64-x86_64-zstd",
+          "version": "1.5.7-1"
+        }
+      ]
+    },
+    {
+      "file": "mpfr-4.2.2-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/mpfr-4.2.2-1.src.tar.zst",
+      "sha256": "e0c56e3af3819471e74dd37e32660e4eb8f58761c4d214dabd2d62f57c548869",
+      "packages": [
+        {
+          "name": "mpfr",
+          "version": "4.2.2-1"
+        }
+      ]
+    },
+    {
+      "file": "msys2-runtime-3.6.6-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-01-15T22-34-40.508011800Z/msys2-runtime-3.6.6-1.src.tar.gz",
+      "sha256": "275fa22d4f6ac7c6023ada822f74e470111b047c1258124555f51b366e3c7600",
+      "packages": [
+        {
+          "name": "msys2-runtime",
+          "version": "3.6.6-1"
+        }
+      ]
+    },
+    {
+      "file": "ncurses-6.6-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/ncurses-6.6-1.src.tar.zst",
+      "sha256": "0bd0d82ab11ea4d219dedfa5de282b9d252ffdaa78624daa5412605894326e6c",
+      "packages": [
+        {
+          "name": "ncurses",
+          "version": "6.6-1"
+        }
+      ]
+    },
+    {
+      "file": "openssh-10.2p1-1.src.tar.gz",
+      "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2025-10-10T11-57-54.774519200Z/openssh-10.2p1-1.src.tar.gz",
+      "sha256": "6a63733730a14bd9ac917b823693adf197287bf007338d9c5ad4a8f42d0ab47c",
+      "packages": [
+        {
+          "name": "openssh",
+          "version": "10.2p1-1"
+        }
+      ]
+    },
+    {
+      "file": "rebase-4.5.0-5.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/rebase-4.5.0-5.src.tar.zst",
+      "sha256": "5e9c24c35a881888c045aa04b676f79d238e870a7391f595665e9bd9d26b09c9",
+      "packages": [
+        {
+          "name": "rebase",
+          "version": "4.5.0-5"
+        }
+      ]
+    },
+    {
+      "file": "sed-4.9-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/sed-4.9-1.src.tar.zst",
+      "sha256": "a9686da7c1f3cb2ba7ae5f20f30d9ef38f7bba993f9c777b43bd13c7fbd7cc58",
+      "packages": [
+        {
+          "name": "sed",
+          "version": "4.9-1"
+        }
+      ]
+    },
+    {
+      "file": "zlib-1.3.1-1.src.tar.zst",
+      "url": "https://repo.msys2.org/msys/sources/zlib-1.3.1-1.src.tar.zst",
+      "sha256": "84c07b395d0e83e0e6a93acb85e3544dff66d084b9ad8dd17e0e8e576fb56c89",
+      "packages": [
+        {
+          "name": "zlib",
+          "version": "1.3.1-1"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@executor-playground/hosted",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun inspect.ts"
+  },
+  "dependencies": {
+    "@executor-js/hosted-server": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  }
+}

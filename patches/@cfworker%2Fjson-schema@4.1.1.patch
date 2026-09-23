@@ -1,0 +1,70 @@
+diff --git a/dist/commonjs/validate.js b/dist/commonjs/validate.js
+index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..94fbc0b212e0b11cff98d70f30da3f5c585d5a2c 100644
+--- a/dist/commonjs/validate.js
++++ b/dist/commonjs/validate.js
+@@ -429,7 +429,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+         if (!stop && $patternProperties !== undefined) {
+             const keywordLocation = `${schemaLocation}/patternProperties`;
+             for (const pattern in $patternProperties) {
+-                const regex = new RegExp(pattern, 'u');
++                const regex = schemaPattern(pattern);
+                 const subSchema = $patternProperties[pattern];
+                 for (const key in instance) {
+                     if (!regex.test(key)) {
+@@ -782,7 +782,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+                 error: `String is too long (${length} > ${$maxLength}).`
+             });
+         }
+-        if ($pattern !== undefined && !new RegExp($pattern, 'u').test(instance)) {
++        if ($pattern !== undefined && !schemaPattern($pattern).test(instance)) {
+             errors.push({
+                 instanceLocation,
+                 keyword: 'pattern',
+@@ -803,3 +803,12 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+     }
+     return { valid: errors.length === 0, errors };
+ }
++
++// Preserve Unicode matching, while accepting legacy JavaScript patterns used by upstream APIs.
++function schemaPattern(pattern) {
++    try { return new RegExp(pattern, 'u'); }
++    catch (error) {
++        if (!(error instanceof SyntaxError)) throw error;
++        return new RegExp(pattern);
++    }
++}
+diff --git a/dist/esm/validate.js b/dist/esm/validate.js
+index 7a523741614bd8255f5adaf0393e1ab5e7595b59..c1931330d4436ba3d610bae2100131b2ba698445 100644
+--- a/dist/esm/validate.js
++++ b/dist/esm/validate.js
+@@ -426,7 +426,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+         if (!stop && $patternProperties !== undefined) {
+             const keywordLocation = `${schemaLocation}/patternProperties`;
+             for (const pattern in $patternProperties) {
+-                const regex = new RegExp(pattern, 'u');
++                const regex = schemaPattern(pattern);
+                 const subSchema = $patternProperties[pattern];
+                 for (const key in instance) {
+                     if (!regex.test(key)) {
+@@ -779,7 +779,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+                 error: `String is too long (${length} > ${$maxLength}).`
+             });
+         }
+-        if ($pattern !== undefined && !new RegExp($pattern, 'u').test(instance)) {
++        if ($pattern !== undefined && !schemaPattern($pattern).test(instance)) {
+             errors.push({
+                 instanceLocation,
+                 keyword: 'pattern',
+@@ -800,3 +800,12 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+     }
+     return { valid: errors.length === 0, errors };
+ }
++
++// Preserve Unicode matching, while accepting legacy JavaScript patterns used by upstream APIs.
++function schemaPattern(pattern) {
++    try { return new RegExp(pattern, 'u'); }
++    catch (error) {
++        if (!(error instanceof SyntaxError)) throw error;
++        return new RegExp(pattern);
++    }
++}

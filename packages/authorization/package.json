@@ -1,0 +1,13 @@
+{
+  "name": "@executor-js/authorization",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  }
+}

@@ -1,0 +1,67 @@
+---
+import Layout from "../layouts/Layout.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  lastUpdated: string;
+}
+
+const { title, description, lastUpdated } = Astro.props;
+---
+
+<Layout title={`${title} — Executor`} description={description}>
+  <nav class="fixed top-0 z-50 w-full bg-surface/80 backdrop-blur-lg">
+    <div class="mx-auto flex h-14 max-w-[1200px] items-center justify-between border-b border-rule px-6 sm:px-10 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_[class*='max-w-']&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.hero-inner_&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.text-center_&]:ml-0">
+      <a href="/" class="font-mono text-xl tracking-tight text-ink transition-colors hover:text-ink">
+        executor
+      </a>
+      <div class="flex items-center gap-5 sm:gap-8">
+        <a href="/privacy" class="text-[13px] text-ink-muted transition-colors hover:text-ink">
+          Privacy
+        </a>
+        <a href="/terms" class="text-[13px] text-ink-muted transition-colors hover:text-ink">
+          Terms
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="relative overflow-hidden pt-14">
+    <section class="relative px-6 pb-10 pt-18 sm:px-10 sm:pb-16 sm:pt-24">
+      <div class="mx-auto max-w-[720px] min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_[class*='max-w-']&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.hero-inner_&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.text-center_&]:ml-0">
+        <div class="mb-12 sm:mb-16">
+          <h1 class="font-display text-[clamp(2.4rem,5.2vw,4.2rem)] leading-[0.98] tracking-tight text-ink">
+            {title}
+          </h1>
+          <p class="mt-5 text-[15px] leading-[1.75] text-ink-muted sm:text-[16px]">
+            {description}
+          </p>
+          <p class="mt-6 text-[11px] font-mono uppercase tracking-[0.16em] text-ink-faint">
+            Last updated {lastUpdated}
+          </p>
+        </div>
+
+        <article class="legal-prose [color:color-mix(in_srgb,_var(--color-ink)_85%,_transparent)] text-[15.5px] [&_>_:first-child]:mt-0 [&_h2]:mt-[3rem] [&_h2]:mb-[0.85rem] [&_h2]:pt-[1.6rem] [&_h2]:font-sans [&_h2]:text-[1.05rem] [&_h2]:font-semibold [&_h2]:border-t [&_h2]:border-t-rule [&_h3]:mt-[1.6rem] [&_h3]:mb-[0.5rem] [&_h3]:text-[0.95rem] [&_h3]:font-semibold [&_p]:my-[0.85rem] [&_p]:mx-0 [&_ul]:my-[0.85rem] [&_ul]:mx-0 [&_ul]:[list-style:none] [&_ul]:pl-0 [&_li]:relative [&_li]:pl-[1.25rem] [&_li::before]:[content:''] [&_li::before]:absolute [&_li::before]:left-[0.15rem] [&_li::before]:top-[0.72rem] [&_li::before]:w-1.25 [&_li::before]:h-1.25 [&_li::before]:rounded-[50%] [&_li::before]:bg-accent [&_li::before]:opacity-70 [&_a]:text-accent [&_a]:underline [&_a]:[text-decoration-color:color-mix(in_srgb,_var(--color-accent)_35%,_transparent)] [&_a]:underline-offset-[3px] [&_strong]:text-ink [&_strong]:font-semibold">
+          <slot />
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-rule py-10">
+    <div class="mx-auto flex max-w-[1200px] items-center justify-between px-6 sm:px-10 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_[class*='max-w-']&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.hero-inner_&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.text-center_&]:ml-0">
+      <span class="font-mono text-sm text-ink-faint">executor</span>
+      <div class="flex items-center gap-5 text-[13px]">
+        <a href="/privacy" class="text-ink-faint transition-colors hover:text-ink">Privacy</a>
+        <a href="/terms" class="text-ink-faint transition-colors hover:text-ink">Terms</a>
+        <a
+          href="https://github.com/UsefulSoftwareCo/executor"
+          class="text-ink-faint transition-colors hover:text-ink"
+        >
+          GitHub
+        </a>
+      </div>
+    </div>
+  </footer>
+</Layout>

@@ -1,0 +1,249 @@
+---
+export const prerender = true;
+import LegalLayout from "../components/LegalLayout.astro";
+---
+
+<LegalLayout
+  title="Privacy Policy"
+  description="How Executor collects, uses, stores, and shares information across the hosted service, website, and app."
+  lastUpdated="April 14, 2026"
+>
+  <p>
+    This Privacy Policy explains how Executor, a product operated by Useful Software Company
+    (&quot;Executor,&quot; &quot;we,&quot; &quot;our,&quot; or &quot;us&quot;), handles information when you use our website, hosted cloud
+    service, desktop application, command-line tools, and related APIs and support channels (collectively, the
+    &quot;Services&quot;).
+  </p>
+
+  <p>
+    Executor offers both local-first software and hosted cloud features. If you use the local desktop or CLI product
+    without connecting to Executor Cloud, much of your configuration may remain on your device. If you use Executor
+    Cloud, we process and store the information described below so we can authenticate users, manage organizations,
+    connect integrations, enforce policies, meter usage, and operate the service.
+  </p>
+
+  <p>
+    For purposes of this Privacy Policy, the business responsible for the Services is Useful Software Company, 2261
+    Market Street, San Francisco, CA 94114.
+  </p>
+
+  <h2>1. Information We Collect</h2>
+  <h3>Account and profile information</h3>
+  <p>
+    When you sign in, we receive account information from our authentication provider, including your name, email
+    address, avatar or profile picture URL, account ID, session identifiers, and organization membership information.
+  </p>
+
+  <h3>Workspace and service configuration</h3>
+  <p>We collect and store information needed to provide the Services, such as:</p>
+  <ul>
+    <li>organization and workspace names;</li>
+    <li>membership and role information;</li>
+    <li>integration metadata;</li>
+    <li>tool catalogs, schemas, policies, and related configuration;</li>
+    <li>secret metadata and connection settings; and</li>
+    <li>billing plan, membership, and execution-usage records.</li>
+  </ul>
+
+  <h3>Credentials, secrets, and connected-service data</h3>
+  <p>
+    If you connect third-party tools or APIs, you may provide API keys, OAuth tokens, secrets, endpoint URLs, and
+    related configuration. We process that information to authenticate requests and operate your configured
+    integrations. We may also process content that passes through those integrations when you instruct Executor to make
+    a call, run code, or execute a workflow.
+  </p>
+
+  <h3>Google Workspace API data</h3>
+  <p>
+    If you connect a Google Workspace service, Executor uses the permissions you grant to perform the actions you
+    request through that integration. Depending on the service and permissions you choose, this may include accessing
+    or modifying Google Calendar calendars, events, and sharing rules; Gmail messages, drafts, threads, attachments, labels, and settings; Google
+    Drive files and folders; Docs documents; Sheets spreadsheets; Slides presentations; Forms and responses; Contacts,
+    profile fields, other contacts, and an available Workspace directory; Tasks; Meet spaces, participants, recordings, and transcripts; app-created or user-selected Photos media; Search
+    Console sites, sitemaps, indexed URLs, and performance data; or other Google content made available by the service
+    you connect. For Gmail, this can include permanently deleting messages or threads only when you explicitly request
+    that irreversible action.
+  </p>
+  <p>
+    Executor stores OAuth credentials and connection metadata so the integration can continue working. It processes
+    Google Workspace content only while carrying out your requested tool calls and returning their results to you or
+    the agent you directed to make the call. That content can appear in the resulting agent session or in another
+    service when you explicitly direct Executor to send it there.
+  </p>
+  <p>
+    We do not use Google Workspace API data for advertising or to train generalized artificial-intelligence or
+    machine-learning models. We disclose it only as needed to provide the user-requested integration, operate and secure
+    the Services, comply with law, or as otherwise described in this Policy with the user&apos;s consent.
+  </p>
+  <p>
+    Executor&apos;s use and transfer of information received from Google Workspace APIs adheres to the
+    <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+    including its Limited Use requirements.
+  </p>
+  <p>
+    You can stop Executor&apos;s access by deleting the Google connection in Executor or revoking Executor from your
+    Google Account permissions. To request deletion of your Executor account, stored OAuth credentials, connection
+    metadata, or other personal information, email <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
+  </p>
+
+  <h3>Website inputs and support communications</h3>
+  <p>
+    If you submit a URL to our website&apos;s API detection tool, contact us by email, or otherwise communicate with us,
+    we collect the information you provide in order to respond and improve the Services.
+  </p>
+
+  <h3>Usage, device, and diagnostic information</h3>
+  <p>
+    We automatically collect technical information such as IP address, browser and device data, request metadata,
+    session cookies, product interactions, operational logs, crash reports, traces, and other diagnostics needed to
+    secure, maintain, and improve the Services.
+  </p>
+
+  <h3>Payment and subscription information</h3>
+  <p>
+    If you subscribe to a paid plan, we and our billing providers process subscription status, plan selections, usage
+    counters, invoices, and limited payment-related metadata. Our payment partners, not Executor, generally handle full
+    payment card details.
+  </p>
+
+  <h2>2. How We Use Information</h2>
+  <p>We use the information we collect to:</p>
+  <ul>
+    <li>provide, operate, secure, and support the Services;</li>
+    <li>authenticate users and maintain sessions;</li>
+    <li>create and manage organizations, memberships, and permissions;</li>
+    <li>connect to third-party integrations and execute user-requested actions;</li>
+    <li>store and retrieve tool catalogs, policies, secrets, and workspace settings;</li>
+    <li>meter usage, manage subscriptions, and administer billing;</li>
+    <li>monitor performance, debug issues, prevent abuse, and investigate incidents;</li>
+    <li>communicate with you about the Services, updates, and support requests; and</li>
+    <li>comply with legal obligations and enforce our agreements.</li>
+  </ul>
+
+  <h2>3. Legal Bases for Processing</h2>
+  <p>
+    If data protection laws such as the GDPR or UK GDPR apply, we generally process personal data because it is
+    necessary to perform our contract with you, because we have legitimate interests in operating and securing the
+    Services, because we must comply with legal obligations, or because you have given consent where consent is
+    required.
+  </p>
+
+  <h2>4. How We Share Information</h2>
+  <p>We may share information in the following circumstances:</p>
+  <ul>
+    <li>with service providers that help us run the Services, including hosting, authentication, billing, logging, analytics, error monitoring, and customer-support vendors;</li>
+    <li>with third-party integrations, APIs, and tools when you direct Executor to connect to or act on those services;</li>
+    <li>with your organization administrators and authorized teammates, consistent with your workspace permissions;</li>
+    <li>in connection with a merger, financing, acquisition, reorganization, or sale of assets; and</li>
+    <li>when required to comply with law, protect rights or safety, investigate misuse, or enforce our terms.</li>
+  </ul>
+
+  <p>
+    Based on our current hosted implementation, our processors or infrastructure providers may include WorkOS
+    (authentication, organization management, and vault-backed secret workflows), Autumn (billing and subscription
+    tooling), Axiom (operational telemetry when enabled), Sentry (error monitoring when enabled), and cloud hosting and
+    database providers such as Cloudflare and PlanetScale. Our providers may change over time as the
+    Services evolve.
+  </p>
+
+  <h2>5. Cookies and Similar Technologies</h2>
+  <p>
+    We use cookies and similar technologies for essential functions such as authentication, session continuity, and
+    security. For example, Executor Cloud currently uses an HTTP-only session cookie to keep users signed in. We may
+    also use cookies or comparable storage for preference, security, performance, or diagnostic purposes.
+  </p>
+
+  <h2>6. Data Retention</h2>
+  <p>
+    We retain information for as long as reasonably necessary to provide the Services, maintain your account and
+    organization, meet contractual commitments, resolve disputes, enforce agreements, and comply with legal obligations.
+    Retention periods vary based on the type of information, the sensitivity of the data, and whether the information
+    is needed for security, billing, tax, audit, or backup purposes.
+  </p>
+
+  <p>
+    Some data may remain in backups or logs for a limited period after deletion. Session cookies may persist until they
+    expire or are cleared. If you need deletion assistance, contact us using the information below.
+  </p>
+
+  <h2>7. Security</h2>
+  <p>
+    We use reasonable administrative, technical, and organizational safeguards designed to protect information from
+    unauthorized access, loss, misuse, and alteration. Those measures include access controls, secret-management
+    workflows, encrypted transport, and monitoring. No method of transmission or storage is completely secure, so we
+    cannot guarantee absolute security.
+  </p>
+
+  <h2>8. International Data Transfers</h2>
+  <p>
+    We and our service providers may process information in countries other than your own. Where required, we use
+    appropriate safeguards for cross-border transfers.
+  </p>
+
+  <h2>9. Your Choices and Rights</h2>
+  <p>
+    Depending on where you live, you may have rights to access, correct, delete, export, or limit certain processing
+    of your personal information, or to object to processing. You may also have the right to appeal a denial of your
+    request.
+  </p>
+
+  <p>
+    You can also manage certain information directly in the product, such as organizations, memberships,
+    secrets, policies, and integrations. To exercise privacy rights or request account deletion, email
+    <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
+  </p>
+
+  <p>
+    We do not sell personal information for money, and we do not use personal information for cross-context behavioral
+    advertising as part of the current product implementation.
+  </p>
+
+  <h2>10. California Privacy Notice</h2>
+  <p>
+    If you are a California resident, this section supplements the rest of this Privacy Policy. Depending on our
+    obligations under California law, we may collect the following categories of personal information: identifiers;
+    customer records; commercial or billing information; internet or network activity; geolocation inferred from IP
+    address; professional or employment-related information you choose to provide; and sensitive personal information
+    such as account credentials or authentication data.
+  </p>
+
+  <p>
+    We collect this information from you, your devices, your organization, our service providers, and third-party
+    integrations you connect. We use it for the business and commercial purposes described in this Privacy Policy,
+    including account administration, workspace management, service delivery, security, debugging, analytics, and
+    billing.
+  </p>
+
+  <p>
+    California residents may have rights to know, access, correct, or delete certain personal information and to limit
+    certain uses of sensitive personal information, subject to exceptions. To submit a request, contact
+    <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
+  </p>
+  <p>
+    The Services are not directed to children under 13, and we do not knowingly collect personal information from
+    children under 13. If you believe a child has provided personal information to us, contact us so we can take
+    appropriate action.
+  </p>
+
+  <h2>11. Changes to This Policy</h2>
+  <p>
+    We may update this Privacy Policy from time to time. If we make material changes, we will post the updated version
+    here and revise the &quot;Last updated&quot; date above. Your continued use of the Services after an update becomes effective
+    means the updated policy will apply going forward.
+  </p>
+
+  <h2>12. Contact</h2>
+  <p>
+    Questions or requests about this Privacy Policy can be sent to Useful Software Company at
+    <a href="mailto:rhys@executor.sh">rhys@executor.sh</a>.
+  </p>
+  <p>
+    Useful Software Company
+    <br />
+    Attn: Rhys Sullivan
+    <br />
+    2261 Market Street
+    <br />
+    San Francisco, CA 94114
+  </p>
+</LegalLayout>

@@ -1,0 +1,8 @@
+{
+  "name": "@executor-js/app-scheduled-notes",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "apps": "workspace:*"
+  }
+}

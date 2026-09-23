@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Chromium and the V8 isolates the runtime compiles apps with need
+         writable, executable pages. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- No allow-dyld-environment-variables. That entitlement only governs the
+         DYLD_* loader variables, and nothing here sets one. The desktop starts
+         its bundled Node server with ordinary EXECUTOR_* environment variables,
+         which the hardened runtime passes through regardless. -->
+    <!-- Resources/runtime holds the packaged dependency tree: workerd, the
+         Motel collector's own Bun runtime and native Node addons. Library
+         validation rejects them because they are not part of the Electron
+         framework's signing chain. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

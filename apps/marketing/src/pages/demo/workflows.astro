@@ -1,0 +1,23 @@
+---
+import "../../styles/global.css";
+import { WorkflowDirections } from "../../components/workflow-directions";
+---
+<html lang="en" class="[&_astro-dev-toolbar]:hidden">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Workflow directions · Executor</title>
+  </head>
+  <body class="m-0 bg-white font-sans text-[#222]">
+    <main class="mx-auto max-w-290 px-5 py-12 min-[760px]:px-8 min-[760px]:py-20">
+      <a href="/#apps" class="text-[12px] text-[#999] transition-colors hover:text-[#333]">← Back to the landing page</a>
+      <header class="mt-8 mb-10">
+        <h1 class="text-[28px] font-semibold tracking-[-0.025em]">Nine workflow directions.</h1>
+        <p class="mt-3 text-[14px] leading-relaxed text-[#888]">Nine different stories, layouts, and ways to move.</p>
+      </header>
+      <WorkflowDirections client:visible />
+      <a href="/demo/workflows-round-one/" class="mt-10 inline-block text-[12px] text-[#aaa] hover:text-[#555]">Previous round ↗</a>
+    </main>
+  </body>
+</html>

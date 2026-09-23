@@ -1,0 +1,56 @@
+---
+import RailLayout from "./RailLayout.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  date: Date;
+  author: string;
+  authorHandle: string;
+  authorRole: string;
+  authorAvatar: string;
+}
+
+const { title, description, date, author, authorHandle, authorRole, authorAvatar } =
+  Astro.props;
+
+const authorX = `https://x.com/${authorHandle}`;
+
+const formattedDate = date.toLocaleDateString("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  // Frontmatter dates are bare YYYY-MM-DD (parsed as UTC midnight); format in
+  // UTC so the displayed day matches the date the author wrote, regardless of
+  // the build/runtime timezone.
+  timeZone: "UTC",
+});
+const isoDate = date.toISOString();
+---
+
+<RailLayout title={`${title} — Executor`} description={description} current="blog">
+  <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
+    <header class="doc__intro doc__intro--post min-[1024px]:max-w-180 max-[1023.98px]:text-center pb-[2rem] border-b border-b-rule mb-[2rem]">
+      <a href="/blog" class="doc__crumb inline-block font-mono text-[11px] uppercase tracking-[0.14em] [color:var(--color-ink-3)] mb-[1rem] hover:text-ink">← Writing</a>
+      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{title}</h1>
+      <p class="doc__lede text-[17px] leading-[1.6] [color:var(--color-ink-2)] [text-wrap:pretty] mb-[1.6rem]">{description}</p>
+      <a href={authorX} target="_blank" rel="noopener noreferrer" class="doc__sig doc__sig--post inline-flex items-center gap-[0.8rem] no-underline! [&_img]:w-10 [&_img]:h-10 [&_img]:rounded-[999px] [&_img]:[box-shadow:0_0_0_1px_var(--color-rule)] mt-[0.5rem]">
+        <img src={authorAvatar} alt="" width="40" height="40" loading="lazy" />
+        <span class="doc__sig-b flex flex-col gap-[0.1rem] text-[14px] [&_strong]:text-ink [&_strong]:font-semibold [&_span]:[color:var(--color-ink-3)] [.doc\_\_sig:hover_&_span]:text-ink">
+          <strong>{author}</strong>
+          <span>{authorRole} · <time datetime={isoDate}>{formattedDate}</time></span>
+        </span>
+      </a>
+    </header>
+
+    <div class="blog-prose doc__prose [color:color-mix(in_srgb,_var(--color-ink)_88%,_transparent)] text-[17px] leading-[1.75] tracking-[-0.011em] [&_>_:first-child]:mt-0 [&_p]:my-[1.25rem] [&_p]:mx-0 [&_p]:[text-wrap:pretty] [&_h2]:mt-[2.75rem] [&_h2]:mb-[0.9rem] [&_h2]:font-sans [&_h2]:text-[clamp(1.4rem,_2.6vw,_1.7rem)] [&_h2]:font-semibold [&_h2]:tracking-[-0.02em] [&_h2]:leading-[1.2] [&_h2]:text-ink [&_h3]:mt-[2rem] [&_h3]:mb-[0.5rem] [&_h3]:text-[1.18rem] [&_h3]:font-semibold [&_h3]:tracking-[-0.01em] [&_h3]:text-ink [&_ul]:my-[1.25rem] [&_ul]:mx-0 [&_ul]:pl-0 [&_ul]:[list-style:none] [&_ol]:my-[1.25rem] [&_ol]:mx-0 [&_ol]:pl-0 [&_ol]:[list-style:none] [&_li]:relative [&_li]:my-[0.5rem] [&_li]:mx-0 [&_li]:pl-[1.4rem] [&_ul_>_li::before]:[content:''] [&_ul_>_li::before]:absolute [&_ul_>_li::before]:left-[0.2rem] [&_ul_>_li::before]:top-[0.78rem] [&_ul_>_li::before]:w-1.25 [&_ul_>_li::before]:h-1.25 [&_ul_>_li::before]:rounded-[50%] [&_ul_>_li::before]:bg-accent [&_ul_>_li::before]:opacity-75 [&_ol]:[counter-reset:blog-ol] [&_ol_>_li]:[counter-increment:blog-ol] [&_ol_>_li::before]:[content:counter(blog-ol)_'.'] [&_ol_>_li::before]:absolute [&_ol_>_li::before]:left-0 [&_ol_>_li::before]:top-0 [&_ol_>_li::before]:tabular-nums [&_ol_>_li::before]:font-semibold [&_ol_>_li::before]:text-accent [&_a]:text-accent [&_a]:underline [&_a]:[text-decoration-color:color-mix(in_srgb,_var(--color-accent)_35%,_transparent)] [&_a]:underline-offset-[3px] [&_a]:[transition:color_0.15s_ease,_text-decoration-color_0.15s_ease] [&_a:hover]:text-accent-hover [&_a:hover]:[text-decoration-color:var(--color-accent-hover)] [&_strong]:text-ink [&_strong]:font-semibold [&_em]:italic [&_blockquote]:my-[1.5rem] [&_blockquote]:mx-0 [&_blockquote]:[padding:0.25rem_0_0.25rem_1.25rem] [&_blockquote]:[border-left:2px_solid_color-mix(in_srgb,_var(--color-accent)_55%,_transparent)] [&_blockquote]:[color:var(--color-ink-2)] [&_blockquote]:italic [&_code]:font-mono [&_code]:text-[0.86em] [&_code]:[background:var(--color-surface-2)] [&_code]:border [&_code]:border-rule [&_code]:rounded-[5px] [&_code]:py-[0.12em] [&_code]:px-[0.4em] [&_pre]:my-[1.5rem] [&_pre]:mx-0 [&_pre]:py-[1.1rem] [&_pre]:px-[1.25rem] [&_pre]:[background:var(--color-surface-2)] [&_pre]:border [&_pre]:border-rule [&_pre]:rounded-[12px] [&_pre]:overflow-x-auto [&_pre]:text-[14px] [&_pre]:leading-[1.6] [&_pre_code]:bg-transparent [&_pre_code]:border-0 [&_pre_code]:p-0 [&_pre_code]:text-[inherit] [&_hr]:my-[2.5rem] [&_hr]:mx-0 [&_hr]:border-0 [&_hr]:border-t [&_hr]:border-t-rule [&_h2_+_p]:mt-0 [&_h3_+_p]:mt-0 min-[1024px]:max-w-180">
+      <slot />
+    </div>
+
+    <section class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+      <p class="doc__quiet-p mt-[0.75rem] text-[14px]! [color:var(--color-ink-3)]!">
+        <a href="/blog">More writing</a> · <a href="/">Back to Executor</a>
+      </p>
+    </section>
+  </article>
+</RailLayout>

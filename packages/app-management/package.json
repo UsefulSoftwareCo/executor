@@ -1,0 +1,24 @@
+{
+  "name": "@executor-js/app-management",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/http.ts",
+    "./http": "./src/http.ts",
+    "./cli": "./src/cli.ts",
+    "./contracts": "./src/contracts/api.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/app-source": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@napi-rs/keyring": "2.1.0",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4",
+    "fumadb-effect": "workspace:*"
+  }
+}

@@ -1,0 +1,130 @@
+---
+// Rail, variant B: "Gridline rail".
+// Compact and technical: mark-only wordmark, a tight link stack, two quiet
+// meta lines (open source, YC), and a numbered mono index. The rail does not
+// sell; the hero owns the call to action. A full-height hairline closes the
+// right edge.
+import discordLogo from "../../assets/logos/discord.svg?url";
+import gmailLogo from "../../assets/logos/gmail.svg?url";
+import slackLogo from "../../assets/logos/slack.svg?url";
+import xLogo from "../../assets/logos/x.svg?url";
+import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+
+// The brand mark resolves against the build's base, so the docs build (mounted
+// at /docs) serves its own copy instead of reaching for the marketing root.
+const MARK = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/favicon-192.png`;
+
+const DISCORD_URL = "https://discord.gg/eF29HBHwM6";
+const X_URL = "https://x.com/RhysSullivan";
+const EMAIL = "rhys@executor.sh";
+
+interface Props {
+  stars: string | null;
+  /** Which primary link is the current page. Defaults to home. */
+  current?: "home" | "pricing" | "blog" | "docs" | "apps";
+}
+const { stars, current = "home" } = Astro.props;
+const cur = (k: string) => (k === current ? "page" : undefined);
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+const SIGN_IN = "/login";
+
+const sections = [
+  { id: "connect", label: "Start small" },
+  { id: "mission", label: "Build what you need" },
+  { id: "automate", label: "Keep it working" },
+  { id: "apps", label: "That’s an app" },
+  { id: "agents", label: "It's just code" },
+  { id: "install", label: "Run it" },
+  { id: "people", label: "What people say" },
+  { id: "pricing", label: "Pricing" },
+  { id: "writing", label: "Writing" },
+  { id: "about", label: "About" },
+];
+const pad = (index: number) => String(index + 1).padStart(2, "0");
+---
+
+<aside class="rail rail--b flex flex-col h-full bg-surface font-sans gap-7 py-[32px] px-[24px] border-r border-r-rule max-[1023.98px]:flex-row max-[1023.98px]:items-center max-[1023.98px]:justify-between max-[1023.98px]:gap-3 max-[1023.98px]:h-14 max-[1023.98px]:py-0 max-[1023.98px]:px-[16px] max-[1023.98px]:border-r-0 max-[1023.98px]:border-b max-[1023.98px]:border-b-rule">
+  <a href="/" class="rail__brand flex items-center gap-2.5 max-[1023.98px]:[.rail_&]:m-0" aria-label="Executor home">
+    <img src={MARK} alt="" width="20" height="20" class="rail__brand-mark w-5 h-5 shrink-0 [.rail--b_&]:w-4.5 [.rail--b_&]:h-4.5" />
+  </a>
+
+  <div class="rail__stack flex flex-1 min-h-0 flex-col [.rail--b_&]:gap-7 max-[1023.98px]:[.rail_&]:[flex:0_1_auto] max-[1023.98px]:[.rail_&]:flex-row max-[1023.98px]:[.rail_&]:items-center max-[1023.98px]:[.rail_&]:gap-4">
+    <nav class="rail__nav flex flex-col [.rail--b_&]:gap-1 max-[1023.98px]:[.rail_&]:flex-row max-[1023.98px]:[.rail_&]:items-center max-[1023.98px]:[.rail_&]:gap-3.5 max-[479.98px]:[.rail_&]:gap-3" aria-label="Main">
+      <a href="/home" class="rail__link rail__link--keep relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden" aria-current={cur("home")}>Home</a>
+      <a href="/docs" aria-current={cur("docs")} class="rail__link rail__link--keep relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden">Docs</a>
+      <a href="/apps" aria-current={cur("apps")} class="rail__link rail__link--keep relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden">Apps</a>
+      <a href="/blog" class="rail__link relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden" aria-current={cur("blog")}>Blog</a>
+      <a href="/pricing" class="rail__link relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden" aria-current={cur("pricing")}>Pricing</a>
+      <a href={SIGN_IN} class="rail__link rail__link--keep relative flex items-center gap-1.5 [color:var(--color-ink-2)] [transition:color_0.15s_ease] hover:text-ink [&[aria-current='page']]:text-ink [&[aria-current='page']]:font-medium [.rail--b_&]:text-[14px] [.rail--b_&]:pl-3 [.rail--b_&::before]:[content:''] [.rail--b_&::before]:absolute [.rail--b_&::before]:left-0 [.rail--b_&::before]:top-[50%] [.rail--b_&::before]:[transform:translateY(-50%)] [.rail--b_&::before]:w-0.25 [.rail--b_&::before]:h-3.5 [.rail--b_&::before]:bg-ink [.rail--b_&::before]:opacity-0 [.rail--b_&::before]:[transition:opacity_0.15s_ease] [.rail--b_&[aria-current='page']::before]:opacity-100 max-[1023.98px]:[.rail_&]:p-0 max-[1023.98px]:[.rail_&]:text-[14px] max-[1023.98px]:[.rail_&]:whitespace-nowrap max-[1023.98px]:[.rail_&::before]:hidden max-[479.98px]:[.rail_.rail\_\_nav_&:not(.rail\_\_link--keep)]:hidden">Sign in</a>
+    </nav>
+
+    <slot name="secondary" />
+
+    <div class="rail__meta hidden min-[1024px]:grid [.rail--b_&]:gap-1 [.rail--b_&]:mt-4 [.rail--b_&]:pt-3 [.rail--b_&]:border-t [.rail--b_&]:border-t-rule">
+      <a href={GH} target="_blank" rel="noopener" class="rail__meta-line [.rail--b_&]:flex [.rail--b_&]:items-center [.rail--b_&]:justify-between [.rail--b_&]:gap-2 [.rail--b_&]:text-[12.5px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:leading-[1.6] [.rail--b_&:hover]:text-ink">
+        <span>Open source</span>
+        {stars != null && <span class="rail__meta-n [.rail--b_&]:font-mono [.rail--b_&]:text-[11.5px]">★ {stars}</span>}
+      </a>
+      <a href="https://www.ycombinator.com" target="_blank" rel="noopener noreferrer" class="rail__meta-line [.rail--b_&]:flex [.rail--b_&]:items-center [.rail--b_&]:justify-between [.rail--b_&]:gap-2 [.rail--b_&]:text-[12.5px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:leading-[1.6] [.rail--b_&:hover]:text-ink">
+        <span>Backed by Y Combinator</span>
+      </a>
+    </div>
+
+    {current === "home" ? (
+    <nav class="rail__toc flex flex-col [&_a]:flex [&_a]:items-center [&_a]:[color:var(--color-ink-2)] [&_a]:[transition:color_0.15s_ease] [&_a:hover]:text-ink [.rail--b_&]:gap-2 [.rail--b_&_a]:gap-2 [.rail--b_&_a]:font-mono [.rail--b_&_a]:text-[11px] [.rail--b_&_a]:tracking-[0.04em] [.rail--b_&_a]:[color:var(--color-ink-3)] [.rail--b_&_a[aria-current='true']]:text-ink max-[1023.98px]:[.rail_&]:hidden" aria-label="On this page">
+      {
+        sections.map((section, index) => (
+          <span class="rail__toc-item block">
+            <a href={`#${section.id}`}>
+              <span class="rail__num [.rail--b_&]:tabular-nums [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:[transition:color_0.15s_ease] [.rail--b_.rail\_\_toc_a[aria-current='true']_&]:text-ink">{pad(index)}</span>
+              <span>{section.label}</span>
+            </a>
+          </span>
+        ))
+      }
+    </nav>
+    ) : null}
+
+    <div class="rail__contact [.rail--b_&]:mt-auto [.rail--b_&]:pt-5 [.rail--b_&]:border-t [.rail--b_&]:border-t-rule hidden min-[1024px]:grid [.rail--b_&]:gap-3">
+      <div class="rail__contact-head [.rail--b_&]:flex [.rail--b_&]:items-center [.rail--b_&]:gap-2.5 [.rail--b_&_img]:w-7 [.rail--b_&_img]:h-7 [.rail--b_&_img]:rounded-[999px] [.rail--b_&_img]:[box-shadow:0_0_0_1px_var(--color-rule)] [.rail--b_&_img]:shrink-0 [.rail--b_&_>_div]:flex [.rail--b_&_>_div]:flex-col [.rail--b_&_>_div]:gap-0.25 [.rail--b_&_>_div]:min-w-0">
+        <img src={rhysAvatar.src} alt="" width="28" height="28" />
+        <div>
+          <span class="rail__contact-title [.rail--b_&]:text-[13px] [.rail--b_&]:font-medium [.rail--b_&]:text-ink">Questions? Get in touch.</span>
+          <span class="rail__contact-sub [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)]">Rhys, founder</span>
+        </div>
+      </div>
+      <ul class="rail__contact-list [.rail--b_&]:grid [.rail--b_&]:gap-2 [.rail--b_&_a]:flex [.rail--b_&_a]:flex-col [.rail--b_&_a]:gap-0.25 [.rail--b_&_a]:my-0 [.rail--b_&_a]:mx-[-6px] [.rail--b_&_a]:py-[4px] [.rail--b_&_a]:px-[6px] [.rail--b_&_a]:rounded-[5px] [.rail--b_&_a]:text-[12.5px] [.rail--b_&_a]:leading-[1.35] [.rail--b_&_a]:[transition:background_0.15s_ease] [.rail--b_&_a:hover]:[background:var(--color-surface-2)]">
+        <li>
+          <a href={DISCORD_URL} target="_blank" rel="noopener noreferrer">
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={discordLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Discord</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">Join the community</span>
+          </a>
+        </li>
+        <li>
+          <a href={`mailto:${EMAIL}?subject=Executor`}>
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={gmailLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Email</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">{EMAIL}</span>
+          </a>
+        </li>
+        <li>
+          <a href={`mailto:${EMAIL}?subject=slack%20connect%20invite%20for%20Executor`}>
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={slackLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />Shared Slack</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">send a slack connect</span>
+          </a>
+        </li>
+        <li>
+          <a href={X_URL} target="_blank" rel="me noopener">
+            <span class="rail__contact-k inline-flex items-center gap-2 [.rail--b_&]:text-ink [.rail--b_&]:font-medium"><img src={xLogo} alt="" width="16" height="16" class="size-4 shrink-0 object-contain" />X</span>
+            <span class="rail__contact-v [.rail--b_&]:font-mono [.rail--b_&]:text-[11px] [.rail--b_&]:[color:var(--color-ink-3)] [.rail--b_&]:wrap-anywhere [.rail--b_.rail\_\_contact-list_a:hover_&]:[color:var(--color-ink-2)]">@RhysSullivan</span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</aside>
+
+<script>
+  import { initRailSpy } from "./rail-spy";
+  document.querySelectorAll<HTMLElement>(".rail").forEach(initRailSpy);
+</script>

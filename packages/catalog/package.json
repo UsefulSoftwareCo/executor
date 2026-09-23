@@ -1,0 +1,16 @@
+{
+  "name": "@executor-js/catalog",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/index.ts"
+  },
+  "dependencies": {
+    "@executor-js/app-templates": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/utils": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "yaml": "^2.8.2"
+  }
+}

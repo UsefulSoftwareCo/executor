@@ -1,0 +1,26 @@
+{
+  "name": "@executor-js/app-data",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/database.ts",
+    "./schema": "./src/implementation/schema.ts",
+    "./node": "./src/node.ts",
+    "./worker-bundle": "./src/contracts/worker-bundle.ts",
+    "./cloudflare": "./src/cloudflare.ts"
+  },
+  "dependencies": {
+    "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/reactivity": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "undici": "7.16.0"
+  }
+}

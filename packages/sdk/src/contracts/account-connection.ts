@@ -1,0 +1,253 @@
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ProfileId } from "./shared.ts";
+import { ProfileErrors } from "./profiles.ts";
+/** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
+import { Schema } from "effect";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
+import { AppNotFound, AccountSelectionInvalid } from "./apps.ts";
+import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";
+import {
+  AccountConnectionId,
+  AppId,
+  AccountId,
+  OwnerId,
+  ProviderId,
+  HttpUrl,
+  StorageError,
+  CredentialsError,
+} from "./shared.ts";
+import {
+  OAuthClientUnavailable,
+  OAuthClientSetup,
+  CheckOAuthSetup,
+  OAuthCompletionFailed,
+  OAuthStartResult,
+  OAuthClientInput,
+  OAuthSetupFailed,
+} from "./oauth.ts";
+
+/** Public progress never contains submitted fields, grants, or OAuth protocol state. */
+export const AccountConnectionState = Schema.Union([
+  Schema.Struct({ status: Schema.Literals(["pending", "cancelled", "expired"]) }),
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+]);
+/** An app profile requirement to fill when account setup finishes. */
+export const AccountConnectionTarget = Schema.Struct({
+  app: AppId,
+  profile: ProfileId,
+  requirement: Schema.NonEmptyString,
+});
+/** App name is captured for browser consent without exposing unrelated app configuration. */
+export const AccountConnectionDestination = Schema.Struct({
+  ...AccountConnectionTarget.fields,
+  name: Schema.NonEmptyString,
+});
+/** Provider definitions drive the form. Hosts supply URLs and enforce access. */
+export const AccountConnection = Schema.Struct({
+  id: AccountConnectionId,
+  owner: OwnerId,
+  provider: Provider,
+  reconnectAccount: Schema.NullOr(Account),
+  target: Schema.NullOr(AccountConnectionDestination),
+  createdAt: Schema.Date,
+  expiresAt: Schema.Date,
+  state: AccountConnectionState,
+});
+export type AccountConnection = typeof AccountConnection.Type;
+/** A reconnect binds the existing account, provider and owner at creation. */
+export const CreateAccountConnection = Schema.Union([
+  Schema.Struct({
+    owner: OwnerId,
+    provider: ProviderId,
+    account: Schema.optional(AccountId),
+    target: Schema.optional(Schema.Never),
+  }),
+  Schema.Struct({
+    owner: OwnerId,
+    target: AccountConnectionTarget,
+    account: Schema.optional(AccountId),
+    provider: Schema.optional(Schema.Never),
+  }),
+]);
+/** Owner filters remain data predicates; the host must authorize each call. */
+export const GetAccountConnection = Schema.Struct({
+  connection: AccountConnectionId,
+  owner: Schema.optional(OwnerId),
+});
+/** Save one set of fields. Successful retries return the same account. */
+export const SubmitAccountConnection = Schema.Struct({
+  ...GetAccountConnection.fields,
+  method: AuthMethodName,
+  label: Schema.NonEmptyString,
+  fields: AccountFieldsInput,
+});
+/** OAuth setup is bound to the connection's owner and provider. */
+export const StartConnectionOAuth = Schema.Struct({
+  ...GetAccountConnection.fields,
+  method: AuthMethodName,
+  label: Schema.NonEmptyString,
+  redirectUri: Schema.optional(HttpUrl),
+  client: Schema.optional(OAuthClientInput),
+});
+/** Both request identity and OAuth state must match before exchanging a code. */
+export const CompleteConnectionOAuth = Schema.Struct({
+  ...GetAccountConnection.fields,
+  callbackUrl: Schema.RedactedFromValue(HttpUrl),
+});
+/** Unknown IDs and mismatched owners have the same result. */
+export const AccountConnectionNotFound = UserFacingError.define({
+  tag: "AccountConnectionNotFound",
+  status: 404,
+  fields: { connection: AccountConnectionId },
+  title: "Connection no longer available",
+  description: "This connection request could not be found.",
+  recovery: {
+    action:
+      "Close this form and start account setup again. You can also copy the fix prompt into your agent to create a new connection link.",
+    instructions:
+      "Check whether the account connection request still exists. Start a new request for the current app requirement and provide its supported connection link. Do not reconstruct or reuse a missing request’s credentials or link.",
+  },
+});
+/** Parsed AccountConnectionNotFound failure. */
+export type AccountConnectionNotFound = typeof AccountConnectionNotFound.Type;
+/** Cancelled, expired, or superseded flows cannot save credentials. */
+export const AccountConnectionClosed = UserFacingError.define({
+  tag: "AccountConnectionClosed",
+  status: 409,
+  fields: { connection: AccountConnectionId },
+  title: "Connection has ended",
+  description: "This request was completed, cancelled, or expired.",
+  recovery: {
+    action: "Close this form and start account setup again.",
+    instructions:
+      "Read the current connection status. If it completed, check whether the intended account is already connected. Otherwise start a fresh account setup request. Do not reuse a cancelled or expired request or create a duplicate account blindly.",
+  },
+});
+/** Parsed AccountConnectionClosed failure. */
+export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
+
+/** Target changes require a fresh connection; no credentials or selections are committed. */
+export const AccountConnectionTargetChanged = UserFacingError.define({
+  tag: "AccountConnectionTargetChanged",
+  status: 409,
+  fields: {
+    app: AppId,
+    requirement: Schema.String,
+  },
+  title: "App account setup changed",
+  description: "This connection no longer matches the app’s requirements.",
+  recovery: {
+    action: "Close this form and start account setup again.",
+    instructions:
+      "Read the current app deployment, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
+  },
+});
+/** Parsed AccountConnectionTargetChanged failure. */
+export type AccountConnectionTargetChanged = typeof AccountConnectionTargetChanged.Type;
+
+const errors = [
+  ...ProfileErrors,
+  StorageError,
+  AccountConnectionNotFound,
+  ProviderNotFound,
+  AccountNotFound,
+] as const;
+const saveErrors = [
+  ...errors,
+  AccountConnectionClosed,
+  AccountConnectionTargetChanged,
+  CredentialsError,
+  AuthMethodInvalid,
+  AccountFieldsInvalid,
+] as const;
+/** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
+export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
+  .add(
+    HttpApiEndpoint.post("create", "/v1/account-connections", {
+      payload: CreateAccountConnection,
+      success: AccountConnection,
+      error: [
+        ...ProfileErrors,
+        StorageError,
+        ProviderNotFound,
+        AccountNotFound,
+        AccountConnectionNotFound,
+        AppNotFound,
+        AccountSelectionInvalid,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("get", "/v1/account-connections/:connection", {
+      params: { connection: AccountConnectionId },
+      query: { owner: Schema.optional(OwnerId) },
+      success: AccountConnection,
+      error: errors,
+    }).annotate(
+      OpenApi.Description,
+      "Check a connection request: pending, completed with account metadata, cancelled or expired. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed targeted requests have already selected the account for the named profile. Provider-only requests save standalone accounts.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("cancel", "/v1/account-connections/:connection/cancel", {
+      params: { connection: AccountConnectionId },
+      query: { owner: Schema.optional(OwnerId) },
+      success: AccountConnection,
+      error: errors,
+    }).annotate(
+      OpenApi.Description,
+      "Cancel a pending connection request without changing saved accounts.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("submit", "/v1/account-connections/submit", {
+      payload: SubmitAccountConnection,
+      success: Account,
+      error: saveErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("oauthSetup", "/v1/account-connections/oauth/setup", {
+      payload: CheckOAuthSetup,
+      success: OAuthClientSetup,
+      error: [
+        StorageError,
+        ProviderNotFound,
+        AuthMethodInvalid,
+        CredentialsError,
+        OAuthSetupFailed,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "Inspect OAuth client availability without registering a client, creating a connection, or starting authorization. Hosts must authorize access to the owner and provider.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("startOAuth", "/v1/account-connections/oauth/start", {
+      payload: StartConnectionOAuth,
+      success: OAuthStartResult,
+      error: [
+        ...errors,
+        AccountConnectionClosed,
+        AccountConnectionTargetChanged,
+        CredentialsError,
+        AuthMethodInvalid,
+        OAuthClientUnavailable,
+        OAuthSetupFailed,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("completeOAuth", "/v1/account-connections/oauth/complete", {
+      payload: CompleteConnectionOAuth,
+      success: Account,
+      error: [
+        ...errors,
+        AccountConnectionClosed,
+        AccountConnectionTargetChanged,
+        CredentialsError,
+        OAuthCompletionFailed,
+      ],
+    }),
+  );

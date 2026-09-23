@@ -1,0 +1,158 @@
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 0f25dedd409ee3bf612b5a0641ee3745a4389625..dbcf7e73593a49e43cf8364de928c4d20268de74 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -194,3 +194,6 @@ declare function consumeClientAssertion(ctx: GenericEndpointContext, opts: OAuth
+ }): Promise<void>;
+ //#endregion
+ export { ActiveAccessTokenPayload, AuthMethod, AuthServerMetadata, AuthorizePrompt, BearerMethodsSupported, ClientDiscovery, ClientMetadataResourceFetch, ClientRegistrationRequest, Confirmation, DEFAULT_OAUTH_SCOPES, DEVICE_CODE_GRANT_TYPE, GrantType, InitialAccessTokenAuthorization, OAuthAuthenticatedClient, OAuthAuthorizationQuery, OAuthClaimExtensionInput, type OAuthClient, OAuthClientAdministrativeResponse, OAuthClientAuthenticationInput, OAuthClientAuthenticationRequest, OAuthClientAuthenticationResult, OAuthClientAuthenticationStrategy, type OAuthClientMetadata, OAuthClientRegistrationResponse, OAuthClientResource, OAuthConsent, type OAuthDeviceAuthorizationOptions, type OAuthEndpointErrorResult, type OAuthEndpointRedirectContext, type OAuthErrorCode, OAuthExtensionGrantHandler, OAuthExtensionGrantHandlerInput, type OAuthFieldErrorCode, type OAuthFieldErrorCodeMap, OAuthMetadataExtensionInput, OAuthOpaqueAccessToken, OAuthOptions, OAuthProviderApi, OAuthProviderExtension, type OAuthRedirectOnError, OAuthRefreshToken, OAuthResource, OAuthResourceInput, OAuthTokenIssueParams, OAuthTokenResponse, OAuthUserInfoExtensionInput, OIDCMetadata, Prompt, type ResourceServerMetadata, ResourceUriSchema, SchemaClient, Scope, StoreTokenType, StoredAuthorizationQuery, TokenEndpointAuthMethod, TokenType, VerificationValue, authServerMetadata, consumeClientAssertion, createResourceServerChallenge, extendOAuthProvider, getIssuer, getOAuthProviderApi, getOAuthProviderState, metadataResponse, oauthAuthorizationServerMetadata, oauthClientMetadataSchema, oauthDeviceAuthorization, oauthProvider, oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata, oidcServerMetadata };
++/** Provision configured resources after migrations; preserve existing policies and reject missing tables. */
++export type OAuthResourceSeedContext = { adapter: Pick<AuthContext["adapter"], "findOne" | "create"> };
++export declare function seedOAuthResources(ctx: OAuthResourceSeedContext, options: OAuthOptions<Scope[]>): Promise<void>;
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 6e5728dacd87946d9553a497b39688b5d5d9304a..cc89e52fec360a8c1049aafa9a5e88d999b4ce24 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -229,3 +229,8 @@ function oauthDeviceAuthorization(options = {}) {
+ }
+ //#endregion
+ export { DEFAULT_OAUTH_SCOPES, DEVICE_CODE_GRANT_TYPE, ResourceUriSchema, authServerMetadata, consumeClientAssertion, createResourceServerChallenge, extendOAuthProvider, getIssuer, getOAuthProviderApi, getOAuthProviderState, metadataResponse, oauthAuthorizationServerMetadata, oauthClientMetadataSchema, oauthDeviceAuthorization, oauthProvider, oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata, oidcServerMetadata };
++
++// Explicit provisioning is insert-only and must finish after migrations.
++import { w as seedResourcesForProvisioning } from "./introspect-njKASm3q.mjs";
++export const seedOAuthResources = (ctx, options) =>
++  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
+diff --git a/dist/introspect-njKASm3q.mjs b/dist/introspect-njKASm3q.mjs
+index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..265744e4a749ffab39740c168e51136ed22ca7a0 100644
+--- a/dist/introspect-njKASm3q.mjs
++++ b/dist/introspect-njKASm3q.mjs
+@@ -676,6 +676,8 @@ async function getResource(ctx, opts, identifier) {
+ 			value: identifier
+ 		}]
+ 	});
++	if (!dbResource && opts.resourceSeedMode === "manual" && opts.resources?.some((entry) => (typeof entry === "string" ? entry : entry.identifier) === identifier))
++		throw new APIError("SERVICE_UNAVAILABLE", { message: "OAuth resources have not been provisioned." });
+ 	if (dbResource && opts.cachedResources?.has(identifier)) resourceCache.set(identifier, Object.assign({}, dbResource));
+ 	return dbResource;
+ }
+@@ -802,7 +804,8 @@ function getSeedState(ctx) {
+ *
+ * @internal
+ */
+-async function seedResources(ctx, opts) {
++async function seedResources(ctx, opts, strict = false) {
++	if (opts.resourceSeedMode === "manual") return;
+ 	const inputs = collectResourceInputs(opts);
+ 	if (inputs.length === 0) return;
+ 	const mode = opts.resourceSeedMode ?? "insertOnly";
+@@ -810,6 +813,7 @@ async function seedResources(ctx, opts) {
+ 	for (const rawInput of inputs) {
+ 		const check = await checkIdentifier(opts, rawInput.identifier);
+ 		if (!check.ok) {
++			if (strict) throw new Error("Invalid OAuth resource identifier during provisioning");
+ 			logger.warn(`oauth-provider: skipping resource seed for ${rawInput.identifier} — ${check.reason}`);
+ 			continue;
+ 		}
+@@ -830,7 +834,7 @@ async function seedResources(ctx, opts) {
+ 			});
+ 		} catch (err) {
+ 			const message = err instanceof Error ? err.message : String(err);
+-			if (MISSING_TABLE_PATTERN.test(message)) {
++			if (!strict && MISSING_TABLE_PATTERN.test(message)) {
+ 				logger.debug("oauth-provider: oauthResource table not yet created; deferring resource seed to first access.");
+ 				return;
+ 			}
+@@ -846,10 +850,11 @@ async function seedResources(ctx, opts) {
+ 			} catch (err) {
+ 				const message = err instanceof Error ? err.message : String(err);
+ 				if (/unique|duplicate|UNIQUE/i.test(message)) {
++					if (strict && !await ctx.adapter.findOne({ model: modelName, where: [{ field: "identifier", value: input.identifier }] })) throw err;
+ 					logger.debug(`oauth-provider: resource ${input.identifier} already inserted by a concurrent process — skipping.`);
+ 					continue;
+ 				}
+-				if (MISSING_TABLE_PATTERN.test(message)) {
++				if (!strict && MISSING_TABLE_PATTERN.test(message)) {
+ 					logger.debug("oauth-provider: oauthResource table not yet created; deferring resource seed to first access.");
+ 					return;
+ 				}
+diff --git a/dist/oauth-1Ud-hvZY.d.mts b/dist/oauth-1Ud-hvZY.d.mts
+index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..2ad1925b5f4eecf8b0ba76431a8eb576540488b1 100644
+--- a/dist/oauth-1Ud-hvZY.d.mts
++++ b/dist/oauth-1Ud-hvZY.d.mts
+@@ -1131,7 +1131,8 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+    *
+    * @default "insertOnly"
+    */
+-  resourceSeedMode?: "insertOnly" | "merge" | "overwrite";
++  /** "manual" disables automatic seeding; call seedOAuthResources during provisioning. */
++  resourceSeedMode?: "insertOnly" | "merge" | "overwrite" | "manual";
+   /**
+    * Opt-in cache membership for resources by `identifier`. Mirrors the
+    * {@link OAuthOptions.cachedTrustedClients} pattern.
+diff --git a/dist/oauth-CJ85_W0W.d.mts b/dist/oauth-CJ85_W0W.d.mts
+index 4e3c1a512ab3a3658e4a22516d2dfcea0b001ac5..ed0a93b51c638be33858e598cda0372dbc4a45ee 100644
+--- a/dist/oauth-CJ85_W0W.d.mts
++++ b/dist/oauth-CJ85_W0W.d.mts
+@@ -110,7 +110,6 @@ declare function buildOAuthDeviceGrant(): {
+     resource: {
+       oneOf: ({
+         type: string;
+-        items?: undefined;
+       } | {
+         type: string;
+         items: {
+@@ -786,9 +785,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             required: false;
+             schema: {
+               type: "string";
+-              format?: undefined;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -797,9 +793,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             required: true;
+             schema: {
+               type: "string";
+-              format?: undefined;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -809,8 +802,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             schema: {
+               type: "string";
+               format: string;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -820,8 +811,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             schema: {
+               type: "integer";
+               minimum: number;
+-              format?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -833,8 +822,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+               items: {
+                 type: "string";
+               };
+-              format?: undefined;
+-              minimum?: undefined;
+             };
+             description: string;
+           })[];
+@@ -1073,7 +1060,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+                       oneOf: ({
+                         type: string;
+                         description: string;
+-                        items?: undefined;
+                       } | {
+                         type: string;
+                         items: {

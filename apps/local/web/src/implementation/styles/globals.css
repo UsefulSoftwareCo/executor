@@ -1,0 +1,5 @@
+@import "@executor-js/ui/styles";
+
+@import "@executor-js/ui/dashboard/styles";
+
+@source "../";

@@ -1,0 +1,46 @@
+---
+export const prerender = true;
+import RailLayout from "../../layouts/RailLayout.astro";
+import { getCollection } from "astro:content";
+
+const posts = (await getCollection("blog", ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.date.getTime() - a.data.date.getTime(),
+);
+
+const fmt = (date: Date) =>
+  date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    // Frontmatter dates are bare YYYY-MM-DD (UTC midnight); format in UTC so
+    // the displayed day matches what the author wrote regardless of timezone.
+    timeZone: "UTC",
+  });
+---
+
+<RailLayout title="Blog — Executor" description="Latest news and updates from Executor." current="blog">
+  <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
+    <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
+      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">Writing</h1>
+      <p class="doc__lede text-[17px] leading-[1.6] [color:var(--color-ink-2)] [text-wrap:pretty] mb-[1.6rem]">Notes from building Executor.</p>
+    </header>
+
+    {
+      posts.length === 0 ? (
+        <p class="text-[15px] text-ink-3">No posts yet. Check back soon.</p>
+      ) : (
+        <ul class="doc__posts grid mt-[0.5rem] border-t border-t-rule min-[1024px]:max-w-180">
+          {posts.map((post) => (
+            <li>
+              <a href={`/blog/${post.id}`} class="doc__post grid gap-[0.3rem] [padding:1.15rem_0_1.25rem] border-b border-b-rule no-underline [color:var(--color-ink-2)]">
+                <span class="doc__post-date font-mono text-[11px] uppercase tracking-[0.14em] [color:var(--color-ink-3)]">{fmt(post.data.date)}</span>
+                <span class="doc__post-title text-[19px] font-semibold tracking-[-0.01em] text-ink underline underline-offset-[4px] [text-decoration-color:transparent] [transition:text-decoration-color_0.15s_ease] [.doc\_\_post:hover_&]:[text-decoration-color:var(--color-rule-strong)]">{post.data.title}</span>
+                <span class="doc__post-desc text-[15px] leading-[1.55] [text-wrap:pretty]">{post.data.description}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+  </article>
+</RailLayout>

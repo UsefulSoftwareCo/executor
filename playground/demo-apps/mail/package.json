@@ -1,0 +1,11 @@
+{
+  "name": "@executor-js/app-mail",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "apps": "workspace:*"
+  }
+}

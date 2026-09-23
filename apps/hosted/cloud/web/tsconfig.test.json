@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src",
+    "test",
+    "../../web/src",
+    "../../web/test/browser.ts",
+    "../../../../packages/ui/src",
+    "../../../../packages/devtools/src"
+  ],
+  "exclude": []
+}

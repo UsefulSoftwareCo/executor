@@ -1,0 +1,22 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.3/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@executor-js/catalog-playground",
+    "@executor-playground/hosted",
+    "@executor-js/playground",
+    "@executor-js/app-axiom",
+    "@executor-js/app-issue-mail",
+    "@executor-js/app-live-inbox",
+    "@executor-js/app-mail",
+    "@executor-js/app-vercel",
+    "@executor-js/fumadb-playground",
+    "@executor-js/test-evidence-viewer"
+  ]
+}

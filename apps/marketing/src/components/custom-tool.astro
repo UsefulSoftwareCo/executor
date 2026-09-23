@@ -1,0 +1,41 @@
+---
+import posthog from "../assets/logos/posthog.svg?url";
+import github from "../assets/logos/github.svg?url";
+import claude from "../assets/logos/claude.svg?url";
+import codex from "../assets/logos/codex.svg?url";
+import cursor from "../assets/logos/cursor.svg?url";
+import { homepageStory } from "../content/site-copy";
+---
+
+<figure class="doc__fig--wide @container mt-7 max-w-225 overflow-hidden rounded-[10px] border border-[#e5e5e5] bg-[#fafafa]">
+  <div class="grid items-center gap-7 p-5 @min-[620px]:grid-cols-[1fr_1fr] @min-[620px]:gap-9 @min-[620px]:p-8">
+    <div>
+      <p class="mb-3 text-[11px] text-[#999]">Ask your agent</p>
+      <blockquote class="max-w-[29ch] text-[19px] leading-[1.65] tracking-[-0.02em] text-[#333]">“{homepageStory.build.prompt}”</blockquote>
+      <p class="mt-5 text-[12px] leading-relaxed text-[#999]">Your agent builds a reusable tool and deploys it to Executor.</p>
+    </div>
+    <div class="overflow-hidden rounded-[8px] border border-[#e3e3e3] bg-white">
+      <div class="flex items-center gap-2.5 border-b border-[#ededed] px-5 py-4">
+        <span aria-hidden="true" class="grid size-7 place-items-center rounded-[6px] bg-[#eef0ec] font-mono text-[15px] text-[#7d8978]">↗</span>
+        <span class="text-[13px] font-medium">Daily brief</span>
+        <span class="ml-auto text-[11px] text-[#78917f]">Deployed</span>
+      </div>
+      <div class="px-5 py-5">
+        <p class="text-[10px] text-[#aaa]">Uses your accounts</p>
+        <div class="mt-2.5 flex flex-wrap gap-3 text-[12px] text-[#666]">
+          <span class="flex items-center gap-1.5"><img src={posthog} alt="" width="16" height="16" class="size-4 object-contain" />PostHog</span>
+          <span class="flex items-center gap-1.5"><img src={github} alt="" width="16" height="16" class="size-4 object-contain" />GitHub</span>
+        </div>
+        <div class="mt-5 border-t border-[#eee] pt-4">
+          <p class="text-[10px] text-[#aaa]">A tool your agents can call</p>
+          <p class="mt-2.5 font-mono text-[13px] text-[#555]">daily_brief.get_changes()</p>
+          <p class="mt-2 text-[12px] leading-[1.6] text-[#999]">Signups and open issues, compared with the last check.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <figcaption class="flex items-center gap-3 border-t border-[#e5e5e5] px-5 py-4 text-[12px] text-[#888] @min-[620px]:px-8">
+    <span class="flex items-center gap-2" aria-hidden="true">{[claude, codex, cursor].map((icon) => <img src={icon} alt="" width="16" height="16" class="size-4 object-contain" />)}</span>
+    Build it with one agent. Use it and change it with another.
+  </figcaption>
+</figure>

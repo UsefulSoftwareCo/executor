@@ -1,0 +1,92 @@
+diff --git a/dist/src/workers/workflows/binding.worker.js b/dist/src/workers/workflows/binding.worker.js
+index 76bc90015138664ad7252ff0883b2c7bcece9091..aa59903fe88d55dca8853f704cd0a7bcc6d27af7 100644
+--- a/dist/src/workers/workflows/binding.worker.js
++++ b/dist/src/workers/workflows/binding.worker.js
+@@ -13835,12 +13835,18 @@ var PAUSE_DATETIME = "PAUSE_DATETIME", Context = class extends RpcTarget2 {
+     if (this.#engine.rollbackPhase === "replay")
+       return;
+     timestamp instanceof Date && (timestamp = timestamp.valueOf());
++    const occurrence = this.#getCount("absolute-sleep-" + name);
++    const durationKey = `${await computeHash("absolute-sleep-" + name)}-${occurrence}-duration`;
++    const savedDuration = await this.#state.storage.get(durationKey);
++    if (savedDuration !== undefined) return this.sleep(name, savedDuration);
+     let now = Date.now();
+     if (timestamp < now)
+       throw new Error(
+         "You can't sleep until a time in the past, time-traveler"
+       );
+-    return this.sleep(name, timestamp - now);
++    const duration = timestamp - now;
++    await this.#state.storage.put(durationKey, duration);
++    return this.sleep(name, duration);
+   }
+   async waitForEvent(name, options) {
+     if (this.#engine.rollbackPhase === "rollback")
+@@ -14148,6 +14154,7 @@ var TimePriorityQueue = class {
+   async add(entry) {
+     await this.#ctx.storage.transaction(async () => {
+       this.#heap.add(entry), this.addEntryDB(entry);
++      await this.handleNextAlarm();
+     });
+   }
+   /**
+@@ -14179,7 +14186,10 @@ var TimePriorityQueue = class {
+   }
+   // Idempotent, perhaps name should suggest so
+   async handleNextAlarm() {
+-    this.#heap.peek();
++    // Keep a durable recovery alarm even while a callback is in flight.
++    // Waiting runs wake at their earliest persisted deadline.
++    const next = this.#heap.peek();
++    await this.#ctx.storage.setAlarm(next?.targetTimestamp ?? Date.now() + 30_000);
+   }
+   getFirst(callbackFn) {
+     return structuredClone(this.#heap.toArray().find(callbackFn));
+@@ -14513,6 +14523,7 @@ var Engine = class extends DurableObject {
+   }
+   async setStatus(accountId, instanceId, status) {
+     await this.ctx.storage.put(ENGINE_STATUS_KEY, status), this.handleStatusWaiter(status);
++    if ([2, 3, 4, 5].includes(status)) await this.ctx.storage.deleteAlarm();
+   }
+   statusWaiters = /* @__PURE__ */ new Map();
+   async waitForStatus(status) {
+@@ -14878,8 +14889,28 @@ ${i}`] = events[i];
+     let { accountId, workflow, version: version2, instance, event } = metadata;
+     await this.ctx.storage.put(ENGINE_STATUS_KEY, 0 /* Queued */), this.pauseController = new AbortController(), this.waiters = /* @__PURE__ */ new Map(), this.eventMap = /* @__PURE__ */ new Map(), clearRollbackRegistry(this.rollbackRegistry), this.init(accountId, workflow, version2, instance, event);
+   }
++  async alarm() {
++    const metadata = await this.ctx.storage.get(INSTANCE_METADATA);
++    const status = await this.ctx.storage.get(ENGINE_STATUS_KEY);
++    if (metadata === void 0 || [2, 3, 4, 5].includes(status)) return;
++    if (this.isRunning) {
++      this.priorityQueue.popPastEntries();
++      await this.priorityQueue.handleNextAlarm();
++      return;
++    }
++    this.ctx.waitUntil(this.init(metadata.accountId, metadata.workflow, metadata.version, metadata.instance, metadata.event));
++  }
+   async init(accountId, workflow, version2, instance, event) {
+-    if (this.priorityQueue === void 0 && (this.priorityQueue = new TimePriorityQueue(
++    if (this.isRunning) return;
++    this.isRunning = true;
++    try {
++      return await this.runWorkflow(accountId, workflow, version2, instance, event);
++    } finally {
++      this.isRunning = false;
++    }
++  }
++  async runWorkflow(accountId, workflow, version2, instance, event) {
++    if (this.priorityQueue === void 0) this.priorityQueue = new TimePriorityQueue(
+       this.ctx,
+       // this.env,
+       {
+@@ -14889,8 +14920,7 @@ ${i}`] = events[i];
+         instance,
+         event
+       }
+-    )), this.isRunning)
+-      return;
++    );
+     this.priorityQueue.popPastEntries(), await this.priorityQueue.handleNextAlarm(), this.accountId = accountId, this.instanceId = instance.id, this.workflowName = workflow.name;
+     let status = await this.getStatus();
+     if ([

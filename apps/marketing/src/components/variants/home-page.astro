@@ -1,0 +1,128 @@
+---
+import RailLayout from "../../layouts/RailLayout.astro";
+import { tagline, introduction } from "../../content/site-copy";
+import { heroVariants, type HeroVariant } from "../../content/hero-experiment";
+import DocBody from "./doc-body.astro";
+import EarlyPreviewNotice from "../early-preview-notice.astro";
+import { betaNoticeDismissalKey } from "@executor-js/ui/contracts/early-preview";
+
+interface Props { variant?: HeroVariant }
+const { variant = heroVariants[0] } = Astro.props;
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+---
+
+<RailLayout
+  title={`Executor — ${tagline}`}
+  description={introduction}
+>
+  <script is:inline slot="banner" define:vars={{ betaNoticeDismissalKey }}>
+    try {
+      if (localStorage.getItem(betaNoticeDismissalKey) === "true") {
+        document.documentElement.dataset.betaNoticeDismissed = "true";
+      }
+    } catch {}
+  </script>
+  <aside
+    slot="banner"
+    aria-label="Beta notice"
+    data-beta-notice
+    class="relative border-y border-[#e9ddb5] bg-[#fff9e8] px-8 text-[#3d3523] [html[data-beta-notice-dismissed=true]_&]:hidden"
+  >
+    <div class="mx-auto flex min-h-8 w-fit max-w-full flex-wrap items-center justify-center gap-x-2 text-center text-xs leading-4">
+      <strong class="font-mono font-semibold">Executor v2 Beta</strong>
+      <span>You may see bugs.</span>
+      <button type="button" data-early-preview-open aria-haspopup="dialog" aria-controls="early-preview-notice" class="min-h-8 cursor-pointer font-semibold underline underline-offset-2 hover:text-[#765b21] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]">Learn more</button>
+    </div>
+    <button type="button" data-beta-notice-dismiss aria-label="Dismiss beta notice" class="absolute inset-y-0 right-1 flex min-w-8 cursor-pointer items-center justify-center text-lg leading-none text-[#75694d] hover:text-[#3d3523] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#765b21]">&times;</button>
+  </aside>
+  <DocBody gh={GH} variant={variant} />
+  <EarlyPreviewNotice />
+</RailLayout>
+
+<script>
+  import { betaNoticeDismissalKey } from "@executor-js/ui/contracts/early-preview";
+
+  document.querySelector<HTMLButtonElement>("[data-beta-notice-dismiss]")?.addEventListener("click", () => {
+    document.querySelector<HTMLElement>("[data-beta-notice]")?.setAttribute("hidden", "");
+    try {
+      localStorage.setItem(betaNoticeDismissalKey, "true");
+    } catch {}
+  });
+</script>
+
+<script>
+  // Copy buttons. Use the async Clipboard API in secure contexts and fall back
+  // to a hidden textarea + execCommand otherwise, so copy (and the copied-state
+  // animation) also works over plain HTTP, e.g. a LAN / tailnet dev host where
+  // navigator.clipboard is undefined.
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {}
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.className = "fixed top-0 left-0 opacity-0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {}
+    document.body.removeChild(ta);
+    return ok;
+  };
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(
+    "button[data-copy]",
+  )) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    btn.addEventListener("click", async () => {
+      const ok = await copyToClipboard(btn.dataset.copy ?? "");
+      btn.dataset.copied = ok ? "true" : "false";
+      const event = btn.dataset.event;
+      if (ok && event) {
+        window.dispatchEvent(
+          new CustomEvent("analytics:capture", {
+            detail: { event, properties: { surface: "marketing_hero" } },
+          }),
+        );
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        delete btn.dataset.copied;
+      }, 1500);
+    });
+  }
+</script>
+
+<script>
+  // ── Scroll reveals ─────────────────────────────────────────────────
+  // Sections fade + rise into view as they enter the viewport. The
+  // hidden initial state is applied by JS (`.reveal-init`) so no-JS
+  // visitors and reduced-motion users always see fully-rendered content.
+  const reveals = Array.from(
+    document.querySelectorAll<HTMLElement>(".reveal"),
+  );
+  const prefersReduced = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches;
+  if (reveals.length > 0 && !prefersReduced && "IntersectionObserver" in window) {
+    for (const el of reveals) el.classList.add("reveal-init");
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            io.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
+    );
+    for (const el of reveals) io.observe(el);
+  }
+</script>

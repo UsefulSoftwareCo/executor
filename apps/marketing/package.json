@@ -1,0 +1,44 @@
+{
+  "name": "@executor-js/marketing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./experiments": "./src/content/hero-experiment.ts",
+    "./site-origin": "./src/content/site-origin.ts",
+    "./error-reporting": "./src/error-reporting.ts"
+  },
+  "scripts": {
+    "build": "astro build",
+    "preview": "astro preview",
+    "dev": "astro dev",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/react": "^6.0.5",
+    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
+    "@sentry/browser": "10.75.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "astro": "^7.3.2",
+    "clsx": "^2.1.1",
+    "cookie": "^2.0.1",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "motion": "^12.38.0",
+    "posthog-js": "^1.372.5",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-tweet": "^3.3.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.2"
+  },
+  "devDependencies": {
+    "@sentry/vite-plugin": "5.4.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@executor-js/docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "blume build",
+    "dev": "blume dev --port 4322",
+    "preview": "blume preview --port 4322",
+    "validate": "blume validate",
+    "audit": "blume audit --skip BLUME_AUDIT_LINK_TO_BROKEN",
+    "eval": "blume eval"
+  },
+  "dependencies": {
+    "@executor-js/marketing": "workspace:*",
+    "astro": "^7.3.2",
+    "blume": "1.7.3",
+    "cookie": "^2.0.1"
+  },
+  "devDependencies": {
+    "@sentry/vite-plugin": "5.4.0",
+    "astro": "7.3.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

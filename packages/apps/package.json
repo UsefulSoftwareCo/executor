@@ -1,0 +1,66 @@
+{
+  "name": "apps",
+  "version": "0.0.1-beta.0",
+  "private": true,
+  "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./framework-reference.json": "./dist/framework-reference.json",
+    "./contracts": "./src/contracts/host.ts",
+    "./host": "./src/host.ts",
+    "./effect": "./src/effect.ts",
+    "./operations/approval": "./src/approval.ts",
+    "./client": "./src/client.ts",
+    "./mcp": "./src/mcp.ts",
+    "./mcp/stdio": "./src/mcp-stdio.ts",
+    "./mcp/effect": "./src/implementation/mcp.ts",
+    "./graphql": "./src/graphql.ts",
+    "./openapi": "./src/openapi.ts",
+    "./ui/contracts": "./src/contracts/ui.ts",
+    "./ui/auth": "./src/ui-auth.ts",
+    "./ui/serving": "./src/ui-serving.ts",
+    "./ui/auth/contracts": "./src/contracts/ui-auth.ts",
+    "./react": "./src/react.ts",
+    "./storage/facet": "./src/facet.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "pack": "bun run build && npm pack ./dist --pack-destination ./dist",
+    "test:package": "node scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "4.1.1",
+    "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-data": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/node": "^26.6.1",
+    "@types/react": "^19.2.0",
+    "esbuild": "0.28.2",
+    "graphql": "16.11.0",
+    "react": "^19.2.0",
+    "typescript": "^5.9.2"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "graphql": "^16.11.0",
+    "react": "^19.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "graphql": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}

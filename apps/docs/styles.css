@@ -1,0 +1,214 @@
+@import "../marketing/src/styles/site-frame.css";
+
+/* The chrome that joins the marketing rail to Blume's own docs frame.
+   Everything here uses the marketing tokens already defined in apps/marketing;
+   no new colour and no new face is introduced. Blume still owns the article,
+   the code blocks, the outline and the page actions, so nothing below touches
+   them beyond the offsets the missing header leaves behind.
+
+   These rules sit outside every Tailwind layer, so they win over the utility
+   classes on Blume's own elements without !important. */
+
+/* Match the marketing frame while retaining Blume's article and outline.
+   The rail owns its positioning utilities in DocsRail.astro. */
+@media (min-width: 1024px) {
+  body {
+    max-width: var(--site-frame-width);
+    margin-inline: auto;
+    padding-inline-start: var(--site-rail-width);
+  }
+
+  #blume-content {
+    min-width: 0;
+    padding-inline: var(--site-content-gutter);
+  }
+
+  /* Keep capped article blocks on the shared content edge below the TOC breakpoint. */
+  #blume-content > * {
+    margin-inline: 0;
+  }
+
+  /* On the home page the rail fills the viewport exactly. With the
+     documentation tree inside it, the rail has to grow and let the column
+     scroll instead. */
+  .rail:has(.docs-nav) {
+    height: auto;
+    min-height: 100%;
+  }
+}
+
+/* The rail's secondary slot: the search button and the documentation tree,
+   under the main navigation and above the quiet meta lines. In the bar it
+   lays out along the row with everything else. */
+.docs-rail__secondary {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@media (max-width: 1023.98px) {
+  .docs-rail__secondary {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+}
+
+/* --- Blume's grid without a header or a nav column --------------------- */
+
+/* The documentation tree is in the rail, so Blume's own navigation column is
+   empty (see NoSidebar.astro): drop it, and close the column it held. */
+[data-blume-nav-drawer] {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  [data-blume-doc-grid] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  [data-blume-doc-grid] {
+    grid-template-columns: minmax(0, 1fr) 17.5rem;
+  }
+}
+
+/* Blume parks the outline below a 4rem header. There is none here, so the
+   outline and the page actions start with the article. */
+[data-blume-toc] {
+  top: 24px;
+  height: auto;
+  max-height: calc(100dvh - 48px);
+}
+
+/* --- The documentation tree -------------------------------------------- */
+
+.docs-nav {
+  font-family: var(--font-sans);
+}
+
+.docs-nav__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docs-nav__group {
+  display: block;
+  margin: 20px 0 6px;
+  color: var(--color-ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.docs-nav__list > li:first-child > .docs-nav__group {
+  margin-top: 0;
+}
+
+.docs-nav__list a {
+  display: block;
+  border-left: 1px solid var(--color-rule);
+  padding: 4px 0 4px 12px;
+  color: var(--color-ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.docs-nav__list a:hover,
+.docs-nav__list a[aria-current="page"] {
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+}
+
+.docs-nav__list a[aria-current="page"] {
+  font-weight: 600;
+}
+
+.docs-nav--mobile {
+  display: none;
+}
+
+@media (max-width: 1023.98px) {
+  .docs-nav--desktop {
+    display: none;
+  }
+
+  /* Small screens: the rail collapses to a bar, so the documentation tree
+     becomes a menu directly below it. */
+  .docs-nav--mobile {
+    display: block;
+    border-bottom: 1px solid var(--color-rule);
+    background: var(--color-surface);
+    padding: 14px 16px;
+  }
+
+  .docs-nav--mobile summary {
+    cursor: pointer;
+    color: var(--color-ink-2);
+    font-size: 14px;
+    list-style: none;
+  }
+
+  .docs-nav--mobile summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .docs-nav--mobile summary::after {
+    content: "+";
+    margin-left: 6px;
+    color: var(--color-ink-3);
+  }
+
+  .docs-nav--mobile[open] summary::after {
+    content: "–";
+  }
+
+  .docs-nav--mobile nav {
+    padding-top: 16px;
+  }
+}
+
+/* --- Article type scale ------------------------------------------------ */
+
+/* Blume's defaults run large. These sizes follow the familiar Mintlify scale:
+   16px body, a 30px semibold title, an 18px muted description, 24px and 20px
+   section headings. Only sizes and weights change; faces and colours stay. */
+article.prose {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+article.prose > h1 {
+  font-size: 1.875rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-block-end: 0.75rem;
+}
+
+article.prose > h1 + p.text-lg {
+  font-size: 1.125rem;
+  line-height: 1.6;
+  margin-block-start: 0;
+  margin-block-end: 2rem;
+}
+
+article.prose h2 {
+  font-size: 1.5rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+article.prose h3 {
+  font-size: 1.25rem;
+  line-height: 1.4;
+  font-weight: 600;
+}

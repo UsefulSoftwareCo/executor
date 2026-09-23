@@ -1,0 +1,39 @@
+{
+  "name": "@executor-js/hosted-self-host",
+  "private": true,
+  "type": "module",
+  "exports": {},
+  "scripts": {
+    "start": "bun run ../../../packages/apps/scripts/build.mjs && node src/main.ts",
+    "build": "bun run ../../../packages/apps/scripts/build.mjs && bun build src/main.ts --target=node --packages=external --outdir=dist --entry-naming=\"[name].mjs\""
+  },
+  "dependencies": {
+    "@better-auth/core": "1.7.5",
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@electric-sql/pglite": "0.5.8",
+    "@executor-js/app-management": "workspace:*",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/app-source": "workspace:*",
+    "@executor-js/app-templates": "workspace:*",
+    "@executor-js/hosted-server": "workspace:*",
+    "@executor-js/mcp": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/utils": "workspace:*",
+    "apps": "workspace:*",
+    "better-auth": "1.7.5",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "fumadb-effect": "workspace:*",
+    "kysely": "0.29.6",
+    "proper-lockfile": "4.1.2",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@executor-js/authorization": "workspace:*",
+    "@executor-js/catalog": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/proper-lockfile": "4.1.4"
+  }
+}

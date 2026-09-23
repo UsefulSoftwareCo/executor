@@ -1,0 +1,36 @@
+---
+// The documentation tree, rendered in the marketing rail's secondary slot.
+// Blume resolves the groups and their order from `navigation.sidebar` in
+// blume.config.ts; this only paints them in the site's own type scale.
+import type { NavNode } from "blume";
+import { withBase } from "blume/components/islands/base-path.ts";
+
+interface Props {
+  items: readonly NavNode[];
+  currentRoute: string;
+}
+
+const { items, currentRoute } = Astro.props;
+---
+
+<ul class="docs-nav__list">
+  {
+    items.map((item) =>
+      item.kind === "group" ? (
+        <li>
+          <span class="docs-nav__group">{item.label}</span>
+          <Astro.self currentRoute={currentRoute} items={item.children} />
+        </li>
+      ) : (
+        <li>
+          <a
+            aria-current={item.route === currentRoute ? "page" : undefined}
+            href={withBase(item.route)}
+          >
+            {item.label}
+          </a>
+        </li>
+      ),
+    )
+  }
+</ul>

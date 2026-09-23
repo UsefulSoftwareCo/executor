@@ -1,0 +1,56 @@
+---
+title: What Executor is
+description: "Executor holds the services you already use as reusable accounts, connects them to apps, and gives both people and agents one place to call them."
+---
+
+Executor holds your **accounts** — the credentials for the services you already
+use — and connects them to **apps**. An app is a small program that turns those
+accounts into **tools**. People use those tools in the dashboard. Agents use
+them through one MCP endpoint.
+
+You connect an account once. Any app that needs the same **provider** can select
+it, without a second copy of the credential. The agent never sees the
+credential; Executor attaches it inside the app.
+
+## The short version
+
+<Steps>
+  <Step title="Connect an account">
+    Save a credential once, such as an API key or an OAuth sign-in.
+  </Step>
+  <Step title="Add an app">
+    Select which account fills each of the app's requirements.
+  </Step>
+  <Step title="Use it">
+    Connect your agent to the MCP endpoint, or use the app in the dashboard.
+  </Step>
+</Steps>
+
+## Where to run it
+
+- **Hosted**: sign in at [v2.executor.sh](https://v2.executor.sh). This is the
+  beta origin. There is nothing to install.
+- **Local**: run the server on your own machine with the
+  [command line](/run/cli). Your accounts stay on that machine.
+- **Self-host**: run the server in [Docker](/run/self-host) on your own
+  infrastructure, with your own database.
+
+All three run the same apps and expose the same `/mcp` endpoint. Hosted and
+self-host add organizations and browser sign-in.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Connect an account" href="/connect-an-account" icon="key">
+    Save a credential and select it for an app.
+  </Card>
+  <Card title="Add an MCP client" href="/mcp-clients" icon="terminal">
+    Point Claude Code, Cursor or Codex at your endpoint.
+  </Card>
+  <Card title="Providers and accounts" href="/concepts/providers-and-accounts" icon="book-open">
+    What Executor stores, and what an app sees.
+  </Card>
+  <Card title="Author an app" href="/build/author-an-app" icon="code">
+    Write queries, mutations and the approvals that guard them.
+  </Card>
+</CardGroup>

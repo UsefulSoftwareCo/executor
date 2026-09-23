@@ -1,0 +1,42 @@
+{
+  "name": "@executor-js/local-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cd ../../.. && bun run dev",
+    "build": "vp build",
+    "typecheck": "tsc --noEmit",
+    "test:routing": "NODE_ENV=test TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --test src/implementation/router.test.tsx src/contracts/bootstrap.test.ts"
+  },
+  "dependencies": {
+    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/catalog": "workspace:*",
+    "@executor-js/devtools": "workspace:*",
+    "@executor-js/local-server": "workspace:*",
+    "@executor-js/mcp": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
+    "@hugeicons/core-free-icons": "^4.3.3",
+    "@hugeicons/react": "^1.1.10",
+    "@tanstack/react-router": "^1.170.38",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "scheduler": "^0.27.0"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
+    "@tailwindcss/vite": "^4.2.1",
+    "@tanstack/router-plugin": "^1.168.40",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "tailwindcss": "^4.2.1",
+    "tsx": "^4.23.13",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
+    "vite-plus": "0.3.3"
+  }
+}

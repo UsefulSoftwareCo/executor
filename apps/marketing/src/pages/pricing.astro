@@ -1,0 +1,101 @@
+---
+import RailLayout from "../layouts/RailLayout.astro";
+import { pricingTiers as createPricingTiers } from "../content/site-copy";
+import { siteOrigin } from "../content/site-origin.ts";
+const pricingTiers = createPricingTiers(siteOrigin);
+
+const GH = "https://github.com/UsefulSoftwareCo/executor";
+
+// Same tiers the Markdown route serves; the card layout only needs a split
+// between the number and its unit, and a real href for each call to action.
+const cards = [
+  {
+    tier: pricingTiers[0]!,
+    amount: "$0",
+    unit: "/ month",
+    href: "/login",
+    label: "Start free",
+    recommended: false,
+  },
+  {
+    tier: pricingTiers[1]!,
+    amount: "$15",
+    unit: "/ member / month",
+    href: "/login",
+    label: "Start free trial",
+    recommended: true,
+  },
+  {
+    tier: pricingTiers[2]!,
+    amount: "Custom",
+    unit: "",
+    href: "mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry",
+    label: "Contact us",
+    recommended: false,
+  },
+];
+---
+
+<RailLayout
+  title="Pricing — Executor"
+  description="Start free, pay per member. Executor Cloud pricing for teams and enterprises."
+  current="pricing"
+>
+  <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
+    <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
+      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">Start free, pay per member.</h1>
+      <p class="doc__lede text-[17px] leading-[1.6] [color:var(--color-ink-2)] [text-wrap:pretty] mb-[1.6rem]">
+        Cloud is free for small teams. Team is one flat price per person. Enterprise is
+        for orgs that need it on their own infrastructure with their own controls.
+      </p>
+    </header>
+
+    <div class="pricing grid gap-0.25 bg-rule border border-rule rounded-[12px] overflow-hidden mt-[0.5rem] min-[900px]:grid-cols-3">
+      {
+        cards.map(({ tier, amount, unit, href, label, recommended }) => (
+          <section class:list={["pricing__card flex flex-col [padding:1.5rem_1.4rem_1.6rem] bg-surface relative", recommended && "pricing__card--rec before:[content:''] before:absolute before:inset-[0_0_auto_0] before:h-0.5 before:bg-ink"]}>
+            <span class="pricing__eyebrow font-mono text-[11px] uppercase tracking-[0.14em] [color:var(--color-ink-3)] mb-[0.9rem] [.pricing\_\_card--rec_&]:text-ink">{recommended ? "Recommended" : tier.name === "Free" ? "Get started" : "Custom needs"}</span>
+            <h2 class="pricing__name text-[22px] font-semibold tracking-[-0.01em] text-ink mb-[0.15rem]">{tier.name}</h2>
+            <p class="pricing__aud text-[14px] [color:var(--color-ink-3)] mb-[1.1rem]">{tier.audience.replace(" (recommended)", "")}</p>
+            <p class="pricing__price flex items-baseline gap-[0.4rem] mb-[1.25rem]">
+              <span class="pricing__amount text-[40px] leading-[1] font-semibold tracking-[-0.02em] text-ink tabular-nums">{amount}</span>
+              {unit ? <span class="pricing__unit text-[13.5px] [color:var(--color-ink-3)]">{unit}</span> : null}
+            </p>
+            <a href={href} class={recommended ? "btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\\_\\_way-a_&]:text-[13.5px] [.doc\\_\\_way-a_&]:py-[0.55rem] [.doc\\_\\_way-a_&]:px-[0.95rem] [.doc\\_\\_section_a&]:no-underline [.doc\\_\\_section_a&]:text-surface max-[719.98px]:[.doc\\_\\_actions_>_&]:w-full max-[719.98px]:[.doc\\_\\_actions_>_&]:justify-center max-[719.98px]:[.doc\\_\\_actions_>_&]:text-center max-[719.98px]:[.doc\\_\\_way-a_&]:w-full max-[719.98px]:[.doc\\_\\_way-a_&]:justify-center max-[719.98px]:[.doc\\_\\_way-a_&]:text-center [.pricing\\_\\_card_>_&]:self-start [.pricing\\_\\_card_>_&]:mb-[1.4rem]" : "btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\\_\\_way-a_&]:text-[13.5px] [.doc\\_\\_way-a_&]:py-[0.55rem] [.doc\\_\\_way-a_&]:px-[0.95rem] [.doc\\_\\_section_a&]:no-underline max-[719.98px]:[.doc\\_\\_way-a_&]:w-full max-[719.98px]:[.doc\\_\\_way-a_&]:justify-center max-[719.98px]:[.doc\\_\\_way-a_&]:text-center [.pricing\\_\\_card_>_&]:self-start [.pricing\\_\\_card_>_&]:mb-[1.4rem]"}>{label}</a>
+            {tier.featuresLabel ? <p class="pricing__flabel text-[12.5px] font-medium text-ink mb-[0.6rem]">{tier.featuresLabel}</p> : null}
+            <ul class="check-list [list-style:none] grid gap-[0.65rem] p-0 m-0 [&_li]:flex [&_li]:items-start [&_li]:gap-[0.6rem] [&_li]:text-[14px] [&_li]:leading-[1.5] [&_li]:[color:var(--color-ink-2)] [&_li_svg]:shrink-0 [&_li_svg]:w-3.75 [&_li_svg]:h-3.75 [&_li_svg]:mt-0.5 [&_li_svg]:text-accent">
+              {tier.features.map((f) => (
+                <li>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
+      }
+    </div>
+
+
+    <section class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+      <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Questions</h2>
+      <dl class="doc__beats grid gap-[1.25rem] [&_dt]:text-[16px] [&_dt]:font-semibold [&_dt]:text-ink [&_dt]:mb-[0.2rem] [&_dd]:text-[15.5px] [&_dd]:leading-[1.6] [&_dd]:[color:var(--color-ink-2)]">
+        <div>
+          <dt>What counts as an execution?</dt>
+          <dd>One call to the Executor tool from your agent. A single execution can make many tool calls inside it.</dd>
+        </div>
+        <div>
+          <dt>What happens when the free tier runs out?</dt>
+          <dd>Calls pause until the month resets or you move to Team. Nothing is deleted.</dd>
+        </div>
+        <div>
+          <dt>Can I mix Cloud and self-hosted?</dt>
+          <dd>Yes. They are the same code, and an agent can point at more than one Executor.</dd>
+        </div>
+      </dl>
+      <p class="doc__quiet-p mt-[0.75rem] text-[14px]! [color:var(--color-ink-3)]!">
+        Something else? <a href="mailto:rhys@executor.sh?subject=Executor%20pricing">Email Rhys</a>.
+      </p>
+    </section>
+  </article>
+</RailLayout>

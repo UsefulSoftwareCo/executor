@@ -1,0 +1,9 @@
+---
+import HomePage from "../../../components/variants/home-page.astro";
+import { heroVariants } from "../../../content/hero-experiment";
+export function getStaticPaths() {
+  return heroVariants.map((variant) => ({ params: { variant: variant.id }, props: { variant } }));
+}
+const { variant } = Astro.props;
+---
+<HomePage variant={variant} />

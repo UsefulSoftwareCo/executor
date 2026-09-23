@@ -1,0 +1,436 @@
+diff --git a/dist/core/node/RuntimeServices.d.mts b/dist/core/node/RuntimeServices.d.mts
+index 8aee19fd..5373b7dd 100644
+--- a/dist/core/node/RuntimeServices.d.mts
++++ b/dist/core/node/RuntimeServices.d.mts
+@@ -48,6 +48,8 @@ type RuntimeServices = Runtime | BindingServices;
+-declare const layerProxy: () => Layer.Layer<WorkerProxy, never, never>;
+-declare const layerRegistry: () => Layer.Layer<RegistryProxy, import("effect/PlatformError").PlatformError | SystemError, import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path | Paths>;
+-declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
+-//#endregion
+-export { ApiConfig, BindingServices, RuntimeConfig, RuntimeServices, StorageConfig, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage };
+-//# sourceMappingURL=RuntimeServices.d.mts.map
+\ No newline at end of file
++declare const layerProxy: () => Layer.Layer<WorkerProxy, never, never>;
++declare const layerRegistry: () => Layer.Layer<RegistryProxy, import("effect/PlatformError").PlatformError | SystemError, import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path | Paths>;
++declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
++/** Local-only embedding; remote bindings are intentionally absent. */
++declare const layerLocalRuntime: (storage?: StorageConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
++//#endregion
++export { ApiConfig, BindingServices, RuntimeConfig, RuntimeServices, StorageConfig, layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage };
++//# sourceMappingURL=RuntimeServices.d.mts.map
+\ No newline at end of file
+diff --git a/dist/core/node/RuntimeServices.mjs b/dist/core/node/RuntimeServices.mjs
+index e4adc917..5909c319 100644
+--- a/dist/core/node/RuntimeServices.mjs
++++ b/dist/core/node/RuntimeServices.mjs
+@@ -39,7 +39,8 @@ const layerLocalBindings = () => Layer.mergeAll(AnalyticsEngineLive, AssetsLive,
+-const layerProxy = () => WorkerProxyLive;
+-const layerRegistry = () => RegistryProxyLive.pipe(Layer.provide(RegistryLive));
+-const layerRuntime = (config) => RuntimeLive.pipe(Layer.provideMerge(layerLocalBindings()), Layer.provideMerge(layerRemoteBindings(config.api)), Layer.provideMerge(WorkerProxyLive), Layer.provide(GlobalsLive), Layer.provideMerge(layerLoopback()), Layer.provide(layerStorage(config.storage)), Layer.provide(InternetLive), Layer.provideMerge(layerRegistry()), Layer.provide(PathsLive), Layer.provide(DockerLive), Layer.provide(WorkerdLive));
+-//#endregion
+-export { layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage };
+-
+-//# sourceMappingURL=RuntimeServices.mjs.map
+\ No newline at end of file
++const layerProxy = () => WorkerProxyLive;
++const layerRegistry = () => RegistryProxyLive.pipe(Layer.provide(RegistryLive));
++const layerRuntime = (config) => RuntimeLive.pipe(Layer.provideMerge(layerLocalBindings()), Layer.provideMerge(layerRemoteBindings(config.api)), Layer.provideMerge(WorkerProxyLive), Layer.provide(GlobalsLive), Layer.provideMerge(layerLoopback()), Layer.provide(layerStorage(config.storage)), Layer.provide(InternetLive), Layer.provideMerge(layerRegistry()), Layer.provide(PathsLive), Layer.provide(DockerLive), Layer.provide(WorkerdLive));
++const layerLocalRuntime = (storage) => RuntimeLive.pipe(Layer.provideMerge(layerLocalBindings()), Layer.provideMerge(WorkerProxyLive), Layer.provide(GlobalsLive), Layer.provideMerge(layerLoopback()), Layer.provide(layerStorage(storage)), Layer.provide(InternetLive), Layer.provideMerge(layerRegistry()), Layer.provide(PathsLive), Layer.provide(DockerLive), Layer.provide(WorkerdLive));
++//#endregion
++export { layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage };
++
++//# sourceMappingURL=RuntimeServices.mjs.map
+\ No newline at end of file
+diff --git a/dist/core/node/index.d.mts b/dist/core/node/index.d.mts
+index 7ce3ebaf..fe6a0b54 100644
+--- a/dist/core/node/index.d.mts
++++ b/dist/core/node/index.d.mts
+@@ -4,6 +4,6 @@ import { QueueConsumer } from "./bindings/queue/QueueOptions.shared.mjs";
+-import { Assets, BindingHooks, DurableObjectNamespace, Module, RuntimeWorker, WorkerdLogging, Workflow } from "./RuntimeWorker.mjs";
+-import { BindingHook, ConfigHook, PluginContext, PluginMap, make, pickPluginsFromContext, use, useSync } from "./PluginContext.mjs";
+-import { Runtime, RuntimeLive } from "./Runtime.mjs";
+-import { ApiConfig, BindingServices, RuntimeConfig, RuntimeServices, StorageConfig, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage } from "./RuntimeServices.mjs";
+-import { index_d_exports } from "./platform-proxy/index.mjs";
+-export { ApiConfig, ApiError, Assets, BindingHook, BindingHooks, BindingServices, ConfigError, ConfigHook, DurableObjectNamespace, type HyperdriveOrigin, Module, index_d_exports as PlatformProxy, PluginContext, PluginMap, type QueueConsumer, Runtime, RuntimeConfig, RuntimeError, RuntimeLive, RuntimeServices, RuntimeWorker, StorageConfig, SystemError, WorkerdLogging, Workflow, isRuntimeError, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, use, useSync };
+\ No newline at end of file
++import { Assets, BindingHooks, DurableObjectNamespace, Module, RuntimeWorker, WorkerdLogging, Workflow } from "./RuntimeWorker.mjs";
++import { BindingHook, ConfigHook, PluginContext, PluginMap, make, pickPluginsFromContext, use, useSync } from "./PluginContext.mjs";
++import { Runtime, RuntimeLive } from "./Runtime.mjs";
++import { ApiConfig, BindingServices, RuntimeConfig, RuntimeServices, StorageConfig, layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage } from "./RuntimeServices.mjs";
++import { index_d_exports } from "./platform-proxy/index.mjs";
++export { ApiConfig, ApiError, Assets, BindingHook, BindingHooks, BindingServices, ConfigError, ConfigHook, DurableObjectNamespace, type HyperdriveOrigin, Module, index_d_exports as PlatformProxy, PluginContext, PluginMap, type QueueConsumer, Runtime, RuntimeConfig, RuntimeError, RuntimeLive, RuntimeServices, RuntimeWorker, StorageConfig, SystemError, WorkerdLogging, Workflow, isRuntimeError, layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, use, useSync };
+\ No newline at end of file
+diff --git a/dist/core/node/index.mjs b/dist/core/node/index.mjs
+index efe7aca2..7a2e68c3 100644
+--- a/dist/core/node/index.mjs
++++ b/dist/core/node/index.mjs
+@@ -1,6 +1,6 @@
+-import { ApiError, ConfigError, RuntimeError, SystemError, isRuntimeError } from "./RuntimeError.shared.mjs";
+-import { PluginContext, make, pickPluginsFromContext, use, useSync } from "./PluginContext.mjs";
+-import { Runtime, RuntimeLive } from "./Runtime.mjs";
+-import { layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage } from "./RuntimeServices.mjs";
+-import { platform_proxy_exports } from "./platform-proxy/index.mjs";
+-export { ApiError, ConfigError, platform_proxy_exports as PlatformProxy, PluginContext, Runtime, RuntimeError, RuntimeLive, SystemError, isRuntimeError, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, use, useSync };
++import { ApiError, ConfigError, RuntimeError, SystemError, isRuntimeError } from "./RuntimeError.shared.mjs";
++import { PluginContext, make, pickPluginsFromContext, use, useSync } from "./PluginContext.mjs";
++import { Runtime, RuntimeLive } from "./Runtime.mjs";
++import { layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage } from "./RuntimeServices.mjs";
++import { platform_proxy_exports } from "./platform-proxy/index.mjs";
++export { ApiError, ConfigError, platform_proxy_exports as PlatformProxy, PluginContext, Runtime, RuntimeError, RuntimeLive, SystemError, isRuntimeError, layerLocalRuntime, layerLocalBindings, layerLoopback, layerProxy, layerRegistry, layerRemoteBindings, layerRuntime, layerStorage, make, pickPluginsFromContext, use, useSync };
+diff --git a/dist/core/workers/bindings/workflows/binding.worker.mjs b/dist/core/workers/bindings/workflows/binding.worker.mjs
+index e030a77c..fb436242 100644
+--- a/dist/core/workers/bindings/workflows/binding.worker.mjs
++++ b/dist/core/workers/bindings/workflows/binding.worker.mjs
+@@ -7,0 +8,29 @@ export const modules = {
++
++// Apply the source recovery changes above to the published source-text bundle.
++// Exact matches deliberately reject an incompatible upstream artifact.
++const recoveryReplacements = [
++  [
++    "async handleNextAlarm(){this.#heap.peek()}",
++    "async handleNextAlarm(){const next=this.#heap.peek();await this.#ctx.storage.setAlarm(next?.targetTimestamp??Date.now()+30000)}"
++  ],
++  [
++    "this.#heap.add(entry),this.addEntryDB(entry)})",
++    "this.#heap.add(entry),this.addEntryDB(entry);await this.handleNextAlarm()})"
++  ],
++  [
++    "this.handleStatusWaiter(status)}statusWaiters=",
++    "this.handleStatusWaiter(status);if([2,3,4,5].includes(status))await this.ctx.storage.deleteAlarm()}statusWaiters="
++  ],
++  [
++    "async init(accountId,workflow,version,instance,event){if(this.priorityQueue===void 0&&(this.priorityQueue=new TimePriorityQueue(this.ctx,{accountId,workflow,version,instance,event})),this.isRunning)return;",
++    "async alarm(){const metadata=await this.ctx.storage.get(INSTANCE_METADATA),status=await this.ctx.storage.get(ENGINE_STATUS_KEY);if(metadata===void 0||[2,3,4,5].includes(status))return;if(this.isRunning){this.priorityQueue.popPastEntries();await this.priorityQueue.handleNextAlarm();return}this.ctx.waitUntil(this.init(metadata.accountId,metadata.workflow,metadata.version,metadata.instance,metadata.event))}async init(accountId,workflow,version,instance,event){if(this.isRunning)return;this.isRunning=true;try{return await this.runWorkflow(accountId,workflow,version,instance,event)}finally{this.isRunning=false}}async runWorkflow(accountId,workflow,version,instance,event){if(this.priorityQueue===void 0)this.priorityQueue=new TimePriorityQueue(this.ctx,{accountId,workflow,version,instance,event});"
++  ],
++  [
++    "async sleepUntil(name,timestamp){if(this.#engine.rollbackPhase===`replay`)return;timestamp instanceof Date&&(timestamp=timestamp.valueOf());let now=Date.now();if(timestamp<now)throw Error(`You can't sleep until a time in the past, time-traveler`);return this.sleep(name,timestamp-now)}",
++    "async sleepUntil(name,timestamp){if(this.#engine.rollbackPhase===`replay`)return;timestamp instanceof Date&&(timestamp=timestamp.valueOf());const occurrence=this.#getCount(\"absolute-sleep-\"+name),key=`${await computeHash(\"absolute-sleep-\"+name)}-${occurrence}-duration`,saved=await this.#state.storage.get(key);if(saved!==void 0)return this.sleep(name,saved);let now=Date.now();if(timestamp<now)throw Error(\"Sleep deadline is in the past\");const duration=timestamp-now;await this.#state.storage.put(key,duration);return this.sleep(name,duration)}"
++  ]
++];
++for (const [before, after] of recoveryReplacements) {
++  if (modules[main].split(before).length !== 2) throw new Error("Workflow recovery patch does not match the published engine");
++  modules[main] = modules[main].replace(before, after);
++}
+diff --git a/src/core/RuntimeServices.ts b/src/core/RuntimeServices.ts
+index 9993a17a..38e0069a 100644
+--- a/src/core/RuntimeServices.ts
++++ b/src/core/RuntimeServices.ts
+@@ -128,3 +128,18 @@ export const layerRuntime = (config: RuntimeConfig) =>
+-    Layer.provide(Docker.DockerLive),
+-    Layer.provide(Workerd.WorkerdLive),
+-  );
++    Layer.provide(Docker.DockerLive),
++    Layer.provide(Workerd.WorkerdLive),
++  );
++
++/** Local-only embedding without requiring or granting remote Cloudflare credentials. */
++export const layerLocalRuntime = (storage?: StorageConfig) =>
++  Runtime.RuntimeLive.pipe(
++    Layer.provideMerge(layerLocalBindings()),
++    Layer.provideMerge(WorkerProxy.WorkerProxyLive),
++    Layer.provide(Globals.GlobalsLive),
++    Layer.provideMerge(layerLoopback()),
++    Layer.provide(layerStorage(storage)),
++    Layer.provide(Internet.InternetLive),
++    Layer.provideMerge(layerRegistry()),
++    Layer.provide(Paths.PathsLive),
++    Layer.provide(Docker.DockerLive),
++    Layer.provide(Workerd.WorkerdLive),
++  );
+diff --git a/src/internal/workflows-shared/context.ts b/src/internal/workflows-shared/context.ts
+index 771de293..e93be6bb 100644
+--- a/src/internal/workflows-shared/context.ts
++++ b/src/internal/workflows-shared/context.ts
+@@ -1415,6 +1415,10 @@ export class Context extends RpcTarget {
+-      timestamp = timestamp.valueOf();
+-    }
+-
+-    const now = Date.now();
+-    // timestamp needs to be in the future, throw if not
+-    if (timestamp < now) {
++      timestamp = timestamp.valueOf();
++    }
++
++    const occurrence = this.#getCount("absolute-sleep-" + name);
++    const durationKey = `${await computeHash("absolute-sleep-" + name)}-${occurrence}-duration`;
++    const saved = await this.#state.storage.get<number>(durationKey);
++    if (saved !== undefined) return this.sleep(name, saved);
++    const now = Date.now();
++    // timestamp needs to be in the future, throw if not
++    if (timestamp < now) {
+@@ -1423,7 +1427,9 @@ export class Context extends RpcTarget {
+-      );
+-    }
+-
+-    return this.sleep(name, timestamp - now);
+-  }
+-
+-  async waitForEvent<T>(
++      );
++    }
++
++    const duration = timestamp - now;
++    await this.#state.storage.put(durationKey, duration);
++    return this.sleep(name, duration);
++  }
++
++  async waitForEvent<T>(
+diff --git a/src/internal/workflows-shared/engine.ts b/src/internal/workflows-shared/engine.ts
+index a1e9a492..04334c8c 100644
+--- a/src/internal/workflows-shared/engine.ts
++++ b/src/internal/workflows-shared/engine.ts
+@@ -564,6 +564,7 @@ export class Engine extends DurableObject<Env> {
+-
+-    // check if anyone is waiting for this status
+-    this.handleStatusWaiter(status);
+-  }
+-
+-  private statusWaiters: Map<
++
++    // check if anyone is waiting for this status
++    this.handleStatusWaiter(status);
++    if ([2, 3, 4, 5].includes(status)) await this.ctx.storage.deleteAlarm();
++  }
++
++  private statusWaiters: Map<
+@@ -1222,7 +1223,27 @@ export class Engine extends DurableObject<Env> {
+-    void this.init(accountId, workflow, version, instance, event);
+-  }
+-
+-  async init(
+-    accountId: number,
+-    workflow: DatabaseWorkflow,
+-    version: DatabaseVersion,
++    void this.init(accountId, workflow, version, instance, event);
++  }
++
++  async alarm() {
++    const metadata = await this.ctx.storage.get<InstanceMetadata>(INSTANCE_METADATA);
++    const status = await this.ctx.storage.get<InstanceStatus>(ENGINE_STATUS_KEY);
++    if (metadata === undefined || [2, 3, 4, 5].includes(status ?? -1)) return;
++    if (this.isRunning) {
++      this.priorityQueue.popPastEntries();
++      await this.priorityQueue.handleNextAlarm();
++      return;
++    }
++    this.ctx.waitUntil(this.init(metadata.accountId, metadata.workflow, metadata.version, metadata.instance, metadata.event));
++  }
++
++  async init(accountId: number, workflow: DatabaseWorkflow, version: DatabaseVersion,
++    instance: DatabaseInstance, event: WorkflowEvent<unknown>) {
++    if (this.isRunning) return;
++    this.isRunning = true;
++    try { return await this.runWorkflow(accountId, workflow, version, instance, event); }
++    finally { this.isRunning = false; }
++  }
++
++  async runWorkflow(
++    accountId: number,
++    workflow: DatabaseWorkflow,
++    version: DatabaseVersion,
+@@ -1243,10 +1264,6 @@ export class Engine extends DurableObject<Env> {
+-      );
+-    }
+-
+-    if (this.isRunning) {
+-      return;
+-    }
+-
+-    this.priorityQueue.popPastEntries();
+-    await this.priorityQueue.handleNextAlarm();
+-
++      );
++    }
++
++    this.priorityQueue.popPastEntries();
++    await this.priorityQueue.handleNextAlarm();
++
+diff --git a/src/internal/workflows-shared/lib/timePriorityQueue.ts b/src/internal/workflows-shared/lib/timePriorityQueue.ts
+index be7399a5..86cde9be 100644
+--- a/src/internal/workflows-shared/lib/timePriorityQueue.ts
++++ b/src/internal/workflows-shared/lib/timePriorityQueue.ts
+@@ -86,6 +86,7 @@ export class TimePriorityQueue {
+-
+-      this.#heap.add(entry);
+-      this.addEntryDB(entry);
+-    });
+-  }
+-
++
++      this.#heap.add(entry);
++      this.addEntryDB(entry);
++      await this.handleNextAlarm();
++    });
++  }
++
+@@ -136,19 +137,8 @@ export class TimePriorityQueue {
+-
+-  // Idempotent, perhaps name should suggest so
+-  async handleNextAlarm() {
+-    const nextWakeCall = this.#heap.peek();
+-    if (nextWakeCall === undefined) {
+-      return;
+-    }
+-    // TODO: Handle this
+-    // const waker = this.#env.WAKERS.idFromName(
+-    // 	this.#instanceMetadata.instance.id
+-    // );
+-    // const wakerStub = this.#env.WAKERS.get(waker);
+-    // await wakerStub.wake(
+-    // 	new Date(nextWakeCall.targetTimestamp),
+-    // 	this.#instanceMetadata
+-    // );
+-  }
+-
+-  getFirst(callbackFn: (a: WakerPriorityEntry) => boolean): WakerPriorityEntry | undefined {
++
++  // Idempotent, perhaps name should suggest so
++  async handleNextAlarm() {
++    const next = this.#heap.peek();
++    await this.#ctx.storage.setAlarm(next?.targetTimestamp ?? Date.now() + 30_000);
++  }
++
++  getFirst(callbackFn: (a: WakerPriorityEntry) => boolean): WakerPriorityEntry | undefined {
+diff --git a/src/core/Docker.ts b/src/core/Docker.ts
+index ad4c4ab7..8044038d 100644
+--- a/src/core/Docker.ts
++++ b/src/core/Docker.ts
+@@ -1,7 +1,6 @@
+-import * as Config from "effect/Config";
+-import * as Context from "effect/Context";
+-import * as Effect from "effect/Effect";
+-import * as Fiber from "effect/Fiber";
+-import * as FileSystem from "effect/FileSystem";
+-import * as Layer from "effect/Layer";
+-import * as Path from "effect/Path";
++import * as Config from "effect/Config";
++import * as Context from "effect/Context";
++import * as Effect from "effect/Effect";
++import * as FileSystem from "effect/FileSystem";
++import * as Layer from "effect/Layer";
++import * as Path from "effect/Path";
+@@ -481,15 +480,27 @@ export const DockerLive = Layer.effect(
+-        ),
+-      );
+-
+-    const docker = yield* Effect.zipWith(
+-      DockerHost.pipe(
+-        Effect.catchTag("ConfigError", getSocketPathFromContext),
+-        Effect.orElseSucceed(() => DEFAULT_DOCKER_HOST),
+-        Effect.flatMap((socketPath) => {
+-          const server = makeDockerProxyServer(socketPath);
+-          server.listen(0);
+-          return getAddress(server);
+-        }),
+-      ),
+-      // Skip the eager pull when the interceptor image is already present
+-      // locally. `CONTAINER_EGRESS_INTERCEPTOR_IMAGE` can point at a
++        ),
++      );
++
++    // Container-free runtimes must not start a Docker proxy or probe Docker.
++    // A requested proxy belongs to this layer, not a detached fiber.
++    const context = yield* Effect.context<Scope.Scope>();
++    const docker = yield* Effect.cached(Effect.zipWith(
++      DockerHost.pipe(
++        Effect.catchTag("ConfigError", getSocketPathFromContext),
++        Effect.orElseSucceed(() => DEFAULT_DOCKER_HOST),
++        Effect.flatMap((socketPath) =>
++          Effect.acquireRelease(
++            Effect.sync(() => makeDockerProxyServer(socketPath)),
++            (server) => Effect.sync(() => {
++              server.close();
++              server.closeAllConnections();
++            }),
++          ).pipe(Effect.flatMap((server) => Effect.callback<string, SystemError>((resume) => {
++            server.once("error", (cause) => resume(Effect.fail(new SystemError({
++              subtag: "DockerProxyListenFailed", message: "Docker proxy could not listen", cause,
++            }))));
++            server.listen(0, "127.0.0.1", () => resume(getAddress(server)));
++          }))),
++        ),
++      ),
++      // Skip the eager pull when the interceptor image is already present
++      // locally. `CONTAINER_EGRESS_INTERCEPTOR_IMAGE` can point at a
+@@ -518,12 +529,10 @@ export const DockerLive = Layer.effect(
+-        },
+-      }),
+-      { concurrent: true },
+-    ).pipe(
+-      Effect.forkDetach({ startImmediately: false, uninterruptible: true }),
+-    );
+-
+-    return Docker.of({
+-      getWorkerdDockerConfiguration: Fiber.join(docker),
+-      registerImageEnv: (className, tag, env) => {
+-        const alias = generateImageTag(className);
+-        return Effect.acquireRelease(
++        },
++      }),
++      { concurrent: true },
++    ).pipe(Effect.provideContext(context)));
++
++    return Docker.of({
++      getWorkerdDockerConfiguration: docker,
++      registerImageEnv: (className, tag, env) => {
++        const alias = generateImageTag(className);
++        return Effect.acquireRelease(
+diff --git a/dist/core/node/Docker.mjs b/dist/core/node/Docker.mjs
+index d8dd5221..3b032b77 100644
+--- a/dist/core/node/Docker.mjs
++++ b/dist/core/node/Docker.mjs
+@@ -4,7 +4,6 @@ import { getAddress } from "./internal/get-address.mjs";
+-import * as Config from "effect/Config";
+-import * as Context from "effect/Context";
+-import * as Effect from "effect/Effect";
+-import * as Fiber from "effect/Fiber";
+-import * as FileSystem from "effect/FileSystem";
+-import * as Layer from "effect/Layer";
+-import * as Path from "effect/Path";
++import * as Config from "effect/Config";
++import * as Context from "effect/Context";
++import * as Effect from "effect/Effect";
++import * as FileSystem from "effect/FileSystem";
++import * as Layer from "effect/Layer";
++import * as Path from "effect/Path";
+@@ -272,19 +271,21 @@ const DockerLive = Layer.effect(Docker, Effect.gen(function* () {
+-			image
+-		};
+-	}).filter((container) => container.image === ancestor)));
+-	const docker = yield* Effect.zipWith(DockerHost.pipe(Effect.catchTag("ConfigError", getSocketPathFromContext), Effect.orElseSucceed(() => DEFAULT_DOCKER_HOST), Effect.flatMap((socketPath) => {
+-		const server = makeDockerProxyServer(socketPath);
+-		server.listen(0);
+-		return getAddress(server);
+-	})), inspect(containerEgressInterceptorImage, "{{.Id}}").pipe(Effect.orElseSucceed(() => void 0), Effect.flatMap((imageId) => imageId?.trim() ? Effect.void : pull({ imageUri: containerEgressInterceptorImage }))), (socketPath) => ({ localDocker: {
+-		socketPath,
+-		containerEgressInterceptorImage
+-	} }), { concurrent: true }).pipe(Effect.forkDetach({
+-		startImmediately: false,
+-		uninterruptible: true
+-	}));
+-	return Docker.of({
+-		getWorkerdDockerConfiguration: Fiber.join(docker),
+-		registerImageEnv: (className, tag, env) => {
+-			const alias = generateImageTag(className);
+-			return Effect.acquireRelease(Effect.sync(() => {
++			image
++		};
++	}).filter((container) => container.image === ancestor)));
++	const context = yield* Effect.context();
++	const docker = yield* Effect.cached(Effect.zipWith(DockerHost.pipe(Effect.catchTag("ConfigError", getSocketPathFromContext), Effect.orElseSucceed(() => DEFAULT_DOCKER_HOST), Effect.flatMap((socketPath) => Effect.acquireRelease(
++        Effect.sync(() => makeDockerProxyServer(socketPath)),
++        (server) => Effect.sync(() => { server.close(); server.closeAllConnections(); }),
++      ).pipe(Effect.flatMap((server) => Effect.callback((resume) => {
++        server.once("error", (cause) => resume(Effect.fail(new SystemError({
++          subtag: "DockerProxyListenFailed", message: "Docker proxy could not listen", cause,
++        }))));
++        server.listen(0, "127.0.0.1", () => resume(getAddress(server)));
++      }))))), inspect(containerEgressInterceptorImage, "{{.Id}}").pipe(Effect.orElseSucceed(() => void 0), Effect.flatMap((imageId) => imageId?.trim() ? Effect.void : pull({ imageUri: containerEgressInterceptorImage }))), (socketPath) => ({ localDocker: {
++		socketPath,
++		containerEgressInterceptorImage
++	} }), { concurrent: true }).pipe(Effect.provideContext(context)));
++	return Docker.of({
++		getWorkerdDockerConfiguration: docker,
++		registerImageEnv: (className, tag, env) => {
++			const alias = generateImageTag(className);
++			return Effect.acquireRelease(Effect.sync(() => {

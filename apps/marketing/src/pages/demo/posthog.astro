@@ -1,0 +1,23 @@
+---
+import "../../styles/global.css";
+const dailyUsers = [710, 842, 790, 1020, 960, 1148, 1284];
+const sources = [{ name: "Direct", share: 42 }, { name: "Search", share: 34 }, { name: "Referral", share: 24 }];
+---
+<html lang="en" class="[&_astro-dev-toolbar]:hidden">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>PostHog analytics · Executor demo</title>
+  </head>
+  <body class="m-0 bg-[#fcfcfb] text-[#202320] font-sans">
+    <main class="analytics-demo max-w-250 my-0 mx-auto p-[30px] max-[480px]:p-[20px]">
+      <header class="flex items-start justify-between gap-4"><div><span class="eyebrow font-mono font-medium uppercase tracking-[0.18em] [color:var(--color-ink-3)] text-[11px] text-[#858780]">PostHog / Analytics</span><h1 class="mt-2 text-[clamp(20px,_3vw,_29px)] font-medium tracking-[-0.04em]">Your week, at a glance.</h1></div><span class="sample text-[10px] text-[#999] whitespace-nowrap">Example data</span></header>
+      <div class="connection flex items-center gap-1.75 flex-wrap mt-4.25 text-[10px] text-[#727870] [&_>_span:last-child]:ml-auto [&_>_span:last-child]:text-[#92978e] max-[480px]:[&_>_span:last-child]:ml-3"><span class="status-dot w-1.25 h-1.25 bg-[#5c8262] rounded-[50%]"></span>Connected through Executor <span>Read-only · Cached queries</span></div>
+      <div class="metrics grid grid-cols-[repeat(3,minmax(0,1fr))] mt-6.75 [padding-block:20px] [border-top:1px_solid_#e5e7e1] [border-bottom:1px_solid_#e5e7e1] [&_>_div]:grid [&_>_div]:gap-2 [&_>_div]:pl-6 [&_>_div]:[border-left:1px_solid_#e5e7e1] [&_>_div:first-child]:pl-0 [&_>_div:first-child]:border-l-0 [&_p]:m-0 [&_p]:text-[11px] [&_p]:text-[#858780] [&_strong]:text-[clamp(22px,4vw,34px)] [&_strong]:font-medium [&_strong]:tabular-nums [&_strong]:tracking-[-0.04em] [&_strong_span]:text-[18px] [&_small]:text-[10px] [&_small]:text-[#5c8262] max-[480px]:[&_>_div]:pl-3 max-[480px]:[&_small]:text-[9px]"><div><p>Active users</p><strong>1,284</strong><small>↑ 18% this week</small></div><div><p>Signups</p><strong>96</strong><small>↑ 12% this week</small></div><div><p>Conversion</p><strong>7.5<span>%</span></strong><small>↑ 0.4 percentage points</small></div></div>
+      <section class="chart-panel pt-6" aria-label="Active users during the last seven days"><div class="chart-title flex items-center justify-between gap-3 [&_>_span]:text-[10px] [&_>_span]:text-[#999]"><h2 class="text-[12px] font-medium">Daily active users</h2><span>Last 7 days</span></div><div class="chart grid grid-cols-[repeat(7,1fr)] gap-3 items-end h-40 mt-4.5 [border-bottom:1px_solid_#dfe3da] [background:repeating-linear-gradient(to_top,transparent_0_39px,#ecefe7_39px_40px)] [&_>_div]:flex [&_>_div]:items-end [&_>_div]:h-full [&_i]:block [&_i]:w-full [&_i]:h-[var(--bar-height)] [&_i]:bg-[#71866a] [&_i]:rounded-[3px_3px_0_0] [&_>_div:last-child_i]:bg-[#344d39] max-[480px]:gap-2 max-[480px]:h-33.75">{dailyUsers.map(value => <div style={`--bar-height:${value / 14}%`}><i></i></div>)}</div><div class="chart-labels grid grid-cols-[repeat(7,1fr)] gap-3 text-center pt-2.25 text-[9px] text-[#92978e]"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div></section>
+      <section class="sources grid gap-3.25 mt-6.25 [&_>_div]:grid [&_>_div]:grid-cols-[60px_1fr_35px] [&_>_div]:items-center [&_>_div]:gap-3.5 [&_>_div]:text-[10px] [&_>_div]:text-[#727870] [&_strong]:font-normal [&_strong]:text-right"><h2 class="text-[12px] font-medium">Where people came from</h2>{sources.map(source => <div><span>{source.name}</span><span class="source-track h-1 bg-[#edf0e9] [&_i]:block [&_i]:h-full [&_i]:w-[var(--share)] [&_i]:bg-[#a2afa0]"><i style={`--share:${source.share}%`}></i></span><strong>{source.share}%</strong></div>)}</section>
+      <footer class="[border-top:1px_solid_#e5e7e1] mt-6 pt-3.75 text-[9px] text-[#969b91]">One PostHog app. Built with Claude, Codex, Grok Bot, and Cursor.</footer>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+/* These standalone information pages preserve their original browser defaults. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@source "../pages/google-workspace.astro";
+@source "../pages/about-executor.astro";

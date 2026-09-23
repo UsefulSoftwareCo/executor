@@ -1,0 +1,26 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 5989b7213499593c256ffcb47cc3aee882916ac5..bf0dc2884fc2ffe823b02cff13c5e07f565763e2 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -391,8 +391,7 @@ function computeDiscoveryUrl(issuer) {
+ * @throws DiscoveryError if URL is invalid
+ */
+ function validateDiscoveryUrl(url, isTrustedOrigin) {
+-	const discoveryEndpoint = parseURL("discoveryEndpoint", url).toString();
+-	if (!isTrustedOrigin(discoveryEndpoint)) throw new DiscoveryError("discovery_untrusted_origin", `The main discovery endpoint "${discoveryEndpoint}" is not trusted by your trusted origins configuration.`, { url: discoveryEndpoint });
++	validateOIDCEndpointUrl("discoveryEndpoint", url, isTrustedOrigin);
+ }
+ /**
+ * Validate that a user-supplied OIDC endpoint URL is safe to fetch.
+@@ -682,10 +681,7 @@ function normalizeDiscoveryUrls(document, issuer, isTrustedOrigin) {
+ */
+ function normalizeAndValidateUrl(name, endpoint, issuer, isTrustedOrigin) {
+ 	const url = normalizeUrl(name, endpoint, issuer);
+-	if (!isTrustedOrigin(url)) throw new DiscoveryError("discovery_untrusted_origin", `The ${name} "${url}" is not trusted by your trusted origins configuration.`, {
+-		endpoint: name,
+-		url
+-	});
++	validateOIDCEndpointUrl(name, url, isTrustedOrigin);
+ 	return url;
+ }
+ /**

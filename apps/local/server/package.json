@@ -1,0 +1,48 @@
+{
+  "name": "@executor-js/local-server",
+  "private": true,
+  "bin": {
+    "executor": "./src/bin.ts"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app-management": "./src/contracts/app-management.ts",
+    "./contracts": "./src/contracts/dashboard.ts",
+    "./account-connections": "./src/contracts/account-connections.ts",
+    "./webhook-setup": "./src/contracts/webhook-setup.ts",
+    "./auth": "./src/contracts/auth.ts",
+    "./node": "./src/node.ts",
+    "./app-ui": "./src/contracts/app-ui.ts"
+  },
+  "scripts": {
+    "start": "bun run ../../../packages/apps/scripts/build.mjs && node src/main.ts",
+    "test:mcp": "node --test test/mcp.test.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-management": "workspace:*",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/app-source": "workspace:*",
+    "@executor-js/app-templates": "workspace:*",
+    "@executor-js/catalog": "workspace:*",
+    "@executor-js/mcp": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/utils": "workspace:*",
+    "@napi-rs/keyring": "2.1.0",
+    "apps": "workspace:*",
+    "better-auth": "1.7.5",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "fumadb-effect": "workspace:*",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/proper-lockfile": "4.1.4",
+    "graphql": "16.11.0",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3"
+  }
+}

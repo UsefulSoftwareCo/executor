@@ -1,0 +1,10 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "@executor-js/desktop": "0.0.0",
+    "@executor-js/marketing": "0.0.0",
+    "fumadb-effect": "0.1.0"
+  },
+  "changesets": []
+}

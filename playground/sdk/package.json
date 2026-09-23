@@ -1,0 +1,14 @@
+{
+  "name": "@executor-js/playground",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-source": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "apps": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "fumadb-effect": "workspace:*"
+  }
+}

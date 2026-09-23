@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.DS_Store
+.reference/
+
+.local/
+.env*
+.alchemy/
+.wrangler/
+
+# Generated app framework for the cloud runtime
+apps/hosted/cloud/.generated/
+
+# Blume generated runtime
+.blume/
+.blume-verify/
+
+# Detached preview handoffs (see notes/preview-handoffs.md)
+.preview/

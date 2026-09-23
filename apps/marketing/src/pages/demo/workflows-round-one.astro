@@ -1,0 +1,22 @@
+---
+import "../../styles/global.css";
+import { WorkflowVariants } from "../../components/workflow-variants";
+---
+<html lang="en" class="[&_astro-dev-toolbar]:hidden">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Workflow directions · Executor</title>
+  </head>
+  <body class="m-0 bg-white font-sans text-[#222]">
+    <main class="mx-auto max-w-290 px-5 py-12 min-[760px]:px-8 min-[760px]:py-20">
+      <a href="/#apps" class="text-[12px] text-[#999] transition-colors hover:text-[#333]">← Back to the landing page</a>
+      <header class="mt-8 mb-10">
+        <h1 class="text-[28px] font-semibold tracking-[-0.025em]">Workflows, three ways.</h1>
+        <p class="mt-3 text-[14px] leading-relaxed text-[#888]">A finished result. A useful wait. A run that picks up where it stopped.</p>
+      </header>
+      <WorkflowVariants client:visible />
+    </main>
+  </body>
+</html>

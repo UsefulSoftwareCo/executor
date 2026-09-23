@@ -1,0 +1,66 @@
+{
+  "name": "fumadb-effect",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Effect-native unified schema, query, and migration layer for library authors. A port of fumadb to Effect v4 and Effect SQL.",
+  "keywords": [
+    "cockroachdb",
+    "database",
+    "effect",
+    "effect-ts",
+    "fumadb",
+    "migration",
+    "mssql",
+    "mysql",
+    "orm",
+    "postgresql",
+    "schema",
+    "sql",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "author": "Rhys Sullivan",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./query": "./src/query.ts",
+    "./adapter": "./src/adapter.ts",
+    "./migration": "./src/migration.ts",
+    "./sql": "./src/sql.ts",
+    "./cli": "./src/cli.ts",
+    "./package.json": "./package.json",
+    "./pglite": "./src/pglite.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "db:up": "docker compose up -d --wait"
+  },
+  "dependencies": {
+    "@paralleldrive/cuid2": "^3.3.0",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-mssql": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-mssql@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-mysql2": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-mysql2@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pg": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect/@effect/vitest@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "vitest": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  },
+  "peerDependenciesMeta": {
+    "@effect/sql-pglite": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,23 @@
+---
+// The site shell: the document, wrapped around the rail frame. The homepage,
+// pricing, and blog all use it. The docs site builds its own document and
+// renders RailFrame directly, so the two halves share one frame.
+import Layout from "./Layout.astro";
+import RailFrame from "./RailFrame.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  current?: "home" | "pricing" | "blog" | "docs" | "apps";
+  scroll?: "page" | "content";
+}
+const { title, description, current = "home", scroll = "page" } = Astro.props;
+---
+
+<Layout title={title} description={description}>
+  <RailFrame current={current} scroll={scroll}>
+    <slot name="banner" slot="banner" />
+    <slot name="sidebar" slot="sidebar" />
+    <slot />
+  </RailFrame>
+</Layout>

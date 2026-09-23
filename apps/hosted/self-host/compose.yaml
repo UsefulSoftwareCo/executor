@@ -1,0 +1,46 @@
+name: executor-next-hosted
+
+services:
+  server:
+    build:
+      context: ../../..
+      dockerfile: apps/hosted/self-host/Dockerfile
+    environment:
+      BETTER_AUTH_URL:
+      BETTER_AUTH_SECRET:
+      RAILWAY_PUBLIC_DOMAIN:
+      SSO_DISCOVERY_URL: ${SSO_DISCOVERY_URL:-}
+      SSO_CLIENT_ID: ${SSO_CLIENT_ID:-}
+      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:-}
+      SSO_ALLOWED_DOMAINS: ${SSO_ALLOWED_DOMAINS:-}
+      EXECUTOR_ENCRYPTION_KEY:
+      # OAuth transport exceptions are explicit and parsed at startup.
+      EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
+      EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
+      EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
+      EXECUTOR_OAUTH_CALLBACK_URL:
+      EXECUTOR_OAUTH_CLIENT_METADATA_URL:
+      # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
+      EXECUTOR_APP_UI_BASE_URL:
+      # Unset passthrough entries stay absent; the default is bundled Motel.
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+      OTEL_EXPORTER_OTLP_HEADERS:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS:
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:
+      OTEL_EXPORTER_OTLP_METRICS_HEADERS:
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL:
+      EXECUTOR_BUILD_VERSION:
+      EXECUTOR_ENVIRONMENT: ${EXECUTOR_ENVIRONMENT:-self-host}
+    init: true
+    ports:
+      - "127.0.0.1:4400:4400"
+    volumes:
+      - pglite-data:/app/data
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pglite-data:

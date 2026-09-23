@@ -1,0 +1,6 @@
+/* Shared geometry for the marketing and documentation frames. */
+:root {
+  --site-rail-width: 240px;
+  --site-frame-width: 1240px;
+  --site-content-gutter: clamp(32px, 4vw, 64px);
+}

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM"],
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true
+  },
+  "exclude": [
+    "apps/local/web",
+    "apps/hosted/web",
+    "apps/hosted/cloud/web",
+    "apps/hosted/self-host/web",
+    "apps/marketing",
+    "apps/docs",
+    "**/dist",
+    "**/.blume"
+  ],
+  "include": ["packages", "apps", "playground"]
+}

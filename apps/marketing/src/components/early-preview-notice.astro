@@ -1,0 +1,36 @@
+---
+import rhysAvatar from "../assets/rhys-sullivan.jpg";
+import { EarlyPreviewNotice } from "@executor-js/ui/components/early-preview-notice";
+---
+
+<EarlyPreviewNotice avatarSrc={rhysAvatar.src} />
+
+<!-- Show the original first-visit notice immediately; the banner can reopen it later. -->
+<script is:inline>
+  {
+    const dialog = document.getElementById("early-preview-notice");
+    const storageKey = "executor-v2-early-preview-dismissed";
+    let dismissed = false;
+    try {
+      dismissed = localStorage.getItem(storageKey) === "true";
+    } catch {}
+
+    if (dialog instanceof HTMLDialogElement) {
+      let previousOverflow = "";
+      dialog.addEventListener("close", () => {
+        document.documentElement.style.overflow = previousOverflow;
+        try {
+          localStorage.setItem(storageKey, "true");
+        } catch {}
+      });
+      const openDialog = () => {
+        if (dialog.open) return;
+        previousOverflow = document.documentElement.style.overflow;
+        dialog.showModal();
+        document.documentElement.style.overflow = "hidden";
+      };
+      document.querySelector("[data-early-preview-open]")?.addEventListener("click", openDialog);
+      if (!dismissed) openDialog();
+    }
+  }
+</script>

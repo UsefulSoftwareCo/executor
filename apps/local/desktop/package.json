@@ -1,0 +1,25 @@
+{
+  "name": "@executor-js/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/server.test.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/local-server": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "electron-updater": "6.6.8"
+  },
+  "devDependencies": {
+    "electron": "44.4.2",
+    "electron-builder": "26.15.6",
+    "esbuild": "0.28.2"
+  },
+  "productName": "Executor (Dev)"
+}

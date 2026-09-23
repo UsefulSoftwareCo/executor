@@ -1,0 +1,27 @@
+{
+  "name": "@executor-js/hosted-self-host-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "portless --name executor-self-host vp dev",
+    "build": "vp build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/devtools": "workspace:*",
+    "@executor-js/hosted-web": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
+    "@tanstack/react-router": "^1.170.38",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
+    "vite-plus": "0.3.3"
+  }
+}

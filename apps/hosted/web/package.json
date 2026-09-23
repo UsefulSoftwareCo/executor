@@ -1,0 +1,61 @@
+{
+  "name": "@executor-js/hosted-web",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./shell": "./src/implementation/components/shell.tsx",
+    "./navigation": "./src/implementation/components/navigation.tsx",
+    "./route-fallbacks": "./src/implementation/components/route-fallbacks.tsx",
+    "./pages/*": "./src/implementation/pages/*.tsx",
+    "./styles": "./src/implementation/styles/globals.css",
+    "./vite": "./vite.ts",
+    "./auth": "./src/implementation/components/auth.tsx",
+    "./entry": "./src/implementation/components/entry.tsx",
+    "./organization": "./src/implementation/components/organization.tsx",
+    "./contracts/*": "./src/contracts/*.ts",
+    "./icon-picker": "./src/implementation/components/icon-picker.tsx",
+    "./page-pending": "./src/implementation/components/page-pending.tsx",
+    "./session-hint": "./src/implementation/session-hint.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:routing": "NODE_ENV=test TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --import ./test/browser.ts --test test/organization-routing.test.tsx",
+    "test": "bun run test:atoms && bun run test:views",
+    "test:atoms": "TSX_TSCONFIG_PATH=tsconfig.test.json node --conditions=development --import tsx --test --test-concurrency=1 test/*.test.ts",
+    "test:views": "TSX_TSCONFIG_PATH=tsconfig.test.json node --conditions=development --import tsx --import ./test/browser.ts --test --test-concurrency=1 test/*.test.tsx",
+    "test:cloud": "TSX_TSCONFIG_PATH=../cloud/web/tsconfig.test.json node --conditions=development --import tsx --import ./test/browser.ts --test --test-concurrency=1 ../cloud/web/test/*.test.tsx"
+  },
+  "dependencies": {
+    "@better-auth/oauth-provider": "1.7.5",
+    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/catalog": "workspace:*",
+    "@executor-js/hosted-server": "workspace:*",
+    "@executor-js/mcp": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
+    "@hugeicons/core-free-icons": "^4.3.3",
+    "@hugeicons/react": "^1.1.10",
+    "@tanstack/history": "1.162.4",
+    "@tanstack/react-form": "^1.33.5",
+    "@tanstack/react-router": "^1.170.38",
+    "better-auth": "1.7.5",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
+    "@tailwindcss/vite": "^4.2.1",
+    "@tanstack/router-plugin": "^1.168.40",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "tailwindcss": "^4.2.1",
+    "tsx": "^4.23.13",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
+    "vite-plus": "0.3.3"
+  }
+}

@@ -1,0 +1,12 @@
+---
+import RailLayout from "../../layouts/RailLayout.astro";
+import AppsDirectory, { PublishedAppLoading } from "../../components/apps-directory.tsx";
+---
+
+<RailLayout title="App — Executor" description="Explore a published app and its source." current="apps">
+  <article class="py-12 max-[1023.98px]:px-6 max-[719.98px]:px-4 max-[719.98px]:py-8">
+    <AppsDirectory client:only="react">
+      <PublishedAppLoading slot="fallback" />
+    </AppsDirectory>
+  </article>
+</RailLayout>

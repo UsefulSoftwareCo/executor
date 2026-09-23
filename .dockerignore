@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/.git
+**/.reference
+**/.local
+**/.env*
+**/.alchemy
+**/.wrangler
+.DS_Store

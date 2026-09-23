@@ -1,0 +1,37 @@
+{
+  "name": "@executor-js/hosted-cloud-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../scripts/development-web.ts",
+    "build": "vp build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/passkey": "1.7.5",
+    "@better-auth/sso": "1.7.5",
+    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/devtools": "workspace:*",
+    "@executor-js/hosted-server": "workspace:*",
+    "@executor-js/hosted-web": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/ui": "workspace:*",
+    "@hugeicons/core-free-icons": "^4.3.3",
+    "@hugeicons/react": "^1.1.10",
+    "@sentry/react": "^10.75.0",
+    "@tanstack/react-router": "^1.170.38",
+    "better-auth": "1.7.5",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "posthog-js": "1.434.7",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@sentry/vite-plugin": "^5.4.0",
+    "@tanstack/router-generator": "1.167.38",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
+    "vite-plus": "0.3.3"
+  }
+}

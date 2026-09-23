@@ -1,0 +1,169 @@
+diff --git a/src/PgConnection.ts b/src/PgConnection.ts
+--- a/src/PgConnection.ts
++++ b/src/PgConnection.ts
+@@ -269,7 +269,7 @@
+     Effect.acquireRelease(
+       Effect.gen(function*() {
+         const password = yield* PasswordInternal.resolve(config.password)
+-        const session = yield* connect(config, password)
++        const session = yield* connect(config, password).pipe(Effect.withSpan("sql.connect", { kind: "client" }))
+         return new PgConnectionImpl(options, config, session, options.types)
+       }),
+       (connection) => Effect.sync(() => connection.closeUnsafe()),
+diff --git a/dist/PgConnection.js b/dist/PgConnection.js
+--- a/dist/PgConnection.js
++++ b/dist/PgConnection.js
+@@ -63,7 +63,7 @@
+  */
+ export const make = options => Effect.flatMap(resolveConfig(options), config => Effect.acquireRelease(Effect.gen(function* () {
+   const password = yield* PasswordInternal.resolve(config.password);
+-  const session = yield* connect(config, password);
++  const session = yield* connect(config, password).pipe(Effect.withSpan("sql.connect", { kind: "client" }));
+   return new PgConnectionImpl(options, config, session, options.types);
+ }), connection => Effect.sync(() => connection.closeUnsafe()), {
+   interruptible: true
+diff --git a/src/PgConnection.ts b/src/PgConnection.ts
+--- a/src/PgConnection.ts
++++ b/src/PgConnection.ts
+@@ -1463,7 +1463,7 @@
+   plan: Plan,
+   wantRows: boolean
+ ): Effect.Effect<QueryOutput, SqlError> =>
+-  Effect.callback<QueryOutput, SqlError>((resume) => {
++  Effect.useSpan("sql.wire", { kind: "client" }, (span) => Effect.callback<QueryOutput, SqlError>((resume) => {
+     if (conn.deadWith !== undefined) {
+       resume(Effect.fail(conn.deadWith))
+       return
+@@ -1472,12 +1472,30 @@
+       conn.consumer = undefined
+       resume(effect)
+     })
+-    conn.consumer = machine
++    const started = Date.now()
++    let firstMessage = true
++    span.attribute("db.wire.request_bytes", plan.frame.byteLength)
++    span.attribute("db.wire.clock", "date-now")
++    conn.consumer = {
++      onMessage: (message) => {
++        const elapsed = Date.now() - started
++        if (firstMessage) {
++          firstMessage = false
++          span.attribute("db.wire.first_message_ms", elapsed)
++        }
++        if (message._tag === "CommandComplete") span.attribute("db.wire.command_complete_ms", elapsed)
++        if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed)
++        machine.onMessage(message)
++      },
++      onFatal: (error) => machine.onFatal(error)
++    }
+     // A reused statement has no `RowDescription` coming, so its reader has to
+     // be in place before the rows are.
+     conn.session.parser.readField = machine.readField
+     try {
+-      conn.session.socket.write(plan.frame)
++      conn.session.socket.write(plan.frame, () => {
++        span.attribute("db.wire.write_callback_ms", Date.now() - started)
++      })
+     } catch (cause) {
+       conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
+     }
+@@ -1506 +1524 @@
+-  })
++  }))
+diff --git a/dist/PgConnection.js b/dist/PgConnection.js
+--- a/dist/PgConnection.js
++++ b/dist/PgConnection.js
+@@ -1018,39 +1018,62 @@
+ const emptyRows = [];
+ const emptyValues = [];
+ /** One cycle on a connection that carries a single statement at a time. */
+-const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+-  if (conn.deadWith !== undefined) {
+-    resume(Effect.fail(conn.deadWith));
+-    return;
+-  }
+-  const machine = new QueryMachine(conn, plan, wantRows, effect => {
+-    conn.consumer = undefined;
+-    resume(effect);
+-  });
+-  conn.consumer = machine;
+-  // A reused statement has no `RowDescription` coming, so its reader has to
+-  // be in place before the rows are.
+-  conn.session.parser.readField = machine.readField;
+-  try {
+-    conn.session.socket.write(plan.frame);
+-  } catch (cause) {
+-    conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
+-  }
+-  // On interruption: cancel the statement and drain the connection back to
+-  // ReadyForQuery so it stays usable, destroying it when the drain stalls.
+-  return Effect.suspend(() => {
+-    if (machine.isDone()) return Effect.void;
+-    const wait = Effect.callback(resumeWait => {
+-      const timer = setTimeout(() => conn.fatal(connectionQueryError(new Error("Query cancellation timed out"), "PgConnection: Query cancellation timed out")), abortDrainTimeoutMillis);
+-      machine.abort(() => {
+-        clearTimeout(timer);
++const runQuery = (conn, plan, wantRows) => Effect.useSpan("sql.wire", { kind: "client" }, (span) => Effect.callback((resume) => {
++    if (conn.deadWith !== undefined) {
++        resume(Effect.fail(conn.deadWith));
++        return;
++    }
++    const machine = new QueryMachine(conn, plan, wantRows, (effect) => {
+         conn.consumer = undefined;
+-        resumeWait(Effect.void);
+-      });
++        resume(effect);
+     });
+-    return Effect.andThen(conn.cancel, wait);
+-  });
+-});
++    const started = Date.now();
++    let firstMessage = true;
++    span.attribute("db.wire.request_bytes", plan.frame.byteLength);
++    span.attribute("db.wire.clock", "date-now");
++    conn.consumer = {
++        onMessage: (message) => {
++            const elapsed = Date.now() - started;
++            if (firstMessage) {
++                firstMessage = false;
++                span.attribute("db.wire.first_message_ms", elapsed);
++            }
++            if (message._tag === "CommandComplete")
++                span.attribute("db.wire.command_complete_ms", elapsed);
++            if (message._tag === "ReadyForQuery")
++                span.attribute("db.wire.ready_ms", elapsed);
++            machine.onMessage(message);
++        },
++        onFatal: (error) => machine.onFatal(error)
++    };
++    // A reused statement has no `RowDescription` coming, so its reader has to
++    // be in place before the rows are.
++    conn.session.parser.readField = machine.readField;
++    try {
++        conn.session.socket.write(plan.frame, () => {
++            span.attribute("db.wire.write_callback_ms", Date.now() - started);
++        });
++    }
++    catch (cause) {
++        conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
++    }
++    // On interruption: cancel the statement and drain the connection back to
++    // ReadyForQuery so it stays usable, destroying it when the drain stalls.
++    return Effect.suspend(() => {
++        if (machine.isDone())
++            return Effect.void;
++        const wait = Effect.callback((resumeWait) => {
++            const timer = setTimeout(() => conn.fatal(connectionQueryError(new Error("Query cancellation timed out"), "PgConnection: Query cancellation timed out")), abortDrainTimeoutMillis);
++            machine.abort(() => {
++                clearTimeout(timer);
++                conn.consumer = undefined;
++                resumeWait(Effect.void);
++            });
++        });
++        return Effect.andThen(conn.cancel, wait);
++    });
++}));
++
+ const emptyFields = [];
+ /** Derives the per-column readers and the row constructor for a description. */
+ const describe = (fields, registry) => {

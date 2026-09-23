@@ -1,0 +1,80 @@
+---
+import { heroSteps } from "../../content/hero-experiment";
+interface Props { variant?: keyof typeof heroSteps }
+const { variant = "build" } = Astro.props;
+const copy = heroSteps[variant];
+// Dotted phrases reveal examples of tools and supported agents.
+const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+const logo = (name: string): string => {
+  const hit = Object.entries(logos).find(([path]) => path.endsWith(`/${name}.svg`));
+  if (!hit) throw new Error(`missing logo ${name}`);
+  return hit[1];
+};
+const serviceLogos = ["axiom", "posthog", "github", "linear", "sentry", "stripe", "notion", "slack", "jira", "gmail", "google-drive", "google-calendar", "google-meet", "mcp"];
+const agentLogos = ["claude", "codex", "cursor", "chatgpt", "gemini", "hermes", "copilot", "windsurf", "opencode", "zed", "grok", "mcp"];
+---
+
+<ol class="doc__steps grid gap-[0.55rem] [margin:0.25rem_0_1rem] text-[17px] leading-[1.5] text-ink [&_li]:grid [&_li]:grid-cols-[2rem_1fr] [&_li]:gap-[0.25rem] [&_li]:items-baseline [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[4px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:text-[16px] max-[719.98px]:[&_li]:grid-cols-[1.75rem_1fr] max-[1023.98px]:justify-center max-[1023.98px]:[&_li]:flex max-[1023.98px]:[&_li]:justify-center max-[1023.98px]:[&_li]:gap-[0.6rem]">
+  <li>
+    <span class="doc__num font-mono text-[11px] tracking-[0.08em] [color:var(--color-ink-3)] pt-[0.25rem]">01</span>
+    <span>{copy.first}</span>
+  </li>
+  <li>
+    <span class="doc__num font-mono text-[11px] tracking-[0.08em] [color:var(--color-ink-3)] pt-[0.25rem]">02</span>
+    <span>
+      {copy.second.before}
+      <span class="doc__pop relative inline-block [outline:none] max-[719.98px]:static" tabindex="0">
+        <span class="doc__pop-word font-semibold underline [text-decoration-style:dotted] underline-offset-[4px] [text-decoration-color:var(--color-ink-3)] cursor-default [.doc\_\_pop[data-open]_&]:[text-decoration-style:solid] [.doc\_\_pop[data-open]_&]:[text-decoration-color:var(--color-ink)]">{copy.second.emphasis}</span>
+        <span class="doc__pop-panel absolute left-0 top-[calc(100%_+_8px)] z-20 flex-wrap gap-1.5 w-[max-content] max-w-105 p-[8px] border border-rule rounded-[10px] bg-surface [box-shadow:0_1px_2px_rgba(13,_13,_16,_0.04),_0_12px_32px_-12px_rgba(13,_13,_16,_0.18)] opacity-0 pointer-events-none invisible flex [transform:translateY(-4px)] [transition:opacity_0.15s_ease,_transform_0.15s_ease] [.doc\_\_pop[data-open]_&]:opacity-100 [.doc\_\_pop[data-open]_&]:pointer-events-auto [.doc\_\_pop[data-open]_&]:visible [.doc\_\_pop[data-open]_&]:[transform:translateY(0)] [.doc\_\_pop[data-open]_&]:[transition-delay:0s] [@media(prefers-reduced-motion:_reduce)]:[transition:none] max-[719.98px]:fixed max-[719.98px]:left-[1rem] max-[719.98px]:right-[1rem] max-[719.98px]:top-16 max-[719.98px]:w-auto max-[719.98px]:max-w-none max-[1023.98px]:text-left" aria-hidden="true" inert>
+          {serviceLogos.map((name, index) => (
+            <span class="doc__pop-tile opacity-0 [transform:scale(0.6)] [transition:opacity_0.2s_ease,_transform_0.25s_cubic-bezier(0.22,_1,_0.36,_1)] [transition-delay:calc(var(--i,_0)_*_28ms)] [.doc\_\_pop[data-open]_&]:opacity-100 [.doc\_\_pop[data-open]_&]:[transform:scale(1)] inline-flex items-center justify-center w-8.5 h-8.5 border border-rule rounded-[8px] bg-surface [&_img]:w-4.5 [&_img]:h-4.5 [&_img]:object-contain [@media(prefers-reduced-motion:_reduce)]:[transition:none]" style={`--i:${index}`}><img src={logo(name)} alt="" width="18" height="18" /></span>
+          ))}
+        </span>
+      </span>{copy.second.after}
+    </span>
+  </li>
+  <li>
+    <span class="doc__num font-mono text-[11px] tracking-[0.08em] [color:var(--color-ink-3)] pt-[0.25rem]">03</span>
+    <span>
+      {copy.third.before}
+      <span class="doc__pop relative inline-block [outline:none] max-[719.98px]:static" tabindex="0">
+        <span class="doc__pop-word font-semibold underline [text-decoration-style:dotted] underline-offset-[4px] [text-decoration-color:var(--color-ink-3)] cursor-default [.doc\_\_pop[data-open]_&]:[text-decoration-style:solid] [.doc\_\_pop[data-open]_&]:[text-decoration-color:var(--color-ink)]">{copy.third.emphasis}</span>
+        <span class="doc__pop-panel absolute left-0 top-[calc(100%_+_8px)] z-20 flex-wrap gap-1.5 w-[max-content] max-w-105 p-[8px] border border-rule rounded-[10px] bg-surface [box-shadow:0_1px_2px_rgba(13,_13,_16,_0.04),_0_12px_32px_-12px_rgba(13,_13,_16,_0.18)] opacity-0 pointer-events-none invisible flex [transform:translateY(-4px)] [transition:opacity_0.15s_ease,_transform_0.15s_ease] [.doc\_\_pop[data-open]_&]:opacity-100 [.doc\_\_pop[data-open]_&]:pointer-events-auto [.doc\_\_pop[data-open]_&]:visible [.doc\_\_pop[data-open]_&]:[transform:translateY(0)] [.doc\_\_pop[data-open]_&]:[transition-delay:0s] [@media(prefers-reduced-motion:_reduce)]:[transition:none] max-[719.98px]:fixed max-[719.98px]:left-[1rem] max-[719.98px]:right-[1rem] max-[719.98px]:top-16 max-[719.98px]:w-auto max-[719.98px]:max-w-none max-[1023.98px]:text-left" aria-hidden="true" inert>
+          {agentLogos.map((name, index) => (
+            <span class="doc__pop-tile opacity-0 [transform:scale(0.6)] [transition:opacity_0.2s_ease,_transform_0.25s_cubic-bezier(0.22,_1,_0.36,_1)] [transition-delay:calc(var(--i,_0)_*_28ms)] [.doc\_\_pop[data-open]_&]:opacity-100 [.doc\_\_pop[data-open]_&]:[transform:scale(1)] inline-flex items-center justify-center w-8.5 h-8.5 border border-rule rounded-[8px] bg-surface [&_img]:w-4.5 [&_img]:h-4.5 [&_img]:object-contain [@media(prefers-reduced-motion:_reduce)]:[transition:none]" style={`--i:${index}`}><img src={logo(name)} alt="" width="18" height="18" /></span>
+          ))}
+        </span>
+      </span>{copy.third.after}
+    </span>
+  </li>
+</ol>
+
+<script>
+  for (const steps of document.querySelectorAll<HTMLOListElement>(".doc__steps")) {
+    let activePopover: HTMLElement | null = null;
+
+    const showPopover = (popover: HTMLElement | null) => {
+      if (activePopover === popover) return;
+      activePopover?.removeAttribute("data-open");
+      activePopover = popover;
+      activePopover?.setAttribute("data-open", "");
+    };
+
+    for (const popover of steps.querySelectorAll<HTMLElement>(".doc__pop")) {
+      const open = () => showPopover(popover);
+      const closeIfInactive = () => {
+        if (activePopover !== popover || popover.matches(":hover, :focus-within")) return;
+        showPopover(null);
+      };
+
+      popover.addEventListener("pointerenter", open);
+      popover.addEventListener("focusin", open);
+      popover.addEventListener("pointerleave", closeIfInactive);
+      popover.addEventListener("focusout", closeIfInactive);
+    }
+  }
+</script>

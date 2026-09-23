@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "unicorn", "oxc"],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    // Effect.gen bodies without a yield are valid Effect code.
+    "require-yield": "off",
+  },
+  "overrides": [
+    {
+      // Compile-only type checks declare functions and expressions that are never run.
+      "files": ["**/*.types.tsx", "**/*.types.ts"],
+      "rules": {
+        "no-unused-vars": "off",
+        "no-unused-expressions": "off",
+      },
+    },
+  ],
+  "ignorePatterns": [
+    ".alchemy/",
+    "**/.blume/",
+    ".local/",
+    ".reference/",
+    ".wrangler/",
+    "dist/",
+    "node_modules/",
+    "patches/",
+    "bun.lock",
+    "*.tsbuildinfo",
+    "**/.generated/",
+    "**/routeTree.gen.ts",
+  ],
+}

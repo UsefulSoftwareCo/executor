@@ -1,0 +1,57 @@
+diff --git a/src/services/workers.ts b/src/services/workers.ts
+--- a/src/services/workers.ts
++++ b/src/services/workers.ts
+@@ -11268,6 +11268,7 @@
+ }) as any as S.Schema<PutScriptObservabilityTraces>;
+ 
+ export interface PutScriptMetadataObservability {
++  redactQueryString?: boolean;
+   enabled: boolean;
+   headSamplingRate?: number | null;
+   logs?: PutScriptObservabilityLogs | null;
+@@ -11276,6 +11277,7 @@
+ export const PutScriptMetadataObservability = /*@__PURE__*/ S.suspend(() =>
+   S.Struct({
+     enabled: S.Boolean,
++    redactQueryString: S.optional(S.Boolean.pipe(T.Body("redact_query_string"))),
+     headSamplingRate: S.optional(
+       S.NullOr(S.Number).pipe(T.Body("head_sampling_rate")),
+     ),
+@@ -30664,6 +30666,7 @@
+         previewToken: "preview_token",
+         previewsEnabled: "previews_enabled",
+         propagationPolicy: "propagation_policy",
++        redactQueryString: "redact_query_string",
+         queueName: "queue_name",
+         renamedClasses: "renamed_classes",
+         resultInfo: "result_info",
+diff --git a/lib/services/workers.js b/lib/services/workers.js
+--- a/lib/services/workers.js
++++ b/lib/services/workers.js
+@@ -4319,6 +4319,7 @@
+ });
+ export const PutScriptMetadataObservability = /*@__PURE__*/ S.suspend(() => S.Struct({
+     enabled: S.Boolean,
++    redactQueryString: S.optional(S.Boolean.pipe(T.Body("redact_query_string"))),
+     headSamplingRate: S.optional(S.NullOr(S.Number).pipe(T.Body("head_sampling_rate"))),
+     logs: S.optional(S.NullOr(PutScriptObservabilityLogs)),
+     traces: S.optional(S.NullOr(PutScriptObservabilityTraces)),
+@@ -10981,6 +10982,7 @@
+         previewToken: "preview_token",
+         previewsEnabled: "previews_enabled",
+         propagationPolicy: "propagation_policy",
++        redactQueryString: "redact_query_string",
+         queueName: "queue_name",
+         renamedClasses: "renamed_classes",
+         resultInfo: "result_info",
+diff --git a/lib/services/workers.d.ts b/lib/services/workers.d.ts
+--- a/lib/services/workers.d.ts
++++ b/lib/services/workers.d.ts
+@@ -4098,6 +4098,7 @@
+ }
+ export declare const PutScriptObservabilityTraces: S.Schema<PutScriptObservabilityTraces>;
+ export interface PutScriptMetadataObservability {
++  redactQueryString?: boolean;
+     enabled: boolean;
+     headSamplingRate?: number | null;
+     logs?: PutScriptObservabilityLogs | null;

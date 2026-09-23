@@ -1,0 +1,122 @@
+---
+import "../styles/standalone.css";
+const services = [
+  {
+    name: "Google Calendar",
+    description:
+      "Read, create, update, or remove calendars and events, and manage calendar sharing rules, when you ask an agent to manage your schedule.",
+  },
+  {
+    name: "Gmail",
+    description:
+      "Read, search, compose, send, label, archive, trash, or permanently delete messages, and manage filters and other basic Gmail settings, when you explicitly ask an agent to work with your email.",
+  },
+  {
+    name: "Google Sheets",
+    description:
+      "Read spreadsheet data, update cells, ranges, or worksheets, and write Drive-file smart chips when you ask an agent to work with a spreadsheet.",
+  },
+  {
+    name: "Google Drive, Docs, Slides, and Forms",
+    description:
+      "Find and manage files and folders, edit documents and presentations, and create or read forms and responses when you ask an agent to work with them.",
+  },
+  {
+    name: "Google Contacts and Tasks",
+    description:
+      "Read or update contacts and contact groups, read available profile fields, other contacts, or a Workspace directory, and manage task lists and tasks when you ask an agent to organize people or work.",
+  },
+  {
+    name: "Google Meet",
+    description:
+      "Create and configure meeting spaces or read meeting records, participants, recordings, and transcripts when you request meeting-related work.",
+  },
+  {
+    name: "Google Photos",
+    description:
+      "Upload and manage app-created photos or read media you explicitly select through Google Photos Picker.",
+  },
+  {
+    name: "Google Search Console",
+    description:
+      "Read and manage verified sites, sitemaps, URL inspection results, and search-performance data when you request website analysis.",
+  },
+] as const;
+---
+
+<!doctype html>
+<html lang="en" class="[color-scheme:light] [font-family:Inter,_ui-sans-serif,_system-ui,_-apple-system,_BlinkMacSystemFont,_'Segoe_UI',_sans-serif] text-[#161616] bg-[#f7f6f1] [&_*]:[box-sizing:border-box]">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="index, follow" />
+    <meta
+      name="description"
+      content="Executor connects AI agents to Google Workspace and related Google services with your permission."
+    />
+    <link rel="canonical" href="https://executor.sh/google-workspace" />
+    <title>Executor</title>
+  </head>
+  <body class="m-0 leading-[1.6]">
+    <header class="w-[min(760px,_calc(100%_-_40px))] [margin-inline:auto] [padding:72px_0_38px] [border-bottom:1px_solid_#d8d6cd]">
+      <p class="brand [margin:0_0_24px] text-[15px] font-bold tracking-[0.04em] uppercase [margin:0_0_18px] [li_&]:m-0">Useful Software Company</p>
+      <h1 class="m-0 text-[clamp(48px,_10vw,_76px)] leading-[1] tracking-[-0.055em]">Executor</h1>
+      <p class="purpose max-w-170 [margin:28px_0_0] text-[20px] leading-[1.55] [margin:0_0_18px] [li_&]:m-0">
+        Executor is an integration platform and MCP gateway for AI agents. Executor lets you
+        securely connect Google Workspace and related Google services so an agent can read your
+        Google data and take only the actions you request.
+      </p>
+    </header>
+
+    <main class="w-[min(760px,_calc(100%_-_40px))] [margin-inline:auto]">
+      <section aria-labelledby="purpose-heading" class="py-[42px] px-0 [border-bottom:1px_solid_#d8d6cd]">
+        <h2 id="purpose-heading" class="[margin:0_0_16px] text-[25px] tracking-[-0.025em]">Why Executor requests access to Google data</h2>
+        <p class="[margin:0_0_18px] [li_&]:m-0">
+          You choose which Google service to connect. Executor requests the permissions needed
+          to provide that connection and uses the resulting Google data to carry out your
+          instructions. Connecting Google does not give Executor permission to act on its own.
+        </p>
+        <ul class="grid gap-5.5 [margin:26px_0_0] p-0 [list-style:none]">
+          {
+            services.map((service) => (
+              <li>
+                <h3 class="[margin:0_0_5px] text-[18px]">{service.name}</h3>
+                <p class="[margin:0_0_18px] [li_&]:m-0">{service.description}</p>
+              </li>
+            ))
+          }
+        </ul>
+      </section>
+
+      <section aria-labelledby="control-heading" class="py-[42px] px-0 [border-bottom:1px_solid_#d8d6cd]">
+        <h2 id="control-heading" class="[margin:0_0_16px] text-[25px] tracking-[-0.025em]">You control the connection</h2>
+        <p class="[margin:0_0_18px] [li_&]:m-0">
+          Executor exposes specific Google actions and their inputs. You can allow an action,
+          require approval, or block it through the policies you configure in Executor. You can
+          remove a connection in Executor or revoke it from your
+          <a href="https://myaccount.google.com/permissions" class="text-[#174ea6]">Google Account permissions</a>.
+        </p>
+      </section>
+
+      <section aria-labelledby="privacy-heading" class="py-[42px] px-0 [border-bottom:1px_solid_#d8d6cd]">
+        <h2 id="privacy-heading" class="[margin:0_0_16px] text-[25px] tracking-[-0.025em]">Privacy and Google API data</h2>
+        <p class="[margin:0_0_18px] [li_&]:m-0">
+          Executor does not sell Google user data. Executor uses Google data only to provide and
+          improve the user-facing integration features you request, as described in the
+          <a href="https://executor.sh/privacy" class="text-[#174ea6]">Executor Privacy Policy</a>.
+        </p>
+        <p class="[margin:0_0_18px] [li_&]:m-0">
+          Executor's use and transfer of information received from Google APIs adheres to the
+          <a href="https://developers.google.com/terms/api-services-user-data-policy"
+             class="text-[#174ea6]">Google API Services User Data Policy</a
+          >, including the Limited Use requirements.
+        </p>
+      </section>
+    </main>
+
+    <footer class="w-[min(760px,_calc(100%_-_40px))] [margin-inline:auto] flex flex-wrap justify-between gap-4 [padding:30px_0_64px] text-[14px]">
+      <span>Executor · Useful Software Company</span>
+      <span><a href="https://executor.sh/privacy" class="text-[#174ea6]">Privacy Policy</a> · <a href="https://executor.sh/terms" class="text-[#174ea6]">Terms of Service</a></span>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,162 @@
+# Questions a new user or an agent asks on their first day. `blume eval` has an
+# agent answer each one from these docs alone, so a question that fails names a
+# page that should have said something and does not. Keep the expected facts to
+# what the docs genuinely promise.
+questions:
+  - id: connect-account-api-key
+    question: How do I connect an account that authenticates with an API key?
+    expected:
+      - open Accounts in the dashboard and add one
+      - pick the provider and its authentication method
+      - give the account a label
+      - paste the fields the secrets method declares
+      - select the account on the app that needs it
+    routes:
+      - /connect-an-account
+
+  - id: account-reuse
+    question: If two apps need the same provider, do I have to save the credential twice?
+    expected:
+      - no, one account is reusable across apps
+      - each app selects the account rather than copying the credential
+    routes:
+      - /connect-an-account
+      - /concepts/providers-and-accounts
+
+  - id: mcp-endpoint-url
+    question: What is the MCP endpoint URL, and what transport does it use?
+    expected:
+      - the endpoint is the origin plus /mcp
+      - hosted is https://v2.executor.sh/mcp
+      - a local server is http://127.0.0.1:4312/mcp
+      - the transport is streamable HTTP
+    routes:
+      - /mcp
+
+  - id: add-claude-code
+    question: How do I add the Executor MCP endpoint to Claude Code?
+    expected:
+      - run claude mcp add --transport http --scope user executor with the endpoint URL
+      - then run /mcp inside Claude Code to sign in through the browser
+      - approve the connection for an organization
+    routes:
+      - /mcp-clients
+
+  - id: client-restart
+    question: I added the MCP server but no Executor tools appear in my client. Why?
+    expected:
+      - most clients load MCP servers only at startup
+      - restart the client or open a new session
+    routes:
+      - /mcp-clients
+
+  - id: what-is-an-approval
+    question: What is an approval in Executor, and where is it configured?
+    expected:
+      - an approval decides whether a tool may run
+      - it is declared on the individual query or mutation, not app-wide
+      - always() asks a person first and never() runs without asking
+      - an approval function can return approved, denied, or user-approval
+    routes:
+      - /concepts/tools-and-approvals
+
+  - id: approval-not-inferred
+    question: Does Executor treat a read-only operation as safe automatically?
+    expected:
+      - no, nothing is inferred from an operation looking read-only
+      - there is no app-wide approval setting
+    routes:
+      - /concepts/tools-and-approvals
+      - /build/author-an-app
+
+  - id: elicitation-modes
+    question: Can I approve tool calls in my browser instead of through the agent?
+    expected:
+      - yes, add elicitation_mode=browser to the endpoint URL before connecting
+      - the default mode is model, where the agent relays the request and calls resume
+      - the mode is fixed in the grant, so changing the URL later means connecting again
+    routes:
+      - /mcp
+      - /mcp-clients
+
+  - id: tools-and-codemode
+    question: How does an agent call one of my app's tools through the MCP endpoint?
+    expected:
+      - the agent writes a JavaScript program and runs it with the execute tool
+      - tools.search returns the callable path and signature
+      - a tool is called as tools.<app>.queries.<name> or tools.<app>.mutations.<name>
+    routes:
+      - /mcp
+      - /concepts/tools-and-approvals
+
+  - id: execute-limits
+    question: What limits apply to an execute program?
+    expected:
+      - 100 tool calls
+      - 30 seconds
+      - 65,536 characters of program source
+      - 65,536 bytes of output
+      - a client cannot raise them
+    routes:
+      - /mcp
+
+  - id: author-first-app
+    question: What does the source of a minimal Executor app look like?
+    expected:
+      - a default export from defineApp in the "apps" package
+      - defineApp takes the requirements and the definition
+      - queries are declared with query(options, handler)
+      - one index.ts file is enough
+    routes:
+      - /build/author-an-app
+
+  - id: deploy-an-app
+    question: How do I deploy an app?
+    expected:
+      - call the apps_deploy mutation through the MCP endpoint
+      - pass the files as path and content pairs
+      - there is no executor deploy command
+      - the app activates only after the build succeeds
+    routes:
+      - /build/author-an-app
+
+  - id: self-host-docker
+    question: How do I self-host Executor with Docker, and what must I configure?
+    expected:
+      - run docker compose with apps/hosted/self-host/compose.yaml
+      - BETTER_AUTH_URL, BETTER_AUTH_SECRET and EXECUTOR_ENCRYPTION_KEY are required
+      - the container publishes port 4400 on loopback only
+      - data lives in the pglite-data volume
+    routes:
+      - /run/self-host
+
+  - id: local-required-config
+    question: What do I need to set before the local Executor server will start?
+    expected:
+      - EXECUTOR_API_KEY, at least 32 characters
+      - EXECUTOR_ENCRYPTION_KEY, exactly 64 hexadecimal characters
+      - the server refuses to start without them
+    routes:
+      - /run/cli
+
+  - id: removing-an-account
+    question: What happens to my apps if I delete an account they were using?
+    expected:
+      - the apps keep the reference and report the account as unavailable
+      - they cannot run until a different account is chosen
+      - the account is not silently unselected
+    routes:
+      - /connect-an-account
+
+  - id: where-to-run
+    question: What are the ways to run Executor, and what is different about each?
+    expected:
+      - hosted at v2.executor.sh, with nothing to install
+      - local on your own machine through the command line
+      - self-host in Docker on your own infrastructure
+      - all three run the same apps and expose the same /mcp endpoint
+      - hosted and self-host add organizations and browser sign-in
+    routes:
+      - /
+      - /run/cli
+      - /run/self-host

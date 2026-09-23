@@ -1,0 +1,258 @@
+/** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
+import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { CurrentTelemetryConfig } from "./config.ts";
+import { telemetryLayer } from "./layer.ts";
+import { telemetryHttpClient } from "./transport.ts";
+import { recordExportFailure } from "./measurements.ts";
+
+/**
+ * Forward app telemetry in the host scope without delaying an app result.
+ * One export runs at a time, with at most sixteen pending batches. Overload and
+ * shutdown loss are reported through the normal safe export-failure signal.
+ * Scope release drains for the same three-second budget as the other exporters.
+ */
+export const makeTelemetryForwarder = Effect.gen(function* () {
+  const fibers = yield* FiberSet.make();
+  const pending = yield* Semaphore.make(16);
+  const sender = yield* Semaphore.make(1);
+  const failed = (reason: string) =>
+    recordExportFailure("app").pipe(Effect.annotateLogs({ "executor.telemetry.failure": reason }));
+  yield* Effect.addFinalizer(() =>
+    FiberSet.awaitEmpty(fibers).pipe(
+      Effect.timeoutOption("3 seconds"),
+      Effect.flatMap((drained) => (Option.isNone(drained) ? failed("shutdown") : Effect.void)),
+    ),
+  );
+  return (batch: TelemetryBatch, traceId: string, build?: string) =>
+    FiberSet.run(
+      fibers,
+      sender
+        .withPermits(1)(
+          forwardTelemetry(batch, traceId, build).pipe(Effect.catch(() => failed("relay"))),
+        )
+        .pipe(
+          pending.withPermitsIfAvailable(1),
+          Effect.flatMap((accepted) =>
+            Option.isNone(accepted) ? failed("capacity") : Effect.void,
+          ),
+        ),
+    ).pipe(Effect.asVoid);
+});
+
+const payloadBytes = 262_144;
+const encoder = new TextEncoder();
+const Payload = Schema.String.check(
+  Schema.isMaxLength(payloadBytes),
+  Schema.makeFilter((body) => encoder.encode(body).byteLength <= payloadBytes),
+);
+/** Untrusted isolate batches are bounded before decoding; no endpoint or credential crosses back. */
+export const TelemetryBatch = Schema.Struct({
+  traces: Schema.Array(Payload).check(Schema.isMaxLength(4)),
+  logs: Schema.Array(Payload).check(Schema.isMaxLength(4)),
+  dropped: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+/** Parsed isolate telemetry envelope. */
+export type TelemetryBatch = typeof TelemetryBatch.Type;
+
+/** Collect one invocation into memory, flush before returning, and never contact a remote collector. */
+export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const traces: string[] = [];
+    const logs: string[] = [];
+    let dropped = 0;
+    const capture: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const body = await request.text();
+      if (new URL(request.url).pathname === "/v1/traces") {
+        const payload = Schema.decodeUnknownSync(TracePayload)(body);
+        dropped += packRecords(
+          payload.resourceSpans.flatMap((resource) =>
+            resource.scopeSpans.flatMap((scope) => scope.spans),
+          ),
+          traces,
+          '{"resourceSpans":[{"scopeSpans":[{"spans":[',
+          "]}]}]}",
+        );
+      } else {
+        const payload = Schema.decodeUnknownSync(LogPayload)(body);
+        dropped += packRecords(
+          payload.resourceLogs.flatMap((resource) =>
+            resource.scopeLogs.flatMap((scope) => scope.logRecords),
+          ),
+          logs,
+          '{"resourceLogs":[{"scopeLogs":[{"logRecords":[',
+          "]}]}]}",
+        );
+      }
+      return Response.json({});
+    };
+    const value = yield* effect.pipe(
+      Effect.provide(
+        telemetryLayer(
+          {
+            service: "executor-app",
+            version: "invocation",
+            environment: "isolated",
+            clock: "WebSocketPair" in globalThis ? "cloudflare-io" : "system",
+            traces: { url: "http://telemetry.internal/v1/traces" },
+            logs: { url: "http://telemetry.internal/v1/logs" },
+          },
+          "event",
+        ),
+      ),
+      Effect.provideService(FetchHttpClient.Fetch, capture),
+    );
+    return { value, telemetry: { traces, logs, dropped } };
+  });
+
+// Native exporters can emit a thousand records at once. Split complete records,
+// not JSON text, and preserve the existing four-envelope memory bound per signal.
+// Resource identity is deliberately assigned by the parent, never the isolate.
+const packRecords = (
+  records: ReadonlyArray<Schema.Json>,
+  target: string[],
+  prefix: string,
+  suffix: string,
+): number => {
+  let parts: string[] = [];
+  const overhead = encoder.encode(prefix + suffix).byteLength;
+  let bytes = overhead;
+  let dropped = 0;
+  const flush = () => {
+    if (parts.length === 0) return;
+    target.push(prefix + parts.join(",") + suffix);
+    parts = [];
+    bytes = overhead;
+  };
+  for (const record of records) {
+    const encoded = JSON.stringify(record);
+    const size = encoder.encode(encoded).byteLength;
+    if (size + overhead > payloadBytes || target.length >= 4) {
+      dropped++;
+      continue;
+    }
+    if (bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes) flush();
+    if (target.length >= 4) {
+      dropped++;
+      continue;
+    }
+    bytes += size + (parts.length > 0 ? 1 : 0);
+    parts.push(encoded);
+  }
+  flush();
+  return dropped;
+};
+
+const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
+const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/));
+// Parse correlation fields and retain the rest of each native OTLP record verbatim.
+const Span = Schema.StructWithRest(Schema.Struct({ traceId: HexTrace, spanId: HexSpan }), [
+  Schema.Record(Schema.String, Schema.Json),
+]);
+const LogRecord = Schema.StructWithRest(
+  Schema.Struct({ traceId: Schema.optional(HexTrace), spanId: Schema.optional(HexSpan) }),
+  [Schema.Record(Schema.String, Schema.Json)],
+);
+const TracePayload = Schema.fromJsonString(
+  Schema.Struct({
+    resourceSpans: Schema.Array(
+      Schema.Struct({
+        scopeSpans: Schema.Array(
+          Schema.Struct({ spans: Schema.Array(Span).check(Schema.isMaxLength(1000)) }),
+        ),
+      }),
+    ),
+  }),
+);
+const LogPayload = Schema.fromJsonString(
+  Schema.Struct({
+    resourceLogs: Schema.Array(
+      Schema.Struct({
+        scopeLogs: Schema.Array(
+          Schema.Struct({ logRecords: Schema.Array(LogRecord).check(Schema.isMaxLength(1000)) }),
+        ),
+      }),
+    ),
+  }),
+);
+
+/** Validate isolated records and export only this call's trace, using parent-owned credentials/identity. */
+export const forwardTelemetry = (
+  batch: TelemetryBatch,
+  traceId: string | undefined,
+  build: string | undefined,
+  service: "executor-app" | "executor-web" = "executor-app",
+) =>
+  Effect.gen(function* () {
+    const config = yield* CurrentTelemetryConfig;
+    if (config === undefined) return;
+    const resource = {
+      attributes: [
+        { key: "service.name", value: { stringValue: service } },
+        { key: "service.version", value: { stringValue: config.version } },
+        { key: "deployment.environment.name", value: { stringValue: config.environment } },
+        ...(build === undefined
+          ? []
+          : [{ key: "executor.build.id", value: { stringValue: build } }]),
+      ],
+    };
+    const client = yield* HttpClient.HttpClient;
+    if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
+    for (const signal of ["traces", "logs"] as const) {
+      const target = config[signal];
+      if (target === undefined) continue;
+      for (const body of batch[signal]) {
+        const data =
+          signal === "traces"
+            ? yield* Schema.decodeUnknownEffect(TracePayload)(body).pipe(
+                Effect.map((payload) => ({
+                  resourceSpans: [
+                    {
+                      resource,
+                      scopeSpans: [
+                        {
+                          scope: { name: service },
+                          spans: payload.resourceSpans
+                            .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
+                            .filter((span) => traceId === undefined || span.traceId === traceId),
+                        },
+                      ],
+                    },
+                  ],
+                })),
+              )
+            : yield* Schema.decodeUnknownEffect(LogPayload)(body).pipe(
+                Effect.map((payload) => ({
+                  resourceLogs: [
+                    {
+                      resource,
+                      scopeLogs: [
+                        {
+                          scope: { name: service },
+                          logRecords: payload.resourceLogs
+                            .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
+                            .filter((log) => traceId === undefined || log.traceId === traceId),
+                        },
+                      ],
+                    },
+                  ],
+                })),
+              );
+        yield* client
+          .pipe(HttpClient.filterStatusOk)
+          .execute(
+            HttpClientRequest.post(target.url).pipe(
+              HttpClientRequest.setHeaders(
+                target.headers === undefined ? {} : Redacted.value(target.headers),
+              ),
+              HttpClientRequest.bodyJsonUnsafe(data),
+            ),
+          );
+      }
+    }
+  }).pipe(
+    Effect.provide(telemetryHttpClient),
+    Effect.provideService(Tracer.DisablePropagation, true),
+    Effect.timeout("3 seconds"),
+  );

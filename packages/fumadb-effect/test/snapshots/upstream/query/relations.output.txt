@@ -1,0 +1,60 @@
+create initial records
+get initial records
+[
+  { id: 'alfon', name: 'alfonsus' },
+  { id: 'fuma', name: 'fuma' },
+  { id: 'joulev', name: 'joulev' }
+]
+[
+  {
+    attachmentUrl: null,
+    authorId: 'fuma',
+    content: 'hello world',
+    id: '1',
+    relyTo: null
+  },
+  {
+    attachmentUrl: 'attachment-1',
+    authorId: 'joulev',
+    content: 'default content.',
+    id: '2',
+    relyTo: '1'
+  },
+  {
+    attachmentUrl: null,
+    authorId: 'alfon',
+    content: 'hehe',
+    id: '3',
+    relyTo: null
+  }
+]
+[
+  { data: Uint8Array(4) [ 1, 2, 3, 4 ], id: '1', url: 'attachment-1' }
+]
+delete alfon, his posts should also be deleted
+[
+  {
+    attachmentUrl: null,
+    authorId: 'fuma',
+    content: 'hello world',
+    id: '1',
+    relyTo: null
+  },
+  {
+    attachmentUrl: 'attachment-1',
+    authorId: 'joulev',
+    content: 'default content.',
+    id: '2',
+    relyTo: '1'
+  }
+]
+update attachment url of post 2, attachment url should also be updated
+[
+  {
+    data: Uint8Array(4) [ 1, 2, 3, 4 ],
+    id: '1',
+    url: 'attachment-1-updated'
+  }
+]
+delete post, attachment should also be deleted
+[]

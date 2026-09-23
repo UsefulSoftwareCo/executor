@@ -1,0 +1,17 @@
+{
+  "name": "@executor-js/app-templates",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./probe": "./src/probe.ts",
+    "./executor": "./src/executor.ts",
+    "./executor/skills/app-authoring/SKILL.md": "./executor/skills/app-authoring/SKILL.md"
+  },
+  "dependencies": {
+    "@executor-js/sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "apps": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  }
+}

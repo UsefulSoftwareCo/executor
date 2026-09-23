@@ -1,0 +1,19 @@
+{
+  "name": "@executor-js/test-evidence-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:styles": "tailwindcss -i storyboard.css -o .local/storyboard.css --minify"
+  },
+  "dependencies": {
+    "media-chrome": "^4.19.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.3.3"
+  }
+}

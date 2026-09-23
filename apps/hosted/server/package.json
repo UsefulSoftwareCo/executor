@@ -1,0 +1,43 @@
+{
+  "name": "@executor-js/hosted-server",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./api-keys": "./src/contracts/api-keys.ts",
+    "./contracts": "./src/contracts/api.ts",
+    "./mcp/browser": "./src/contracts/mcp-browser.ts",
+    "./organization": "./src/contracts/organization.ts",
+    "./groups": "./src/contracts/groups.ts",
+    "./resource-access": "./src/contracts/resource-access.ts",
+    "./database": "./src/implementation/database.ts",
+    "./app-ui": "./src/app-ui.ts",
+    "./app-ui/contracts": "./src/contracts/app-ui.ts",
+    "./provisioning": "./src/implementation/provisioning.ts",
+    "./migrations": "./src/implementation/migrations.ts",
+    "./organization-icon": "./src/contracts/organization-icon.ts",
+    "./browser": "./src/browser.ts",
+    "./browser/contracts": "./src/contracts/browser.ts",
+    "./app-management": "./src/app-management.ts"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "1.7.5",
+    "@better-auth/core": "1.7.5",
+    "@better-auth/oauth-provider": "1.7.5",
+    "@executor-js/app-management": "workspace:*",
+    "@executor-js/app-registry": "workspace:*",
+    "@executor-js/app-templates": "workspace:*",
+    "@executor-js/authorization": "workspace:*",
+    "@executor-js/catalog": "workspace:*",
+    "@executor-js/mcp": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/utils": "workspace:*",
+    "apps": "workspace:*",
+    "better-auth": "1.7.5",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  },
+  "devDependencies": {}
+}

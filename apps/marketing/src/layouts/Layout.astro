@@ -1,0 +1,121 @@
+---
+import '../styles/global.css'
+import { tagline, introduction } from '../content/site-copy'
+
+interface Props {
+  title?: string
+  description?: string
+}
+
+const {
+  title = `Executor — ${tagline}`,
+  description = introduction
+} = Astro.props
+
+const ogImage = new URL('/og-image.png', Astro.site ?? Astro.url).toString()
+const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? '/' : Astro.url.pathname, Astro.site ?? Astro.url).toString()
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="3800" />
+    <meta property="og:image:height" content="2360" />
+    <meta property="og:image:alt" content={title} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <title>{title}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="antialiased">
+    <slot />
+    <script>
+      // Parent integration must provide the analytics proxy before setting
+      // PUBLIC_POSTHOG_KEY. Gated PostHog init runs only when that key is set.
+      // Gated PostHog init. Runs only when PUBLIC_POSTHOG_KEY is set in the
+      // deploy env, so it's a no-op in dev / unconfigured builds. The parent
+      // deployment must supply the first-party proxy before enabling this.
+      // autocapture stays off on purpose: beyond $pageview we only send the
+      // explicit events the page fires (e.g. the "Set up with your agent" copy).
+      //
+      // capture_pageview is ON because this is the campaign landing surface.
+      // With it off, a visit to executor.sh/?utm_source=... produced no
+      // $pageview at all, so every UTM-tagged campaign read as zero traffic in
+      // PostHog — the params only ever reached $web_vitals, which no funnel or
+      // web-analytics view is built on. Astro serves a full page load per
+      // navigation, so plain `true` (capture once on init) is right here;
+      // `history_change` is for SPAs like apps/cloud.
+      import { heroBootstrap, isHeroPreview, markHeroPreview, observeHero } from "../hero-analytics";
+      markHeroPreview();
+      const phKey = import.meta.env.PUBLIC_POSTHOG_KEY;
+      if (phKey && !isHeroPreview()) {
+        const phPath = import.meta.env.PUBLIC_POSTHOG_PATH;
+        if (typeof phPath !== "string" || !/^\/api\/[a-f0-9]{16}$/.test(phPath)) throw new Error("PostHog proxy path is missing from this build");
+        // The parent deployment should replace this with its analytics proxy
+        // path if it enables PostHog.
+        const posthogReady = import("posthog-js").then(({ default: posthog }) => {
+          posthog.init(phKey, {
+            defaults: "2025-05-24",
+            bootstrap: heroBootstrap(),
+            before_send: (event) => {
+              if (event) {
+                try {
+                  const body = new Blob([JSON.stringify(event)], { type: "application/json" });
+                  if (!navigator.sendBeacon(`${phPath}/push`, body)) console.warn("Could not queue analytics event");
+                } catch { console.warn("Could not encode analytics event"); }
+              }
+              return null;
+            },
+            api_host: `${window.location.origin}${phPath}`,
+            ui_host: import.meta.env.PUBLIC_POSTHOG_HOST ?? "https://us.posthog.com",
+            autocapture: false,
+            capture_pageview: true,
+            persistence: "localStorage",
+            disable_session_recording: true,
+            capture_exceptions: false,
+            person_profiles: "identified_only",
+            loaded: (client) => client.register({ product_version: "v2", surface: "marketing",
+              environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
+              executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") }),
+          });
+          observeHero((event, properties) => posthog.capture(event, properties));
+          return posthog;
+        });
+        // The copy handler (in index.astro) is a separate bundle, so it asks for
+        // a capture via a DOM event rather than reaching for a global. Attached
+        // synchronously so a click during PostHog's async load isn't missed; the
+        // capture waits on the init promise.
+        window.addEventListener("analytics:capture", (e) => {
+          const detail = (
+            e as CustomEvent<{
+              event: string;
+              properties?: Record<string, unknown>;
+            }>
+          ).detail;
+          void posthogReady.then((posthog) => posthog.capture(detail.event, detail.properties));
+        });
+      }
+    </script>
+    <script>
+      import { startPublicErrorReporting } from "../error-reporting";
+      startPublicErrorReporting("marketing", { dsn: import.meta.env.PUBLIC_SENTRY_DSN, tunnel: import.meta.env.PUBLIC_SENTRY_TUNNEL, environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE });
+    </script>
+  </body>
+</html>

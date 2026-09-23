@@ -1,0 +1,142 @@
+diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
+--- a/dist/file-system-ZXKe_fv7.d.ts
++++ b/dist/file-system-ZXKe_fv7.d.ts
+@@ -37,6 +37,8 @@
+  */
+ declare class InMemoryFileSystem implements FileSystem {
+   private files;
++  /** Read an installed binary asset without text decoding. */
++  readBinary(path: string): Uint8Array<ArrayBuffer> | null;
+   /**
+    * @param files Optional initial file contents. Accepts either a plain object
+    * (keys are paths, values are file contents) or a `Map`. Defaults to an
+@@ -44,7 +46,7 @@
+    */
+   constructor(files?: Record<string, string> | Map<string, string>);
+   read(path: string): string | null;
+-  write(path: string, content: string): void;
++  write(path: string, content: FileEntry): void;
+   delete(path: string): void;
+   list(prefix?: string): string[];
+   flush(): Promise<void>;
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -331,6 +331,8 @@
+  * Options for createApp
+  */
+ interface CreateAppOptions {
++  /** Set false when an import resolver owns dependency installation. */
++  installDependencies?: boolean;
+   /**
+    * Input files — keys are paths relative to project root, values are file contents.
+    * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
+@@ -499,6 +501,8 @@
+ //#endregion
+ //#region src/installer.d.ts
+ interface InstallOptions {
++  /** Skip dependency traversal for a self-contained framework archive. Default: true. */
++  transitive?: boolean;
+   /**
+    * Include devDependencies (default: false)
+    */
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -81 +81 @@ function resolvePackage(specifier, files, conditions, extensions) {
+-	const legacyEntry = resolveExports.legacy(pkg, { fields: ["module", "main"] });
++	const legacyEntry = resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
+@@ -258 +258 @@ async function bundleWithEsbuild(options) {
+-						const result = resolveModule(args.path, { files });
++						const result = resolveModule(args.path, { files, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });
+@@ -857,7 +857,12 @@
+ 		this.files = files instanceof Map ? files : new Map(Object.entries(files));
+ 	}
+ 	read(path) {
+-		return this.files.get(path) ?? null;
++		const value = this.files.get(path);
++		return typeof value === "string" ? value : null;
++	}
++	readBinary(path) {
++		const value = this.files.get(path);
++		return typeof value === "object" && value !== null ? value.data : null;
+ 	}
+ 	write(path, content) {
+ 		this.files.set(path, content);
+@@ -1516,7 +1521,7 @@
+ 	const wranglerConfig = parseWranglerConfig(fileSystem);
+ 	const nodejsCompat = hasNodejsCompat(wranglerConfig);
+ 	const installWarnings = [];
+-	if (hasDependencies(fileSystem)) {
++	if (options.installDependencies !== false && hasDependencies(fileSystem)) {
+ 		const installResult = await installDependencies(fileSystem, { ...registry ? { registry } : {} });
+ 		installWarnings.push(...installResult.warnings);
+ 	}
+diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
+--- a/dist/installer-DDvaMqav.js
++++ b/dist/installer-DDvaMqav.js
+@@ -381,7 +381,7 @@
+ * @returns Metadata about the installation
+ */
+ async function installDependencies(fileSystem, options = {}) {
+-	const { dev = false, registry = NPM_REGISTRY } = options;
++	const { dev = false, registry = NPM_REGISTRY, transitive = true } = options;
+ 	const result = {
+ 		installed: [],
+ 		warnings: []
+@@ -407,14 +407,14 @@
+ 		if (Object.keys(depsToInstall).length === 0) return result;
+ 		const installedPackages = /* @__PURE__ */ new Set();
+ 		const inProgress = /* @__PURE__ */ new Map();
+-		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry)));
++		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive)));
+ 	} else if (pyprojectTomlContent) return await installDependenciesPython(fileSystem, pyprojectTomlContent);
+ 	return result;
+ }
+ /**
+ * Install a single package and its dependencies recursively.
+ */
+-async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry) {
++async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive) {
+ 	if (installedPackages.has(name)) return;
+ 	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
+ 		installedPackages.add(name);
+@@ -424,6 +424,19 @@
+ 	if (existing) return existing;
+ 	const installPromise = (async () => {
+ 		try {
++			// npm permits HTTP tarballs, including pinned framework dependencies.
++			// Read their manifest from the archive; do not execute package scripts.
++			if (/^https?:\/\//.test(versionRange)) {
++				const packageFiles = await fetchPackageFiles(name, { dist: { tarball: versionRange } });
++				const manifest = JSON.parse(packageFiles["package.json"]);
++				if (manifest.name !== name || typeof manifest.version !== "string")
++					throw new Error("Tarball package identity does not match its dependency");
++				installedPackages.add(name);
++				for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
++				result.installed.push(`${name}@${manifest.version}`);
++				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive)));
++				return;
++			}
+ 			const metadata = await fetchPackageMetadata(name, registry);
+ 			const version = resolveVersion(versionRange, metadata);
+ 			if (!version) {
+@@ -440,7 +453,7 @@
+ 			const packageFiles = await fetchPackageFiles(name, versionMetadata);
+ 			for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
+ 			const deps = versionMetadata.dependencies ?? {};
+-			await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry)));
++			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive)));
+ 		} catch (error) {
+ 			const message = error instanceof Error ? error.message : String(error);
+ 			result.warnings.push(`Failed to install ${name}: ${message}`);
+@@ -544,6 +557,9 @@
+ 		offset += 512;
+ 		const isRegularFile = typeFlag === 48 || typeFlag === 0;
+ 		if (isRegularFile && filePath !== "") regularFilePaths.push(filePath);
++		if (isRegularFile && size > 0 && filePath.endsWith(".wasm")) {
++			textFiles.set(filePath, { data: data.slice(offset, offset + size) });
++		}
+ 		if (isRegularFile && size > 0 && isTextFile(filePath)) {
+ 			const content = data.slice(offset, offset + size);
+ 			try {

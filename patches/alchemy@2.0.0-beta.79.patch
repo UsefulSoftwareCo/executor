@@ -1,0 +1,1135 @@
+diff --git a/lib/Action.js b/lib/Action.js
+index 8d4f9b29..a26e84f0 100644
+--- a/lib/Action.js
++++ b/lib/Action.js
+@@ -6,7 +6,7 @@ import { toFqn } from "./FQN.js";
+ import { CurrentNamespace } from "./Namespace.js";
+ import * as Output from "./Output.js";
+ import { RuntimeContext } from "./RuntimeContext.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ export const isAction = (value) => typeof value === "object" && value !== null && value?.Kind === "action";
+ export function Action(...args) {
+     if (args.length === 0) {
+diff --git a/lib/Apply.js b/lib/Apply.js
+index c099d206..fb38591c 100644
+--- a/lib/Apply.js
++++ b/lib/Apply.js
+@@ -18,7 +18,7 @@ import * as Output from "./Output.js";
+ import {} from "./Plan.js";
+ import { findProviderByType, missingProviderError, tryFindProviderByType, } from "./Provider.js";
+ import { stampedMode } from "./ProviderMode.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ import { State, StateStoreError, } from "./State/index.js";
+ import { recordResourceOp } from "./Telemetry/Metrics.js";
+@@ -391,13 +391,17 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+         if (policyChanged && node.state.removalPolicy !== undefined) {
+             yield* scopedSession.note(`removal policy ${node.state.removalPolicy} → ${node.resource.RemovalPolicy}`);
+         }
+-        yield* signalReadyStable;
++        // Store before signalling. A dependent task released by
++        // `readyStable` reads `tracker[fqn]`, so signalling first lets it
++        // observe a missing output. Every other lifecycle path stores first.
++        // See https://github.com/alchemy-run/alchemy/issues/1717.
+         yield* storeAndSignal({
+             output: node.state.attr,
+             props: node.state.props,
+             bindings: node.state.bindings ?? [],
+             instanceId: node.state.instanceId,
+         });
++        yield* signalReadyStable;
+         return;
+     }
+     const allUpstreamFqns = () => {
+diff --git a/lib/Cloudflare/DNS/Record.d.ts b/lib/Cloudflare/DNS/Record.d.ts
+index 0479f3dd..d9c8e61f 100644
+--- a/lib/Cloudflare/DNS/Record.d.ts
++++ b/lib/Cloudflare/DNS/Record.d.ts
+@@ -30,6 +30,8 @@ export interface RecordDataByType {
+ /** Structured DNS record components accepted by Cloudflare. */
+ export type RecordData = RecordDataByType[keyof RecordDataByType];
+ export interface RecordCommonProps {
++    /** Append a stable Alchemy instance marker to recover interrupted creates. Counts toward the zone comment limit. */
++    ownershipComment?: boolean;
+     /**
+      * Zone the record lives in. Stable — changing the zone triggers
+      * replacement.
+diff --git a/lib/Cloudflare/DNS/Record.js b/lib/Cloudflare/DNS/Record.js
+index c377cd33..325cad25 100644
+--- a/lib/Cloudflare/DNS/Record.js
++++ b/lib/Cloudflare/DNS/Record.js
+@@ -1,9 +1,12 @@
++import { InstanceId } from "../../InstanceId.js";
++import { NotFound, UnknownCloudflareError, CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
++import * as Schema from "effect/Schema";
+ import * as dns from "@distilled.cloud/cloudflare/dns";
+ import * as zones from "@distilled.cloud/cloudflare/zones";
+ import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+ import * as Stream from "effect/Stream";
+-import { Unowned } from "../../AdoptPolicy.js";
++import { Unowned, OwnedBySomeoneElse } from "../../AdoptPolicy.js";
+ import * as Provider from "../../Provider.js";
+ import { Resource } from "../../Resource.js";
+ import { arrayEqualsUnordered } from "../../Util/equal.js";
+@@ -126,7 +129,8 @@ export const RecordProvider = () => Provider.succeed(Record, {
+     reconcile: Effect.fn(function* ({ news, output }) {
+         // Inputs have been resolved to concrete strings by Plan.
+         const zoneId = news.zoneId;
+-        const body = buildMutableBody(news);
++        const ownership = `[alchemy:${yield* InstanceId}]`;
++        const body = { ...buildMutableBody(news), ...(news.ownershipComment ? { comment: `${news.comment ?? "Managed by Alchemy"} ${ownership}` } : {}) };
+         // 1. Observe by cached id first.
+         let observed;
+         if (output?.recordId) {
+@@ -177,6 +181,10 @@ export const RecordProvider = () => Provider.succeed(Record, {
+             if (created.raced)
+                 foundByScan = true;
+         }
++        if (news.ownershipComment && foundByScan && observed.id !== output?.recordId && !observed.comment?.endsWith(` ${ownership}`)) {
++          return yield* Effect.fail(new OwnedBySomeoneElse({ message: "DNS record was created by another owner", resourceType: Record.Type, physicalName: news.name }));
++        }
++
+         // 4. Sync — Cloudflare's update endpoint is PUT-style; resend
+         //    the full desired body when any mutable field differs.
+         if (!observed.id) {
+@@ -222,7 +230,7 @@ export const RecordProvider = () => Provider.succeed(Record, {
+             zoneId: output.zoneId,
+             dnsRecordId: output.recordId,
+         })
+-            .pipe(Effect.catch(() => Effect.void));
++            .pipe(Effect.catch((error) => recordMissing(error) ? Effect.void : Effect.fail(error)));
+     }),
+     read: Effect.fn(function* ({ output, olds }) {
+         // Owned path: we have persisted state (our own recordId) — refresh it.
+@@ -255,7 +263,7 @@ export const RecordProvider = () => Provider.succeed(Record, {
+             });
+             const attrs = toAttributes(observed, zoneId);
+             if (attrs)
+-                return Unowned(attrs);
++                return olds?.ownershipComment && observed?.comment?.endsWith(` [alchemy:${yield* InstanceId}]`) ? attrs : Unowned(attrs);
+         }
+         return undefined;
+     }),
+@@ -265,7 +273,7 @@ const observeById = (zoneId, dnsRecordId) => Effect.gen(function* () {
+     // Distilled tags transport errors but a 404 for a missing
+     // record surfaces as an untagged error. Swallow so the
+     // reconciler falls through to the find-by-name path.
+-    Effect.catch(() => Effect.succeed(undefined)));
++    Effect.catch((error) => recordMissing(error) ? Effect.succeed(undefined) : Effect.fail(error)));
+     if (r === undefined)
+         return undefined;
+     return narrowRecord(r);
+@@ -453,4 +461,5 @@ const recordDataEquals = (desired, observed) => {
+     return (desiredEntries.length === observedEntries.length &&
+         desiredEntries.every(([key, value]) => observedEntries.some(([observedKey, observedValue]) => observedKey === key && observedValue === value)));
+ };
+-//# sourceMappingURL=Record.js.map
+\ No newline at end of file
++//# sourceMappingURL=Record.js.map
++const recordMissing = (error) => Schema.is(NotFound)(error) || (Schema.is(UnknownCloudflareError)(error) && error.code === 81044) || (Schema.is(CloudflareHttpError)(error) && error.status === 404);
+diff --git a/lib/Cloudflare/Hyperdrive/Connection.js b/lib/Cloudflare/Hyperdrive/Connection.js
+index ad4516d4..a177d532 100644
+--- a/lib/Cloudflare/Hyperdrive/Connection.js
++++ b/lib/Cloudflare/Hyperdrive/Connection.js
+@@ -194,7 +194,7 @@ export const ProviderLive = () => Provider.succeed(Connection, {
+ export const ProviderLocal = () => Provider.succeed(Connection, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         if (!output?.hyperdriveId)
+             return { action: "update" };
+         if (!isResolved(news))
+@@ -210,7 +210,7 @@ export const ProviderLocal = () => Provider.succeed(Connection, {
+         return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ id, news, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         return {
+             hyperdriveId: output?.hyperdriveId ?? generateLocalId(),
+             name: yield* createConfigName(id, news.name),
+diff --git a/lib/Cloudflare/Providers.d.ts b/lib/Cloudflare/Providers.d.ts
+index d58bedb6..4b80c5c9 100644
+--- a/lib/Cloudflare/Providers.d.ts
++++ b/lib/Cloudflare/Providers.d.ts
+@@ -8,9 +8,8 @@ import * as CloudflareEnvironment from "./CloudflareEnvironment.ts";
+ import * as Containers from "./Containers/index.ts";
+ import * as LoadBalancer from "./LoadBalancer/index.ts";
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+-declare const Providers_base: Provider.ProviderCollection<Providers, "Cloudflare">;
+-export declare class Providers extends Providers_base {
+-}
++import { Providers } from "../CloudflareRuntimeServices.js";
++export { Providers } from "../CloudflareRuntimeServices.js";
+ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+ /**
+  * Cloudflare providers, bindings, and credentials for Worker-based stacks.
+diff --git a/lib/Cloudflare/Providers.js b/lib/Cloudflare/Providers.js
+index 9a4a8add..83f7829f 100644
+--- a/lib/Cloudflare/Providers.js
++++ b/lib/Cloudflare/Providers.js
+@@ -123,8 +123,8 @@ import * as Workflows from "./Workflows/Workflow.js";
+ import * as Zaraz from "./Zaraz/index.js";
+ import * as Zone from "./Zone/index.js";
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+-export class Providers extends Provider.ProviderCollection()("Cloudflare") {
+-}
++import { Providers } from "../CloudflareRuntimeServices.js";
++export { Providers } from "../CloudflareRuntimeServices.js";
+ /**
+  * Cloudflare providers, bindings, and credentials for Worker-based stacks.
+  */
+diff --git a/lib/Cloudflare/R2/Bucket.js b/lib/Cloudflare/R2/Bucket.js
+index a87d7432..959ef148 100644
+--- a/lib/Cloudflare/R2/Bucket.js
++++ b/lib/Cloudflare/R2/Bucket.js
+@@ -858,7 +858,7 @@ export const ProviderLive = () => Provider.effect(Bucket, Effect.gen(function* (
+ export const ProviderLocal = () => Provider.succeed(Bucket, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news = {}, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         if (!output?.bucketName)
+             return { action: "update" };
+         if (!isResolved(news))
+@@ -873,7 +873,7 @@ export const ProviderLocal = () => Provider.succeed(Bucket, {
+         return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ news = {}, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         return {
+             bucketName: output?.bucketName ?? generateLocalId(),
+             storageClass: (news.storageClass ?? "Standard"),
+diff --git a/lib/Cloudflare/Workers/DurableObjectBridge.js b/lib/Cloudflare/Workers/DurableObjectBridge.js
+index d5e365c2..c3bf83b1 100644
+--- a/lib/Cloudflare/Workers/DurableObjectBridge.js
++++ b/lib/Cloudflare/Workers/DurableObjectBridge.js
+@@ -9,6 +9,7 @@ import { buildEventTelemetry } from "../../TelemetryRuntime.js";
+ import { DurableObjectState, fromDurableObjectState, } from "./DurableObjectState.js";
+ import { isScopeEjected, makeRequestEffect } from "./HttpServer.js";
+ import { fromWebSocket } from "./WebSocket.js";
++import { platformSpan } from "./cloudflare_workers.js";
+ import { getWorkerExport, handleRpcExit } from "./WorkerBridge.js";
+ /**
+  * Create a DurableObjectBridge class that proxies RPC method calls through
+@@ -33,16 +34,17 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+         constructor(state, env) {
+             super(state, env);
+             this.#state = state;
+-            this.#instance = state.blockConcurrencyWhile(() => build((promise) => void state.waitUntil?.(promise)).then(({ context, export: exported, telemetry }) => {
++            const instanceScope = Scope.makeUnsafe();
++            this.#instance = state.blockConcurrencyWhile(() => platformSpan("alchemy.do.initialize", () => build((promise) => void state.waitUntil?.(promise)).then(({ context, export: exported, telemetry }) => {
+                 const { constructor, services } = exported;
+-                const doContext = Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(context)));
+-                return constructor.pipe(Effect.provide(doContext), Effect.flatMap((instance) => instance.pipe(Effect.provide(doContext))), Effect.map((instance) => ({
++                const doContext = Layer.mergeAll(Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)), Layer.succeed(Scope.Scope, instanceScope)).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(context)));
++                return constructor.pipe(Effect.provide(doContext), Effect.flatMap((instance) => instance.pipe(Effect.provide(doContext))), Effect.onExit((exit) => Exit.isFailure(exit) ? Scope.close(instanceScope, exit) : Effect.void), Effect.map((instance) => ({
+                     instance,
+                     services,
+                     context,
+                     telemetry,
+                 })), Effect.runPromise);
+-            }));
++            })));
+             return new Proxy(this, {
+                 get: (target, prop) => {
+                     const bind = (f) => typeof f === "function" ? f.bind(target) : f;
+@@ -78,8 +80,8 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+         }
+         async #execute(fn, onExit) {
+             const scope = Scope.makeUnsafe();
+-            const { instance, services, context, telemetry } = await this.#instance;
+-            return fn(instance)
++            const { instance, services, context, telemetry } = await platformSpan("alchemy.do.wait", () => this.#instance);
++            return platformSpan("alchemy.do.response", () => fn(instance)
+                 .pipe(Effect.provide(Layer.mergeAll(Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)), Layer.succeed(Scope.Scope, scope), 
+             // The configured telemetry exporters, attached to the *call*
+             // scope by `buildEventTelemetry` so buffered telemetry
+@@ -90,14 +92,14 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+                 ? onExit(exit, scope)
+                 : exit._tag === "Success"
+                     ? Promise.resolve(exit.value)
+-                    : Promise.reject(Cause.squash(exit.cause)))
++                    : Promise.reject(Cause.squash(exit.cause))))
+                 .finally(() => isScopeEjected(scope)
+                 ? undefined
+                 : this.ctx.waitUntil(
+                 // Match WorkerBridge: yield one macrotask so the
+                 // HttpMiddleware tracer's late span-end reaches the
+                 // telemetry exporter before the scope's flush finalizer.
+-                new Promise((resolve) => setTimeout(resolve, 0)).then(() => Effect.runPromise(Scope.close(scope, Exit.void)))));
++                new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))))));
+         }
+         async fetch(request) {
+             return this.#execute((instance) => instance.fetch
+diff --git a/lib/Cloudflare/Workers/HttpServer.js b/lib/Cloudflare/Workers/HttpServer.js
+index 53d2536b6c086fb167269e07f1c04a1a2d1f55b6..80628efc856170ebaea904b32e95758018cd294e 100644
+--- a/lib/Cloudflare/Workers/HttpServer.js
++++ b/lib/Cloudflare/Workers/HttpServer.js
+@@ -1,7 +1,9 @@
+ import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
+-import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/unstable/http/HttpBody";
+ import * as EffectHttp from "effect/unstable/http/HttpEffect";
+ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+@@ -22,23 +24,30 @@ export const makeRequestEffect = (webRequest, handler) => {
+                 raw: webRequest.body,
+             }),
+         });
+-        return yield* toHandledWebResponse(safeHandler).pipe(Effect.provide([
+-            Layer.succeed(HttpServerRequest.HttpServerRequest, request),
+-            Layer.succeed(Request, webRequest),
+-        ]));
++        return yield* toHandledWebResponse(safeHandler).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request), Effect.provideService(Request, webRequest));
+     });
+ };
+ const toHandledWebResponse = (handler) => Effect.gen(function* () {
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
+     const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
+     const webResponse = yield* Deferred.make();
++    const toWeb = (request, response) => {
++        let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++        const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++        if (streaming && transferred.body instanceof HttpBody.Stream) {
++            const body = transferred.body;
++            transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++                body.stream.pipe(Stream.onExit((exit) => Scope.close(eventScope, exit))),
++                body.contentType, body.contentLength));
++        }
++        const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++        if (streaming) EffectHttp.scopeDisableClose(eventScope);
++        return web;
++    };
+     yield* EffectHttp.toHandled(handler, (request, response) => Deferred.succeed(webResponse, 
+-    // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-    HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-        withoutBody: request.method === "HEAD",
+-        context,
+-    })));
++    toWeb(request, response))).pipe(Effect.forkScoped);
+     return yield* Deferred.await(webResponse);
+ });
+ export { isScopeEjected } from "../../Http.js";
+diff --git a/lib/Cloudflare/Workers/LocalWorkerProvider.js b/lib/Cloudflare/Workers/LocalWorkerProvider.js
+index 3eefe4f3..b27c9684 100644
+--- a/lib/Cloudflare/Workers/LocalWorkerProvider.js
++++ b/lib/Cloudflare/Workers/LocalWorkerProvider.js
+@@ -455,7 +455,7 @@ export const LocalWorkerProvider = () => LocalProvider.make(Worker, LOCAL_PROVID
+      * half of the old `buildConfig` — kept out of the hashed config.
+      */
+     const materializeWorkerBindings = Effect.fn(function* (config, selfUrl) {
+-        const { accountId } = yield* cloudflareEnv;
++        const { accountId } = yield* (Object.values(config.devRemote).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+         return yield* materializeRuntimeBindings({
+             ...config,
+             devAccess: config.dev.mode === "external" ? undefined : config.dev.access,
+@@ -927,7 +927,7 @@ export const LocalWorkerProvider = () => LocalProvider.make(Worker, LOCAL_PROVID
+         // The dev server and its workerd run in a child process rooted
+         // at the app.
+         const root = path.resolve(rootDir ?? process.cwd());
+-        const { accountId } = yield* cloudflareEnv;
++        const { accountId } = yield* (Object.values(worker.devRemote ?? {}).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+         // Queue-consumer wiring can change while the child is starting
+         // (a sibling `Consumer` reconcile), before the restart hook
+         // below exists to pick it up. We hold the serve lock, so a
+@@ -1076,14 +1076,17 @@ export const LocalWorkerProvider = () => LocalProvider.make(Worker, LOCAL_PROVID
+             const durableObjectNamespaces = {};
+             for (const { data } of bindings) {
+                 for (const binding of data?.bindings ?? []) {
+-                    if (binding.type === "durable_object_namespace") {
++                    // Foreign bindings may contain unresolved script-name Outputs during precreate.
++                    // Their namespace belongs to the host Worker and must not be declared here.
++                    if (binding.type === "durable_object_namespace" &&
++                        (!binding.scriptName || binding.scriptName === name)) {
+                         durableObjectNamespaces[binding.className] =
+                             binding.namespaceId ??
+                                 encodeURIComponent(`${binding.scriptName}-${binding.className}`);
+                     }
+                 }
+             }
+-            const { accountId } = yield* cloudflareEnv;
++            const { accountId } = yield* (bindings.some(({ data }) => Object.values(data?.devRemote ?? {}).some(Boolean)) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+             const urls = news.dev?.mode === "external"
+                 ? // news.dev.url may be an unresolved output; avoid trying to resolve it here.
+                     []
+@@ -1111,7 +1114,7 @@ export const LocalWorkerProvider = () => LocalProvider.make(Worker, LOCAL_PROVID
+             };
+         }),
+         start: Effect.fn(function* ({ fqn, config, invalidate }) {
+-            const { accountId } = yield* cloudflareEnv;
++            const { accountId } = yield* (Object.values(config.devRemote).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+             // `dev: { mode: "external" }` opts out of running a local Worker
+             // entirely — typically because an external dev process
+             // (Command.Dev) is serving requests. The instance exists in the
+diff --git a/lib/Cloudflare/Workers/WorkerBridge.js b/lib/Cloudflare/Workers/WorkerBridge.js
+index f00dd3e1..712153a0 100644
+--- a/lib/Cloudflare/Workers/WorkerBridge.js
++++ b/lib/Cloudflare/Workers/WorkerBridge.js
+@@ -16,7 +16,7 @@ import { Self } from "../../Self.js";
+ import { StackContext } from "../../StackContext.js";
+ import { buildEventTelemetry } from "../../TelemetryRuntime.js";
+ import { CloudflareEnvironment } from "../CloudflareEnvironmentService.js";
+-import cloudflare_workers from "./cloudflare_workers.js";
++import cloudflare_workers, { platformSpan } from "./cloudflare_workers.js";
+ import { isScopeEjected } from "./HttpServer.js";
+ import { ErrorTag, encodeRpcError, toRpcStream, } from "./Rpc.js";
+ import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, deferredExecutionContext, fromExecutionContext, } from "./WorkerRuntime.js";
+@@ -31,10 +31,10 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+     });
+     const processEvent = (makeEffect, ctx, env, onExit) => {
+         const scope = Scope.makeUnsafe();
+-        return build((promise) => ctx.waitUntil(promise))
++        return platformSpan("alchemy.response", () => platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise)))
+             .then((built) => {
+             const [eff, services] = makeEffect(built);
+-            return eff.pipe(
++            return platformSpan("alchemy.handler", () => eff.pipe(
+             // Per-event services take precedence over the captured services
+             // and the built isolate context: the isolate context carries the
+             // *deferred* WorkerExecutionContext (yieldable in the top-level
+@@ -50,12 +50,12 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+             // so buffered telemetry flushes when the scope closes into
+             // `ctx.waitUntil` below — never on workerd's ephemeral
+             // isolate scope.
+-            Layer.effectContext(buildEventTelemetry(built.context, scope, built.telemetry()))).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(built.context)))), Effect.runPromiseExit);
++            Layer.effectContext(buildEventTelemetry(built.context, scope, built.telemetry()))).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(built.context)))), Effect.runPromiseExit));
+         }, 
+         // A failed isolate build reaches callers as a defect exit so the RPC
+         // path can envelope-encode it like any other handler defect.
+         (error) => Exit.die(error))
+-            .then((exit) => onExit(exit, scope))
++            .then((exit) => onExit(exit, scope)))
+             .finally(() => isScopeEjected(scope)
+             ? undefined
+             : ctx.waitUntil(
+@@ -64,7 +64,7 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+             // Yield one macrotask before closing the scope so that span
+             // reaches the telemetry exporter's buffer before the scope's
+             // flush finalizer runs.
+-            new Promise((resolve) => setTimeout(resolve, 0)).then(() => Effect.runPromise(Scope.close(scope, Exit.void)))));
++            new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))))));
+     };
+     class WorkerBridge extends Base {
+         ctx;
+@@ -194,12 +194,12 @@ const getSharedBuild = (entrypoint, stack) => {
+      * `Config` read in user init) resets the memo and heals on the next event.
+      */
+     shared = (pin) => {
+-        const promise = (built ??= Effect.runPromise(Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
++        const promise = (built ??= platformSpan("alchemy.runtime.initialize", () => Effect.runPromise(Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+         // Strip the build's memo map from the exposed context so a Layer the
+         // user `Effect.provide`s *inside a handler* builds per event instead
+         // of sharing one instance (pinned to the first request's IoContext)
+         // across concurrent events.
+-        Effect.map(Context.omit(Layer.CurrentMemoMap)))).catch((error) => {
++        Effect.map(Context.omit(Layer.CurrentMemoMap))))).catch((error) => {
+             built = undefined;
+             throw error;
+         }));
+diff --git a/lib/Cloudflare/Workers/cloudflare_workers.d.ts b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+index 98526844..c43196ba 100644
+--- a/lib/Cloudflare/Workers/cloudflare_workers.d.ts
++++ b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+@@ -1,4 +1,5 @@
+ import * as Effect from "effect/Effect";
+ declare const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")>;
+ export default cloudflare_workers;
+-//# sourceMappingURL=cloudflare_workers.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.d.ts.map
++export declare const platformSpan: <A>(name: string, run: () => Promise<A>) => Promise<A>;
+diff --git a/lib/Cloudflare/Workers/cloudflare_workers.js b/lib/Cloudflare/Workers/cloudflare_workers.js
+index a9ec2cb5..08d72a08 100644
+--- a/lib/Cloudflare/Workers/cloudflare_workers.js
++++ b/lib/Cloudflare/Workers/cloudflare_workers.js
+@@ -9,7 +9,8 @@ import * as Effect from "effect/Effect";
+ // Type the import before chaining to avoid expanding the full module namespace
+ // while TypeScript infers the catch result.
+ const moduleImport = import("cloudflare:workers");
+-const modulePromise = moduleImport.catch(() => ({
++let tracing;
++const modulePromise = moduleImport.then((module) => { tracing = module.tracing; return module; }).catch(() => ({
+     env: {},
+     DurableObject: class {
+     },
+@@ -19,4 +20,19 @@ const modulePromise = moduleImport.catch(() => ({
+ }));
+ const cloudflare_workers = Effect.promise(() => modulePromise);
+ export default cloudflare_workers;
+-//# sourceMappingURL=cloudflare_workers.js.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.js.map
++export const platformSpan = (name, run) => {
++  // Tail delivery gives each invocation a timing record even when native traces are sampled.
++  // Cloudflare clocks advance on I/O: CPU cost remains the platform's separate cpuTime field.
++  const measured = () => {
++    const started = performance.now();
++    return Promise.resolve().then(run).finally(() => {
++      if (name !== "alchemy.handler") console.log({
++        type: "alchemy.phase",
++        name,
++        durationMs: Math.max(0, performance.now() - started),
++      });
++    });
++  };
++  return tracing?.enterSpan === undefined ? measured() : tracing.enterSpan(name, measured);
++};
+diff --git a/lib/Cloudflare/Workflows/Workflow.js b/lib/Cloudflare/Workflows/Workflow.js
+index ed3447de..995a02b0 100644
+--- a/lib/Cloudflare/Workflows/Workflow.js
++++ b/lib/Cloudflare/Workflows/Workflow.js
+@@ -593,7 +593,7 @@ export const ProviderLive = () => Provider.succeed(WorkflowResource, {
+ export const ProviderLocal = () => Provider.succeed(WorkflowResource, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         if (!output?.workflowId)
+             return { action: "update" };
+         if (!isResolved(news))
+@@ -609,7 +609,7 @@ export const ProviderLocal = () => Provider.succeed(WorkflowResource, {
+         return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ news, output }) {
+-        const { accountId } = yield* yield* CloudflareEnvironment;
++        const accountId = output?.accountId ?? "local";
+         return {
+             workflowId: output?.workflowId ?? generateLocalId(),
+             workflowName: news.workflowName,
+diff --git a/lib/CloudflareRuntimeServices.d.ts b/lib/CloudflareRuntimeServices.d.ts
+new file mode 100644
+index 00000000..76f3a22b
+--- /dev/null
++++ b/lib/CloudflareRuntimeServices.d.ts
+@@ -0,0 +1,4 @@
++import type { ProviderCollection } from "./Provider.js";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.js";
++declare const Providers_base: ProviderCollection<Providers, "Cloudflare">;
++export declare class Providers extends Providers_base {}
+diff --git a/lib/CloudflareRuntimeServices.js b/lib/CloudflareRuntimeServices.js
+new file mode 100644
+index 00000000..e0c1dc24
+--- /dev/null
++++ b/lib/CloudflareRuntimeServices.js
+@@ -0,0 +1,3 @@
++import { ProviderCollection } from "./Provider.js";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.js";
++export class Providers extends ProviderCollection()("Cloudflare") {}
+diff --git a/lib/Output.js b/lib/Output.js
+index 77a3ef32..60fb4bd3 100644
+--- a/lib/Output.js
++++ b/lib/Output.js
+@@ -6,7 +6,7 @@ import { SingleShotGen } from "effect/Utils";
+ import { getRefMetadata, isRef } from "./Ref.js";
+ import { isResource } from "./Resource.js";
+ import { RuntimeContext, sanitizeKey } from "./RuntimeContext.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ import * as State from "./State/State.js";
+ import { isPlainData, isPrimitive } from "./Util/data.js";
+diff --git a/lib/PhysicalName.js b/lib/PhysicalName.js
+index f1ce8c88..906664ca 100644
+--- a/lib/PhysicalName.js
++++ b/lib/PhysicalName.js
+@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
+ import * as Effect from "effect/Effect";
+ import { base32 } from ".//Util/base32.js";
+ import { InstanceId } from "./InstanceId.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ // 8 base32 chars = 40 bits of the sha256 of the full untruncated name,
+ // appended when truncation occurs so names that differ only in the truncated
+diff --git a/lib/Resource.js b/lib/Resource.js
+index fb7eda68..1c8be214 100644
+--- a/lib/Resource.js
++++ b/lib/Resource.js
+@@ -13,7 +13,7 @@ import { ref as makeRef } from "./Ref.js";
+ import { RemovalPolicy } from "./RemovalPolicy.js";
+ import { RenamePolicy } from "./Rename.js";
+ import { Self } from "./Self.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ export const isResource = (value) => {
+     // Require the full resource identity (Type AND FQN), not just `Type`:
+     // user-authored prop objects legitimately carry a `Type` field (e.g.
+diff --git a/src/Action.ts b/src/Action.ts
+index 6e6ed7d0..c5d2a026 100644
+--- a/src/Action.ts
++++ b/src/Action.ts
+@@ -8,7 +8,7 @@ import type { Input } from "./Input.ts";
+ import { CurrentNamespace, type NamespaceNode } from "./Namespace.ts";
+ import * as Output from "./Output.ts";
+ import { RuntimeContext } from "./RuntimeContext.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ 
+ /**
+  * An Action is a node in the dependency graph that runs an Effect with its
+diff --git a/src/Apply.ts b/src/Apply.ts
+index 4e056c4e..d0d1a672 100644
+--- a/src/Apply.ts
++++ b/src/Apply.ts
+@@ -50,7 +50,7 @@ import {
+ } from "./Provider.ts";
+ import { stampedMode, type ProviderMode } from "./ProviderMode.ts";
+ import type { ResourceBinding } from "./Resource.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ import {
+   type ActionState,
+@@ -747,13 +747,17 @@ const executeNode = (
+           `removal policy ${node.state.removalPolicy} → ${node.resource.RemovalPolicy}`,
+         );
+       }
+-      yield* signalReadyStable;
++      // Store before signalling. A dependent task released by
++      // `readyStable` reads `tracker[fqn]`, so signalling first lets it
++      // observe a missing output. Every other lifecycle path stores first.
++      // See https://github.com/alchemy-run/alchemy/issues/1717.
+       yield* storeAndSignal({
+         output: node.state.attr,
+         props: node.state.props,
+         bindings: node.state.bindings ?? [],
+         instanceId: node.state.instanceId,
+       });
++      yield* signalReadyStable;
+       return;
+     }
+ 
+diff --git a/src/Cloudflare/DNS/Record.ts b/src/Cloudflare/DNS/Record.ts
+index d4631f61..52fb6b85 100644
+--- a/src/Cloudflare/DNS/Record.ts
++++ b/src/Cloudflare/DNS/Record.ts
+@@ -1,10 +1,13 @@
++import { InstanceId } from "../../InstanceId.ts";
++import { NotFound, UnknownCloudflareError, CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
++import * as Schema from "effect/Schema";
+ import * as dns from "@distilled.cloud/cloudflare/dns";
+ import * as zones from "@distilled.cloud/cloudflare/zones";
+ import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+ import * as Stream from "effect/Stream";
+ 
+-import { Unowned } from "../../AdoptPolicy.ts";
++import { Unowned, OwnedBySomeoneElse } from "../../AdoptPolicy.ts";
+ import * as Provider from "../../Provider.ts";
+ import { Resource } from "../../Resource.ts";
+ import { arrayEqualsUnordered } from "../../Util/equal.ts";
+@@ -64,6 +67,8 @@ export interface RecordDataByType {
+ export type RecordData = RecordDataByType[keyof RecordDataByType];
+ 
+ export interface RecordCommonProps {
++  /** Append a stable Alchemy instance marker to the comment to recover interrupted creates. Counts toward the zone comment limit. */
++  ownershipComment?: boolean;
+   /**
+    * Zone the record lives in. Stable — changing the zone triggers
+    * replacement.
+@@ -317,7 +322,8 @@ export const RecordProvider = () =>
+     reconcile: Effect.fn(function* ({ news, output }) {
+       // Inputs have been resolved to concrete strings by Plan.
+       const zoneId = news.zoneId as string;
+-      const body = buildMutableBody(news);
++      const ownership = `[alchemy:${yield* InstanceId}]`;
++      const body = { ...buildMutableBody(news), ...(news.ownershipComment ? { comment: `${news.comment ?? "Managed by Alchemy"} ${ownership}` } : {}) };
+ 
+       // 1. Observe by cached id first.
+       let observed: ObservedRecord | undefined;
+@@ -386,6 +392,10 @@ export const RecordProvider = () =>
+         if (created.raced) foundByScan = true;
+       }
+ 
++      if (news.ownershipComment && foundByScan && observed.id !== output?.recordId && !observed.comment?.endsWith(` ${ownership}`)) {
++        return yield* Effect.fail(new OwnedBySomeoneElse({ message: "DNS record was created by another owner", resourceType: Record.Type, physicalName: news.name }));
++      }
++
+       // 4. Sync — Cloudflare's update endpoint is PUT-style; resend
+       //    the full desired body when any mutable field differs.
+       if (!observed.id) {
+@@ -443,7 +453,7 @@ export const RecordProvider = () =>
+           zoneId: output.zoneId,
+           dnsRecordId: output.recordId,
+         })
+-        .pipe(Effect.catch(() => Effect.void));
++        .pipe(Effect.catch((error) => recordMissing(error) ? Effect.void : Effect.fail(error)));
+     }),
+ 
+     read: Effect.fn(function* ({ output, olds }) {
+@@ -476,7 +486,7 @@ export const RecordProvider = () =>
+           priority: olds?.priority,
+         });
+         const attrs = toAttributes(observed, zoneId);
+-        if (attrs) return Unowned(attrs);
++        if (attrs) return olds?.ownershipComment && observed?.comment?.endsWith(` [alchemy:${yield* InstanceId}]`) ? attrs : Unowned(attrs);
+       }
+       return undefined;
+     }),
+@@ -488,7 +498,7 @@ const observeById = (zoneId: string, dnsRecordId: string) =>
+       // Distilled tags transport errors but a 404 for a missing
+       // record surfaces as an untagged error. Swallow so the
+       // reconciler falls through to the find-by-name path.
+-      Effect.catch(() => Effect.succeed(undefined)),
++      Effect.catch((error) => recordMissing(error) ? Effect.succeed(undefined) : Effect.fail(error)),
+     );
+     if (r === undefined) return undefined;
+     return narrowRecord(r as Parameters<typeof narrowRecord>[0]);
+@@ -811,3 +821,5 @@ const recordDataEquals = (
+     )
+   );
+ };
++
++const recordMissing = (error: unknown) => Schema.is(NotFound)(error) || (Schema.is(UnknownCloudflareError)(error) && error.code === 81044) || (Schema.is(CloudflareHttpError)(error) && error.status === 404);
+diff --git a/src/Cloudflare/Hyperdrive/Connection.ts b/src/Cloudflare/Hyperdrive/Connection.ts
+index 9a0aa1a8..786e6207 100644
+--- a/src/Cloudflare/Hyperdrive/Connection.ts
++++ b/src/Cloudflare/Hyperdrive/Connection.ts
+@@ -338,7 +338,7 @@ export const ProviderLocal = () =>
+   Provider.succeed(Connection, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       if (!output?.hyperdriveId) return { action: "update" } as const;
+       if (!isResolved(news)) return undefined;
+       if (output.accountId !== accountId) {
+@@ -352,7 +352,7 @@ export const ProviderLocal = () =>
+       return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ id, news, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       return {
+         hyperdriveId: output?.hyperdriveId ?? generateLocalId(),
+         name: yield* createConfigName(id, news.name),
+diff --git a/src/Cloudflare/Providers.ts b/src/Cloudflare/Providers.ts
+index ab1fc560..24621ff1 100644
+--- a/src/Cloudflare/Providers.ts
++++ b/src/Cloudflare/Providers.ts
+@@ -125,9 +125,8 @@ import * as Zone from "./Zone/index.ts";
+ 
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+ 
+-export class Providers extends Provider.ProviderCollection<Providers>()(
+-  "Cloudflare",
+-) {}
++import { Providers } from "../CloudflareRuntimeServices.ts";
++export { Providers } from "../CloudflareRuntimeServices.ts";
+ 
+ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+ 
+diff --git a/src/Cloudflare/R2/Bucket.ts b/src/Cloudflare/R2/Bucket.ts
+index a1f2df8a..2e33c930 100644
+--- a/src/Cloudflare/R2/Bucket.ts
++++ b/src/Cloudflare/R2/Bucket.ts
+@@ -1388,7 +1388,7 @@ export const ProviderLocal = () =>
+   Provider.succeed(Bucket, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news = {}, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       if (!output?.bucketName) return { action: "update" } as const;
+       if (!isResolved(news)) return undefined;
+       if (output.accountId !== accountId) {
+@@ -1401,7 +1401,7 @@ export const ProviderLocal = () =>
+       return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ news = {}, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       return {
+         bucketName: output?.bucketName ?? generateLocalId(),
+         storageClass: (news.storageClass ?? "Standard") as Bucket.StorageClass,
+diff --git a/src/Cloudflare/Workers/DurableObjectBridge.ts b/src/Cloudflare/Workers/DurableObjectBridge.ts
+index 83cc61f5..1f6ed8c8 100644
+--- a/src/Cloudflare/Workers/DurableObjectBridge.ts
++++ b/src/Cloudflare/Workers/DurableObjectBridge.ts
+@@ -20,6 +20,7 @@ import {
+ } from "./DurableObjectState.ts";
+ import { isScopeEjected, makeRequestEffect } from "./HttpServer.ts";
+ import { fromWebSocket } from "./WebSocket.ts";
++import { platformSpan } from "./cloudflare_workers.ts";
+ import { getWorkerExport, handleRpcExit } from "./WorkerBridge.ts";
+ 
+ /**
+@@ -60,14 +61,17 @@ export const makeDurableObjectBridge =
+       constructor(state: cf.DurableObjectState, env: any) {
+         super(state as any, env);
+         this.#state = state;
++        // Constructor resources belong to the object, not a transient Layer.provide scope.
++        // workerd has no teardown hook; failed construction must still release them.
++        const instanceScope = Scope.makeUnsafe();
+ 
+         this.#instance = state.blockConcurrencyWhile(() =>
+-          build((promise) => void (state as any).waitUntil?.(promise)).then(
++          platformSpan("alchemy.do.initialize", () => build((promise) => void (state as any).waitUntil?.(promise)).then(
+             ({ context, export: exported, telemetry }) => {
+               const { constructor, services } = exported;
+-              const doContext = Layer.succeed(
+-                DurableObjectState,
+-                fromDurableObjectState(this.#state),
++              const doContext = Layer.mergeAll(
++                Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)),
++                Layer.succeed(Scope.Scope, instanceScope),
+               ).pipe(
+                 Layer.provideMerge(Layer.succeedContext(services)),
+                 Layer.provideMerge(Layer.succeedContext(context)),
+@@ -77,6 +81,9 @@ export const makeDurableObjectBridge =
+                 Effect.flatMap((instance) =>
+                   instance.pipe(Effect.provide(doContext)),
+                 ),
++                Effect.onExit((exit) =>
++                  Exit.isFailure(exit) ? Scope.close(instanceScope, exit) : Effect.void,
++                ),
+                 Effect.map((instance) => ({
+                   instance,
+                   services,
+@@ -86,7 +93,7 @@ export const makeDurableObjectBridge =
+                 Effect.runPromise,
+               );
+             },
+-          ),
++          )),
+         );
+ 
+         return new Proxy(this, {
+@@ -130,9 +137,9 @@ export const makeDurableObjectBridge =
+       ) {
+         const scope = Scope.makeUnsafe();
+ 
+-        const { instance, services, context, telemetry } = await this.#instance;
++        const { instance, services, context, telemetry } = await platformSpan("alchemy.do.wait", () => this.#instance);
+ 
+-        return fn(instance)
++        return platformSpan("alchemy.do.response", () => fn(instance)
+           .pipe(
+             Effect.provide(
+               Layer.mergeAll(
+@@ -161,7 +168,7 @@ export const makeDurableObjectBridge =
+               : exit._tag === "Success"
+                 ? Promise.resolve(exit.value)
+                 : Promise.reject(Cause.squash(exit.cause)),
+-          )
++          ))
+           .finally(() =>
+             isScopeEjected(scope)
+               ? undefined
+@@ -170,7 +177,7 @@ export const makeDurableObjectBridge =
+                   // HttpMiddleware tracer's late span-end reaches the
+                   // telemetry exporter before the scope's flush finalizer.
+                   new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+-                    Effect.runPromise(Scope.close(scope, Exit.void)),
++                    platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+                   ),
+                 ),
+           );
+diff --git a/src/Cloudflare/Workers/HttpServer.ts b/src/Cloudflare/Workers/HttpServer.ts
+index 73034de2da062d5b083e213aeb4a087ae7fa2989..54a73a37a0268d1236af0dcd345fec76b165371b 100644
+--- a/src/Cloudflare/Workers/HttpServer.ts
++++ b/src/Cloudflare/Workers/HttpServer.ts
+@@ -1,8 +1,10 @@
+ import type * as cf from "@cloudflare/workers-types";
+ import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
+-import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/unstable/http/HttpBody";
+ import * as EffectHttp from "effect/unstable/http/HttpEffect";
+ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+@@ -44,10 +46,8 @@ export const makeRequestEffect = <Req = never>(
+     });
+ 
+     return yield* toHandledWebResponse(safeHandler).pipe(
+-      Effect.provide([
+-        Layer.succeed(HttpServerRequest.HttpServerRequest, request),
+-        Layer.succeed(Request, webRequest as any),
+-      ]),
++      Effect.provideService(HttpServerRequest.HttpServerRequest, request),
++      Effect.provideService(Request, webRequest as any),
+     );
+   }) as any;
+ };
+@@ -59,18 +59,29 @@ const toHandledWebResponse = <Req>(
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
+     const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
+     const webResponse = yield* Deferred.make<Response>();
+ 
++    const toWeb = (request: HttpServerRequest.HttpServerRequest, response: HttpServerResponse.HttpServerResponse) => {
++      let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++      const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++      if (streaming && transferred.body instanceof HttpBody.Stream) {
++        const body = transferred.body;
++        // The HTTP scope (and its root span) closes first. The outer event
++        // exporter closes only after that stream finalizer has completed.
++        transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++          body.stream.pipe(Stream.onExit((exit) => Scope.close(eventScope, exit))),
++          body.contentType,
++          body.contentLength,
++        ));
++      }
++      const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++      if (streaming) EffectHttp.scopeDisableClose(eventScope);
++      return web;
++    };
+     yield* EffectHttp.toHandled(handler, (request, response) =>
+-      Deferred.succeed(
+-        webResponse,
+-        // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-        HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-          withoutBody: request.method === "HEAD",
+-          context,
+-        }),
+-      ),
+-    );
++      Deferred.succeed(webResponse, toWeb(request, response)),
++    ).pipe(Effect.forkScoped);
+     return yield* Deferred.await(webResponse);
+   });
+ 
+diff --git a/src/Cloudflare/Workers/LocalWorkerProvider.ts b/src/Cloudflare/Workers/LocalWorkerProvider.ts
+index 02757fb2..24e4d804 100644
+--- a/src/Cloudflare/Workers/LocalWorkerProvider.ts
++++ b/src/Cloudflare/Workers/LocalWorkerProvider.ts
+@@ -583,7 +583,7 @@ export const LocalWorkerProvider = () =>
+         config: WorkerConfig,
+         selfUrl: string | undefined,
+       ) {
+-        const { accountId } = yield* cloudflareEnv;
++        const { accountId } = yield* (Object.values(config.devRemote).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+         return yield* materializeRuntimeBindings(
+           {
+             ...config,
+@@ -1250,7 +1250,7 @@ export const LocalWorkerProvider = () =>
+               // The dev server and its workerd run in a child process rooted
+               // at the app.
+               const root = path.resolve(rootDir ?? process.cwd());
+-              const { accountId } = yield* cloudflareEnv;
++              const { accountId } = yield* (Object.values(worker.devRemote ?? {}).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+               // Queue-consumer wiring can change while the child is starting
+               // (a sibling `Consumer` reconcile), before the restart hook
+               // below exists to pick it up. We hold the serve lock, so a
+@@ -1457,7 +1457,10 @@ export const LocalWorkerProvider = () =>
+           const durableObjectNamespaces: Record<string, string> = {};
+           for (const { data } of bindings) {
+             for (const binding of data?.bindings ?? []) {
+-              if (binding.type === "durable_object_namespace") {
++              // Foreign bindings may contain unresolved script-name Outputs during precreate.
++              // Their namespace belongs to the host Worker and must not be declared here.
++              if (binding.type === "durable_object_namespace" &&
++                  (!binding.scriptName || binding.scriptName === name)) {
+                 durableObjectNamespaces[binding.className] =
+                   binding.namespaceId ??
+                   encodeURIComponent(
+@@ -1466,7 +1469,7 @@ export const LocalWorkerProvider = () =>
+               }
+             }
+           }
+-          const { accountId } = yield* cloudflareEnv;
++          const { accountId } = yield* (bindings.some(({ data }) => Object.values(data?.devRemote ?? {}).some(Boolean)) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+           const urls =
+             news.dev?.mode === "external"
+               ? // news.dev.url may be an unresolved output; avoid trying to resolve it here.
+@@ -1498,7 +1501,7 @@ export const LocalWorkerProvider = () =>
+         }),
+ 
+         start: Effect.fn(function* ({ fqn, config, invalidate }) {
+-          const { accountId } = yield* cloudflareEnv;
++          const { accountId } = yield* (Object.values(config.devRemote).some(Boolean) ? cloudflareEnv : Effect.succeed({ accountId: "local" }));
+ 
+           // `dev: { mode: "external" }` opts out of running a local Worker
+           // entirely — typically because an external dev process
+diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
+index 0fd70818..575cedeb 100644
+--- a/src/Cloudflare/Workers/WorkerBridge.ts
++++ b/src/Cloudflare/Workers/WorkerBridge.ts
+@@ -21,7 +21,7 @@ import { Self } from "../../Self.ts";
+ import { StackContext } from "../../StackContext.ts";
+ import { buildEventTelemetry } from "../../TelemetryRuntime.ts";
+ import { CloudflareEnvironment } from "../CloudflareEnvironmentService.ts";
+-import cloudflare_workers from "./cloudflare_workers.ts";
++import cloudflare_workers, { platformSpan } from "./cloudflare_workers.ts";
+ import { isScopeEjected } from "./HttpServer.ts";
+ import {
+   ErrorTag,
+@@ -88,11 +88,12 @@ export const makeWorkerBridge = (
+     ) => T | Promise<T>,
+   ): Promise<T> => {
+     const scope = Scope.makeUnsafe();
+-    return build((promise) => ctx.waitUntil(promise as Promise<any>))
++    return platformSpan("alchemy.response", () =>
++      platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise as Promise<any>)))
+       .then(
+         (built) => {
+           const [eff, services] = makeEffect(built);
+-          return eff.pipe(
++          return platformSpan("alchemy.handler", () => eff.pipe(
+             // Per-event services take precedence over the captured services
+             // and the built isolate context: the isolate context carries the
+             // *deferred* WorkerExecutionContext (yieldable in the top-level
+@@ -123,13 +124,13 @@ export const makeWorkerBridge = (
+               ),
+             ),
+             Effect.runPromiseExit,
+-          );
++          ));
+         },
+         // A failed isolate build reaches callers as a defect exit so the RPC
+         // path can envelope-encode it like any other handler defect.
+         (error) => Exit.die(error),
+       )
+-      .then((exit) => onExit(exit, scope))
++      .then((exit) => onExit(exit, scope)))
+       .finally(() =>
+         isScopeEjected(scope)
+           ? undefined
+@@ -140,7 +141,7 @@ export const makeWorkerBridge = (
+               // reaches the telemetry exporter's buffer before the scope's
+               // flush finalizer runs.
+               new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+-                Effect.runPromise(Scope.close(scope, Exit.void)),
++                platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+               ),
+             ),
+       );
+@@ -356,7 +357,7 @@ const getSharedBuild = (
+    * `Config` read in user init) resets the memo and heals on the next event.
+    */
+   shared = (pin) => {
+-    const promise = (built ??= Effect.runPromise(
++    const promise = (built ??= platformSpan("alchemy.runtime.initialize", () => Effect.runPromise(
+       Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+         // Strip the build's memo map from the exposed context so a Layer the
+         // user `Effect.provide`s *inside a handler* builds per event instead
+@@ -364,7 +365,7 @@ const getSharedBuild = (
+         // across concurrent events.
+         Effect.map(Context.omit(Layer.CurrentMemoMap)),
+       ),
+-    ).catch((error) => {
++     )).catch((error) => {
+       built = undefined;
+       throw error;
+     }));
+diff --git a/src/Cloudflare/Workers/cloudflare_workers.ts b/src/Cloudflare/Workers/cloudflare_workers.ts
+index 635467ae..6a3ebd75 100644
+--- a/src/Cloudflare/Workers/cloudflare_workers.ts
++++ b/src/Cloudflare/Workers/cloudflare_workers.ts
+@@ -11,8 +11,9 @@ import * as Effect from "effect/Effect";
+ // while TypeScript infers the catch result.
+ const moduleImport: Promise<typeof import("cloudflare:workers")> =
+   import("cloudflare:workers");
++let tracing: typeof import("cloudflare:workers").tracing | undefined;
+ const modulePromise: Promise<typeof import("cloudflare:workers")> =
+-  moduleImport.catch(
++  moduleImport.then((module) => { tracing = module.tracing; return module; }).catch(
+     () =>
+       ({
+         env: {},
+@@ -27,3 +28,20 @@ const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")> =
+   Effect.promise(() => modulePromise);
+ 
+ export default cloudflare_workers;
++
++/** Native invocation spans also cover work before the Effect tracer exists. */
++export const platformSpan = <A>(name: string, run: () => Promise<A>): Promise<A> => {
++  // Tail delivery gives each invocation a timing record even when native traces are sampled.
++  // Cloudflare clocks advance on I/O: CPU cost remains the platform's separate cpuTime field.
++  const measured = () => {
++    const started = performance.now();
++    return Promise.resolve().then(run).finally(() => {
++      if (name !== "alchemy.handler") console.log({
++        type: "alchemy.phase",
++        name,
++        durationMs: Math.max(0, performance.now() - started),
++      });
++    });
++  };
++  return tracing?.enterSpan === undefined ? measured() : tracing.enterSpan(name, measured);
++};
+diff --git a/src/Cloudflare/Workflows/Workflow.ts b/src/Cloudflare/Workflows/Workflow.ts
+index e109526b..f623dca6 100644
+--- a/src/Cloudflare/Workflows/Workflow.ts
++++ b/src/Cloudflare/Workflows/Workflow.ts
+@@ -1119,7 +1119,7 @@ export const ProviderLocal = () =>
+   Provider.succeed(WorkflowResource, {
+     stables: ["accountId"],
+     diff: Effect.fn(function* ({ news, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       if (!output?.workflowId) return { action: "update" } as const;
+       if (!isResolved(news)) return undefined;
+       if (output.accountId !== accountId) {
+@@ -1133,7 +1133,7 @@ export const ProviderLocal = () =>
+       return output ?? undefined;
+     }),
+     reconcile: Effect.fn(function* ({ news, output }) {
+-      const { accountId } = yield* yield* CloudflareEnvironment;
++      const accountId = output?.accountId ?? "local";
+       return {
+         workflowId: output?.workflowId ?? generateLocalId(),
+         workflowName: news.workflowName,
+diff --git a/src/CloudflareRuntimeServices.ts b/src/CloudflareRuntimeServices.ts
+new file mode 100644
+index 00000000..80d163fd
+--- /dev/null
++++ b/src/CloudflareRuntimeServices.ts
+@@ -0,0 +1,3 @@
++import { ProviderCollection } from "./Provider.ts";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.ts";
++export class Providers extends ProviderCollection<Providers>()("Cloudflare") {}
+diff --git a/src/Output.ts b/src/Output.ts
+index 7d1171d8..7b2ff188 100644
+--- a/src/Output.ts
++++ b/src/Output.ts
+@@ -7,7 +7,7 @@ import { SingleShotGen } from "effect/Utils";
+ import { getRefMetadata, isRef, type Ref } from "./Ref.ts";
+ import { isResource, type Resource, type ResourceLike } from "./Resource.ts";
+ import { RuntimeContext, sanitizeKey } from "./RuntimeContext.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ import * as State from "./State/State.ts";
+ import { isPlainData, isPrimitive, type Primitive } from "./Util/data.ts";
+diff --git a/src/PhysicalName.ts b/src/PhysicalName.ts
+index e94afa31..81810335 100644
+--- a/src/PhysicalName.ts
++++ b/src/PhysicalName.ts
+@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
+ import * as Effect from "effect/Effect";
+ import { base32 } from ".//Util/base32.ts";
+ import { InstanceId } from "./InstanceId.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ 
+ // 8 base32 chars = 40 bits of the sha256 of the full untruncated name,
+diff --git a/src/Resource.ts b/src/Resource.ts
+index b07a50d0..d55689cc 100644
+--- a/src/Resource.ts
++++ b/src/Resource.ts
+@@ -19,7 +19,7 @@ import { ref as makeRef } from "./Ref.ts";
+ import { RemovalPolicy } from "./RemovalPolicy.ts";
+ import { RenamePolicy } from "./Rename.ts";
+ import { Self } from "./Self.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ 
+ export type ResourceConstructor<R extends ResourceLike, Req = never> = {
+   Type: R["Type"];

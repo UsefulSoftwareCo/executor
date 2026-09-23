@@ -1,0 +1,56 @@
+/* Blume's Tailwind entry, and the only one on a docs page.
+ *
+ * The docs render inside the marketing rail, so the rail's utility classes have
+ * to come out of this build too. Loading apps/marketing's own Tailwind entry
+ * beside this one put two copies of the shared base utilities on the page, and
+ * whichever copy came last silently beat the other's responsive variants. So
+ * this file points Blume's scan at the marketing components and repeats their
+ * theme tokens: one build, one cascade.
+ *
+ * apps/marketing/src/styles/global.css is the source of these values. Change
+ * them there first.
+ */
+@source "../marketing/src/**/*.astro";
+@source "../marketing/src/**/*.tsx";
+
+@theme {
+  /* Geist and Geist Mono, self-hosted by Blume from theme.fonts in
+     blume.config.ts. The marketing build names the same two faces. */
+  --font-sans: var(--blume-ff-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--blume-ff-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--blume-ff-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--blume-ff-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
+  --color-ink: #111111;
+  --color-ink-2: #666666;
+  --color-ink-3: #888888;
+  --color-rule: #eaeaea;
+  --color-rule-strong: #d4d4d4;
+
+  --color-accent: #0a0a0a;
+  --color-accent-hover: #333333;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  ::selection {
+    background: var(--color-ink);
+    color: var(--color-surface);
+  }
+}
+
+/* Blume's own tokens, held to the same surface, ink and rule values, so /docs
+   and / read as one product. */
+:root {
+  --blume-background: var(--color-surface);
+  --blume-foreground: var(--color-ink);
+  --blume-muted: var(--color-surface-2);
+  --blume-muted-foreground: var(--color-ink-2);
+  --blume-border: var(--color-rule);
+  --blume-code-background: var(--color-surface-2);
+}

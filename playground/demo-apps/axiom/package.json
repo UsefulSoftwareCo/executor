@@ -1,0 +1,12 @@
+{
+  "name": "@executor-js/app-axiom",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "apps": "workspace:*"
+  }
+}

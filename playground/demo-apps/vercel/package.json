@@ -1,0 +1,11 @@
+{
+  "name": "@executor-js/app-vercel",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "apps": "workspace:*"
+  }
+}

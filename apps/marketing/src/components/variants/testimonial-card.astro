@@ -1,0 +1,42 @@
+---
+import type { Testimonial } from "../../content/testimonials";
+
+interface Props {
+  testimonial: Testimonial;
+  layout?: "preview" | "full";
+}
+
+const { testimonial, layout = "full" } = Astro.props;
+const avatars = import.meta.glob<{ default: ImageMetadata }>(
+  "../../assets/pfps/*.{jpg,png}",
+  { eager: true },
+);
+const avatar = Object.entries(avatars).find(([path]) =>
+  path.endsWith(`/${testimonial.handle}.jpg`) || path.endsWith(`/${testimonial.handle}.png`),
+)?.[1].default.src;
+---
+
+<a
+  class:list={[
+    "group/card flex min-w-0 flex-col border border-rule bg-surface text-ink! no-underline! transition-[border-color,box-shadow] duration-200 hover:border-rule-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
+    layout === "preview"
+      ? "w-75 shrink-0 gap-[0.55rem] rounded-[10px] px-4 pt-[0.85rem] pb-[0.95rem] hover:bg-surface-2 motion-reduce:w-[calc(50%_-_6px)] max-[719.98px]:w-60"
+      : "gap-4 rounded-2xl p-5 shadow-[0_1px_3px_#00000003] hover:shadow-[0_4px_20px_#00000006]",
+  ]}
+  href={`https://x.com/${testimonial.handle}/status/${testimonial.id}`}
+  target="_blank"
+  rel="noopener noreferrer"
+>
+  <span class="flex min-w-0 items-center gap-2.5">
+    {avatar && <img class:list={["shrink-0 rounded-full ring-1 ring-rule", layout === "preview" ? "size-6" : "size-8"]} src={avatar} alt="" width="32" height="32" loading="lazy" decoding="async" />}
+    <span class:list={["flex min-w-0 gap-x-2 gap-y-0.5", layout === "preview" ? "flex-wrap items-baseline" : "flex-col"]}>
+      <span class="text-[13px] font-medium text-ink">{testimonial.name}</span>
+      <span class="min-w-0 truncate font-mono text-[11px] text-ink-3">@{testimonial.handle}</span>
+    </span>
+  </span>
+  <span class:list={[
+    "wrap-break-word whitespace-pre-line",
+    layout === "preview" ? "text-[13.5px] leading-[1.5] line-clamp-4 max-[719.98px]:line-clamp-5" : "text-[14px] leading-[1.7]",
+  ]}>{testimonial.text}</span>
+  {layout === "full" && <span class="flex items-center gap-1.5 text-[11px] text-ink-3 transition-colors group-hover/card:text-ink">Read on X <span aria-hidden="true">↗</span></span>}
+</a>

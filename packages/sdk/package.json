@@ -1,0 +1,49 @@
+{
+  "name": "@executor-js/sdk",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./core": "./src/core.ts",
+    "./blobs": "./src/blobs.ts",
+    "./ui-build": "./src/ui-build.ts",
+    "./skill-source": "./src/skill-source.ts",
+    "./workerd": "./src/workerd.ts",
+    "./workerd/build": "./src/workerd-build.ts",
+    "./scheduling": "./src/scheduling.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.79",
+    "@cloudflare/worker-bundler": "0.2.4",
+    "@distilled.cloud/cloudflare": "1.0.0-rc.12",
+    "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-data": "workspace:*",
+    "@executor-js/reactivity": "workspace:*",
+    "@executor-js/telemetry": "workspace:*",
+    "@executor-js/utils": "workspace:*",
+    "ajv": "^8.17.1",
+    "apps": "workspace:*",
+    "bun": "1.3.11",
+    "capnweb": "0.12.0",
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "esbuild": "0.28.2",
+    "fumadb-effect": "workspace:*",
+    "oauth4webapi": "3.8.8",
+    "parse5": "8.0.0",
+    "tailwindcss": "4.3.3",
+    "tailwindcss-iso": "1.0.7",
+    "tar": "7.5.22",
+    "ws": "8.21.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260729.1",
+    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-source": "workspace:*",
+    "@types/ws": "8.18.1"
+  }
+}

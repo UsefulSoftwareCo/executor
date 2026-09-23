@@ -1,0 +1,37 @@
+---
+// The "Copy setup prompt" button: a dashed ghost button beside the primary,
+// carrying the three agent marks. Copies `setupPrompt`; the click handler
+// lives in pages/index.astro.
+import { setupPrompt } from "../../content/site-copy";
+import { siteOrigin } from "../../content/site-origin.ts";
+
+const logos = import.meta.glob<string>("../../assets/logos/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+const logo = (name: string): string => {
+  const hit = Object.entries(logos).find(([k]) => k.endsWith(`/${name}.svg`));
+  if (!hit) throw new Error(`missing logo ${name}`);
+  return hit[1];
+};
+const marks = ["claude", "codex", "cursor"];
+
+
+---
+
+<button
+  type="button"
+  class="btn-ghost copy-btn doc__copy max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center inline-flex items-center gap-[0.4rem] bg-transparent [color:var(--color-ink-2)] [border:1px_dashed_var(--color-rule-strong)] rounded-[8px] py-[0.7rem] px-[1.1rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:color_0.15s_ease,_border-color_0.15s_ease] hover:text-ink hover:[border-color:var(--color-ink-3)]"
+  data-copy={setupPrompt(siteOrigin)}
+  data-event="marketing_setup_prompt_copied"
+>
+  <span class="doc__copy-logos inline-flex mr-[0.35rem] [&_img]:w-4 [&_img]:h-4 [&_img]:p-[2px] [&_img]:rounded-[999px] [&_img]:bg-surface [&_img]:[box-shadow:0_0_0_1px_var(--color-rule)] [&_img]:object-contain [&_img_+_img]:-ml-1.25" aria-hidden="true">
+    {marks.map((n) => <img src={logo(n)} alt="" width="14" height="14" />)}
+  </span>
+  <span>Build with your agent</span>
+  <span class="copy-icons relative inline-flex w-3.5 h-3.5 ml-[0.15rem] [&_>_svg]:absolute [&_>_svg]:inset-0 [&_>_svg]:[transition:opacity_0.15s_ease,_transform_0.15s_ease]" aria-hidden="true">
+    <svg class="copy-icon-copy [.copy-btn[data-copied='true']_&]:opacity-0 [.copy-btn[data-copied='true']_&]:[transform:scale(0.8)]" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+    <svg class="copy-icon-check opacity-0 [transform:scale(0.8)] text-accent [.copy-btn[data-copied='true']_&]:opacity-100 [.copy-btn[data-copied='true']_&]:[transform:scale(1)]" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>
+  </span>
+</button>
