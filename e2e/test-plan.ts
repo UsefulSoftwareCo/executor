@@ -30,6 +30,33 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  mcpMemoryBurst: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive a reconnect burst",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
+  mcpMemoryShared: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive concurrent clients on one session",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
+  mcpMemory: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive idle sessions and reconnect churn",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
   toolsErrorState: {
     file: "tools-error-state.spec.ts",
     title: "Tools errors explain discovery failures and preserve retry on desktop and mobile",

@@ -109,7 +109,7 @@ export default Api.make(
           })),
       compatibility: {
         date: "2026-09-08",
-        flags: ["nodejs_compat", "global_fetch_strictly_public"],
+        flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
       },
       dev: {
         host: "127.0.0.1",
