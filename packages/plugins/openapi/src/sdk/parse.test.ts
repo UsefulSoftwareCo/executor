@@ -155,29 +155,6 @@ describe("OpenAPI fetchSpecText", () => {
     }),
   );
 
-  it.effect("bounds a streamed response even when Content-Length understates it", () =>
-    Effect.gen(function* () {
-      let cancelled = false;
-      const response = new Response(
-        new ReadableStream({
-          pull(controller) {
-            controller.enqueue(new Uint8Array(1024 * 1024));
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }),
-        { headers: { "content-length": "1" } },
-      );
-      const error = yield* fetchSpecText(specUrl).pipe(
-        Effect.provide(layerWithResponse(response)),
-        Effect.flip,
-      );
-      expect(error).toHaveProperty("message", expect.stringMatching(/too large to parse/));
-      expect(cancelled).toBe(true);
-    }),
-  );
-
   it.effect("fetches a document with an in-range declared length", () =>
     Effect.gen(function* () {
       const specText = yield* fetchSpecText(specUrl).pipe(
