@@ -11,7 +11,6 @@ import { UserStoreService } from "../auth/context";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import { DbService } from "../db/db";
 import { makeAccountApiLive } from "../account/account-api";
-import { AdminMfaRoutes } from "../auth/admin-mfa-routes";
 
 import { AutumnRoutesLive } from "../extensions/billing/route";
 import { CloudDocsLive } from "../extensions/docs";
@@ -42,7 +41,6 @@ export const makeApiLive = (
     Layer.provide(requestScopedMiddleware(requestScopedLive).layer),
   );
   return Layer.mergeAll(
-    AdminMfaRoutes.pipe(Layer.provide(requestScopedMiddleware(requestScopedLive).layer)),
     makeNonProtectedApiLive(requestScopedLive),
     makeOrgApiLive(requestScopedLive),
     makeAccountApiLive(requestScopedLive),

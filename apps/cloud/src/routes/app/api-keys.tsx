@@ -1,8 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ApiKeysPage, OrgApiKeysSection } from "@executor-js/react/pages/api-keys";
 
-import { AdminVerification } from "../../web/components/admin-verification";
-
 // Cloud renders the SHARED API-keys page over the provider-neutral
 // `/account/api-keys` surface — identical UI to self-host, plus the
 // cloud-only Organization keys section (self-host's provider refuses
@@ -12,13 +10,5 @@ export const Route = createFileRoute("/{-$orgSlug}/api-keys")({
 });
 
 function CloudApiKeysPage() {
-  return (
-    <ApiKeysPage
-      orgKeysSection={
-        <AdminVerification>
-          <OrgApiKeysSection />
-        </AdminVerification>
-      }
-    />
-  );
+  return <ApiKeysPage orgKeysSection={<OrgApiKeysSection />} />;
 }

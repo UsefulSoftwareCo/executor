@@ -41,7 +41,7 @@ export class OrgApi extends HttpApiGroup.make("org")
   .add(
     HttpApiEndpoint.get("listDomains", "/org/domains", {
       success: DomainsResponse,
-      error: [WorkOSError, Forbidden],
+      error: WorkOSError,
     }),
   )
   .add(

@@ -144,15 +144,7 @@ export const workosAccountProvider: Layer.Layer<
     // moments ago is denied as soon as the write-through or the Events
     // reconciler has landed the change.
     const requireAdmin = (org: { readonly memberRole: "admin" | "member" }) =>
-      Effect.gen(function* () {
-        if (org.memberRole !== "admin") return yield* new AccountForbidden();
-        const session = yield* requireSession();
-        if (session.adminVerified !== true) {
-          return yield* new AccountForbidden({
-            message: "Verify your identity to use organization admin settings.",
-          });
-        }
-      });
+      org.memberRole === "admin" ? Effect.void : Effect.fail(new AccountForbidden());
 
     // Ownership check so an admin can't mutate a membership id from another
     // org: the id must name a row the mirror holds for THIS org (any status —

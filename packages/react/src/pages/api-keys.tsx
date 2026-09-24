@@ -380,7 +380,7 @@ export function ApiKeysPage(props: { readonly orgKeysSection?: ReactNode }) {
 
 // ---------------------------------------------------------------------------
 // Organization keys — the admin-only, org-owned credentials for the read-only
-// shared product API. A separate section rather than rows in the table
+// admin API (`/api/admin/*`). A separate section rather than rows in the table
 // above because the two key kinds answer different questions: a personal key
 // acts AS the member who minted it on the product plane; an org key has no
 // member behind it and reads the whole tenant.
@@ -456,8 +456,9 @@ function OrgApiKeysSectionBody() {
         <div>
           <h2 className="text-sm font-medium text-foreground">Organization keys</h2>
           <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-            Read-only keys for shared integrations and tools. They cannot read other users’ personal
-            data or change workspace settings. Only admins can manage these keys.
+            Read-only keys owned by the organization, not a member. They authenticate the admin API
+            (who are my users, what have they connected) and cannot act as anyone or write anything.
+            Admins only.
           </p>
         </div>
         <Button
@@ -505,7 +506,7 @@ function OrgApiKeysSectionBody() {
               <div className="rounded-md border border-dashed border-border bg-card p-8">
                 <h3 className="text-base font-semibold text-foreground">No organization keys</h3>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                  Create one to read shared integrations and tools from your backend.
+                  Create one to call the admin API from your backend.
                 </p>
               </div>
             ) : (
@@ -523,9 +524,9 @@ function OrgApiKeysSectionBody() {
           <CreateKeyDialogBody
             key={openCount}
             title="Create organization key"
-            description="The key belongs to the organization. It can read shared integrations and tools. It cannot read other users’ personal data or change workspace settings."
+            description="The key will belong to the organization itself, not to you. It grants read-only access to the admin API across the whole organization."
             defaultName={defaultKeyName("Organization key")}
-            placeholder="Shared catalog reader"
+            placeholder="Backend admin reader"
             onCreate={handleCreate}
             onCopy={(kind) => trackEvent("org_api_key_copied", { kind })}
           />
@@ -545,7 +546,7 @@ function OrgApiKeysSectionBody() {
             <DialogTitle className="font-display text-xl">Revoke organization key</DialogTitle>
             <DialogDescription className="text-sm leading-relaxed">
               {confirmRevoke
-                ? `Revoke ${confirmRevoke.name}? Anything authenticating with it loses shared API access immediately. This cannot be undone.`
+                ? `Revoke ${confirmRevoke.name}? Anything authenticating with it loses admin API access immediately. This cannot be undone.`
                 : ""}
             </DialogDescription>
           </DialogHeader>

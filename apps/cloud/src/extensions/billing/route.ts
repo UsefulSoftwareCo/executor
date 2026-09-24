@@ -87,19 +87,8 @@ const handler = Effect.gen(function* () {
     });
   }
   const org = yield* resolveBillingOrganization(webRequest, session);
-  const url = new URL(webRequest.url);
-  const ordinaryRead =
-    request.method === "POST" &&
-    (url.pathname === "/api/billing/getOrCreateCustomer" ||
-      url.pathname === "/api/billing/listPlans");
-  if (!ordinaryRead && (org.memberRole !== "admin" || session.adminVerified !== true)) {
-    return yield* new HttpResponseError({
-      status: 403,
-      code: "admin_mfa_required",
-      message: "Unlock administration with your authenticator to manage billing.",
-    });
-  }
 
+  const url = new URL(webRequest.url);
   const body =
     request.method !== "GET" && request.method !== "HEAD"
       ? yield* Effect.mapError(

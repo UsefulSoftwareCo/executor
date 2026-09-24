@@ -15,7 +15,6 @@ import {
 import { MemberDirectory, NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
 import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
-import { ADMIN_MFA_COOKIE, ADMIN_MFA_CHALLENGE_COOKIE } from "./admin-mfa-proof";
 import { SessionContext, SessionCookies } from "./middleware";
 import { encodeLoginState, decodeLoginState } from "./login-state";
 import { safeReturnTo } from "./return-to";
@@ -354,9 +353,6 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
               "wos-session",
             ),
             AUTH_HINT_COOKIE,
-          ).pipe(
-            (response) => deleteResponseCookie(response, ADMIN_MFA_COOKIE),
-            (response) => deleteResponseCookie(response, ADMIN_MFA_CHALLENGE_COOKIE),
           );
         }),
       )
@@ -566,7 +562,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // not an admin) and reported its role, so the gate is that one
           // value: a member removed or demoted moments ago is denied once the
           // write-through or the Events reconciler has landed the change.
-          if (session.memberRole !== "admin" || session.adminVerified !== true) {
+          if (session.memberRole !== "admin") {
             return yield* new OrganizationDeletionForbidden();
           }
 
@@ -833,7 +829,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               {
                 accountId: owner.accountId,
                 organizationId: owner.organizationId,
-                orgRole: owner.adminVerified === true ? owner.memberRole : "member",
+                orgRole: owner.memberRole,
               },
               {
                 action: payload.action,

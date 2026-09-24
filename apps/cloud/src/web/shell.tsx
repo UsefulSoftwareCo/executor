@@ -1,5 +1,4 @@
 import type React from "react";
-import { Outlet, useLocation, useParams } from "@tanstack/react-router";
 
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
 import { useAdminNavItems } from "@executor-js/react/multiplayer/use-admin-nav";
@@ -7,7 +6,6 @@ import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../auth/api";
 import { OrgMenuSlot } from "./components/org-menu-slot";
 import { SupportSlot } from "./components/support-slot";
-import { AdminVerification } from "./components/admin-verification";
 
 // ---------------------------------------------------------------------------
 // Cloud shell — the SHARED multiplayer shell, identical to self-host, with
@@ -49,31 +47,13 @@ const signOut = () => {
 
 export function Shell(props: { readonly content?: React.ReactNode }) {
   const items = useAdminNavItems(navItems, adminNavItems);
-  const { orgSlug } = useParams({ strict: false });
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const path = orgSlug ? pathname.slice(orgSlug.length + 1) : pathname;
-  const adminPage = ["/org", "/users", "/billing"].some(
-    (section) => path === section || path.startsWith(`${section}/`),
-  );
   return (
     <SharedShell
       onSignOut={signOut}
       navItems={items}
       orgMenuSlot={<OrgMenuSlot />}
       supportSlot={<SupportSlot />}
-      content={
-        props.content ??
-        (adminPage ? (
-          <AdminVerification>
-            <Outlet />
-          </AdminVerification>
-        ) : (
-          <>
-            <AdminVerification notice />
-            <Outlet />
-          </>
-        ))
-      }
+      content={props.content}
     />
   );
 }

@@ -162,7 +162,7 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
       avatarUrl: null,
       roles: [],
       orgRoleModel: "organization",
-      orgRole: "member",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 
@@ -173,8 +173,8 @@ const resolveJwtPrincipal = (token: string, jwt: JwtBearerConfig) =>
  * can accidentally treat it as a member, and the executor built from it binds
  * `subject: null` + the read-only tenant reach rather than inventing a subject.
  *
- * This credential grants shared catalog reads only. Cross-user admin reads
- * require an MFA-verified browser session.
+ * The `/admin/*` mount turns this into an executor with `{ tenant:
+ * organizationId, subject: undefined, platformView: true }`.
  */
 export interface PlatformAuth {
   readonly kind: "platform";
@@ -272,7 +272,7 @@ export const resolveBearerAuth = (
       avatarUrl: null,
       roles: [],
       orgRoleModel: "organization",
-      orgRole: "member",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 
@@ -354,7 +354,7 @@ export const resolveSessionPrincipal = (request: Request) =>
       avatarUrl: session.avatarUrl ?? null,
       roles: [],
       orgRoleModel: "organization",
-      orgRole: session.adminVerified === true ? org.memberRole : "member",
+      orgRole: org.memberRole,
     } satisfies Principal;
   });
 

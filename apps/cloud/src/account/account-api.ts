@@ -13,7 +13,6 @@ import { UserStoreService } from "../auth/context";
 import { WorkOsMirror } from "../auth/workos-mirror";
 import { sessionFromSealed, type Session } from "../auth/middleware";
 import { WorkOSClient } from "../auth/workos";
-import { ADMIN_MFA_COOKIE } from "../auth/admin-mfa-proof";
 import { AutumnService } from "../extensions/billing/service";
 import { DbService } from "../db/db";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
@@ -70,7 +69,7 @@ const AccountProviderMiddleware = HttpRouter.middleware<{
         const request = yield* HttpServerRequest.HttpServerRequest;
         const cookieValue = request.cookies["wos-session"] ?? "";
         const resolved = yield* workos
-          .authenticateSealedSession(cookieValue, request.cookies[ADMIN_MFA_COOKIE])
+          .authenticateSealedSession(cookieValue)
           .pipe(Effect.orElseSucceed(() => null));
         // The account API never re-sets the cookie, so the fallback sealed
         // session is `""` (vs `SessionAuthLive`, which keeps the inbound cookie).

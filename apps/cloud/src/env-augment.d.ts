@@ -5,12 +5,6 @@
 declare global {
   namespace Cloudflare {
     interface Env {
-      /** TOTP enrollment and verification attempts; absence refuses verification. */
-      ADMIN_MFA_RATE_LIMITER?: {
-        readonly limit: (options: {
-          readonly key: string;
-        }) => Promise<{ readonly success: boolean }>;
-      };
       // Observability
       // Worker version metadata binding (wrangler.jsonc `version_metadata`).
       // Optional so test workers and local setups without the binding still
