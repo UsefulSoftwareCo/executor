@@ -188,7 +188,9 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* issuer.configure({ discoveryFails: true });
         yield* setup.release;
         yield* browser.use("Wait for setup failure", (page) =>
-          page.getByText("Sign-in temporarily unavailable", { exact: true }).waitFor(),
+          page
+            .getByText("The connected service’s sign-in is unavailable", { exact: true })
+            .waitFor(),
         );
         const failedLayout = yield* connectionLayout();
         expect(failedLayout.name.width).toEqual(loadingLayout.name.width);

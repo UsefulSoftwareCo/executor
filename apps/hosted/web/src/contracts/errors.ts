@@ -91,10 +91,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",
     OAuthSetupFailed: (error) => `${error.description} ${error.recovery.action}`,
-    OAuthCompletionFailed: (error) =>
-      error.reason === "invalid_client"
-        ? "The OAuth client was rejected. Update its details and try again."
-        : "Sign-in did not complete. Try connecting again.",
+    OAuthCompletionFailed: (error) => `${error.description} ${error.recovery.action}`,
     InputInvalid: () => "The input does not match this tool’s schema.",
     AppProviderFailed: (error) => `${error.description} ${error.recovery.action}`,
     AppEvaluationFailed: (error) => `${error.description} ${error.recovery.action}`,

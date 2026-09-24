@@ -87,9 +87,9 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           ],
           [
             "unavailable",
-            "discovery_unavailable",
+            "service_unavailable",
             "The connected service’s sign-in is unavailable",
-            "Try again.",
+            "Try again in a moment.",
             true,
           ],
         ] as const) {
@@ -207,6 +207,65 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         ).toBe("Work reports");
         expect((yield* issuer.metrics).registrations).toBe(0);
         yield* browser.checkpoint("OAuth-setup-recovered");
+        // Registration failures are split by who can act. Services that refuse Executor
+        // open manual client entry; an unusable 2xx response is Executor's problem.
+        for (const [name, registration, title, nextStep, clientEntry] of [
+          [
+            "not-approved",
+            { registrationStatus: 400, registrationError: "invalid_redirect_uri" },
+            "Service did not accept Executor",
+            "Ask the service to approve Executor’s callback URL",
+            true,
+          ],
+          [
+            "rejected",
+            { registrationStatus: 400, registrationError: "invalid_client_metadata" },
+            "Service rejected Executor’s registration",
+            "Create an OAuth app with the service and enter its client details",
+            true,
+          ],
+          [
+            "incompatible",
+            { registrationStatus: 200, malformedRegistration: true },
+            "Executor could not use the service’s response",
+            "Retrying will not help.",
+            false,
+          ],
+        ] as const) {
+          yield* issuer.configure({ malformedRegistration: false, ...registration });
+          yield* browser.use(`Start sign-in when registration is ${name}`, (page) =>
+            page
+              .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
+              .then(() =>
+                page
+                  .getByRole("button", { name: "Add Sample service account", exact: true })
+                  .click(),
+              )
+              .then(() => page.getByLabel("Account name", { exact: true }).fill("Work reports"))
+              .then(() =>
+                page.getByRole("button", { name: "Connect Sample service", exact: true }).click(),
+              )
+              .then(() => page.getByRole("alert").getByText(title, { exact: true }).waitFor()),
+          );
+          const text = yield* browser.use("Read the registration error", (page) =>
+            page.getByRole("alert").innerText(),
+          );
+          expect(text).toContain(nextStep);
+          expect(text).not.toContain("PRIVATE_UPSTREAM_DIAGNOSTIC");
+          // Client entry shows the callback URL once, in its own form field.
+          expect(text).not.toContain("/api/oauth/callback");
+          expect(
+            yield* browser.use("Client entry follows the cause", (page) =>
+              page.getByText("Set up an OAuth client", { exact: true }).count(),
+            ),
+          ).toBe(clientEntry ? 1 : 0);
+          expect(
+            yield* browser.use("Self-host does not claim a failure was tracked", (page) =>
+              page.getByText("We’ve tracked this automatically", { exact: false }).count(),
+            ),
+          ).toBe(0);
+          yield* browser.checkpoint(`OAuth-registration-${name}-desktop`);
+        }
       }),
     ),
   );

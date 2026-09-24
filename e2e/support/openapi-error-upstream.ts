@@ -187,7 +187,7 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
             return yield* HttpServerResponse.json(
               {
                 _tag: "OAuthSetupFailed",
-                reason: "registration",
+                reason: "registration_rejected",
                 message: openapiOAuthMessage,
                 recovery: openapiMemoryRecovery,
               },

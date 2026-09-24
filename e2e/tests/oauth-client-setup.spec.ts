@@ -135,7 +135,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         yield* browser.use("Failed discovery offers retry", (page) =>
           page
             .getByRole("alert")
-            .getByText("Sign-in temporarily unavailable", { exact: true })
+            .getByText("The connected service’s sign-in is unavailable", { exact: true })
             .waitFor({ state: "visible" }),
         );
         yield* browser.checkpoint("OAuth setup check failed without guessing");

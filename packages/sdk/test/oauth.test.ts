@@ -58,9 +58,15 @@ const definition: ProviderDefinition = {
   },
 };
 
+/**
+ * How the synthetic service publishes metadata. "none" has no protected-resource metadata and
+ * serves authorization-server metadata only at the origin root, like Atlassian's MCP server.
+ */
+type Discovery = "path" | "challenge" | "origin" | "none";
+
 function issuer(
   mode: "dcr" | "cimd" | "manual",
-  discovery: "path" | "challenge" | "origin" = "path",
+  discovery: Discovery = "path",
   offlineAccess = false,
   urls = { issuer: issuerUrl, resource: resourceUrl, redirect: redirectUri },
 ) {
@@ -85,7 +91,15 @@ function issuer(
   const requestClients: string[] = [];
   const registrationScopes: string[] = [];
   const discoveryRequests: string[] = [];
-  const canonicalResource = discovery === "path" ? urls.resource : new URL(urls.resource).origin;
+  const clientSecrets: string[] = [];
+  // Fixed replies by URL, for services that answer differently from this issuer.
+  const replies = new Map<string, { body: unknown; status: number }>();
+  const canonicalResource =
+    discovery === "none"
+      ? null
+      : discovery === "path"
+        ? urls.resource
+        : new URL(urls.resource).origin;
   const json = (body: unknown, status = 200) => Response.json(body, { status });
   const httpClient = HttpClient.make((request) =>
     Effect.gen(function* () {
@@ -94,7 +108,9 @@ function issuer(
       const text = yield* Effect.promise(() => web.text());
       let response: Response;
       if (web.method === "GET") discoveryRequests.push(url.href);
-      if (url.href === urls.resource)
+      const reply = replies.get(url.href);
+      if (reply !== undefined) response = json(reply.body, reply.status);
+      else if (url.href === urls.resource)
         response =
           discovery === "challenge"
             ? new Response(null, {
@@ -106,8 +122,9 @@ function issuer(
               })
             : json({}, 404);
       else if (
-        url.href === "https://metadata.example/resource" ||
-        url.href === new URL("/.well-known/oauth-protected-resource", urls.resource).href
+        discovery !== "none" &&
+        (url.href === "https://metadata.example/resource" ||
+          url.href === new URL("/.well-known/oauth-protected-resource", urls.resource).href)
       )
         response = json({
           resource: canonicalResource,
@@ -115,6 +132,7 @@ function issuer(
           scopes_supported: ["read"],
         });
       else if (
+        discovery !== "none" &&
         url.href === new URL("/.well-known/oauth-protected-resource/mcp", urls.resource).href
       )
         response =
@@ -142,7 +160,12 @@ function issuer(
           Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
         )(text);
         assert.deepEqual(metadata.redirect_uris, [urls.redirect]);
-        assert.equal(metadata.scope, offlineAccess ? "read offline_access" : "read");
+        // Without resource metadata, only the issuer's offline access adds a scope.
+        const scopes = [
+          ...(discovery === "none" ? [] : ["read"]),
+          ...(offlineAccess ? ["offline_access"] : []),
+        ];
+        assert.equal(metadata.scope, scopes.length === 0 ? undefined : scopes.join(" "));
         registrationScopes.push(String(metadata.scope));
         response = json({ ...metadata, client_id: `registered-${registrations}` }, 201);
       } else if (url.pathname === "/token") {
@@ -164,16 +187,20 @@ function issuer(
             authorization.searchParams.get("code_challenge"),
           );
           assert.equal(body.get("redirect_uri"), urls.redirect);
-          if (mode === "manual") {
-            const authorization = web.headers.get("authorization");
-            assert.ok(authorization !== null && authorization.startsWith("Basic "));
-            assert.equal(
-              atob(authorization.slice(6)).split(":").map(decodeURIComponent).join(":"),
-              "manual-client:synthetic-client-secret",
-            );
-          } else assert.equal(body.get("client_id"), authorization.searchParams.get("client_id"));
           const clientId = authorization.searchParams.get("client_id");
           assert.ok(clientId);
+          const basic = web.headers.get("authorization");
+          const basicCredentials =
+            basic !== null && basic.startsWith("Basic ")
+              ? atob(basic.slice(6)).split(":").map(decodeURIComponent)
+              : undefined;
+          if (mode === "manual")
+            assert.deepEqual(basicCredentials, ["manual-client", "synthetic-client-secret"]);
+          else if (basicCredentials === undefined) assert.equal(body.get("client_id"), clientId);
+          else {
+            assert.equal(basicCredentials[0], clientId);
+            clientSecrets.push(String(basicCredentials[1]));
+          }
           requestClients.push(clientId);
           exchanges++;
           yield* pause("exchange");
@@ -215,6 +242,12 @@ function issuer(
     requestClients,
     discoveryRequests,
     registrationScopes,
+    /** Secrets that registered clients sent with HTTP Basic authentication at the token endpoint. */
+    clientSecrets,
+    /** Answer every later request to `url` with this JSON body instead of the issuer's behavior. */
+    reply(url: string, body: unknown, status = 200) {
+      replies.set(url, { body, status });
+    },
     get registrations() {
       return registrations;
     },
@@ -257,9 +290,16 @@ function issuer(
 
 async function setup(
   mode: "dcr" | "cimd" | "manual",
-  discovery: "path" | "challenge" | "origin" = "path",
+  discovery: Discovery = "path",
   offlineAccess = false,
-  settings: { redirect?: string; issuer?: string; resource?: string; urlPolicy?: UrlPolicy } = {},
+  settings: {
+    redirect?: string;
+    issuer?: string;
+    resource?: string;
+    urlPolicy?: UrlPolicy;
+    /** Provider method options declared by the app. */
+    method?: { tokenEndpointAuthMethod?: "client_secret_basic"; scopes?: string[] };
+  } = {},
 ) {
   const scope = Effect.runSync(Scope.make());
   const context = await Effect.runPromise(Layer.buildWithScope(pgliteLayer(), scope));
@@ -294,6 +334,7 @@ async function setup(
               ...(mode === "manual"
                 ? { tokenEndpointAuthMethod: "client_secret_basic" as const }
                 : {}),
+              ...settings.method,
               response: {
                 type: "object",
                 properties: { access_token: { type: "string" } },
@@ -442,6 +483,16 @@ async function setup(
     close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
   };
 }
+
+const completionFailed = (reason: OAuthCompletionFailed["reason"]) => (error: unknown) =>
+  Schema.is(OAuthCompletionFailed)(error) && error.reason === reason;
+
+/** The failure of an operation that must fail, for assertions on its fields. */
+const rejection = (operation: Promise<unknown>) =>
+  operation.then(
+    () => assert.fail("expected the operation to fail"),
+    (error: unknown) => error,
+  );
 
 test("remote HTTP discovery and token endpoints are rejected before OAuth network requests", async () => {
   const f = await setup("dcr");
@@ -650,10 +701,10 @@ test("DCR, one-time callback, two owners, and coordinated refresh preserve reusa
     }
     const wrong = new URL(f.service.callback(next.authorizationUrl));
     wrong.pathname = "/wrong";
-    await assert.rejects(f.complete({ callbackUrl: wrong.href }), {
-      _tag: "OAuthCompletionFailed",
-      reason: "invalid_callback",
-    });
+    await assert.rejects(
+      f.complete({ callbackUrl: wrong.href }),
+      completionFailed("invalid_callback"),
+    );
     const accounts = await f.executor.accounts.list();
     assert.ok(!JSON.stringify(accounts).includes("refresh-"));
     for (const row of await Effect.runPromise(f.storage.orm("4.0.0").findMany("oauthGrants", {})))
@@ -727,22 +778,19 @@ test("denied, expired and modified callbacks never create an account", async () 
     const denied = new URL(f.service.callback((await f.start()).authorizationUrl));
     denied.searchParams.delete("code");
     denied.searchParams.set("error", "access_denied");
-    await assert.rejects(f.complete({ callbackUrl: denied.href }), {
-      _tag: "OAuthCompletionFailed",
-      reason: "denied",
-    });
-    await assert.rejects(f.complete({ callbackUrl: denied.href }), {
-      _tag: "OAuthCompletionFailed",
-      reason: "already_completed",
-    });
+    await assert.rejects(f.complete({ callbackUrl: denied.href }), completionFailed("denied"));
+    await assert.rejects(
+      f.complete({ callbackUrl: denied.href }),
+      completionFailed("sign_in_expired"),
+    );
     const expiring = f.service.callback((await f.start()).authorizationUrl);
     await Effect.runPromise(
       f.storage.orm("4.0.0").updateMany("oauthAttempts", { set: { expiresAt: new Date(0) } }),
     );
-    await assert.rejects(f.complete({ callbackUrl: expiring }), {
-      _tag: "OAuthCompletionFailed",
-      reason: "expired",
-    });
+    await assert.rejects(
+      f.complete({ callbackUrl: expiring }),
+      completionFailed("sign_in_expired"),
+    );
     const modified = new URL(expiring);
     modified.searchParams.set("state", "changed");
     await assert.rejects(
@@ -750,7 +798,7 @@ test("denied, expired and modified callbacks never create an account", async () 
         connection: (await f.start()).connection,
         callbackUrl: modified.href,
       }),
-      { _tag: "OAuthCompletionFailed", reason: "invalid_callback" },
+      completionFailed("invalid_callback"),
     );
     assert.equal(f.service.exchanges, 0);
     assert.deepEqual(await f.executor.accounts.list(), []);
@@ -846,10 +894,7 @@ test("OAuth reconnect keeps identity, current name and all app selections; denia
     );
     denied.searchParams.delete("code");
     denied.searchParams.set("error", "access_denied");
-    await assert.rejects(f.complete({ callbackUrl: denied.href }), {
-      _tag: "OAuthCompletionFailed",
-      reason: "denied",
-    });
+    await assert.rejects(f.complete({ callbackUrl: denied.href }), completionFailed("denied"));
     assert.deepEqual(
       await Effect.runPromise(
         f.storage.orm("4.0.0").findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
@@ -901,20 +946,20 @@ for (const phase of ["consent", "exchange"] as const)
         );
         if (phase === "exchange") {
           const paused = f.service.pauseNext("exchange");
-          const result = assert.rejects(f.complete({ callbackUrl }), {
-            _tag: "OAuthCompletionFailed",
-            reason: "account_unavailable",
-          });
+          const result = assert.rejects(
+            f.complete({ callbackUrl }),
+            completionFailed("account_unavailable"),
+          );
           await paused.started;
           await f.executor.accounts.remove({ account: account.id });
           await paused.release();
           await result;
         } else {
           await f.executor.accounts.remove({ account: account.id });
-          await assert.rejects(f.complete({ callbackUrl }), {
-            _tag: "OAuthCompletionFailed",
-            reason: "account_unavailable",
-          });
+          await assert.rejects(
+            f.complete({ callbackUrl }),
+            completionFailed("account_unavailable"),
+          );
         }
         await f.executor.accounts.remove({ account: account.id });
         assert.deepEqual(await f.executor.accounts.list(), []);
@@ -1116,7 +1161,7 @@ test("OAuth callbacks are bound to their connection and cancellation wins during
     const callbackUrl = f.service.callback(first.authorizationUrl);
     await assert.rejects(
       f.executor.accountConnections.completeOAuth({ connection: second.connection, callbackUrl }),
-      { _tag: "OAuthCompletionFailed", reason: "invalid_callback" },
+      completionFailed("invalid_callback"),
     );
     assert.equal(f.service.exchanges, 0);
     const paused = f.service.pauseNext("exchange");
@@ -1506,7 +1551,7 @@ for (const callback of [
       if (new URL(callback).search !== "") {
         await assert.rejects(
           f.complete({ callbackUrl: tampered.href }),
-          (error) => Schema.is(OAuthCompletionFailed)(error) && error.reason === "invalid_callback",
+          completionFailed("invalid_callback"),
         );
         assert.equal(f.service.exchanges, 0);
       }
@@ -1581,3 +1626,210 @@ test("callback policy rejects unapproved HTTP, fragments, credentials and reserv
     await f.close();
   }
 });
+
+test("an MCP server without resource metadata falls back to authorization metadata at its origin", async () => {
+  const f = await setup("dcr", "none", false, {
+    issuer: "https://service.example",
+    resource: "https://service.example/v1/mcp",
+  });
+  try {
+    const signIn = await f.start();
+    assert.equal(new URL(signIn.authorizationUrl).searchParams.get("resource"), null);
+    const pathMetadata = "https://service.example/.well-known/oauth-authorization-server/v1/mcp";
+    const rootMetadata = "https://service.example/.well-known/oauth-authorization-server";
+    assert.ok(f.service.discoveryRequests.includes(pathMetadata));
+    assert.ok(
+      f.service.discoveryRequests.indexOf(rootMetadata) >
+        f.service.discoveryRequests.indexOf(pathMetadata),
+    );
+    const account = await f.complete({ callbackUrl: f.service.callback(signIn.authorizationUrl) });
+    assert.equal(account.owner, "alice");
+    assert.equal(f.service.exchanges, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const expiry of ["missing", "null"] as const)
+  test(`registration with a client secret and ${expiry} expiry uses the secret`, async () => {
+    const f = await setup("dcr", "path", false, {
+      method: { tokenEndpointAuthMethod: "client_secret_basic" },
+    });
+    try {
+      f.service.reply(
+        `${issuerUrl}/register`,
+        {
+          client_id: "registered-confidential",
+          client_secret: "synthetic-registered-secret",
+          token_endpoint_auth_method: "client_secret_basic",
+          ...(expiry === "null" ? { client_secret_expires_at: null } : {}),
+        },
+        201,
+      );
+      const signIn = await f.start();
+      assert.equal(
+        new URL(signIn.authorizationUrl).searchParams.get("client_id"),
+        "registered-confidential",
+      );
+      await f.complete({ callbackUrl: f.service.callback(signIn.authorizationUrl) });
+      assert.deepEqual(f.service.clientSecrets, ["synthetic-registered-secret"]);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("an openid sign-in completes without an ID token but still validates a returned one", async () => {
+  const f = await setup("manual", "path", false, { method: { scopes: ["openid", "read"] } });
+  const idToken = (nonce: string | null) =>
+    [
+      { alg: "RS256", typ: "JWT" },
+      {
+        iss: issuerUrl,
+        aud: "manual-client",
+        sub: "synthetic-user",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 300,
+        nonce,
+      },
+    ]
+      .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
+      .concat("c3ludGhldGlj")
+      .join(".");
+  const tokens = (nonce: string | null) => ({
+    access_token: "synthetic-access",
+    token_type: "Bearer",
+    id_token: idToken(nonce),
+  });
+  try {
+    const first = await f.start();
+    assert.ok(new URL(first.authorizationUrl).searchParams.get("nonce"));
+    await f.complete({ callbackUrl: f.service.callback(first.authorizationUrl) });
+    assert.equal(f.service.exchanges, 1, "the token response had no ID token");
+
+    const wrong = await f.start();
+    f.service.reply(`${issuerUrl}/token`, tokens("synthetic-other-nonce"));
+    const error = await rejection(
+      f.complete({ callbackUrl: f.service.callback(wrong.authorizationUrl) }),
+    );
+    assert.ok(Schema.is(OAuthCompletionFailed)(error));
+    assert.equal(error.reason, "incompatible_response");
+    assert.equal(error.cause?.status, 200);
+
+    const matching = await f.start();
+    f.service.reply(
+      `${issuerUrl}/token`,
+      tokens(new URL(matching.authorizationUrl).searchParams.get("nonce")),
+    );
+    await f.complete({ callbackUrl: f.service.callback(matching.authorizationUrl) });
+    assert.equal((await f.executor.accounts.list()).length, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const { name, status, body, reason, cause } of [
+  {
+    name: "an invalid redirect URI",
+    status: 400,
+    body: { error: "invalid_redirect_uri" },
+    reason: "client_not_approved",
+    cause: { stage: "register", status: 400, providerError: "invalid_redirect_uri" },
+  },
+  {
+    name: "HTTP 403",
+    status: 403,
+    body: {},
+    reason: "client_not_approved",
+    cause: { stage: "register", status: 403 },
+  },
+  {
+    name: "invalid client metadata",
+    status: 400,
+    body: { error: "invalid_client_metadata" },
+    reason: "registration_rejected",
+    cause: { stage: "register", status: 400, providerError: "invalid_client_metadata" },
+  },
+  {
+    name: "a successful response without a client ID",
+    status: 200,
+    body: { client_name: "Executor test" },
+    reason: "incompatible_response",
+    cause: { stage: "register", status: 200, field: "client_id" },
+  },
+] satisfies ReadonlyArray<{
+  name: string;
+  status: number;
+  body: unknown;
+  reason: OAuthSetupFailed["reason"];
+  cause: OAuthSetupFailed["cause"];
+}>)
+  test(`registration refused with ${name} reports ${reason}`, async () => {
+    const f = await setup("dcr");
+    try {
+      f.service.reply(`${issuerUrl}/register`, body, status);
+      const error = await rejection(f.start());
+      assert.ok(Schema.is(OAuthSetupFailed)(error));
+      assert.equal(error.reason, reason);
+      assert.deepEqual(error.cause, cause);
+      assert.equal(error.callbackUrl, redirectUri);
+      assert.equal(f.service.exchanges, 0);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("resource metadata for a sibling path reports resource_mismatch", async () => {
+  const f = await setup("dcr");
+  try {
+    f.service.reply("https://service.example/.well-known/oauth-protected-resource/mcp", {
+      resource: "https://service.example/other",
+      authorization_servers: [issuerUrl],
+    });
+    const error = await rejection(f.start());
+    assert.ok(Schema.is(OAuthSetupFailed)(error));
+    assert.equal(error.reason, "resource_mismatch");
+    assert.equal(error.cause?.stage, "discover");
+    assert.equal(f.service.registrations, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const { name, status, body, reason, cause } of [
+  {
+    name: "invalid_grant",
+    status: 400,
+    body: { error: "invalid_grant" },
+    reason: "sign_in_expired",
+    cause: { stage: "exchange", status: 400, providerError: "invalid_grant" },
+  },
+  {
+    name: "HTTP 503",
+    status: 503,
+    body: {},
+    reason: "service_unavailable",
+    cause: { stage: "exchange", status: 503 },
+  },
+] satisfies ReadonlyArray<{
+  name: string;
+  status: number;
+  body: unknown;
+  reason: OAuthCompletionFailed["reason"];
+  cause: OAuthCompletionFailed["cause"];
+}>)
+  test(`token endpoint ${name} reports ${reason} without creating an account`, async () => {
+    const f = await setup("dcr");
+    try {
+      const signIn = await f.start();
+      f.service.reply(`${issuerUrl}/token`, body, status);
+      const error = await rejection(
+        f.complete({ callbackUrl: f.service.callback(signIn.authorizationUrl) }),
+      );
+      assert.ok(Schema.is(OAuthCompletionFailed)(error));
+      assert.equal(error.reason, reason);
+      assert.deepEqual(error.cause, cause);
+      assert.deepEqual(await f.executor.accounts.list(), []);
+    } finally {
+      await f.close();
+    }
+  });

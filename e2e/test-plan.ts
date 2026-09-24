@@ -511,7 +511,7 @@ export const scenarios = {
   oauthCompatibility: {
     file: "oauth-compatibility.spec.ts",
     title:
-      "OAuth accepts valid HTTP 200 registration and advertised ES256 tokens without weakening validation",
+      "OAuth accepts compatible registration and token variants, classifies registration failures, and keeps token validation",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
@@ -726,6 +726,15 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer; hosted presentation is shared."),
       local: na("Local connection-link coverage is in the local OAuth scenario."),
+    },
+  },
+  oauthErrorReport: {
+    file: "oauth-error-report.spec.ts",
+    title: "Cloud tracks an unusable OAuth registration response with safe evidence",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Only Cloud records product failures for the Executor team."),
+      local: na("Only Cloud records product failures for the Executor team."),
     },
   },
   localOAuth: {

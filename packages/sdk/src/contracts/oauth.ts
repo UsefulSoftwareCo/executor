@@ -61,25 +61,85 @@ export class OAuthClientUnavailable extends Schema.TaggedError<OAuthClientUnavai
   },
 ) {}
 
-/** Safe failure categories; no callback URL, code, state, or upstream body. */
-export class OAuthCompletionFailed extends Schema.TaggedError<OAuthCompletionFailed>()(
-  "OAuthCompletionFailed",
-  {
-    reason: Schema.Literals([
-      "invalid_callback",
-      "expired",
-      "denied",
-      "already_completed",
-      "exchange_failed",
-      "invalid_client",
-      "account_unavailable",
-    ]),
+/** Provider error codes that Executor may record. Other provider values are dropped. */
+export const OAuthProviderErrorCode = Schema.Literals([
+  "invalid_grant",
+  "invalid_client",
+  "invalid_request",
+  "invalid_scope",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_redirect_uri",
+  "invalid_client_metadata",
+  "access_denied",
+  "server_error",
+  "temporarily_unavailable",
+]);
+/** Response fields named by protocol validation. Values are never recorded. */
+export const OAuthResponseField = Schema.Literals([
+  "client_id",
+  "client_secret",
+  "client_secret_expires_at",
+  "access_token",
+  "token_type",
+  "expires_in",
+  "refresh_token",
+  "id_token",
+  "issuer",
+  "authorization_endpoint",
+  "token_endpoint",
+  "jwt_alg",
+]);
+/** Safe protocol evidence for diagnosis. Fixed vocabularies only; never a body, message, or URL. */
+export const OAuthFailureCause = Schema.Struct({
+  stage: Schema.Literals(["discover", "register", "exchange", "clientCredentials"]),
+  status: Schema.optional(Schema.Int),
+  providerError: Schema.optional(OAuthProviderErrorCode),
+  field: Schema.optional(OAuthResponseField),
+});
+export type OAuthFailureCause = typeof OAuthFailureCause.Type;
+
+/** Append safe protocol evidence to agent instructions and any report; user copy stays curated. */
+const withCause = (presentation: ErrorPresentation, cause: OAuthFailureCause | undefined) => {
+  if (cause === undefined) return presentation;
+  const evidence = `OAuth ${cause.stage} stage${cause.status === undefined ? "" : `, HTTP ${cause.status}`}${
+    cause.providerError === undefined ? "" : `, provider error ${cause.providerError}`
+  }${cause.field === undefined ? "" : `, response field ${cause.field}`}.`;
+  return {
+    ...presentation,
+    recovery: {
+      ...presentation.recovery,
+      instructions: `${presentation.recovery.instructions} Recorded evidence: ${evidence}`,
+    },
+    ...(presentation.report === undefined ? {} : { report: `${presentation.report} ${evidence}` }),
+  };
+};
+
+const serviceUnavailable = {
+  title: "The connected service’s sign-in is unavailable",
+  description:
+    "Executor could not reach this service’s sign-in. The service may be down, busy, or unreachable. This affects the service connection, not your Executor sign-in.",
+  recovery: {
+    action:
+      "Try again in a moment. If this continues, check the service’s status or copy the fix prompt to investigate its server address.",
+    instructions:
+      "Inspect the current app’s provider definition and OAuth endpoints. Check reachability and service status, and distinguish a temporary outage from an incorrect endpoint. Fix incorrect configuration only when the evidence supports it; retry a temporary failure.",
   },
-  {
-    httpApiStatus: 400,
-    description: "OAuth completion failed. Saved account credentials were not changed.",
+  retryable: true,
+} satisfies ErrorPresentation;
+
+const incompatibleResponse = {
+  title: "Executor could not use the service’s response",
+  description:
+    "The service answered, but its response did not match what Executor expects. This is a compatibility problem between Executor and this service, not a problem with your account.",
+  recovery: {
+    action: "Retrying will not help. This needs a fix in Executor.",
+    instructions:
+      "Compare the service’s OAuth response at the recorded stage with the fields Executor and the app’s provider definition require. Identify the precise incompatibility and whether Executor or the service must change. Do not weaken state, PKCE, issuer, or token validation to work around it.",
   },
-) {}
+  agentFixable: false,
+  report: "Incompatible OAuth response.",
+} satisfies ErrorPresentation;
 
 /** User-supplied client configuration. A client secret is write-only at API boundaries. */
 export const OAuthClientInput = Schema.Struct({
@@ -102,128 +162,252 @@ export const OAuthSetupFailed = UserFacingError.define({
   tag: "OAuthSetupFailed",
   status: 422,
   fields: {
+    /** Each reason has a different recovery: who must act and what they must change. */
     reason: Schema.Literals([
-      "discovery_unavailable",
+      "service_unavailable",
       "discovery_missing",
       "discovery_invalid",
       "discovery_blocked",
-      "registration",
+      "resource_mismatch",
+      "client_not_approved",
+      "registration_rejected",
+      "incompatible_response",
       "invalid_client",
       "invalid_redirect",
       "token_exchange",
       "unsupported",
     ]),
-    /** Executor's own public callback, which some services must approve before sign-in. */
+    /** Executor's own public callback, which some services must approve. Forms show it with client entry. */
     callbackUrl: Schema.optional(HttpUrl),
+    cause: Schema.optional(OAuthFailureCause),
   },
-  presentation: ({ reason, callbackUrl }) =>
-    (
-      ({
-        discovery_unavailable: {
-          title: "The connected service’s sign-in is unavailable",
-          description:
-            "Executor could not load sign-in settings from this app’s service. The service may be down, busy, or unreachable. This affects the service connection, not your Executor sign-in.",
-          recovery: {
-            action:
-              "Try again. If this continues, check the service’s status or copy the fix prompt to investigate its server address and connection settings.",
-            instructions:
-              "Inspect the current app’s provider definition and OAuth discovery URL. Check reachability and service status, and distinguish a temporary outage from an incorrect endpoint. Fix incorrect configuration only when the evidence supports it; retry a temporary failure.",
+  presentation: ({ reason, callbackUrl, cause }) => {
+    // Forms that open client entry already show the callback, so only the fix prompt repeats it.
+    const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
+    return withCause(
+      (
+        {
+          service_unavailable: serviceUnavailable,
+          discovery_missing: {
+            title: "OAuth settings not found",
+            description:
+              "This app is configured for OAuth, but its server did not provide OAuth sign-in settings.",
+            recovery: {
+              action:
+                "Check the app’s server URL and sign-in method. Copy the fix prompt into your agent to update the integration.",
+              instructions:
+                "Inspect the current app’s provider definition, server URL, and the service’s documented sign-in method. Check whether discovery targets the correct OAuth issuer. Do not disable authentication just because OAuth metadata is missing. Use No authentication only if the service documentation confirms this endpoint is public; otherwise configure its supported sign-in method.",
+            },
           },
-          retryable: true,
-        },
-        discovery_missing: {
-          title: "OAuth settings not found",
-          description:
-            "This app is configured for OAuth, but its server did not provide OAuth sign-in settings.",
-          recovery: {
-            action:
-              "Check the app’s server URL and sign-in method. Copy the fix prompt into your agent to update the integration.",
-            instructions:
-              "Inspect the current app’s provider definition, server URL, and the service’s documented sign-in method. Check whether discovery targets the correct OAuth issuer. Do not disable authentication just because OAuth metadata is missing. Use No authentication only if the service documentation confirms this endpoint is public; otherwise configure its supported sign-in method.",
+          discovery_invalid: {
+            title: "OAuth settings not valid",
+            description:
+              "We reached the service, but its response could not be used to prepare OAuth sign-in.",
+            recovery: {
+              action:
+                "Check the app’s OAuth server URL and configuration. Copy the fix prompt into your agent to investigate.",
+              instructions:
+                "Inspect the app’s provider definition and OAuth discovery configuration. Compare the discovery response with the required OAuth metadata and the service documentation. Identify an incorrect endpoint or invalid metadata, then repair the app configuration or explain the precise service-side correction needed.",
+            },
           },
-        },
-        discovery_invalid: {
-          title: "OAuth settings not valid",
-          description:
-            "We reached the service, but its response could not be used to prepare OAuth sign-in.",
-          recovery: {
-            action:
-              "Check the app’s OAuth server URL and configuration. Copy the fix prompt into your agent to investigate.",
-            instructions:
-              "Inspect the app’s provider definition and OAuth discovery configuration. Compare the discovery response with the required OAuth metadata and the service documentation. Identify an incorrect endpoint or invalid metadata, then repair the app configuration or explain the precise service-side correction needed.",
+          discovery_blocked: {
+            title: "OAuth address blocked",
+            description:
+              "This Executor instance does not allow access to an address in the app’s OAuth configuration.",
+            recovery: {
+              action:
+                "Review the app’s server URL and this instance’s network policy. Copy the fix prompt into your agent to find an allowed configuration.",
+              instructions:
+                "Inspect the app’s OAuth discovery URL and advertised endpoints against this Executor instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
+            },
           },
-        },
-        discovery_blocked: {
-          title: "OAuth address blocked",
-          description:
-            "This Executor instance does not allow access to an address in the app’s OAuth configuration.",
-          recovery: {
-            action:
-              "Review the app’s server URL and this instance’s network policy. Copy the fix prompt into your agent to find an allowed configuration.",
-            instructions:
-              "Inspect the app’s OAuth discovery URL and advertised endpoints against this Executor instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
+          resource_mismatch: {
+            title: "Server URL does not match its sign-in settings",
+            description:
+              "The service’s sign-in settings belong to a different address than this app’s server URL.",
+            recovery: {
+              action:
+                "Check the app’s server URL. Copy the fix prompt into your agent to correct it.",
+              instructions:
+                "Compare the app’s configured server URL with the resource the service advertises in its protected-resource metadata. Update the app to use the advertised endpoint. Do not weaken resource validation.",
+            },
           },
-        },
-        registration: {
-          title: "Service did not accept Executor",
-          description: "Some services accept only apps that they have approved.",
-          ...(callbackUrl === undefined
-            ? {}
-            : { detail: { label: "Callback URL", value: callbackUrl } }),
-          recovery: {
-            action: "Ask the service to approve Executor’s callback URL, then try again.",
-            instructions:
-              "Find out why the service did not accept Executor as an OAuth client. Some services, such as Vercel, accept registration or sign-in only from approved apps and redirect URLs; their sign-in page can report an invalid redirect URL. If so, identify the service’s approval or allowlist process and prepare a request that includes Executor’s callback URL. Also compare the registration response with the request, including a changed token endpoint authentication method, and distinguish a temporary failure from a service that requires a pre-registered client. Do not repeatedly create clients.",
+          client_not_approved: {
+            title: "Service did not accept Executor",
+            description:
+              "This service accepts sign-in only from apps it has approved, and it has not approved Executor’s callback URL.",
+            recovery: {
+              action:
+                "Ask the service to approve Executor’s callback URL, or create an OAuth app with the service and enter its client details.",
+              instructions:
+                "Identify the service’s approval or allowlist process for OAuth clients and prepare a request that includes Executor’s callback URL. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in Executor. Do not repeatedly register clients." +
+                callback,
+            },
+            agentFixable: false,
           },
-          retryable: true,
-          agentFixable: false,
-        },
-        invalid_client: {
-          title: "OAuth client not accepted",
-          description: "Executor could not use the OAuth client configuration for this connection.",
-          recovery: {
-            action:
-              "Check the OAuth client settings for this service. Copy the fix prompt into your agent to find and correct the mismatch.",
-            instructions:
-              "Inspect which OAuth client configuration this connection selects and compare its client ID, authentication method, and redirect settings with the service’s developer settings. Check secret availability through the supported credential mechanism without exposing values. Correct the mismatch rather than replacing unrelated accounts.",
+          registration_rejected: {
+            title: "Service rejected Executor’s registration",
+            description: "The service refused Executor’s request to register as an OAuth client.",
+            recovery: {
+              action:
+                "Create an OAuth app with the service and enter its client details, or copy the fix prompt to investigate.",
+              instructions:
+                "Compare Executor’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
+                callback,
+            },
           },
-        },
-        invalid_redirect: {
-          title: "Callback URL not valid",
-          description: "Executor’s callback URL cannot be used for this sign-in.",
-          recovery: {
-            action:
-              "Check the OAuth callback URL against the service’s settings. Copy the fix prompt into your agent to correct the mismatch.",
-            instructions:
-              "Compare Executor’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
+          incompatible_response: incompatibleResponse,
+          invalid_client: {
+            title: "OAuth client not accepted",
+            description:
+              "Executor could not use the OAuth client configuration for this connection.",
+            recovery: {
+              action:
+                "Check the OAuth client settings for this service. Copy the fix prompt into your agent to find and correct the mismatch.",
+              instructions:
+                "Inspect which OAuth client configuration this connection selects and compare its client ID, authentication method, and redirect settings with the service’s developer settings. Check secret availability through the supported credential mechanism without exposing values. Correct the mismatch rather than replacing unrelated accounts.",
+            },
           },
-        },
-        token_exchange: {
-          title: "Account connection failed",
-          description: "We could not complete the connection with this service.",
-          recovery: {
-            action:
-              "Try connecting again. If this continues, copy the fix prompt into your agent to investigate the sign-in exchange.",
-            instructions:
-              "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and authorization flow. Check for an expired or already-used authorization code without printing it. Fix verified configuration errors and start a fresh user sign-in when needed; never replay a consumed code.",
+          invalid_redirect: {
+            title: "Callback URL not valid",
+            description: "Executor’s callback URL cannot be used for this sign-in.",
+            recovery: {
+              action:
+                "Check the OAuth callback URL against the service’s settings. Copy the fix prompt into your agent to correct the mismatch.",
+              instructions:
+                "Compare Executor’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
+            },
           },
-          retryable: true,
-        },
-        unsupported: {
-          title: "Sign-in method unavailable",
-          description: "Executor cannot use this app’s OAuth sign-in configuration.",
-          recovery: {
-            action:
-              "Review the app’s sign-in method and OAuth settings. Copy the fix prompt into your agent to use a supported configuration.",
-            instructions:
-              "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
+          token_exchange: {
+            title: "Account connection failed",
+            description: "We could not complete the connection with this service.",
+            recovery: {
+              action:
+                "Try connecting again. If this continues, copy the fix prompt into your agent to investigate the sign-in exchange.",
+              instructions:
+                "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and authorization flow. Check for an expired or already-used authorization code without printing it. Fix verified configuration errors and start a fresh user sign-in when needed; never replay a consumed code.",
+            },
+            retryable: true,
           },
-        },
-      }) satisfies Record<typeof reason, ErrorPresentation>
-    )[reason],
+          unsupported: {
+            title: "Sign-in method unavailable",
+            description: "Executor cannot use this app’s OAuth sign-in configuration.",
+            recovery: {
+              action:
+                "Review the app’s sign-in method and OAuth settings. Copy the fix prompt into your agent to use a supported configuration.",
+              instructions:
+                "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
+            },
+          },
+        } satisfies Record<typeof reason, ErrorPresentation>
+      )[reason],
+      cause,
+    );
+  },
 });
+/** Setup failures that a user-supplied OAuth client can resolve, so forms open client entry. */
+export const oauthClientEntryReasons: ReadonlySet<OAuthSetupFailed["reason"]> = new Set([
+  "invalid_client",
+  "client_not_approved",
+  "registration_rejected",
+]);
 /** Parsed OAuthSetupFailed failure. */
 export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
+/** Sign-in completion failed. Saved account credentials are not changed. */
+export const OAuthCompletionFailed = UserFacingError.define({
+  tag: "OAuthCompletionFailed",
+  status: 400,
+  fields: {
+    /** Each reason has a different recovery. A consumed attempt always needs a new sign-in. */
+    reason: Schema.Literals([
+      "invalid_callback",
+      "denied",
+      "sign_in_expired",
+      "exchange_failed",
+      "invalid_client",
+      "account_unavailable",
+      "service_unavailable",
+      "incompatible_response",
+    ]),
+    cause: Schema.optional(OAuthFailureCause),
+  },
+  presentation: ({ reason, cause }) =>
+    withCause(
+      (
+        {
+          invalid_callback: {
+            title: "Sign-in response not recognised",
+            description: "This sign-in response does not match a sign-in that Executor started.",
+            recovery: {
+              action: "Start the connection again from Executor.",
+              instructions:
+                "Check that the callback came from the sign-in Executor started, in the same browser session, and that the service returns to Executor’s exact callback URL. Start a fresh sign-in; never replay a callback.",
+            },
+          },
+          denied: {
+            title: "Sign-in was not approved",
+            description: "The service reported that sign-in was cancelled or refused.",
+            recovery: {
+              action: "Start the connection again and approve access.",
+              instructions:
+                "Check whether the user cancelled consent or the service refused the requested scopes or account. Start a fresh sign-in after resolving the refusal.",
+            },
+          },
+          sign_in_expired: {
+            title: "Sign-in expired",
+            description: "This sign-in expired or was already used.",
+            recovery: {
+              action: "Start the connection again.",
+              instructions:
+                "Start a fresh sign-in. Sign-ins expire after ten minutes and each can complete once; never replay a consumed code.",
+            },
+          },
+          exchange_failed: {
+            title: "Service rejected the sign-in",
+            description: "The service refused to complete this sign-in.",
+            recovery: {
+              action:
+                "Start the connection again. If this continues, copy the fix prompt to investigate.",
+              instructions:
+                "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and requested scopes. Fix verified configuration errors and start a fresh sign-in; never replay a consumed code.",
+            },
+          },
+          invalid_client: {
+            title: "OAuth client not accepted",
+            description: "The service rejected the OAuth client used for this sign-in.",
+            recovery: {
+              action: "Update the OAuth client details and try again.",
+              instructions:
+                "Compare the selected OAuth client ID, secret availability, authentication method, and redirect URL with the service’s developer settings without exposing secret values. Correct the mismatch and start a fresh sign-in.",
+            },
+          },
+          account_unavailable: {
+            title: "Account changed during sign-in",
+            description:
+              "The account being reconnected was removed or changed before sign-in finished.",
+            recovery: {
+              action: "Open Accounts and start the connection again.",
+              instructions:
+                "Check whether the reconnected account still exists with the same provider and sign-in method. Start a fresh connection for the intended account.",
+            },
+          },
+          service_unavailable: {
+            ...serviceUnavailable,
+            recovery: {
+              ...serviceUnavailable.recovery,
+              action: "Start the connection again in a moment.",
+            },
+            retryable: false,
+          },
+          incompatible_response: incompatibleResponse,
+        } satisfies Record<typeof reason, ErrorPresentation>
+      )[reason],
+      cause,
+    ),
+});
+/** Parsed OAuthCompletionFailed failure. */
+export type OAuthCompletionFailed = typeof OAuthCompletionFailed.Type;
+
 /** The saved grant cannot supply a fresh token. Its account identity remains available for reconnection. */
 export const OAuthReconnectRequired = UserFacingError.define({
   tag: "OAuthReconnectRequired",

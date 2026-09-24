@@ -15,10 +15,16 @@ export interface ErrorPresentation {
   readonly agentFixable?: boolean;
   /** One safe value the user needs for recovery, such as a URL to send to the service. */
   readonly detail?: { readonly label: string; readonly value: string };
+  /**
+   * Present only when the Executor team must fix the problem. Safe evidence for a public
+   * report: fixed codes and statuses, never user data, URLs, or upstream text.
+   */
+  readonly report?: string;
 }
 
-type PresentationProperties = Required<Omit<ErrorPresentation, "detail">> & {
+type PresentationProperties = Required<Omit<ErrorPresentation, "detail" | "report">> & {
   readonly detail: ErrorPresentation["detail"];
+  readonly report: ErrorPresentation["report"];
   readonly code: string;
   readonly fixPrompt: string;
 };
@@ -135,6 +141,11 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
     detail: {
       get(this: Self) {
         return presentation(this).detail;
+      },
+    },
+    report: {
+      get(this: Self) {
+        return presentation(this).report;
       },
     },
     fixPrompt: {

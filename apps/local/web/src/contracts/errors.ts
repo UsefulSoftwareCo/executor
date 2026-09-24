@@ -80,12 +80,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
     OAuthSetupFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthCompletionFailed: (error) =>
-      message(
-        "Sign-in did not finish",
-        error.reason === "invalid_client"
-          ? "The OAuth client was rejected. Update its details and try again."
-          : "Your saved credentials have not changed. Start a new sign-in to try again.",
-      ),
+      message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthReconnectRequired: (error) => ({
       title: "This account needs a new sign-in",
       description: "Reconnect to load its tools.",
