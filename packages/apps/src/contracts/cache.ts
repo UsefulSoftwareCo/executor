@@ -10,15 +10,19 @@ export interface CacheLoadContext {
   readonly signal: AbortSignal;
   readonly fetch: typeof globalThis.fetch;
 }
+/** Load options shared by normal reads and explicit refreshes. */
+export interface CacheGetOptions<A> {
+  readonly key: JsonValue;
+  readonly schema: Schema<A, boolean>;
+  readonly freshFor: Duration.Input;
+  readonly staleFor?: Duration.Input;
+  readonly load: (context: CacheLoadContext) => Promise<A>;
+}
 /** Cache keys describe every input that affects the value; the host adds app/build isolation. */
 export interface AppCache {
-  readonly get: <A>(options: {
-    readonly key: JsonValue;
-    readonly schema: Schema<A, boolean>;
-    readonly freshFor: Duration.Input;
-    readonly staleFor?: Duration.Input;
-    readonly load: (context: CacheLoadContext) => Promise<A>;
-  }) => Promise<A>;
+  readonly get: <A>(options: CacheGetOptions<A>) => Promise<A>;
+  /** Await a fresh load, coalescing concurrent refreshes and retaining the previous value on failure. */
+  readonly revalidate: <A>(options: CacheGetOptions<A>) => Promise<A>;
   readonly read: <A>(key: JsonValue, schema: Schema<A, boolean>) => Promise<A | undefined>;
   readonly readMany: <A>(
     keys: readonly JsonValue[],

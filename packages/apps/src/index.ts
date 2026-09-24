@@ -1,5 +1,5 @@
 export { ProviderError } from "./contracts/provider-error.ts";
-export type { AppCache, CacheLoadContext } from "./contracts/cache.ts";
+export type { AppCache, CacheLoadContext, CacheGetOptions } from "./contracts/cache.ts";
 export { CacheError } from "@executor-js/app-cache/contracts";
 /**
  * Public author API. Native contracts live in contracts/; this boundary

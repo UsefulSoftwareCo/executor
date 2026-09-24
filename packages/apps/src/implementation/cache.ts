@@ -2,7 +2,7 @@
 import { Effect, Schema } from "effect";
 import { makeCache, CacheError } from "@executor-js/app-cache";
 import { invocationFetch } from "@executor-js/telemetry";
-import type { AppCache, HostCache } from "../contracts/cache.ts";
+import type { AppCache, CacheGetOptions, HostCache } from "../contracts/cache.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
 import type { JsonValue } from "../contracts/schema.ts";
 import { decoderOf } from "./schema.ts";
@@ -22,36 +22,38 @@ export const authorCache = (
 ): AppCache => {
   const scoped = (scope: JsonValue, callerSignal = signal): AppCache => {
     const cache = makeCache(host.transport, host.background, scope);
-    return {
-      get: (options) =>
-        toPromise(
-          () =>
-            cache.get({
-              key: options.key,
-              schema: decoderOf(options.schema),
-              freshFor: options.freshFor,
-              ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
-              load: Effect.acquireUseRelease(
-                Effect.sync(() => new AbortController()),
-                (controller) =>
-                  invocationFetch(controller.signal).pipe(
-                    Effect.flatMap((fetch) =>
-                      Effect.tryPromise({
-                        try: () =>
-                          options.load({
-                            fetch,
-                            signal: controller.signal,
-                            cache: scoped(scope, controller.signal),
-                          }),
-                        catch: (error) => error,
-                      }),
-                    ),
+    const load = <A>(method: "get" | "revalidate", options: CacheGetOptions<A>) =>
+      toPromise(
+        () =>
+          cache[method]({
+            key: options.key,
+            schema: decoderOf(options.schema),
+            freshFor: options.freshFor,
+            ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
+            load: Effect.acquireUseRelease(
+              Effect.sync(() => new AbortController()),
+              (controller) =>
+                invocationFetch(controller.signal).pipe(
+                  Effect.flatMap((fetch) =>
+                    Effect.tryPromise({
+                      try: () =>
+                        options.load({
+                          fetch,
+                          signal: controller.signal,
+                          cache: scoped(scope, controller.signal),
+                        }),
+                      catch: (error) => error,
+                    }),
                   ),
-                (controller) => Effect.sync(() => controller.abort()),
-              ),
-            }),
-          callerSignal,
-        )(),
+                ),
+              (controller) => Effect.sync(() => controller.abort()),
+            ),
+          }),
+        callerSignal,
+      )();
+    return {
+      get: (options) => load("get", options),
+      revalidate: (options) => load("revalidate", options),
       read: (key, schema) =>
         toPromise(
           () =>

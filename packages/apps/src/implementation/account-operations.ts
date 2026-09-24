@@ -10,11 +10,11 @@ import { importedJsonSchema, nestJsonSchema, once, withLazyJsonSchemaDocument } 
 
 type Kind = "query" | "mutation";
 type Operations = {
-  readonly queries: Readonly<
+  readonly queries?: Readonly<
     Record<string, Operation<JsonValue, unknown, "query", OperationContext>>
   >;
   readonly dynamicTools?: DynamicTools;
-  readonly mutations: Readonly<
+  readonly mutations?: Readonly<
     Record<string, Operation<JsonValue, unknown, "mutation", OperationContext>>
   >;
 };
@@ -143,7 +143,7 @@ export const accountOperations = <Account extends { readonly id: string }>(
           [operations.queries, queries],
           [operations.mutations, mutations],
         ] as const) {
-          for (const [name, declaration] of Object.entries(source)) {
+          for (const [name, declaration] of Object.entries(source ?? {})) {
             const operation = nativeOperation(declaration);
             if (operation === undefined)
               return yield* Effect.die(new Error("Expected a protocol operation"));

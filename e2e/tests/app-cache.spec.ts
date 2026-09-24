@@ -31,6 +31,8 @@ export default defineApp({ accounts: { service: provider.many() } }, async ctx =
     heldStarted: query({input:object({})},async()=>await ctx.cache.read("held-started",boolean()) ?? false),
     heldRelease: query({input:object({})},async()=>{await ctx.cache.write([{key:"held-release",value:true}],"1 minute");return true;}),
     replacement: query({input:object({})},async()=>ctx.cache.get({key:"held",schema:string(),freshFor:"1 minute",load:async()=>"replacement"})),
+    refresh: query({ input: object({ key: string() }) }, async (_, { key }) => ctx.cache.revalidate({key, schema:string(),freshFor:"1 minute", load:async()=>crypto.randomUUID()})),
+    refreshFailed: query({ input: object({ key: string() }) }, async (_, { key }) => ctx.cache.revalidate({key, schema:string(),freshFor:"1 minute",load:async()=>{throw new Error("Synthetic refresh failure");}})),
     cached: query({ input: object({ key: string() }) }, async (_, { key }) => ctx.cache.get({ key, schema: string(), freshFor: "1 minute", load: async () => crypto.randomUUID() })),
     invalidate: query({ input: object({ key: string() }) }, async (_, { key }) => { await ctx.cache.invalidate(key); return true; }),
     seed: query({ input: object({}) }, async () => ctx.cache.get({ key: "swr", schema: string(), freshFor: 0, staleFor: "1 minute", load: async () => "seed" })),
@@ -177,6 +179,14 @@ export default defineApp({ accounts: {} }, {
         expect(yield* call("lazy")).toBe("resolved-without-list");
         const warm = yield* call("cached", { key: "shared" });
         expect(yield* call("cached", { key: "shared" }, second.id)).toBe(warm);
+        const refreshedValue = yield* call("refresh", { key: "refresh-check" });
+        expect(yield* call("cached", { key: "refresh-check" })).toBe(refreshedValue);
+        const nextValue = yield* call("refresh", { key: "refresh-check" });
+        expect(nextValue).not.toBe(refreshedValue);
+        expect(
+          (yield* request("refreshFailed", { key: "refresh-check" })).status,
+        ).toBeGreaterThanOrEqual(400);
+        expect(yield* call("cached", { key: "refresh-check" })).toBe(nextValue);
         const burst = yield* Effect.all(
           Array.from({ length: 6 }, () => call("cached", { key: "concurrent" })),
           { concurrency: 6 },

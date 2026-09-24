@@ -114,3 +114,19 @@ MCP or GraphQL. Optional dependencies must appear in the app's manifest and
 resolve from its own installation. A missing peer fails the deployment with
 the package to add. A declared `apps` version owns its framework dependencies;
 otherwise the host supplies them.
+
+MCP imports pass `ctx.cache.forAccount(account)` to `mcpOperations`. Public
+sources without account requirements can pass `ctx.cache`. The helper returns
+`{ dynamicTools }`; it lists metadata without compiling every tool, and resolves
+one executable for each call. Cached identity includes the server URL, normalized
+headers and account ID. Defaults are five minutes fresh plus five minutes stale.
+
+Set `revalidate: true` on a specific `mcpOperations` call to await a new catalog
+at a logical connection or explicit refresh boundary. Do not set it on every
+app evaluation unless every request must reload discovery. Each HTTP transport
+session is short-lived; opening that transport does not force a catalog refresh.
+A received `notifications/tools/list_changed` invalidates the retained manifest.
+There is no idle background connection, so TTL or explicit refresh covers changes
+made while disconnected. A failed explicit refresh retains the previous catalog.
+Only metadata is cached; credentials and executable handlers remain invocation-owned.
+Existing generated apps need the cache option added and a new deployment.

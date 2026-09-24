@@ -65,6 +65,67 @@ export const makeCache = (
       },
       catch: () => new CacheError({ reason: "invalid" }),
     });
+  const get = <A>(options: CacheGet<A>, refresh: boolean) =>
+    Effect.gen(function* () {
+      const key = yield* keyOf(options.key);
+      const { fresh, stale } = yield* durations(options.freshFor, options.staleFor);
+      const decode = (value: unknown) => Schema.decodeUnknownEffect(options.schema)(value);
+      const load = (lease: string) =>
+        Effect.gen(function* () {
+          const value = yield* options.load.pipe(Effect.flatMap(decode));
+          const json = yield* Schema.decodeUnknownEffect(Schema.Json)(value).pipe(
+            Effect.mapError(() => new CacheError({ reason: "invalid" })),
+          );
+          const now = yield* Clock.currentTimeMillis;
+          const published = yield* transport({
+            operation: "publish",
+            key,
+            lease,
+            entry: {
+              value: json,
+              version: crypto.randomUUID(),
+              freshUntil: now + fresh,
+              staleUntil: now + fresh + stale,
+            },
+          });
+          if (published !== true) return yield* new CacheError({ reason: "unavailable" });
+          return value;
+        }).pipe(
+          Effect.withSpan("app.cache.load"),
+          Effect.timeout(cacheLimits.loadTimeoutMs),
+          Effect.ensuring(
+            transport({ operation: "release", key, lease }).pipe(Effect.catch(() => Effect.void)),
+          ),
+        );
+      const deadline = (yield* Clock.currentTimeMillis) + cacheLimits.leaseMs;
+      let initialVersion: string | null | undefined;
+      while (true) {
+        const entry = (yield* readKeys([key]))[0] ?? null;
+        const now = yield* Clock.currentTimeMillis;
+        if (initialVersion === undefined) initialVersion = entry?.version ?? null;
+        const refreshed = refresh && entry !== null && entry.version !== initialVersion;
+        if (entry !== null && (refreshed || (!refresh && now < entry.freshUntil))) {
+          yield* Effect.annotateCurrentSpan("cache.result", "fresh");
+          return yield* decode(entry.value);
+        }
+        const lease = yield* transport({
+          operation: "claim",
+          key,
+          version: entry?.version ?? null,
+        }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.NullOr(Schema.String))));
+        if (!refresh && entry !== null && now < entry.staleUntil) {
+          yield* Effect.annotateCurrentSpan("cache.result", "stale");
+          if (lease !== null) yield* background(load(lease).pipe(Effect.asVoid));
+          return yield* decode(entry.value);
+        }
+        if (lease !== null) {
+          yield* Effect.annotateCurrentSpan("cache.result", "miss");
+          return yield* load(lease);
+        }
+        if (now >= deadline) return yield* new CacheError({ reason: "timeout" });
+        yield* Effect.sleep("100 millis");
+      }
+    }).pipe(Effect.withSpan("app.cache.get"));
   return {
     /** Read arbitrary retained JSON entries without initiating a refresh. Missing and null are distinct. */
     read: (keys: readonly Schema.Json[]) =>
@@ -99,63 +160,8 @@ export const makeCache = (
         Effect.asVoid,
       ),
     /** Read fresh data, refresh stale data in the background, or wait for the lease owner. */
-    get: <A>(options: CacheGet<A>) =>
-      Effect.gen(function* () {
-        const key = yield* keyOf(options.key);
-        const { fresh, stale } = yield* durations(options.freshFor, options.staleFor);
-        const decode = (value: unknown) => Schema.decodeUnknownEffect(options.schema)(value);
-        const load = (lease: string) =>
-          Effect.gen(function* () {
-            const value = yield* options.load.pipe(Effect.flatMap(decode));
-            const json = yield* Schema.decodeUnknownEffect(Schema.Json)(value).pipe(
-              Effect.mapError(() => new CacheError({ reason: "invalid" })),
-            );
-            const now = yield* Clock.currentTimeMillis;
-            const published = yield* transport({
-              operation: "publish",
-              key,
-              lease,
-              entry: {
-                value: json,
-                version: crypto.randomUUID(),
-                freshUntil: now + fresh,
-                staleUntil: now + fresh + stale,
-              },
-            });
-            if (published !== true) return yield* new CacheError({ reason: "unavailable" });
-            return value;
-          }).pipe(
-            Effect.withSpan("app.cache.load"),
-            Effect.timeout(cacheLimits.loadTimeoutMs),
-            Effect.ensuring(
-              transport({ operation: "release", key, lease }).pipe(Effect.catch(() => Effect.void)),
-            ),
-          );
-        const deadline = (yield* Clock.currentTimeMillis) + cacheLimits.leaseMs;
-        while (true) {
-          const entry = (yield* readKeys([key]))[0] ?? null;
-          const now = yield* Clock.currentTimeMillis;
-          if (entry !== null && now < entry.freshUntil) {
-            yield* Effect.annotateCurrentSpan("cache.result", "fresh");
-            return yield* decode(entry.value);
-          }
-          const lease = yield* transport({
-            operation: "claim",
-            key,
-            version: entry?.version ?? null,
-          }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.NullOr(Schema.String))));
-          if (entry !== null && now < entry.staleUntil) {
-            yield* Effect.annotateCurrentSpan("cache.result", "stale");
-            if (lease !== null) yield* background(load(lease).pipe(Effect.asVoid));
-            return yield* decode(entry.value);
-          }
-          if (lease !== null) {
-            yield* Effect.annotateCurrentSpan("cache.result", "miss");
-            return yield* load(lease);
-          }
-          if (now >= deadline) return yield* new CacheError({ reason: "timeout" });
-          yield* Effect.sleep("100 millis");
-        }
-      }).pipe(Effect.withSpan("app.cache.get")),
+    get: <A>(options: CacheGet<A>) => get(options, false),
+    /** Force one awaited refresh without removing the retained value. Concurrent refreshes share a load. */
+    revalidate: <A>(options: CacheGet<A>) => get(options, true),
   };
 };

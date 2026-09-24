@@ -242,6 +242,9 @@ export const runSuite = ({
                           ...(Option.isSome(runtimePath)
                             ? { EXECUTOR_E2E_RUNTIME_PATH: runtimePath.value }
                             : {}),
+                          ...(process.env.MCP_CACHE_FIXTURE_ORIGIN === undefined
+                            ? {}
+                            : { MCP_CACHE_FIXTURE_ORIGIN: process.env.MCP_CACHE_FIXTURE_ORIGIN }),
                           ...(process.env.E2E_CLAUDE_BASE_URL === undefined
                             ? {}
                             : { E2E_CLAUDE_BASE_URL: process.env.E2E_CLAUDE_BASE_URL }),

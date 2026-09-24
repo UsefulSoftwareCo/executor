@@ -33,7 +33,28 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  mcpCatalogCache: {
+    fixtures: "actors",
+    file: "mcp-catalog.spec.ts",
+    title: "MCP catalog cache skips repeated discovery and revalidates account revisions",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback default; external emulators.dev fixture used for remote measurement"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpCatalogRefresh: {
+    fixtures: "actors",
+    file: "mcp-catalog.spec.ts",
+    title: "MCP catalog notifications invalidate schemas and failed refreshes retain values",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback notification fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   liveOpenapi: {
+    fixtures: "actors",
     file: "live-openapi.spec.ts",
     title: "Live OpenAPI refreshes operations while preserving static credential placement",
     targets: {
@@ -43,6 +64,7 @@ export const scenarios = {
     },
   },
   appCache: {
+    fixtures: "actors",
     file: "app-cache.spec.ts",
     title: "App cache shares values, fences concurrent loads and retains background refreshes",
     targets: {
@@ -847,6 +869,7 @@ export const scenarios = {
     },
   },
   oauthErrorReport: {
+    fixtures: "actors",
     file: "oauth-error-report.spec.ts",
     title: "Cloud tracks an unusable OAuth registration response with safe evidence",
     targets: {

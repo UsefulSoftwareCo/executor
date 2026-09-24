@@ -144,13 +144,14 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
           if (kind !== "openapi") {
             yield* upstream.configure({ status: 401 });
             yield* assertFailure(yield* catalog(), "unauthorized", 401);
-            // Discovery needed by background setup retains the same safe failure.
+            // Lazy MCP sources do not discover tools when listing unrelated webhooks.
             const setup = yield* api.request(
               actors.owner,
               "GET",
               `${path}/webhook-definitions?profile=${profile.id}`,
             );
-            expect(setup.status, JSON.stringify(setup.body)).toBe(502);
+            expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
+            if (kind === "mcp") expect(setup.body).toEqual([]);
           }
           yield* upstream.configure({ status: 401, phase: "call" });
           expect((yield* catalog()).status).toBe(200);

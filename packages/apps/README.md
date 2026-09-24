@@ -267,3 +267,9 @@ export default defineApp(
 
 Names include `queries.` or `mutations.`. `list` describes available tools;
 `resolve` returns the matching query or mutation declaration.
+
+`ctx.cache.revalidate(options)` takes the same options as `get`, but always
+awaits a refresh. Concurrent refreshes share a load. The previous value stays
+available to ordinary readers while refresh runs, and a failed refresh does not
+remove it. Use this at an explicit connection or user refresh boundary; it is
+not a reason to refresh on every tool call.
