@@ -260,7 +260,10 @@ export default defineApp({accounts:{}}, {queries:{
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
-        const app = yield* body(App, yield* api.request(actors.owner, "GET", path));
+        const app = yield* body(
+          Schema.Struct({ ...App.fields, activeDeployment: Schema.NonEmptyString }),
+          yield* api.request(actors.owner, "GET", path),
+        );
         expect(app.name).toBe("Gmail");
         const source = yield* body(
           Schema.Struct({
@@ -268,9 +271,11 @@ export default defineApp({accounts:{}}, {queries:{
           }),
           yield* api.request(actors.owner, "GET", `${path}/source`),
         );
-        expect(source.files.find((file) => file.path === "operations.json")?.content).toContain(
-          "https://gmail.googleapis.com",
-        );
+        const operations = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(Schema.NonEmptyArray(Schema.Struct({ baseUrl: Schema.String }))),
+        )(source.files.find((file) => file.path === "operations.json")?.content);
+        for (const operation of operations)
+          expect(new URL(operation.baseUrl).origin).toBe("https://gmail.googleapis.com");
         yield* browser.checkpoint("Gmail installed and ready for account setup");
       }),
     ),
