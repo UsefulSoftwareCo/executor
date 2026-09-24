@@ -69,6 +69,7 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
           readPaths: [actors.organization.id, actors.organization.slug].map(
             (organization) => `/api/organizations/${organization}/apps/${app.id}`,
           ),
+          skills: "reader",
         });
       }),
     ),

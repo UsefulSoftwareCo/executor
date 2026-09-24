@@ -119,6 +119,9 @@ function EditableSkills<E>({
   const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
     app.activeDeployment === null ? undeployedCatalog : bindings.bundle,
   );
+  // Deployed skills may exist only in the catalog. Until it first arrives, the list is incomplete
+  // and an app with only remote skills would look empty.
+  if (AsyncResult.isInitial(result)) return <SkillBrowserLoading />;
   const catalog = Option.getOrUndefined(data);
   return (
     <>

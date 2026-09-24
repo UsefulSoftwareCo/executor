@@ -61,6 +61,7 @@ layer(TestLive, { excludeTestServices: true })("Local app browsing", (it) => {
           name: app.name,
           deployment: app.activeDeployment,
           readPaths: [`/dashboard/api/apps/${app.id}`],
+          skills: "editor",
         });
       }),
     ),
