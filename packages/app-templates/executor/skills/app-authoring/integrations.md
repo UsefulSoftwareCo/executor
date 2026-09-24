@@ -130,3 +130,28 @@ There is no idle background connection, so TTL or explicit refresh covers change
 made while disconnected. A failed explicit refresh retains the previous catalog.
 Only metadata is cached; credentials and executable handlers remain invocation-owned.
 Existing generated apps need the cache option added and a new deployment.
+
+GraphQL imports use the same cache policy through `graphqlOperations`:
+
+```ts
+await graphqlOperations({
+  url,
+  headers,
+  accountId: account.id,
+  cache: ctx.cache.forAccount(account),
+  signal: ctx.signal,
+});
+```
+
+The helper returns `{ dynamicTools }`. One introspection request creates a
+revision of per-tool definitions. Listing reads those definitions; execution
+loads and compiles only the selected query or mutation, without reading the
+full introspection schema. The current account supplies execution credentials.
+Public apps can use `ctx.cache`. Omitting the cache keeps discovery local to the
+current evaluation. Keys include the URL, normalized headers and account ID.
+
+`freshFor`, `staleFor`, and `revalidate: true` have the same meanings as MCP.
+GraphQL has no standard schema-change notification, so TTL or an explicit
+refresh discovers changed fields and input types. Failed refreshes retain the
+previous revision. Cached introspection never caches query or mutation results.
+Existing generated GraphQL apps need the cache option and redeployment.

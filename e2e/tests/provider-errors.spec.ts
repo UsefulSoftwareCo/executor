@@ -76,6 +76,33 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
           expect(created.status, JSON.stringify(created.body)).toBe(200);
           const app = yield* body(App, created),
             path = `${prefix}/apps/${app.id}`;
+          // This diagnostic app explicitly refreshes on every evaluation so discovery
+          // failures remain observable after its GraphQL catalog has been cached.
+          if (kind === "graphql") {
+            const source = yield* body(
+              Schema.Struct({
+                files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+              }),
+              yield* api.request(actors.owner, "GET", `${path}/source`),
+            );
+            expect(source.files.find((file) => file.path === "index.ts")?.content).toContain(
+              "graphqlOperations({",
+            );
+            const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
+              files: source.files.map((file) =>
+                file.path === "index.ts"
+                  ? {
+                      ...file,
+                      content: file.content.replace(
+                        "graphqlOperations({",
+                        "graphqlOperations({ revalidate: true,",
+                      ),
+                    }
+                  : file,
+              ),
+            });
+            expect(updated.status).toBe(200);
+          }
           const accounts: string[] = [];
           const profile = yield* body(
             Resource,

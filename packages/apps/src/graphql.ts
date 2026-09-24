@@ -1,16 +1,14 @@
 /** GraphQL helpers. Requires the optional graphql peer. */
-import { protocolOperations, type OperationKinds } from "./implementation/protocol-operations.ts";
+import type { OperationKinds } from "./implementation/protocol-operations.ts";
 import { Effect } from "effect";
-import type { GraphqlToolsOptions } from "./contracts/graphql.ts";
-import { graphqlToolsEffect } from "./implementation/graphql.ts";
+import { graphqlCatalog, type GraphqlCatalogOptions } from "./implementation/graphql-catalog.ts";
 export { GraphqlError, type GraphqlToolsOptions } from "./contracts/graphql.ts";
+export type { GraphqlCatalogOptions } from "./implementation/graphql-catalog.ts";
 
-/** Discover operations for the selected account. Kinds override uncertain upstream read-only hints. */
-export const graphqlOperations = (options: GraphqlToolsOptions, kinds: OperationKinds = {}) =>
+/** Lazy tools with optional persistent metadata caching for the selected account. */
+export const graphqlOperations = (options: GraphqlCatalogOptions, kinds: OperationKinds = {}) =>
   Effect.runPromise(
-    graphqlToolsEffect(options).pipe(
-      Effect.map((operations) => protocolOperations(operations, kinds)),
-    ),
+    graphqlCatalog(options, kinds),
     options.signal === undefined ? {} : { signal: options.signal },
   );
 

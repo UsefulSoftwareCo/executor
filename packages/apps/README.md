@@ -82,6 +82,12 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
 );
 ```
 
+MCP and GraphQL helpers accept `cache: ctx.cache.forAccount(account)` (or
+`ctx.cache` for a public source). They return `{ dynamicTools }`, cache remote
+metadata, and compile only the selected tool. The defaults are five minutes fresh
+plus five minutes stale. Use `freshFor` / `staleFor` to change the windows, or
+`revalidate: true` to await a refresh. Tool results are never cached.
+
 Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
 `accountId` must identify a selected account that exposes that tool. Discovery
 and validation remain specific to each account. An empty selection returns no

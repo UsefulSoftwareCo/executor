@@ -33,6 +33,27 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  graphqlPublicCache: {
+    fixtures: "actors",
+    file: "graphql-cache.spec.ts",
+    title: "Public GraphQL profiles share metadata while query results remain live",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback introspection fixture"),
+      local: na("Hosted app deployment scenario"),
+    },
+  },
+  graphqlCatalogCache: {
+    fixtures: "actors",
+    file: "graphql-cache.spec.ts",
+    title:
+      "GraphQL catalogs reuse introspection and refresh isolated query and mutation definitions",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback introspection fixture"),
+      local: na("Hosted app deployment scenario"),
+    },
+  },
   mcpCatalogCache: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",

@@ -41,7 +41,7 @@ export const generateRemoteApp = (
       files: yield* sourceFiles([
         {
           path: "index.ts",
-          content: `import { defineApp${methods.length ? ", accountOperations" : ""} } from "apps"\nimport { ${helper} } from "apps/${kind}"\n${methods.length ? 'import { provider } from "./provider.ts"\n' : ""}\nexport default defineApp({ accounts: ${methods.length ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, signal${kind === "mcp" ? ", cache" : ""} }) =>\n  ${methods.length ? "accountOperations(accounts.service, async (account) => " : ""}${helper}({\n    url: ${serialize(url)},\n${kind === "mcp" ? `    cache: ${methods.length ? "cache.forAccount(account)" : "cache"},\n${methods.length ? "    accountId: account.id,\n" : ""}` : ""}${headers ? `    headers: ${headers},\n` : ""}    signal,\n  })${methods.length ? ", { signal })" : ""},\n)\n`,
+          content: `import { defineApp${methods.length ? ", accountOperations" : ""} } from "apps"\nimport { ${helper} } from "apps/${kind}"\n${methods.length ? 'import { provider } from "./provider.ts"\n' : ""}\nexport default defineApp({ accounts: ${methods.length ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, signal, cache }) =>\n  ${methods.length ? "accountOperations(accounts.service, async (account) => " : ""}${helper}({\n    url: ${serialize(url)},\n    cache: ${methods.length ? "cache.forAccount(account)" : "cache"},\n${methods.length ? "    accountId: account.id,\n" : ""}${headers ? `    headers: ${headers},\n` : ""}    signal,\n  })${methods.length ? ", { signal })" : ""},\n)\n`,
         },
         ...(methods.length
           ? [
