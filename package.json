@@ -144,5 +144,13 @@
     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch"
-  }
+  },
+  "trustedDependencies": [
+    "bun",
+    "dugite",
+    "electron",
+    "electron-winstaller",
+    "esbuild",
+    "workerd"
+  ]
 }
