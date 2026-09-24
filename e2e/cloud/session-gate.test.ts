@@ -13,7 +13,6 @@ import * as Iron from "iron-webcrypto";
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 import { E2E_COOKIE_PASSWORD } from "../targets/cloud";
-import { browserCookies } from "./support/admin-mfa";
 
 /** A signed-out-style document request (what the gate keys on). */
 const documentRequest = (url: URL, cookie?: string) =>
@@ -116,9 +115,7 @@ scenario(
 // waiting out a real expiry. Same sealing library + password map the WorkOS
 // SDK uses, so the gate can't tell this seal from one the SDK minted.
 const withTamperedAccessToken = async (sessionCookie: string): Promise<string> => {
-  const cookie = browserCookies(sessionCookie).find((entry) => entry.name === "wos-session");
-  if (!cookie) throw new Error("Test identity has no WorkOS session");
-  const sealed = cookie.value.replace(/~\d$/, "");
+  const sealed = sessionCookie.slice("wos-session=".length).replace(/~\d$/, "");
   const session = (await Iron.unseal(sealed, { "1": E2E_COOKIE_PASSWORD }, Iron.defaults)) as {
     accessToken: string;
   };

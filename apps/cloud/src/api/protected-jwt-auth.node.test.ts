@@ -84,7 +84,7 @@ const stubDirectory = Layer.succeed(MemberDirectory)({
             email: null,
             name: null,
             avatarUrl: null,
-            role: "admin",
+            role: "member",
             status: "active" as const,
             lastActiveAt: null,
           }

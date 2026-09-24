@@ -17,7 +17,6 @@
 //
 // `cloud/*.test.ts` is a vitest `include` of `*.test.ts` only, so this module
 // is never collected as a suite.
-import { browserCookies } from "./admin-mfa";
 import { Effect } from "effect";
 
 import type { Identity, Target as TargetShape } from "../../src/target";
@@ -54,7 +53,7 @@ export const forBrowser = (identity: Identity): Identity => {
   if (separator < 0) throw new Error("identity carries no session cookie");
   return {
     ...identity,
-    cookies: browserCookies(cookie),
+    cookies: [{ name: cookie.slice(0, separator), value: cookie.slice(separator + 1) }],
   };
 };
 
@@ -99,15 +98,7 @@ export const withRefreshedSession = (
     .find((header) => header.startsWith("wos-session="))
     ?.split(";")[0];
   if (!refreshed) throw new Error("response did not refresh the session cookie");
-  const cookies = browserCookies(cookieOf(identity)).filter(
-    (cookie) => cookie.name !== "wos-session",
-  );
-  const cookie = [refreshed, ...cookies.map(({ name, value }) => `${name}=${value}`)].join("; ");
-  return {
-    ...identity,
-    headers: { cookie, [ORG_SELECTOR_HEADER]: orgSelector },
-    cookies: browserCookies(cookie),
-  };
+  return { ...identity, headers: { cookie: refreshed, [ORG_SELECTOR_HEADER]: orgSelector } };
 };
 
 /** The org selector this identity's requests carry — the same header the web

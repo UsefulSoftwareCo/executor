@@ -228,7 +228,6 @@ describe("login callback", () => {
             organizationId: undefined,
             accessToken: "access",
             refreshToken: "refresh",
-            adminVerified: true,
             sealedSession: "sealed",
           }),
         listUserMemberships: (id) => {
@@ -594,7 +593,6 @@ describe("session handlers read membership from the mirror", () => {
             ...options.workos,
             authenticateSealedSession: () =>
               Effect.succeed({
-                adminVerified: true,
                 userId,
                 email: `${userId}@placeholder.test`,
                 organizationId: null,
@@ -1101,7 +1099,6 @@ describe("account service writes through to the mirror", () => {
     name: null,
     avatarUrl: null,
     organizationId: null,
-    adminVerified: true,
     sealedSession: "sealed",
     refreshedSession: null,
   });

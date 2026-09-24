@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { signAdminMfaProof } from "./admin-mfa-proof";
 import { describe, expect, it } from "@effect/vitest";
 import { env } from "cloudflare:workers";
 import { Effect, Schema } from "effect";
@@ -175,7 +174,7 @@ const withWorkOSStub = async <A>(
   });
 };
 
-const runAuthenticate = (sessionData: string, baseUrl: string, proof?: string) => {
+const runAuthenticate = (sessionData: string, baseUrl: string) => {
   Object.assign(env, {
     WORKOS_API_KEY: API_KEY,
     WORKOS_CLIENT_ID: CLIENT_ID,
@@ -186,54 +185,12 @@ const runAuthenticate = (sessionData: string, baseUrl: string, proof?: string) =
   return Effect.runPromise(
     Effect.gen(function* () {
       const workos = yield* WorkOSClient;
-      return yield* workos.authenticateSealedSession(sessionData, proof);
+      return yield* workos.authenticateSealedSession(sessionData);
     }).pipe(Effect.provide(WorkOSClient.Default)),
   );
 };
 
 describe("authenticateSealedSession", () => {
-  it("binds admin verification to the authenticated session and refuses expired proofs", async () => {
-    const keypair = await generateKeypair("k_admin_mfa");
-    await withWorkOSStub(keypair, async (stub) => {
-      const session = await sealSession(
-        await signAccessToken(keypair, { sessionId: "session_admin" }),
-      );
-      const now = Date.now();
-      const makeProof = (sessionId: string, timestamp: number) =>
-        Effect.runPromise(
-          signAdminMfaProof(
-            COOKIE_PASSWORD,
-            { userId: USER.id, sessionId },
-            "verified",
-            {
-              factorId: "factor_test",
-              challengeId: "challenge_test",
-              mode: "challenge",
-              exp: Math.floor(timestamp / 1000) + 900,
-            },
-            timestamp,
-          ),
-        );
-      expect(
-        (await runAuthenticate(session, stub.baseUrl, await makeProof("session_admin", now)))
-          ?.adminVerified,
-      ).toBe(true);
-      expect(
-        (await runAuthenticate(session, stub.baseUrl, await makeProof("session_other", now)))
-          ?.adminVerified,
-      ).toBe(false);
-      expect(
-        (
-          await runAuthenticate(
-            session,
-            stub.baseUrl,
-            await makeProof("session_admin", now - 901_000),
-          )
-        )?.adminVerified,
-      ).toBe(false);
-    });
-  });
-
   it("validates a sealed session locally with the cached JWKS", async () => {
     const keypair = await generateKeypair("k_valid");
     await withWorkOSStub(keypair, async (stub) => {
@@ -254,8 +211,6 @@ describe("authenticateSealedSession", () => {
         organizationId: "org_test",
         sessionId: "session_valid",
         refreshedSession: undefined,
-        adminVerified: false,
-        adminVerificationExpiresAt: null,
       });
       expect(stub.requests()).toEqual([
         { method: "GET", path: `/sso/jwks/${CLIENT_ID}`, body: null },

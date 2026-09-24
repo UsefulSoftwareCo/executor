@@ -17,7 +17,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import { parseBrowserApproval } from "../src/surfaces/mcp";
-import { verifyAdmin } from "./support/admin-mfa";
 import type { Identity } from "../src/target";
 
 const coreApi = composePluginApi([] as const);
@@ -265,80 +264,6 @@ scenario(
           );
           expect(textOf(resumed), "the gated tool completed after approval").toContain(policy.id);
         });
-      }).pipe(Effect.ensuring(closeQuietly(session)));
-    }).pipe(
-      Effect.ensuring(
-        api.policies
-          .remove({ params: { policyId: policy.id }, payload: { owner: "org" } })
-          .pipe(Effect.ignore),
-      ),
-    );
-  }),
-);
-
-scenario(
-  "MCP approval · an admin without MFA cannot grant workspace writes on resume",
-  { timeout: 180_000 },
-  Effect.gen(function* () {
-    const target = yield* Target;
-    const { client: apiClient } = yield* Api;
-    const mcp = yield* Mcp;
-    const locked = yield* target.newIdentity({ adminMfa: false });
-    const unlocked = yield* verifyAdmin(target.baseUrl, locked);
-    const api = yield* apiClient(coreApi, unlocked);
-    const policy = yield* api.policies.create({
-      payload: { owner: "org", pattern: GATE_TOOL, action: "require_approval" },
-    });
-    yield* Effect.gen(function* () {
-      const bearer = yield* mcp.mintBearer(emailOf(locked));
-      const session = yield* Effect.promise(() =>
-        openBrowserApprovalSession(target.mcpUrl, bearer),
-      );
-      yield* Effect.gen(function* () {
-        const paused = yield* Effect.promise(() =>
-          session.client.callTool({
-            name: "execute",
-            arguments: {
-              code: `${GATED_CODE.replace("return JSON.stringify(result);", "")}
-            return await tools.executor.coreTools.policies.create({ owner: "org", pattern: "resume-bypass.*", action: "approve" });`,
-            },
-          }),
-        );
-        let resumed = paused;
-        // The policy read and the subsequent policy write each need approval.
-        // Both browser decisions must preserve the locked session's authority.
-        for (const _step of ["read", "write"]) {
-          const approval = parseBrowserApproval({
-            raw: resumed,
-            text: textOf(resumed),
-            ok: resumed.isError !== true,
-          });
-          const resumeUrl = new URL(
-            `/api/mcp-sessions/${encodeURIComponent(session.transport.sessionId ?? "")}/executions/${encodeURIComponent(approval.executionId)}/resume`,
-            target.baseUrl,
-          );
-          const approved = yield* Effect.promise(() =>
-            authenticatedFetch(locked, resumeUrl, {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                origin: new URL(target.baseUrl).origin,
-              },
-              body: JSON.stringify({ action: "accept", content: {} }),
-            }),
-          );
-          expect(approved.status).toBe(200);
-          resumed = yield* Effect.promise(() =>
-            session.client.callTool({
-              name: "resume",
-              arguments: { executionId: approval.executionId },
-            }),
-          );
-        }
-        expect(textOf(resumed)).toMatch(/OrgWriteDenied|administrator|admin/i);
-        expect((yield* api.policies.list()).some((row) => row.pattern === "resume-bypass.*")).toBe(
-          false,
-        );
       }).pipe(Effect.ensuring(closeQuietly(session)));
     }).pipe(
       Effect.ensuring(

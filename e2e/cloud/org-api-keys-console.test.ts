@@ -1,4 +1,19 @@
-// Organization keys retain shared product reads. Cross-user reads require a verified browser session.
+// Cloud-only: the Organization keys SECTION of the API keys page — the console
+// surface over `/api/account/org-api-keys`, minting the machine credential for
+// the tenant-wide admin plane.
+//
+// Two members are built through the real flows. The guarantees pinned here:
+//
+//   1. an ADMIN sees the section, mints an org key through the dialog, gets the
+//      one-time reveal, and the minted value ACTUALLY authenticates the admin
+//      API (the whole point of the credential);
+//   2. the listing shows the key afterward and revoke asks for confirmation
+//      before killing it — after which the value stops authenticating;
+//   3. a PLAIN MEMBER never sees the section at all.
+//
+// Runs against emulate >= 0.13.9, whose WorkOS emulator serves the org-key
+// routes (list/mint via /organizations/:id/api_keys, org-owner validation) —
+// the gap that previously kept this scenario impossible.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -14,7 +29,7 @@ declare global {
 }
 
 scenario(
-  "Admin · organization keys are minted in the console and authenticate shared product reads",
+  "Admin · organization keys are minted in the console and authenticate the admin API",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -68,14 +83,20 @@ scenario(
           .waitFor({ state: "visible", timeout: 30_000 });
       });
 
-      await step("The minted value reads shared data but cannot read other users", async () => {
-        const headers = { authorization: `Bearer ${mintedValue}` };
+      await step("The minted value authenticates the tenant-wide admin API", async () => {
+        // The credential's purpose, proven from outside the browser: a backend
+        // holding ONLY this value can read the admin plane.
+        const response = await fetch(new URL("/api/admin/users", target.baseUrl), {
+          headers: { authorization: `Bearer ${mintedValue}` },
+        });
+        expect(response.status, "the org key reads the admin plane").toBe(200);
+        const body = (await response.json()) as {
+          users: ReadonlyArray<{ email: string | null }>;
+        };
         expect(
-          (await fetch(new URL("/api/integrations", target.baseUrl), { headers })).status,
-        ).toBe(200);
-        expect((await fetch(new URL("/api/admin/users", target.baseUrl), { headers })).status).toBe(
-          403,
-        );
+          body.users.map((user) => user.email),
+          "and sees the workspace's members",
+        ).toContain(admin.credentials?.email);
       });
 
       await step("Revoke asks for confirmation, then the key stops working", async () => {
@@ -92,7 +113,7 @@ scenario(
         // The dialog closes when revocation starts. Wait for the confirmed
         // provider mutation before asserting the key no longer authenticates.
         await page.getByText("Revoked e2e backend reader", { exact: true }).waitFor();
-        const after = await fetch(new URL("/api/integrations", target.baseUrl), {
+        const after = await fetch(new URL("/api/admin/users", target.baseUrl), {
           headers: { authorization: `Bearer ${mintedValue}` },
         });
         expect(after.status, "the revoked key is refused").toBe(401);

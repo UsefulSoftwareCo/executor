@@ -10,7 +10,6 @@ import { Effect } from "effect";
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { visit, settle } from "../src/surfaces/browser";
-import { verifyAdminInBrowser } from "./support/admin-mfa";
 
 scenario(
   "Organizations · an admin deletes the organization from settings",
@@ -41,7 +40,6 @@ scenario(
 
       await step("Open Organization settings and find the danger zone", async () => {
         await visit(page, `/${slug}/org`);
-        await verifyAdminInBrowser(page);
         // The admin-only danger zone renders (a member would not see it).
         await page.getByText("Permanently delete this organization").waitFor();
       });
