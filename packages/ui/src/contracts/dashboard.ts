@@ -6,13 +6,16 @@ import type {
   AppId,
   ProfileId,
   Profile,
-  Deployment,
   DeploymentId,
   Provider,
   ProviderDefinition,
   SelectedAccounts,
 } from "@executor-js/sdk";
 import type { CatalogImport } from "@executor-js/catalog/contracts";
+import type {
+  DeploymentDisplay,
+  SourceDisplayFile,
+} from "@executor-js/app-management/contracts/source-display";
 import type { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { Schema, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
@@ -55,7 +58,9 @@ export interface AppDeploymentsProps<E> {
   }[];
   readonly deployment: DeploymentId;
   readonly onDeploymentChange: (deployment: DeploymentId | undefined) => void;
-  readonly query: Query<Deployment, E>;
+  readonly query: Query<DeploymentDisplay, E>;
+  /** Reads one file of the listed deployment when the listing did not inline it. */
+  readonly file: (deployment: DeploymentId, path: string) => Query<SourceDisplayFile, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly actions?: ReactNode;
 }

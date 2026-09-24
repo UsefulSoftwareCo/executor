@@ -323,7 +323,6 @@ test("deleting an app keeps reusable accounts and independent copies", async () 
       (
         await Effect.runPromise(
           client.dashboard.source({
-            query: {},
             params: { app: second.id, deployment: second.activeDeployment },
           }),
         )
@@ -989,7 +988,6 @@ test("PostHog catalog defaults use individual tools without duplicate rows or a 
       );
       const source = await Effect.runPromise(
         client.dashboard.source({
-          query: {},
           params: { app: app.id, deployment: app.activeDeployment },
         }),
       );
@@ -1038,7 +1036,6 @@ test("live OAuth advertisement supplements an API-key-only catalog entry", async
           assert.equal(methods?.apiKey?.type, "secrets");
           const source = await Effect.runPromise(
             client.dashboard.source({
-              query: {},
               params: { app: app.id, deployment: app.activeDeployment },
             }),
           );
@@ -1160,7 +1157,6 @@ test("custom MCP URLs deploy source and connect through the same account flow", 
       assert.deepEqual(calls, ["alpha:alpha"]);
       const source = await Effect.runPromise(
         client.dashboard.source({
-          query: {},
           params: { app: app.id, deployment: app.activeDeployment },
         }),
       );
@@ -1416,7 +1412,6 @@ test("custom GraphQL introspects with selected accounts and calls queries and mu
       assert.equal(calls.length, beforeInvalid);
       const source = await Effect.runPromise(
         client.dashboard.source({
-          query: {},
           params: { app: first.id, deployment: first.activeDeployment },
         }),
       );
@@ -1579,7 +1574,6 @@ test(
                   assert.ok(discoveryRequests > initialDiscovery);
 
                   const retained = yield* client.dashboard.source({
-                    query: {},
                     params: { app: first.id, deployment: first.activeDeployment },
                   });
                   const deployed = yield* executor.apps.deploy({

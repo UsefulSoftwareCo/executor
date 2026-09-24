@@ -12,6 +12,7 @@ export function AppDeployments<E>({
   deployment,
   onDeploymentChange,
   query,
+  file,
   Failure,
   actions,
 }: AppDeploymentsProps<E>) {
@@ -84,6 +85,8 @@ export function AppDeployments<E>({
                 </dl>
                 <SourceBrowser
                   files={source.files}
+                  file={(path) => file(source.id, path)}
+                  Failure={Failure}
                   className="h-auto min-h-0 flex-1 rounded-none border-0"
                 />
               </>

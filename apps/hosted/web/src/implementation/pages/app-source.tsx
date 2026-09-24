@@ -18,7 +18,13 @@ import {
 import { Exit, type Cause } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useContext, useState } from "react";
-import { activateAppAtom, appAtom, deploymentsAtom, sourceAtom } from "../../contracts/apps.ts";
+import {
+  activateAppAtom,
+  appAtom,
+  deploymentsAtom,
+  sourceAtom,
+  sourceFileAtom,
+} from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
@@ -47,6 +53,9 @@ export function AppDeployments({ app }: { readonly app: App }) {
           deployment={deployment}
           onDeploymentChange={setSelected}
           query={sourceAtom({ organization, app: app.id, deployment })}
+          file={(deployment, path) =>
+            sourceFileAtom({ organization, app: app.id, deployment, path })
+          }
           Failure={HostedFailure}
           actions={
             deployment !== app.activeDeployment && (

@@ -6,7 +6,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Option } from "effect";
 import type { App } from "@executor-js/sdk";
-import type { AppSourceView } from "@executor-js/app-management/contracts";
+import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
 import type { AppAcknowledgement, AppManagementProps } from "../../contracts/app-management.ts";
 import { QueryView, useDashboard } from "./context.tsx";
 import { Button } from "../components/button.tsx";
@@ -64,7 +64,7 @@ function WorkspaceSource<E>({
   view,
 }: AppManagementProps<E> & {
   readonly app: App;
-  readonly source: typeof AppSourceView.Type;
+  readonly source: typeof AppSourceDisplay.Type;
   readonly onApp: AppAcknowledgement;
   readonly view: "source" | "history";
 }) {
@@ -115,6 +115,8 @@ function WorkspaceSource<E>({
         <div className="flex min-h-0 flex-1 overflow-auto max-[1100px]:flex-col">
           <SourceBrowser
             files={source.files}
+            file={(path) => atoms.sourceFile({ app: app.id, commit: source.revision.commit, path })}
+            Failure={Failure}
             className="h-auto min-h-80 min-w-0 flex-1 rounded-none border-0"
           />
         </div>
@@ -122,7 +124,7 @@ function WorkspaceSource<E>({
     </div>
   );
 }
-function CloneRepository({ source }: { readonly source: typeof AppSourceView.Type }) {
+function CloneRepository({ source }: { readonly source: typeof AppSourceDisplay.Type }) {
   const cloneUrl = window.location.origin + source.gitPath;
   return (
     <Popover>

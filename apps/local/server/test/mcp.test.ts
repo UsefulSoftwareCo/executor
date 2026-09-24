@@ -1,4 +1,4 @@
-import { ExecutorApi, OwnerId } from "@executor-js/sdk/core";
+import { ExecutorApi, OwnerId, SourceError } from "@executor-js/sdk/core";
 /** Real MCP client and HTTP sockets; each run owns an isolated database and server lifecycle. */
 import { telemetryLayer } from "@executor-js/telemetry";
 import assert from "node:assert/strict";
@@ -764,7 +764,6 @@ async function verify(directory: string, source: string) {
     assert.ok(detail.deployments.some((deployment) => deployment.id === first.activeDeployment));
     const sourceRead = await Effect.runPromise(
       read.dashboard.source({
-        query: {},
         params: { app: first.id, deployment: first.activeDeployment },
       }),
     );
@@ -772,7 +771,6 @@ async function verify(directory: string, source: string) {
     const wrongLineage = await Effect.runPromise(
       Effect.flip(
         read.dashboard.source({
-          query: {},
           params: {
             app: first.id,
             deployment: documented.app.activeDeployment,
@@ -837,12 +835,46 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
     assert.notEqual(managedAfter.activeDeployment, previous.app.activeDeployment);
     const generatedSource = await Effect.runPromise(
       (await reader(server)).dashboard.source({
-        query: {},
         params: { app: managed.id, deployment: managedAfter.activeDeployment },
       }),
     );
     assert.ok(generatedSource.files.some((file) => file.path === "operations.json"));
     assert.ok(!JSON.stringify(generatedSource.files).includes(apiKey));
+    // The generated operations file exceeds the inline budget: listed by size, read on selection.
+    const deploymentParams = { app: managed.id, deployment: managedAfter.activeDeployment };
+    const listing = await Effect.runPromise(
+      (await reader(server)).dashboard.sourceDisplay({ params: deploymentParams }),
+    );
+    assert.deepEqual(
+      listing.files.map((file) => file.path),
+      generatedSource.files.map((file) => file.path),
+    );
+    const operations = generatedSource.files.find((file) => file.path === "operations.json");
+    assert.ok(operations);
+    assert.deepEqual(
+      listing.files.find((file) => file.path === "operations.json"),
+      {
+        path: "operations.json",
+        size: new TextEncoder().encode(operations.content).byteLength,
+      },
+    );
+    const loaded = await Effect.runPromise(
+      (await reader(server)).dashboard.sourceDisplayFile({
+        params: deploymentParams,
+        query: { path: "operations.json" },
+      }),
+    );
+    assert.equal(loaded.size, listing.files.find((file) => file.path === "operations.json")?.size);
+    assert.deepEqual(JSON.parse(loaded.content), JSON.parse(operations.content));
+    const missing = await Effect.runPromise(
+      Effect.flip(
+        (await reader(server)).dashboard.sourceDisplayFile({
+          params: deploymentParams,
+          query: { path: "missing.ts" },
+        }),
+      ),
+    );
+    assert.ok(Schema.is(SourceError)(missing) && missing.reason === "not-found");
     const resumed = await browserPost("read", {
       connection: pendingLink.connection,
       token: pendingToken,

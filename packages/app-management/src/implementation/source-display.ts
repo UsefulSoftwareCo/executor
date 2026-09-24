@@ -1,6 +1,12 @@
 import { Effect, Exit, Schema } from "effect";
-import type { SourceFile, SourceFiles } from "@executor-js/sdk/core";
-import { sourceDisplayLimits } from "../contracts/source-display.ts";
+import { SourceError, type SourceFile, type SourceFiles } from "@executor-js/sdk/core";
+import {
+  sourceDisplayInlineLimits,
+  sourceDisplayLimits,
+  type SourceDisplayEntries,
+  type SourceDisplayEntry,
+  type SourceDisplayFile,
+} from "../contracts/source-display.ts";
 
 class SourceFormatUnavailable extends Schema.TaggedError<SourceFormatUnavailable>()(
   "SourceFormatUnavailable",
@@ -8,18 +14,34 @@ class SourceFormatUnavailable extends Schema.TaggedError<SourceFormatUnavailable
 ) {}
 
 const jsonSource = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+/**
+ * Apply non-overlapping formatter edits in one pass. jsonc-parser's applyEdits rebuilds the
+ * whole string per edit, which costs hundreds of milliseconds on a large single-line file.
+ */
+const applyEdits = (
+  text: string,
+  edits: ReadonlyArray<{ offset: number; length: number; content: string }>,
+) => {
+  const parts: Array<string> = [];
+  let position = 0;
+  for (const edit of [...edits].sort((a, b) => a.offset - b.offset)) {
+    parts.push(text.slice(position, edit.offset), edit.content);
+    position = edit.offset + edit.length;
+  }
+  parts.push(text.slice(position));
+  return parts.join("");
+};
 const formatFile = Effect.fn("source.display.format")(function* (file: SourceFile) {
   if (file.path.endsWith(".json")) {
     if (Exit.isFailure(jsonSource(file.content))) return file;
     const json = yield* Effect.promise(() => import("jsonc-parser"));
     // Whitespace edits preserve numeric literals that JSON.parse/stringify would round.
-    return {
-      ...file,
-      content: json.applyEdits(
-        file.content,
-        json.format(file.content, undefined, { tabSize: 2, insertSpaces: true, eol: "\n" }),
-      ),
-    };
+    const edits = json.format(file.content, undefined, {
+      tabSize: 2,
+      insertSpaces: true,
+      eol: "\n",
+    });
+    return { ...file, content: applyEdits(file.content, edits) };
   }
   const typescript = /\.[cm]?tsx?$/.test(file.path);
   if (!typescript && !/\.[cm]?jsx?$/.test(file.path)) return file;
@@ -48,24 +70,47 @@ const formatFile = Effect.fn("source.display.format")(function* (file: SourceFil
   return { ...file, content };
 });
 
+const byteSize = (content: string) => new TextEncoder().encode(content).byteLength;
+
 /**
- * Format an authorized source response only on explicit display reads. Never write it back.
- * Invalid, unsupported, and over-budget files retain their exact original contents.
- * Sequential files bound parser memory; only the selected language's modules are loaded.
+ * List an authorized source response for read-only display. Never write it back.
+ * Every file keeps its path and stored size. Only files within the inline budget carry
+ * contents, and only those are formatted. The inline budget bounds parser work;
+ * sequential files bound parser memory.
  */
 export const sourceDisplay = <A extends { readonly files: SourceFiles }>(
   source: A,
-  format: "display" | undefined,
-): Effect.Effect<A> =>
+): Effect.Effect<Omit<A, "files"> & { readonly files: typeof SourceDisplayEntries.Type }> =>
   Effect.gen(function* () {
-    if (format === undefined) return source;
-    let remaining = sourceDisplayLimits.requestBytes;
-    const files = yield* Effect.forEach(source.files, (file) => {
-      if (!/\.(?:[cm]?[jt]sx?|json)$/.test(file.path)) return Effect.succeed(file);
-      const bytes = new TextEncoder().encode(file.content).byteLength;
-      if (bytes > sourceDisplayLimits.fileBytes || bytes > remaining) return Effect.succeed(file);
-      remaining -= bytes;
-      return formatFile(file);
-    });
-    return { ...source, files };
+    let remaining = sourceDisplayInlineLimits.requestBytes;
+    const entry = (file: SourceFile): Effect.Effect<SourceDisplayEntry> => {
+      const size = byteSize(file.content);
+      if (size > sourceDisplayInlineLimits.fileBytes || size > remaining)
+        return Effect.succeed({ path: file.path, size });
+      remaining -= size;
+      return formatFile(file).pipe(
+        Effect.map(({ content }) => ({ path: file.path, size, content })),
+      );
+    };
+    const [first, ...rest] = source.files;
+    return {
+      ...source,
+      files: [yield* entry(first), ...(yield* Effect.forEach(rest, entry))],
+    };
+  });
+
+/**
+ * Display one file from an immutable source. Invalid, unsupported, and over-budget files
+ * retain their exact original contents.
+ */
+export const sourceDisplayFile = (
+  files: SourceFiles,
+  path: string,
+): Effect.Effect<SourceDisplayFile, SourceError> =>
+  Effect.gen(function* () {
+    const file = files.find((file) => file.path === path);
+    if (file === undefined) return yield* new SourceError({ reason: "not-found" });
+    const size = byteSize(file.content);
+    const { content } = size <= sourceDisplayLimits.fileBytes ? yield* formatFile(file) : file;
+    return { path: file.path, size, content };
   });

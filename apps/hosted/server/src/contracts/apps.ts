@@ -1,4 +1,8 @@
-import { SourceDisplayQuery } from "@executor-js/app-management/contracts/source-display";
+import {
+  DeploymentDisplay,
+  SourceDisplayFile,
+  SourceDisplayFileQuery,
+} from "@executor-js/app-management/contracts/source-display";
 import { RequiredAction } from "./authorization.ts";
 import { AppWorkflowsActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
@@ -111,10 +115,37 @@ export const HostedApps = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.get("source", `${prefix}/:app/source`, {
       params: app,
-      query: { deployment: Schema.optional(DeploymentId), ...SourceDisplayQuery },
+      query: { deployment: Schema.optional(DeploymentId) },
       success: Deployment,
       error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound, OrganizationForbidden],
     }).annotate(RequiredAction, "read"),
+  )
+  .add(
+    HttpApiEndpoint.get("sourceDisplay", `${prefix}/:app/source/display`, {
+      params: app,
+      query: { deployment: Schema.optional(DeploymentId) },
+      success: DeploymentDisplay,
+      error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound, OrganizationForbidden],
+    }).annotate(RequiredAction, "read"),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "sourceDisplayFile",
+      `${prefix}/:app/deployments/:deployment/display/file`,
+      {
+        params: { ...app, deployment: DeploymentId },
+        query: SourceDisplayFileQuery,
+        success: SourceDisplayFile,
+        error: [
+          StorageError,
+          AppNotFound,
+          AppNotDeployed,
+          DeploymentNotFound,
+          OrganizationForbidden,
+          ...sourceErrors,
+        ],
+      },
+    ).annotate(RequiredAction, "read"),
   )
   .add(
     HttpApiEndpoint.post("activate", `${prefix}/:app/activate`, {

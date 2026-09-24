@@ -3,7 +3,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import type { App } from "@executor-js/sdk";
-import type { AppSourceView } from "@executor-js/app-management/contracts";
+import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
 import {
   type PublicationReadiness,
   type PublicationIssue,
@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../compon
 import { ProviderIcon } from "./common.tsx";
 import { QueryView } from "./context.tsx";
 
-type PublishableSource = Omit<typeof AppSourceView.Type, "publication"> & {
+type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
   readonly publication: typeof PublicationReadiness.Type;
 };
 

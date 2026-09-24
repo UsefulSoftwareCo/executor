@@ -11,6 +11,32 @@ import { scenarios } from "../test-plan.ts";
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
+/** Display listings name every file; contents are inlined only within the budget. */
+const Display = Schema.Struct({
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      size: Schema.Number,
+      content: Schema.optionalKey(Schema.String),
+    }),
+  ),
+});
+const DisplayFile = Schema.Struct({
+  path: Schema.String,
+  size: Schema.Number,
+  content: Schema.String,
+});
+const Revision = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
+const Pinned = Schema.Struct({ id: Schema.String });
+const displayPaths = { source: "source/display", workspace: "workspace/display" } as const;
+/** A generated file above the inline budget, formatted only when read on its own. */
+const largeSnippet = {
+  path: "large-demo.ts",
+  content: `export const operations=[${Array.from(
+    { length: 4000 },
+    (_, index) => `{id:${index},name:"operation-${index}"}`,
+  ).join(",")}];`,
+};
 const snippets = [
   {
     path: "format-demo.ts",
@@ -47,6 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
               'import {defineApp,query,object} from "apps";export default defineApp({accounts:{}},{queries:{ping:query({input:object({})},async()=>"pong")}});',
           },
           ...snippets,
+          largeSnippet,
         ];
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Formatting ${randomUUID().slice(0, 6)}`,
@@ -58,15 +85,26 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
         );
-        const displays = new Map<string, typeof Source.Type>();
-        for (const endpoint of ["source", "workspace"]) {
+        const displays = new Map<string, typeof Display.Type>();
+        // Single-file reads are pinned to the deployment or commit the listing came from.
+        const filePaths = {
+          source: `${path}/deployments/${
+            (yield* body(Pinned, yield* api.request(actors.owner, "GET", `${path}/source`))).id
+          }/display/file`,
+          workspace: `${path}/commits/${
+            (yield* body(Revision, yield* api.request(actors.owner, "GET", `${path}/workspace`)))
+              .revision.commit
+          }/display/file`,
+        };
+        const largeDisplays = new Map<string, typeof DisplayFile.Type>();
+        for (const endpoint of ["source", "workspace"] as const) {
           const response = yield* api.request(
             actors.owner,
             "GET",
-            `${path}/${endpoint}?format=display`,
+            `${path}/${displayPaths[endpoint]}`,
           );
           expect(response.status).toBe(200);
-          const display = yield* body(Source, response);
+          const display = yield* body(Display, response);
           displays.set(endpoint, display);
           expect(display.files.find((file) => file.path === "format-demo.ts")?.content).toContain(
             "users: User[]",
@@ -89,8 +127,26 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
             );
           }
           expect(
-            (yield* api.request(actors.member, "GET", `${path}/${endpoint}?format=display`)).status,
+            (yield* api.request(actors.member, "GET", `${path}/${displayPaths[endpoint]}`)).status,
           ).toBe(403);
+          // The large file is listed by path and stored size, then read on its own.
+          expect(display.files.find((file) => file.path === largeSnippet.path)).toEqual({
+            path: largeSnippet.path,
+            size: new TextEncoder().encode(largeSnippet.content).byteLength,
+          });
+          const largeFile = `${filePaths[endpoint]}?path=${largeSnippet.path}`;
+          const large = yield* body(
+            DisplayFile,
+            yield* api.request(actors.owner, "GET", largeFile),
+          );
+          expect(large.size).toBe(new TextEncoder().encode(largeSnippet.content).byteLength);
+          expect(large.content).toContain('\n  { id: 0, name: "operation-0" },\n');
+          largeDisplays.set(endpoint, large);
+          expect((yield* api.request(actors.member, "GET", largeFile)).status).toBe(403);
+          expect(
+            (yield* api.request(actors.owner, "GET", `${filePaths[endpoint]}?path=missing.ts`))
+              .status,
+          ).toBe(404);
         }
         yield* browser.login(actors.owner);
         // Observe the clipboard boundary without reading or replacing the machine's clipboard.
@@ -192,6 +248,29 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
               page.evaluate(() => document.documentElement.dataset.rawSourceSeen),
             ),
           ).toBeUndefined();
+          yield* browser.use(`Select ${largeSnippet.path}`, (page) =>
+            page.getByRole("button", { name: largeSnippet.path, exact: true }).click(),
+          );
+          const large = largeDisplays.get(endpoint)?.content ?? "";
+          yield* browser.use("The selected large file loads with display formatting", (page) =>
+            page
+              .locator(".code-view")
+              .filter({ hasText: '{ id: 3999, name: "operation-3999" }' })
+              .waitFor(),
+          );
+          expect((yield* read()).trimEnd()).toBe(large.trimEnd());
+          yield* browser.use("Line count matches the loaded display text", (page) =>
+            page.getByText(`${large.split("\n").length} lines`, { exact: true }).waitFor(),
+          );
+          yield* browser.use("Copy the loaded source", (page) =>
+            page.getByRole("button", { name: "Copy source", exact: true }).click(),
+          );
+          expect(
+            (yield* browser.use("Read the loaded text sent to the clipboard", (page) =>
+              page.evaluate(() => document.documentElement.dataset.copiedCode),
+            ))?.trimEnd(),
+          ).toBe(large.trimEnd());
+          yield* browser.checkpoint(`${endpoint}: loaded ${largeSnippet.path}`);
         }
         for (const endpoint of ["source", "workspace"]) {
           const stored = yield* body(
@@ -202,13 +281,14 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
             files.toSorted((a, b) => a.path.localeCompare(b.path)),
           );
         }
-        // Parser work is bounded across a whole response, not just each file.
+        // Listings inline and format a bounded amount of source; larger files are read on their own.
         const largeFiles = [
           { path: "index.ts", content: 'export default "draft";' },
           ...Array.from({ length: 5 }, (_, index) => ({
             path: `budget-${index}.ts`,
-            content: `export const text="${"a".repeat(250 * 1024)}";`,
+            content: `export const text="${"a".repeat(60 * 1024)}";`,
           })),
+          { path: "formatted.ts", content: `export const text="${"a".repeat(250 * 1024)}";` },
           { path: "oversized.ts", content: `export const text="${"a".repeat(257 * 1024)}";` },
         ];
         const draft = yield* body(
@@ -222,24 +302,45 @@ layer(HostedLive, { excludeTestServices: true })("Code formatting", (it) => {
           api.request(actors.owner, "DELETE", `${prefix}/apps/${draft.id}`).pipe(Effect.orDie),
         );
         const bounded = yield* body(
-          Source,
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${draft.id}/workspace?format=display`,
-          ),
+          Schema.Struct({ ...Display.fields, ...Revision.fields }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${draft.id}/workspace/display`),
+        );
+        expect(bounded.files.map((file) => file.path).toSorted()).toEqual(
+          largeFiles.map((file) => file.path).toSorted(),
         );
         expect(
           bounded.files.filter(
             (file) =>
-              file.path.startsWith("budget-") && file.content.startsWith("export const text =\n"),
+              file.path.startsWith("budget-") && file.content?.startsWith("export const text =\n"),
           ),
         ).toHaveLength(4);
-        expect(bounded.files.find((file) => file.path === "oversized.ts")?.content).toBe(
+        for (const file of largeFiles.filter((file) => file.path !== "index.ts"))
+          expect(bounded.files.find((item) => item.path === file.path)?.size).toBe(
+            new TextEncoder().encode(file.content).byteLength,
+          );
+        for (const name of ["budget-4.ts", "formatted.ts", "oversized.ts"])
+          expect(bounded.files.find((file) => file.path === name)?.content).toBeUndefined();
+        const readFile = (name: string) =>
+          api
+            .request(
+              actors.owner,
+              "GET",
+              `${prefix}/apps/${draft.id}/commits/${bounded.revision.commit}/display/file?path=${name}`,
+            )
+            .pipe(Effect.flatMap((response) => body(DisplayFile, response)));
+        expect((yield* readFile("budget-4.ts")).content).toMatch(/^export const text =\n/);
+        expect((yield* readFile("formatted.ts")).content).toMatch(/^export const text =\n/);
+        // Files above the formatting budget are returned as their exact stored text.
+        expect((yield* readFile("oversized.ts")).content).toBe(
           largeFiles.find((file) => file.path === "oversized.ts")?.content,
         );
-        expect(bounded.files.find((file) => file.path === "budget-4.ts")?.content).toBe(
-          largeFiles.find((file) => file.path === "budget-4.ts")?.content,
+        // Raw reads still return every stored file byte for byte.
+        const raw = yield* body(
+          Source,
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${draft.id}/workspace`),
+        );
+        expect(raw.files.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual(
+          largeFiles.toSorted((a, b) => a.path.localeCompare(b.path)),
         );
       }),
     ),

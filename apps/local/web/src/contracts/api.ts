@@ -132,8 +132,22 @@ export const appAtom = Atom.family((app: AppId) =>
 /** Immutable retained source follows the deployment selected by its live app atom. */
 export const sourceAtom = Atom.family(
   (key: { readonly app: AppId; readonly deployment: DeploymentId }) =>
-    DashboardClient.query("dashboard", "source", { params: key, query: { format: "display" } }),
+    DashboardClient.query("dashboard", "sourceDisplay", { params: key }),
 );
+class SourceFileKey extends Data.Class<{
+  readonly app: AppId;
+  readonly deployment: DeploymentId;
+  readonly path: string;
+}> {}
+const sourceFileQuery = Atom.family((key: SourceFileKey) =>
+  DashboardClient.query("dashboard", "sourceDisplayFile", {
+    params: { app: key.app, deployment: key.deployment },
+    query: { path: key.path },
+  }).pipe(Atom.setIdleTTL("5 minutes")),
+);
+/** One display file of a retained deployment, read when the listing did not inline it. */
+export const sourceFileAtom = (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
+  sourceFileQuery(new SourceFileKey(key));
 
 /** Tool discovery reruns only when this app's execution inputs change. */
 class ToolKey extends Data.Class<{

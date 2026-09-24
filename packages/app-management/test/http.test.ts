@@ -33,12 +33,14 @@ import {
   AppIdentity,
   AppManagementHost,
   AppAuthoringMetadata,
+  AppSourceDisplay,
   AppSourceView,
   appManagementRoutes,
   appManagementApi,
   gitRoutes,
   registryRoutes,
 } from "../src/http.ts";
+import { SourceDisplayFile, sourceDisplayInlineLimits } from "../src/contracts/source-display.ts";
 
 const source = SourceFiles.make([
   {
@@ -201,6 +203,66 @@ test(
           );
           assert.equal(
             (yield* request(`/api/apps/${app.id}/authoring`, undefined, {
+              "x-fixture-owner": "other",
+            })).status,
+            404,
+          );
+          // Display listings inline small files only; a revision-pinned read loads the rest.
+          const large = SourceFiles.make([
+            ...source,
+            {
+              path: "operations.json",
+              content: JSON.stringify({
+                operations: Array.from({ length: 5000 }, (_, id) => ({ id, name: `op-${id}` })),
+              }),
+            },
+          ]);
+          const largeApp = yield* json("/api/apps/drafts", { name: "Large", files: large }).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.toCodecJson(App))),
+          );
+          const raw = yield* json(`/api/apps/${largeApp.id}/workspace`).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(AppSourceView)),
+          );
+          const byPath = (files: ReadonlyArray<{ readonly path: string }>) =>
+            files.toSorted((a, b) => a.path.localeCompare(b.path));
+          assert.deepEqual(byPath(raw.files), byPath(large));
+          const listing = yield* json(`/api/apps/${largeApp.id}/workspace/display`).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(AppSourceDisplay)),
+          );
+          assert.equal(listing.revision.commit, raw.revision.commit);
+          assert.equal(listing.publication?.status, raw.publication?.status);
+          const operations = large.find((file) => file.path === "operations.json")?.content ?? "";
+          const omitted = listing.files.find((file) => file.path === "operations.json");
+          assert.ok(operations.length > sourceDisplayInlineLimits.fileBytes);
+          assert.deepEqual(omitted, {
+            path: "operations.json",
+            size: new TextEncoder().encode(operations).byteLength,
+          });
+          assert.ok(
+            listing.files
+              .find((file) => file.path === "index.ts")
+              ?.content?.includes('import { defineApp, object, query } from "apps";'),
+          );
+          const filePath = (commit: string, path: string) =>
+            `/api/apps/${largeApp.id}/commits/${commit}/display/file?path=${encodeURIComponent(path)}`;
+          const loaded = yield* json(filePath(listing.revision.commit, "operations.json")).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(SourceDisplayFile)),
+          );
+          assert.equal(loaded.size, omitted?.size);
+          assert.ok(loaded.content.startsWith('{\n  "operations": [\n    {\n      "id": 0,'));
+          assert.deepEqual(JSON.parse(loaded.content), JSON.parse(operations));
+          assert.equal(
+            (yield* request(filePath(listing.revision.commit, "missing.ts"))).status,
+            404,
+          );
+          assert.equal(
+            (yield* request(filePath(listing.revision.commit, "operations.json"), undefined, {
+              "x-fixture-role": "member",
+            })).status,
+            403,
+          );
+          assert.equal(
+            (yield* request(filePath(listing.revision.commit, "operations.json"), undefined, {
               "x-fixture-owner": "other",
             })).status,
             404,
