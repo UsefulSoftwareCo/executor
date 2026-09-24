@@ -22,6 +22,7 @@ import {
   makeOrganizationIcons,
   OrganizationDefaults,
   organizationDefaults,
+  accountOAuthClientMetadataUrl,
 } from "@executor-js/hosted-server";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
@@ -59,6 +60,7 @@ export const selfHostExecutorServices = <E, R>(
         Config.option,
         Config.map(Option.getOrUndefined),
       );
+      const metadataUrl = clientMetadataUrl?.trim() || accountOAuthClientMetadataUrl(origin);
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const ready = yield* Deferred.make<Executor>();
       const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
@@ -76,7 +78,7 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...(metadataUrl === undefined ? {} : { clientMetadataUrl: metadataUrl }),
         },
         { storage, webhookOrigin: origin, workflows },
       );

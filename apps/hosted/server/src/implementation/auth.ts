@@ -25,6 +25,25 @@ export const accountOAuthRedirectUri = (
   auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
 ) => HttpUrl.make(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href);
 
+export const accountOAuthClientMetadataPath = "/api/oauth/client-id-metadata/default.json";
+export const accountOAuthClientMetadataUrl = (origin: string): string | undefined =>
+  origin.startsWith("https://") ? new URL(accountOAuthClientMetadataPath, origin).href : undefined;
+
+/** Public metadata lets OAuth providers identify this host as a client without registration. */
+export const hostedOAuthClientMetadata = Effect.gen(function* () {
+  const auth = yield* Authentication;
+  return HttpServerResponse.jsonUnsafe({
+    client_id: new URL(accountOAuthClientMetadataPath, auth.origin).href,
+    client_name: "Executor",
+    client_uri: auth.origin,
+    redirect_uris: [accountOAuthRedirectUri(auth)],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+    application_type: "web",
+  });
+});
+
 /** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */
 export const authSettings = Config.all({
   url: Config.String("BETTER_AUTH_URL"),

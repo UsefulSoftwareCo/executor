@@ -3,11 +3,12 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, SessionClients, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withHostedCase } from "../support/case.ts";
+import { HostedLive, withCase, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
+import { Target } from "../support/platform.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -20,6 +21,28 @@ const AppProvider = Schema.Struct({
 const Setup = Schema.Struct({ mode: Schema.Literals(["automatic", "saved", "client-required"]) });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
+  it.effect(scenarios.oauthClientMetadata.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const origin = (yield* Target).metadata.origin;
+        const anonymous = yield* (yield* SessionClients).session();
+        const metadata = yield* anonymous.send("GET", "/api/oauth/client-id-metadata/default.json");
+        expect(metadata.status).toBe(200);
+        expect(metadata.body).toMatchObject({
+          client_id: `${origin}/api/oauth/client-id-metadata/default.json`,
+          client_name: "Executor",
+          redirect_uris: [
+            `http://account-picker.localhost:${new URL(origin).port}/api/oauth/callback?tenant=fixture`,
+          ],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }),
+    ),
+  );
+
   it.effect(scenarios.oauthClientSetup.title, (context) =>
     withHostedCase(
       context,
