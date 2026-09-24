@@ -1,4 +1,4 @@
-import { ApiErrorResponse, ProviderError } from "apps/contracts";
+import { ApiErrorResponse, ProviderError, SkillLoadFailed } from "apps/contracts";
 import { ProfileId } from "./shared.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
@@ -82,19 +82,69 @@ export const ToolPage = Schema.Struct({
 
 export type ToolPage = typeof ToolPage.Type;
 
+const evaluationInstructions =
+  "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
+const skillInstructions =
+  "The app loads skills from a remote source each time Executor evaluates it, so tools and skills both fail when that load fails. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
+
+/** Present a skill load failure with the loader's own message. */
+const skillPresentation = ({
+  reason,
+  message,
+  status,
+}: {
+  readonly reason: SkillLoadFailed["reason"];
+  readonly message?: string | undefined;
+  readonly status?: number | undefined;
+}) => {
+  const retryable =
+    reason === "rate_limited" ||
+    reason === "changed" ||
+    (reason === "request" && (status === undefined || status >= 500));
+  const action =
+    reason === "rate_limited"
+      ? "Wait for the rate limit to reset, then try again."
+      : retryable
+        ? "Try again. If this continues, check the app’s skill source."
+        : "Check the app’s skill source, then try again.";
+  return {
+    title:
+      reason === "rate_limited" ? "Skill source rate limit reached" : "Skills could not be loaded",
+    description: `${message || "The app could not load its skills."} The app’s tools and skills are unavailable until the load succeeds.`,
+    recovery: { action, instructions: skillInstructions },
+    retryable,
+  };
+};
+
 /** Evaluating the app's live definition failed before any tool ran. */
 export const AppEvaluationFailed = UserFacingError.define({
   tag: "AppEvaluationFailed",
   status: 502,
-  fields: { app: AppId, deployment: DeploymentId, reason: Schema.String },
-  title: "Tools could not be loaded",
-  description: "Executor could not load this app’s tool definitions.",
-  recovery: {
-    action: "Try again. If this continues, copy the fix prompt to investigate the app.",
-    instructions:
-      "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.",
+  fields: {
+    app: AppId,
+    deployment: DeploymentId,
+    reason: Schema.String,
+    /** Present when the app's remote skill loader caused the failure. */
+    skills: Schema.optional(
+      Schema.Struct({
+        reason: SkillLoadFailed.fields.reason,
+        message: SkillLoadFailed.fields.message,
+        status: SkillLoadFailed.fields.status,
+      }),
+    ),
   },
-  retryable: true,
+  presentation: ({ skills }) =>
+    skills === undefined
+      ? {
+          title: "Tools could not be loaded",
+          description: "Executor could not load this app’s tool definitions.",
+          recovery: {
+            action: "Try again. If this continues, copy the fix prompt to investigate the app.",
+            instructions: evaluationInstructions,
+          },
+          retryable: true,
+        }
+      : skillPresentation(skills),
 });
 /** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
 export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;

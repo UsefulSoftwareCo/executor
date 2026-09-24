@@ -93,16 +93,17 @@ export function SkillFileEditor<E>({
     body,
   });
   const dirty = content !== base;
+  const onEditingDirty = editing.onDirty;
   useEffect(() => {
     onDirty(dirty);
-    editing.onDirty(dirty);
-  }, [dirty, onDirty, editing.onDirty]);
+    onEditingDirty(dirty);
+  }, [dirty, onDirty, onEditingDirty]);
   useEffect(
     () => () => {
       onDirty(false);
-      editing.onDirty(false);
+      onEditingDirty(false);
     },
-    [onDirty, editing.onDirty],
+    [onDirty, onEditingDirty],
   );
   const load = (next: string) => {
     const split = splitSkillDocument(next);

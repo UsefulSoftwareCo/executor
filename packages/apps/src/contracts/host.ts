@@ -1,5 +1,5 @@
 export * from "./skills.ts";
-import type { SkillFile } from "./skills.ts";
+import { SkillLoadFailed, type SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
 import { OpenapiResponseError } from "./api-response-error.ts";
 export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
@@ -235,6 +235,7 @@ export const HostRequirementsError = Schema.Union([HostRequestInvalid, HostDecla
 /** Inspection can fail while binding accounts or evaluating the live definition. */
 export const HostInspectError = Schema.Union([
   ProviderError,
+  SkillLoadFailed,
   HostRequestInvalid,
   HostDeclarationInvalid,
   HostAccountsInvalid,
@@ -262,6 +263,7 @@ export const HostDataError = HostCallError;
 export const HostError = Schema.Union([
   OpenapiResponseError,
   ProviderError,
+  SkillLoadFailed,
   WorkflowFailure,
   HostRequestInvalid,
   HostAccountsInvalid,

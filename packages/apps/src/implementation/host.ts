@@ -1,5 +1,5 @@
 import { folderSkillsEffect } from "./skill-files.ts";
-import { AppSkills, SkillFile } from "../contracts/skills.ts";
+import { AppSkills, SkillFile, SkillLoadFailed } from "../contracts/skills.ts";
 import { parseProviderError } from "./provider-error.ts";
 import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { toPromise } from "./authoring.ts";
@@ -283,8 +283,16 @@ function dispatch(
       const definition = yield* native.evaluate(bound).pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterrupts(cause)) return Effect.interrupt;
-          const provider = parseProviderError(Cause.squash(cause));
-          return Effect.fail(Option.isSome(provider) ? provider.value : new HostEvaluationFailed());
+          const error = Cause.squash(cause);
+          const provider = parseProviderError(error);
+          const skills = parseSkillLoadFailed(error);
+          return Effect.fail(
+            Option.isSome(provider)
+              ? provider.value
+              : Option.isSome(skills)
+                ? skills.value
+                : new HostEvaluationFailed(),
+          );
         }),
         Effect.withSpan("app.evaluate"),
       );
@@ -614,9 +622,23 @@ function dispatch(
   );
 }
 
+/** Rebuild only the allowlisted skill loader fields from an author-visible rejection. */
+const parseSkillLoadFailed = (error: unknown): Option.Option<SkillLoadFailed> =>
+  Schema.decodeUnknownOption(SkillLoadFailed)(error).pipe(
+    Option.map(
+      ({ reason, message, status }) =>
+        new SkillLoadFailed({
+          reason,
+          ...(message ? { message } : {}),
+          ...(status === undefined ? {} : { status }),
+        }),
+    ),
+  );
+
 const errorStatus = Match.type<HostError>().pipe(
   Match.tagsExhaustive({
     ProviderError: () => 502,
+    SkillLoadFailed: () => 502,
     OpenapiResponseError: () => 502,
     WorkflowFailure: () => 422,
     HostRequestInvalid: () => 400,

@@ -1,5 +1,5 @@
 import { storedDeployment } from "./apps.ts";
-import { snapshot as invocation, resolve } from "./tools.ts";
+import { evaluationFailure, snapshot as invocation, resolve } from "./tools.ts";
 import { AppSkills } from "apps/contracts";
 import { AppEvaluationFailed } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
@@ -39,13 +39,12 @@ export const makeSkills = (
               const skills = yield* runtime
                 .skills({ app: app.id, build: state.deployment.build, ...context })
                 .pipe(
-                  Effect.mapError(
-                    () =>
-                      new AppEvaluationFailed({
-                        app: app.id,
-                        deployment,
-                        reason: "Skill evaluation failed",
-                      }),
+                  Effect.mapError((error) =>
+                    evaluationFailure(
+                      { app: app.id, deployment },
+                      error,
+                      "Skill evaluation failed",
+                    ),
                   ),
                 );
               return { skills, profile: state.profile };
