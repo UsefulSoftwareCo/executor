@@ -2,7 +2,11 @@ import { Cause, Data, Effect, Layer } from "effect";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
-import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
+import {
+  formatPausedExecution,
+  type ExecutionEngine,
+  type ResumeResponse,
+} from "@executor-js/execution";
 import type { Executor, OrgWriteAccess } from "@executor-js/sdk";
 
 import {
@@ -13,6 +17,7 @@ import {
   readElicitationMode,
   readSearchToolsEnabled,
   readToolMode,
+  type McpElicitationMode,
   type McpToolMode,
 } from "./browser-approval";
 import {
@@ -33,7 +38,13 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./tool-server";
+import {
+  formatMcpExecutionOutcome,
+  toMcpFailureResult,
+  type BrowserApprovalStore,
+  type McpPassthroughUnavailableError,
+  type ResumeFallbackOutcome,
+} from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -121,6 +132,11 @@ export interface McpBuildServerOptions {
   readonly searchToolsEnabled?: boolean;
   /** The tool surface (`?mode=`): codemode (default) or passthrough. */
   readonly mode?: McpToolMode;
+  /** Resume on another live session with the same identity, resource and approval mode. */
+  readonly resumeFallback?: (
+    executionId: string,
+    response: ResumeResponse,
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
@@ -214,6 +230,7 @@ const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/res
 interface SessionOwner {
   readonly principal: Principal;
   readonly resource: McpResource;
+  readonly elicitationMode: McpElicitationMode;
 }
 
 const sessionOwnerMatches = (
@@ -277,17 +294,11 @@ export const makeInMemoryMcpSessionStore = (
     activeRequests.set(id, (activeRequests.get(id) ?? 0) + 1);
   };
 
-  /**
-   * Release the claim and restamp: a call that ran for an hour leaves the
-   * session idle from the moment it FINISHED, not from the moment it started.
-   * `touch` is a no-op once the session is gone, so this can never resurrect a
-   * disposed id.
-   */
+  /** Release one in-flight request claim. */
   const endRequest = (id: string): void => {
     const remaining = (activeRequests.get(id) ?? 1) - 1;
     if (remaining > 0) activeRequests.set(id, remaining);
     else activeRequests.delete(id);
-    touch(id);
   };
 
   /**
@@ -394,7 +405,7 @@ export const makeInMemoryMcpSessionStore = (
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
-    owners.set(sessionId, { principal, resource });
+    owners.set(sessionId, { ...owner, principal, resource });
     touch(sessionId);
     // Claim before the await, release in the finalizer — `runHandleRequest`
     // already recovers every failure to a 500, but `ensuring` also covers an
@@ -402,7 +413,13 @@ export const makeInMemoryMcpSessionStore = (
     // make the session immortal, the opposite leak).
     beginRequest(sessionId);
     return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
-      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          endRequest(sessionId);
+          // A long request becomes idle when it finishes, not when it starts.
+          touch(sessionId);
+        }),
+      ),
     );
   };
 
@@ -445,6 +462,57 @@ export const makeInMemoryMcpSessionStore = (
     };
   };
 
+  const opaqueResumeFailure = (cause: Cause.Cause<unknown>) =>
+    Effect.succeed({ status: "result" as const, result: toMcpFailureResult(cause) });
+
+  /**
+   * Resume through a live model session with the same identity and resource.
+   * Calling its engine directly preserves pending joins and settled-result
+   * replay; probing mismatched sessions prevents their ids becoming lookup misses.
+   */
+  const resumeAcrossSessions =
+    (requester: Principal, resource: McpResource) =>
+    (executionId: string, response: ResumeResponse): Effect.Effect<ResumeFallbackOutcome | null> =>
+      Effect.gen(function* () {
+        for (const [sid, engine] of engines) {
+          const owner = owners.get(sid);
+          if (!owner) continue;
+          if (
+            !sessionOwnerMatches(owner, requester, resource) ||
+            owner.elicitationMode !== "model"
+          ) {
+            const paused = yield* engine.getPausedExecution(executionId);
+            const settled = engine.isExecutionSettled
+              ? yield* engine.isExecutionSettled(executionId)
+              : false;
+            if (paused || settled) return { status: "execution_forbidden" as const };
+            continue;
+          }
+
+          beginRequest(sid);
+          const result = yield* Effect.gen(function* () {
+            // The caller's CurrentOrgWriteAccess reaches engine.resume, which
+            // rebinds the detached continuation before waking it.
+            const outcome = yield* engine.resume(executionId, response);
+            if (outcome)
+              return { status: "result" as const, result: formatMcpExecutionOutcome(outcome) };
+            const settled = engine.isExecutionSettled
+              ? yield* engine.isExecutionSettled(executionId)
+              : false;
+            return settled ? { status: "execution_already_settled" as const } : null;
+          }).pipe(
+            // The generic fallback hook treats thrown failures as a lookup
+            // miss. Return the normal opaque MCP failure instead, so a failed
+            // continuation never instructs the client to execute it again.
+            Effect.catchCause(opaqueResumeFailure),
+            Effect.tap((outcome) => (outcome ? Effect.sync(() => touch(sid)) : Effect.void)),
+            Effect.ensuring(Effect.sync(() => endRequest(sid))),
+          );
+          if (result) return result;
+        }
+        return null;
+      }).pipe(Effect.catchCause(opaqueResumeFailure));
+
   /** Open a new session: build the server, connect a transport, drive the request. */
   const openSession = (
     principal: Principal,
@@ -455,6 +523,9 @@ export const makeInMemoryMcpSessionStore = (
     return buildServer(principal, {
       ...buildOptionsFor(request, () => createdSessionId),
       resource,
+      ...(readElicitationMode(request) === "model"
+        ? { resumeFallback: resumeAcrossSessions(principal, resource) }
+        : {}),
     }).pipe(
       Effect.flatMap(({ mcpServer, engine, executor, close }) =>
         Effect.gen(function* () {
@@ -465,7 +536,11 @@ export const makeInMemoryMcpSessionStore = (
               createdSessionId = sid;
               transports.set(sid, transport);
               servers.set(sid, mcpServer);
-              owners.set(sid, { principal, resource });
+              owners.set(sid, {
+                principal,
+                resource,
+                elicitationMode: readElicitationMode(request),
+              });
               engines.set(sid, engine);
               if (executor) executors.set(sid, executor);
               if (close) closers.set(sid, close);
