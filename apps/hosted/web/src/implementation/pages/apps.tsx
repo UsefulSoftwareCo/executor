@@ -41,9 +41,9 @@ export function AppsPage() {
         ) : undefined
       }
       connect={
-        <Button asChild>
+        <Button asChild variant="outline">
           <Link to="/org/$organizationSlug/connect" params={{ organizationSlug }}>
-            Connect an agent
+            Connect your agent
           </Link>
         </Button>
       }

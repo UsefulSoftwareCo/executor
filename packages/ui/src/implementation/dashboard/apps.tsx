@@ -42,23 +42,9 @@ export function AppsPage<E>({
         description="Your installed apps and their selected accounts."
         {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
       >
+        {connect}
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending) && action}
       </PageHeader>
-      <section
-        aria-labelledby="agent-start-title"
-        className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border bg-muted/30 p-5"
-      >
-        <div className="min-w-0 flex-1 basis-72">
-          <h2 id="agent-start-title" className="text-sm font-semibold">
-            Want to manage or extend your apps?
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Ask your agent to update an app, add features, or build something new. Connect it to
-            Executor over MCP to get started.
-          </p>
-        </div>
-        {connect}
-      </section>
       {/* Controls above cards should use half-card or full-card widths. Search uses a full
           card and Filters uses half a card at each grid breakpoint. */}
       <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4">

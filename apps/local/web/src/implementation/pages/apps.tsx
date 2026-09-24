@@ -10,8 +10,8 @@ export function AppsPage() {
       query={dashboardAtoms.inventory}
       Failure={Failure}
       connect={
-        <Button asChild>
-          <Link to="/connect">Connect an agent</Link>
+        <Button asChild variant="outline">
+          <Link to="/connect">Connect your agent</Link>
         </Button>
       }
       action={
