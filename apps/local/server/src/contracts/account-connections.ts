@@ -84,7 +84,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
         error: [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid],
       }).annotate(
         OpenApi.Description,
-        "Create a browser connection link. Pass target { app, requirement } to save and select the account automatically, or provider to save a standalone account. Optional account reconnects an existing account without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
+        "Create a browser connection link. Pass target { app, profile, requirement } to save and select the account automatically, or provider to save a standalone account. Optional account reconnects an existing account without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
       ),
     )
     .add(

@@ -670,6 +670,17 @@ export const scenarios = {
       local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
     },
   },
+  importDiagnostics: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "import-diagnostics.spec.ts",
+    title: "OpenAPI imports distinguish download, parse and generation failures safely",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback definition host to exercise the shared importer."),
+      local: na("The shared importer is exercised through the hosted import route."),
+    },
+  },
   setupDiagnostics: {
     fixtures: "actors",
     file: "setup-diagnostics.spec.ts",
