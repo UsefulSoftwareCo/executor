@@ -21,6 +21,27 @@ scenario(
         error: "Request body too large",
       });
     }
+    // A streamed request has no Content-Length; the Worker must count real bytes.
+    let chunks = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (chunks++ < 33) controller.enqueue(new Uint8Array(1024 * 1024));
+        else controller.close();
+      },
+    });
+    const streamedRequest = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+      duplex: "half",
+    };
+    const streamedResponse = yield* Effect.promise(() =>
+      fetch(new URL("/mcp", target.baseUrl), streamedRequest),
+    );
+    expect(streamedResponse.status).toBe(413);
+    expect(yield* Effect.promise(() => streamedResponse.json())).toEqual({
+      error: "Request body too large",
+    });
     const health = yield* Effect.promise(() => fetch(new URL("/api/account/me", target.baseUrl)));
     expect(health.status).toBe(401);
   }),
