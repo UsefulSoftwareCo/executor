@@ -93,7 +93,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
         yield* browser.use("Start adding an account", (page) =>
-          page.getByRole("button", { name: "Add Metadata fixture account", exact: true }).click(),
+          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
         yield* browser.use("Connect is enabled once setup resolves", (page) =>
           page
@@ -151,6 +151,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
         );
         expect(metrics.lastExchangeAuth).toBe("none");
         expect(metrics.registrations).toBe(0);
+        // A metadata client is derived on each sign-in, never stored as the owner's client.
+        const setup = yield* api.request(
+          actors.owner,
+          "GET",
+          `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
+        );
+        expect(setup.status).toBe(200);
+        expect((yield* body(Setup, setup)).mode).toBe("automatic");
 
         const document = yield* api.request(
           actors.owner,
