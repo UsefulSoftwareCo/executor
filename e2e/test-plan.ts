@@ -709,6 +709,15 @@ export const scenarios = {
       local: na("Hosted callback routing and saved-client management."),
     },
   },
+  oauthImportedClientSecret: {
+    file: "oauth-imported-client-secret.spec.ts",
+    title: "Imported OpenAPI OAuth asks for a client secret and completes sign-in with it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer and OpenAPI upstream."),
+      local: na("Exercises the hosted import and callback routing."),
+    },
+  },
   oauthConnectStoryboard: {
     file: "oauth-connect-storyboard.spec.ts",
     title: "OAuth connect storyboard captures loading, consent, success and recovery frames",

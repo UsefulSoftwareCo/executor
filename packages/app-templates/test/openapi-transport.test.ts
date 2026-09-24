@@ -5,7 +5,7 @@ import { Effect, Exit } from "effect";
 import { defineApp } from "apps";
 import { createAppHandler, hostContext } from "apps/host";
 import { openapiOperations, type OpenapiToolsOptions } from "apps/openapi";
-import { compileOpenApi } from "../src/implementation/openapi.ts";
+import { compileOpenApi, generateOpenApiApp } from "../src/implementation/openapi.ts";
 
 const response = { "200": { description: "OK", content: { "application/json": { schema: {} } } } };
 const document = (paths: unknown, components = {}, version = "3.1.0") => ({
@@ -289,6 +289,38 @@ test("Basic and OAuth credentials are adapted without taking over their lifecycl
     const result = await f.call("queries.auth", {});
     assert.equal(f.received[0]?.headers.get("Authorization"), expected, JSON.stringify(result));
   }
+});
+
+test("fixed OAuth endpoints require a client secret, discovered ones do not", async () => {
+  const spec = document(
+    { "/me": { get: { operationId: "me", security: [{ oauth: [] }], responses: response } } },
+    {
+      securitySchemes: {
+        oauth: {
+          type: "oauth2",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: "https://example.test/authorize",
+              tokenUrl: "https://example.test/token",
+              scopes: {},
+            },
+          },
+        },
+      },
+    },
+  );
+  const provider = async (entry: Parameters<typeof generateOpenApiApp>[0]) => {
+    const { files } = await Effect.runPromise(generateOpenApiApp(entry, spec));
+    return files.find((file) => file.path === "provider.ts")?.content ?? "";
+  };
+  assert.match(
+    await provider({ name: "Fixed", connectUrl: "https://example.test" }),
+    /"tokenEndpointAuthMethod": "client_secret_basic"/,
+  );
+  assert.doesNotMatch(
+    await provider({ name: "Discovered", oauthDiscoveryUrl: "https://example.test/mcp" }),
+    /tokenEndpointAuthMethod/,
+  );
 });
 
 test("binary request and response bytes survive the JSON tool boundary", async () => {

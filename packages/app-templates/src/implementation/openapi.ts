@@ -257,6 +257,8 @@ const generateDefinition = (
                         scopes: [
                           ...(entry.scopes ?? Object.keys(record(flow.scopes ?? {}))),
                         ].sort(),
+                        // OpenAPI can't say how the client authenticates; providers like Google require a secret.
+                        tokenEndpointAuthMethod: "client_secret_basic",
                       }
                     : { discover: absolute(entry.oauthDiscoveryUrl) },
                 )})`,
