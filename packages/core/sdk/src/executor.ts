@@ -769,6 +769,17 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly firstPartyOAuthClients?: readonly FirstPartyOAuthClientConfig[];
   /**
+   * Whether this deployment can serve its OAuth Client ID Metadata Document
+   * to authorization servers. Disable this when those servers cannot fetch
+   * the document from this instance, such as an air-gapped or inbound-blocked
+   * topology. Defaults to enabled. When disabled, `oauth.probe` reports CIMD
+   * unsupported even if the authorization server advertises it, and catalog
+   * OAuth methods replace advertised `supportsClientIdMetadataDocument: true`
+   * with `false`. Dynamic Client Registration remains available when the
+   * authorization server offers it.
+   */
+  readonly oauthClientIdMetadataDocumentEnabled?: boolean;
+  /**
    * Enable the built-in `core-tools` plugin which contributes agent-facing
    * static tools over the v2 surface (integrations / connections / policies).
    */
@@ -1920,6 +1931,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const tenant = String(config.tenant);
     const subject = config.subject != null ? String(config.subject) : null;
+    const clientIdMetadataDocumentEnabled = config.oauthClientIdMetadataDocumentEnabled ?? true;
 
     const ownerBinding: OwnerBinding = {
       tenant: config.tenant,
@@ -3134,6 +3146,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // throw (malformed config it didn't guard) degrades to `[]` rather than
     // failing the catalog read.
     const warnedInvalidAuthMethods = new Set<string>();
+    // A deployment that cannot serve its CIMD must not offer it in the catalog.
+    const maskClientIdMetadataDocument = (method: AuthMethodDescriptor): AuthMethodDescriptor => {
+      if (clientIdMetadataDocumentEnabled) return method;
+      if (method.kind !== "oauth" || !method.oauth?.supportsClientIdMetadataDocument) return method;
+      return { ...method, oauth: { ...method.oauth, supportsClientIdMetadataDocument: false } };
+    };
     const describeAuthMethodsForRow = (
       row: IntegrationRow,
     ): Effect.Effect<readonly AuthMethodDescriptor[]> =>
@@ -3163,7 +3181,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             }
             continue;
           }
-          valid.push(method);
+          valid.push(maskClientIdMetadataDocument(method));
         }
         return valid;
       });
@@ -6821,7 +6839,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // OAuth service seam.
     // ------------------------------------------------------------------
 
-    const oauth = makeOAuthService({
+    const oauthService = makeOAuthService({
       fuma,
       owner: ownerBinding,
       tenant,
@@ -6881,12 +6899,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       redirectUri: config.redirectUri ?? null,
       callbackStateOrgSlug: config.oauthCallbackStateOrgSlug ?? null,
       firstPartyClients: config.firstPartyOAuthClients,
+      clientIdMetadataDocumentEnabled,
     });
 
     // ------------------------------------------------------------------
     // Plugin wiring — build ctx, run extension, populate static pools,
     // register credential providers.
     // ------------------------------------------------------------------
+
+    const oauth: OAuthService = {
+      ...oauthService,
+      probe: (input) =>
+        Effect.gen(function* () {
+          if (input.integration && input.template) {
+            const row = yield* findIntegrationRow(input.integration);
+            const runtime = row ? runtimes.get(row.plugin_id) : undefined;
+            if (row && runtime?.plugin.recoverOAuthDiscovery) {
+              const recovered = yield* runtime.plugin.recoverOAuthDiscovery({
+                ctx: runtime.ctx,
+                integration: rowToIntegrationRecord(row),
+                template: input.template,
+              });
+              if (recovered) return recovered;
+            }
+          }
+          return yield* oauthService.probe(input);
+        }),
+    };
 
     const blobPartitions: OwnerPartitions = {
       org: `o:${tenant}`,

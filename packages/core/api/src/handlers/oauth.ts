@@ -199,7 +199,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          return yield* executor.oauth.probe({ url: payload.url });
+          return yield* executor.oauth.probe(payload);
         }),
       ),
     )
