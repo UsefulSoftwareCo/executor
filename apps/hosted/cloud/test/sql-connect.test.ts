@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import { createServer, type Socket } from "node:net";
 import { test } from "node:test";
 import { PgClient, PgConnection, PgPool } from "@effect/sql-pg";
-import { Cause, Deferred, Effect, Exit, Match, Option, Redacted, Schema, Tracer } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Match,
+  Option,
+  Redacted,
+  Schema,
+  Tracer,
+} from "effect";
 import { SqlError } from "effect/unstable/sql/SqlError";
 import { sqlTracing } from "../src/implementation/sql-tracing.ts";
 
@@ -103,20 +114,18 @@ const outcome = (span: Tracer.NativeSpan) =>
     Match.exhaustive,
   ).exit;
 
+const longStatement = "/* synthetic query padding */".repeat(50);
+
 test(
   "SQL comments and wire parents identify the same statement without changing parameters",
   { timeout: 5_000 },
-  () =>
-    withPeer(
+  async () => {
+    let received: Buffer | undefined;
+    await withPeer(
       (socket, processId) => {
         ready(socket, processId);
         socket.once("data", (frame) => {
-          assert.ok(Buffer.isBuffer(frame));
-          assert.equal(frame[0], 80); // Extended protocol Parse
-          const sql = frame.subarray(6, frame.indexOf(0, 6)).toString();
-          assert.match(sql, /^SELECT \$1\n\/\*traceparent='00-[0-9a-f]{32}-[0-9a-f]{16}-01'\*\/$/);
-          assert.doesNotMatch(sql, /synthetic-private-value/);
-          assert.ok(frame.includes(Buffer.from("synthetic-private-value")));
+          received = Buffer.from(frame);
           socket.write(
             Buffer.concat([
               Buffer.from([49, 0, 0, 0, 4, 50, 0, 0, 0, 4, 110, 0, 0, 0, 4]),
@@ -132,13 +141,23 @@ test(
         await Effect.runPromise(
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* sql`SELECT ${"synthetic-private-value"}`;
+            yield* sql`SELECT ${"synthetic-private-value"} ${sql.literal(longStatement)}`;
           }).pipe(
             Effect.provide(PgClient.layer(peer.options)),
             Effect.provide(sqlTracing),
             Effect.provideService(Tracer.Tracer, trace.tracer),
           ),
         );
+        assert.ok(received);
+        assert.equal(received[0], 80); // Extended protocol Parse
+        const query = received.subarray(6, received.indexOf(0, 6)).toString();
+        assert.ok(Buffer.byteLength(query) > 1023);
+        assert.match(
+          Buffer.from(query).subarray(0, 1023).toString(),
+          /^\/\*traceparent='00-[0-9a-f]{32}-[0-9a-f]{16}-01'\*\/\nSELECT \$1/,
+        );
+        assert.doesNotMatch(query, /synthetic-private-value/);
+        assert.ok(received.includes(Buffer.from("synthetic-private-value")));
         const statement = trace.spans.find((span) => span.name === "sql.execute");
         const wire = trace.spans.find((span) => span.name === "sql.wire");
         assert.ok(statement && wire);
@@ -146,14 +165,15 @@ test(
         assert.equal(wire.traceId, statement.traceId);
         assert.equal(
           statement.attributes.get("db.query.text"),
-          `SELECT $1\n/*traceparent='00-${statement.traceId}-${statement.spanId}-01'*/`,
+          `/*traceparent='00-${statement.traceId}-${statement.spanId}-01'*/\nSELECT $1 ${longStatement}`,
         );
       },
-    ),
+    );
+  },
 );
 
 test(
-  "wire spans distinguish first response from protocol completion without recording values",
+  "wire spans distinguish raw data, decoded response and completion without recording values",
   { timeout: 5_000 },
   () =>
     withPeer(
@@ -161,16 +181,19 @@ test(
         ready(socket, processId);
         socket.once("data", () => {
           setTimeout(() => {
-            socket.write(
-              Buffer.concat([
-                Buffer.from([49, 0, 0, 0, 4]), // ParseComplete
-                Buffer.from([50, 0, 0, 0, 4]), // BindComplete
-                Buffer.from([110, 0, 0, 0, 4]), // NoData
-                Buffer.from([67, 0, 0, 0, 13]),
-                Buffer.from("SELECT 0\0"),
-              ]),
-            );
-            setTimeout(() => socket.write(Buffer.from([90, 0, 0, 0, 5, 73])), 25);
+            socket.write(Buffer.from([49, 0])); // Incomplete ParseComplete header
+            setTimeout(() => {
+              socket.write(
+                Buffer.concat([
+                  Buffer.from([0, 0, 4]), // Remaining ParseComplete bytes
+                  Buffer.from([50, 0, 0, 0, 4]), // BindComplete
+                  Buffer.from([110, 0, 0, 0, 4]), // NoData
+                  Buffer.from([67, 0, 0, 0, 13]),
+                  Buffer.from("SELECT 0\0"),
+                ]),
+              );
+              setTimeout(() => socket.write(Buffer.from([90, 0, 0, 0, 5, 73])), 25);
+            }, 25);
           }, 25);
         });
       },
@@ -187,9 +210,13 @@ test(
         assert.ok(wire);
         assert.ok(Exit.isSuccess(outcome(wire)));
         const first = wire.attributes.get("db.wire.first_message_ms");
+        const dataAt = wire.attributes.get("db.wire.first_data_ms");
         const complete = wire.attributes.get("db.wire.command_complete_ms");
         const readyAt = wire.attributes.get("db.wire.ready_ms");
-        assert.ok(typeof first === "number" && first >= 15);
+        assert.ok(typeof dataAt === "number" && dataAt >= 15);
+        assert.equal(wire.attributes.get("db.wire.first_data_bytes"), 2);
+        assert.equal(wire.attributes.get("db.wire.first_message_type"), "ParseComplete");
+        assert.ok(typeof first === "number" && first >= dataAt + 15);
         assert.ok(typeof complete === "number" && complete >= first);
         assert.ok(typeof readyAt === "number" && readyAt >= complete + 15);
         assert.ok(Number(wire.attributes.get("db.wire.request_bytes")) > 0);
@@ -316,4 +343,183 @@ test("cancelled connection spans end and release the pending socket", { timeout:
       assert.deepEqual([...span.attributes], []);
     },
   ),
+);
+
+const parseComplete = Buffer.from([49, 0, 0, 0, 4]);
+const queryComplete = Buffer.concat([
+  Buffer.from([50, 0, 0, 0, 4, 110, 0, 0, 0, 4, 67, 0, 0, 0, 13]),
+  Buffer.from("SELECT 0\0"),
+  Buffer.from([90, 0, 0, 0, 5, 73]),
+]);
+const idle = Buffer.from([90, 0, 0, 0, 5, 73]);
+
+const messages = (socket: Socket, consume: (type: number, frame: Buffer) => void) => {
+  let input = Buffer.alloc(0);
+  socket.on("data", (chunk: Buffer) => {
+    input = Buffer.concat([input, chunk]);
+    while (input.length >= 5) {
+      const size = 1 + input.readInt32BE(1);
+      if (input.length < size) return;
+      const frame = input.subarray(0, size);
+      input = input.subarray(size);
+      const type = frame[0];
+      assert.ok(type !== undefined);
+      consume(type, frame);
+    }
+  });
+};
+
+test(
+  "flushed Parse is acknowledged before bound values and Execute are sent",
+  { timeout: 5_000 },
+  () => {
+    let acknowledged = false;
+    let binds = 0;
+    let executes = 0;
+    return withPeer(
+      (socket, processId) => {
+        ready(socket, processId);
+        messages(socket, (type, frame) => {
+          if (type === 72) {
+            assert.equal(binds, 0);
+            setImmediate(() => {
+              acknowledged = true;
+              socket.write(parseComplete);
+            });
+          }
+          if (type === 66) {
+            assert.ok(acknowledged);
+            assert.ok(frame.includes(Buffer.from("synthetic-bound-value")));
+            binds++;
+          }
+          if (type === 69) executes++;
+          if (type === 83) socket.write(queryComplete);
+        });
+      },
+      async (peer) => {
+        const trace = recording();
+        const result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const connection = yield* PgConnection.make({
+              ...peer.options,
+              flushUnnamedParse: true,
+            });
+            return yield* connection.query("SELECT $1", ["synthetic-bound-value"]);
+          }).pipe(Effect.scoped, Effect.provideService(Tracer.Tracer, trace.tracer)),
+        );
+        assert.equal(result.rowCount, 0);
+        assert.equal(binds, 1);
+        assert.equal(executes, 1);
+        const wire = trace.spans.find((span) => span.name === "sql.wire");
+        assert.ok(wire);
+        assert.equal(wire.attributes.get("db.wire.protocol_mode"), "parse-flush-bind");
+        const bindSent = Number(wire.attributes.get("db.wire.bind_sent_ms"));
+        const bindWritten = Number(wire.attributes.get("db.wire.bind_write_callback_ms"));
+        const bindComplete = Number(wire.attributes.get("db.wire.bind_complete_ms"));
+        assert.ok(bindWritten >= bindSent);
+        assert.ok(bindComplete >= bindSent);
+        const start = wire.attributes.get("db.wire.started_at_ms");
+        const end = wire.attributes.get("db.wire.ready_at_ms");
+        assert.ok(typeof start === "number" && typeof end === "number");
+        assert.equal(end - start, wire.attributes.get("db.wire.ready_ms"));
+      },
+    );
+  },
+);
+
+test(
+  "a Parse error drains without Bind and leaves the connection usable",
+  { timeout: 5_000 },
+  () => {
+    let cycle = 0;
+    let binds = 0;
+    let rejectedBytes = 0;
+    return withPeer(
+      (socket, processId) => {
+        ready(socket, processId);
+        messages(socket, (type, frame) => {
+          if (type === 80) cycle++;
+          if (cycle === 1) rejectedBytes += frame.length;
+          if (type === 72) {
+            if (cycle === 1) {
+              const fields = Buffer.from("SERROR\0C42601\0Msynthetic parse failure\0\0");
+              const header = Buffer.alloc(5);
+              header[0] = 69;
+              header.writeInt32BE(4 + fields.length, 1);
+              socket.write(Buffer.concat([header, fields]));
+            } else socket.write(parseComplete);
+          }
+          if (type === 66) {
+            assert.equal(cycle, 2);
+            binds++;
+          }
+          if (type === 83) socket.write(cycle === 1 ? idle : queryComplete);
+        });
+      },
+      async (peer) => {
+        const trace = recording();
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const connection = yield* PgConnection.make({
+              ...peer.options,
+              flushUnnamedParse: true,
+            });
+            const failed = yield* Effect.exit(connection.query("invalid synthetic SQL"));
+            assert.ok(Exit.isFailure(failed));
+            assert.ok(Schema.is(SqlError)(Cause.squash(failed.cause)));
+            const recovered = yield* connection.query("SELECT 1");
+            assert.equal(recovered.rowCount, 0);
+          }).pipe(Effect.scoped, Effect.provideService(Tracer.Tracer, trace.tracer)),
+        );
+        assert.equal(binds, 1);
+        const rejected = trace.spans.find((span) => span.name === "sql.wire");
+        assert.ok(rejected);
+        assert.equal(rejected.attributes.get("db.wire.request_bytes"), rejectedBytes);
+      },
+    );
+  },
+);
+
+test(
+  "interruption before Parse completes never sends the abandoned Execute",
+  { timeout: 5_000 },
+  () => {
+    const parsed = Deferred.makeUnsafe<void>();
+    let cycle = 0;
+    let executes = 0;
+    return withPeer(
+      (socket, processId) => {
+        ready(socket, processId);
+        messages(socket, (type) => {
+          if (type === 80) cycle++;
+          if (type === 72) {
+            if (cycle === 1) Deferred.doneUnsafe(parsed, Effect.void);
+            else socket.write(parseComplete);
+          }
+          if (type === 66 || type === 69) assert.equal(cycle, 2);
+          if (type === 69) executes++;
+          if (type === 83)
+            socket.write(cycle === 1 ? Buffer.concat([parseComplete, idle]) : queryComplete);
+        });
+      },
+      async (peer) => {
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const connection = yield* PgConnection.make({
+              ...peer.options,
+              flushUnnamedParse: true,
+            });
+            const query = yield* connection
+              .query("INSERT INTO synthetic VALUES (1)")
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(parsed);
+            yield* Fiber.interrupt(query);
+            const recovered = yield* connection.query("SELECT 1");
+            assert.equal(recovered.rowCount, 0);
+          }).pipe(Effect.scoped),
+        );
+        assert.equal(executes, 1);
+      },
+    );
+  },
 );

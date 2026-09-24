@@ -14,7 +14,8 @@ export const sqlTracing = Layer.mergeAll(
     ) {
       return Effect.succeed(statement);
     }
-    const comment = `\n/*traceparent='00-${span.traceId}-${span.spanId}-01'*/`;
-    return Effect.succeed(sql`${statement}${sql.literal(comment)}`);
+    // pg_stat_activity truncates long statements. Keep correlation in its prefix.
+    const comment = `/*traceparent='00-${span.traceId}-${span.spanId}-01'*/\n`;
+    return Effect.succeed(sql`${sql.literal(comment)}${statement}`);
   }),
 );

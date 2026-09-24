@@ -115,6 +115,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
                 url: yield* connection.connectionString,
                 maxConnections: 1,
                 prepare: false,
+                flushUnnamedParse: connection.flushUnnamedParse,
               }).pipe(Layer.build);
               const sql = yield* SqlClient.SqlClient.pipe(Effect.provideContext(db));
               return yield* sql`select id, slug from organization`.pipe(

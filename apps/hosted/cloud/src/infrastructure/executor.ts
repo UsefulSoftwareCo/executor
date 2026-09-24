@@ -91,7 +91,14 @@ export const cloudExecutor = Effect.fn(function* (
   const database = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const url = yield* connection.connectionString;
-      return yield* Layer.build(PgClient.layer({ url, maxConnections: 1, prepare: false }));
+      return yield* Layer.build(
+        PgClient.layer({
+          url,
+          maxConnections: 1,
+          prepare: false,
+          flushUnnamedParse: connection.flushUnnamedParse,
+        }),
+      );
     }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
   );
   const executor = yield* makeExecutionMemo(

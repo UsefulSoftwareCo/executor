@@ -53,7 +53,7 @@ export const axiomTraceQuery = Effect.gen(function* () {
           Option.isSome(organization) ? { "x-axiom-org-id": organization.value } : {},
         ),
         HttpClientRequest.bodyJson({
-          apl: `['${dataset}'] | where trace_id == '${id}' | project traceId=trace_id, spanId=span_id, parentSpanId=parent_span_id, operationName=name, serviceName=['service.name'], durationMs=duration/1ms, status=['status.code'], tags=['attributes.custom'], build=['resource.custom']['executor.build.id'], links, standard=pack('exception.type', column_ifexists('attributes.exception.type', dynamic(null)), 'code.file.path', column_ifexists('attributes.code.file.path', dynamic(null)), 'code.line.number', column_ifexists('attributes.code.line.number', dynamic(null)), 'code.column.number', column_ifexists('attributes.code.column.number', dynamic(null))) | take 5000`,
+          apl: `['${dataset}'] | where trace_id == '${id}' | project traceId=trace_id, spanId=span_id, parentSpanId=parent_span_id, operationName=name, serviceName=['service.name'], durationMs=duration/1ms, status=['status.code'], tags=['attributes.custom'], build=['resource.custom']['executor.build.id'], links, standard=pack('db.query.text', column_ifexists('attributes.db.query.text', dynamic(null)), 'exception.type', column_ifexists('attributes.exception.type', dynamic(null)), 'code.file.path', column_ifexists('attributes.code.file.path', dynamic(null)), 'code.line.number', column_ifexists('attributes.code.line.number', dynamic(null)), 'code.column.number', column_ifexists('attributes.code.column.number', dynamic(null))) | take 5000`,
           startTime: new Date(start - 60_000).toISOString(),
           endTime: new Date(now + 60_000).toISOString(),
         }),
