@@ -174,7 +174,6 @@ export const runSuite = ({
                     ? yield* startCloudEnvironment({
                         directory,
                         origin,
-                        apiPort: yield* freePort,
                         appPort: yield* freePort,
                         databasePort: yield* freePort,
                         commit,

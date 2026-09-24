@@ -62,13 +62,6 @@ load().catch(() => { status.textContent = "Load failed"; });`,
 const Location = Schema.Struct({ url: Schema.String });
 const OperationSecurity = Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String)));
 const PublicOperation = Schema.Struct({ operationId: Schema.String, security: OperationSecurity });
-const GeneratedOperation = Schema.Struct({
-  name: Schema.String,
-  method: Schema.String,
-  path: Schema.String,
-  request: Schema.Struct({ security: OperationSecurity }),
-  streaming: Schema.optionalKey(Schema.Boolean),
-});
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
@@ -89,11 +82,6 @@ const appFixture = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
   );
-  const seeded = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/data/mutate`, {
-    name: "save",
-    input: { body: "Saved from the management API" },
-  });
-  expect(seeded.status).toBe(200);
   const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
   expect(new URL(url).hostname.split(".").slice(0, 2).join(".")).toBe(
     `${app.slug}.${actors.organization.slug}`,
@@ -107,12 +95,15 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, browser, prefix, app, url } = yield* appFixture;
+        const { api, actors, browser, prefix, app, url, target } = yield* appFixture;
         yield* browser.login(actors.owner);
         const anonymous = yield* api.session();
         const apiDocument = yield* body(
           Schema.Struct({
             paths: Schema.Record(Schema.String, Schema.Record(Schema.String, PublicOperation)),
+            components: Schema.Struct({
+              securitySchemes: Schema.Record(Schema.String, Schema.Json),
+            }),
           }),
           yield* api.request(anonymous, "GET", "/openapi.json"),
         );
@@ -138,40 +129,23 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${management.id}/source`),
         );
-        const metadataFile = source.files.find((file) => file.path === "operations.json");
-        if (metadataFile === undefined)
-          return yield* Effect.die("Executor app has no operations metadata");
-        const metadata = yield* Schema.decodeUnknownEffect(
+        const configurationFile = source.files.find((file) => file.path === "openapi.json");
+        if (configurationFile === undefined)
+          return yield* Effect.die("Executor app has no live OpenAPI configuration");
+        const configuration = yield* Schema.decodeUnknownEffect(
           Schema.fromJsonString(
             Schema.Struct({
-              operations: Schema.Array(GeneratedOperation),
+              source: Schema.Struct({ url: Schema.String }),
+              baseUrl: Schema.String,
+              allowedOrigin: Schema.String,
+              securitySchemes: Schema.Record(Schema.String, Schema.Json),
             }),
           ),
-        )(metadataFile.content);
-        const expected = Object.entries(apiDocument.paths)
-          .flatMap(([path, methods]) =>
-            Object.entries(methods).map(([method, operation]) => ({
-              name: operation.operationId.replace(/[^a-zA-Z0-9_]/g, "_"),
-              method: method.toUpperCase(),
-              path,
-              security: operation.security.map((requirement) => Object.keys(requirement).sort()),
-            })),
-          )
-          .sort((a, b) => a.name.localeCompare(b.name));
-        expect(
-          metadata.operations
-            .map(({ name, method, path, request }) => ({
-              name,
-              method,
-              path,
-              security: request.security.map((requirement) => Object.keys(requirement).sort()),
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        ).toEqual(expected);
-        expect(
-          metadata.operations.find((operation) => operation.name === "appData_subscribe")
-            ?.streaming,
-        ).toBe(true);
+        )(configurationFile.content);
+        expect(configuration.source.url).toBe(`${target.metadata.origin}/openapi.json`);
+        expect(configuration.baseUrl).toBe(target.metadata.origin);
+        expect(configuration.allowedOrigin).toBe(new URL(target.metadata.origin).origin);
+        expect(configuration.securitySchemes).toEqual(apiDocument.components.securitySchemes);
         const oauth = yield* McpOAuth;
         const mcp = yield* McpClient;
         const grant = yield* oauth.authorize;
@@ -259,6 +233,16 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
       context,
       Effect.gen(function* () {
         const { api, actors, browser, target, prefix, app, url, bookmark } = yield* appFixture;
+        const seeded = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/apps/${app.id}/data/mutate`,
+          {
+            name: "save",
+            input: { body: "Saved from the management API" },
+          },
+        );
+        expect(seeded.status).toBe(200);
         yield* browser.omitNetworkTrace;
         expect(
           (yield* browser.use("Unsigned protected assets stay private", (page) =>
@@ -385,7 +369,11 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
         );
         yield* browser.login(actors.member);
+        // Keep the live revocation watcher pending while testing the mutation's
+        // own rejection. Starting a document navigation can cancel its response.
+        const watcher = yield* holdQuery(["/_executor/version"], "continue");
         yield* openPrivateApp(bookmark);
+        yield* watcher.requested;
         yield* browser.use("Member can query the app", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
@@ -398,9 +386,27 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         yield* browser.use("Member write succeeds", (page) =>
           page.getByRole("listitem").filter({ hasText: "Saved by a member" }).waitFor(),
         );
-        // Hold the watcher's next document request so the rejected mutation stays
-        // observable. The real version stream still detects the revoked access.
-        const reload = yield* holdQuery([new URL(bookmark).pathname], "continue");
+        const live = yield* browser.use("Open a member tab with live revocation", (page) =>
+          page.context().newPage(),
+        );
+        yield* Effect.addFinalizer(() =>
+          browser.use("Close the live member tab", () => live.close()).pipe(Effect.orDie),
+        );
+        const [response] = yield* Effect.all(
+          [
+            browser.use("Observe the live member subscription", () =>
+              live.waitForResponse(
+                (response) => new URL(response.url()).pathname === "/_executor/version",
+              ),
+            ),
+            browser.use("Load the live member tab", () => live.goto(bookmark)),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(response.status()).toBe(200);
+        yield* browser.use("The live member tab is ready", () =>
+          live.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
+        );
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
             revision: shared.revision,
@@ -416,12 +422,10 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(
           (yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/ui`)).status,
         ).toBe(403);
-        yield* reload.requested;
-        yield* reload.release;
-        // Finish the watcher transition before opening the renamed app as owner.
-        yield* browser.use("Revocation removes the open app from the browser", (page) =>
-          page.getByText("App unavailable.", { exact: true }).waitFor(),
+        yield* browser.use("Revocation removes the open app from the browser", () =>
+          live.getByText("App unavailable.", { exact: true }).waitFor(),
         );
+        yield* watcher.release;
         // Each app has its own complete DNS label, independent of the team slug length.
         const maxAppSlug = 63;
         expect(maxAppSlug).toBeGreaterThan(0);

@@ -53,7 +53,7 @@ const generateDefinition = (
           [
             {
               path: "index.ts",
-              content: `import { defineApp${hasAccount ? ", accountOperations" : ""} } from "apps";
+              content: `${skipped.length ? "// Some API operations were not imported. skipped-operations.json lists each one and why.\n" : ""}import { defineApp${hasAccount ? ", accountOperations" : ""} } from "apps";
 import { liveOpenapiOperations } from "apps/openapi";
 ${hasAccount ? 'import { provider } from "./provider.ts";' : ""}
 import configuration from "./openapi.json";

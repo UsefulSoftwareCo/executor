@@ -5,8 +5,8 @@ import { invocationFetch } from "@executor-js/telemetry";
 import type { AppCache, CacheGetOptions, HostCache } from "../contracts/cache.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
 import type { JsonValue } from "../contracts/schema.ts";
-import { decoderOf } from "./schema.ts";
-import { toPromise } from "./authoring.ts";
+import { decoderOf, type Schema as AppSchema } from "./schema.ts";
+import { fromPromise, toPromise } from "./authoring.ts";
 
 /** Missing host support is explicit on use; ordinary apps do not need cache support. */
 export const unavailableCache: HostCache = {
@@ -23,66 +23,61 @@ export const authorCache = (
   const scoped = (scope: JsonValue, callerSignal = signal): AppCache => {
     const cache = makeCache(host.transport, host.background, scope);
     const load = <A>(method: "get" | "revalidate", options: CacheGetOptions<A>) =>
-      toPromise(
-        () =>
-          cache[method]({
-            key: options.key,
-            schema: decoderOf(options.schema),
-            freshFor: options.freshFor,
-            ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
-            load: Effect.acquireUseRelease(
-              Effect.sync(() => new AbortController()),
-              (controller) =>
-                invocationFetch(controller.signal).pipe(
-                  Effect.flatMap((fetch) =>
-                    Effect.tryPromise({
-                      try: () =>
-                        options.load({
-                          fetch,
-                          signal: controller.signal,
-                          cache: scoped(scope, controller.signal),
-                        }),
-                      catch: (error) => error,
-                    }),
-                  ),
-                ),
-              (controller) => Effect.sync(() => controller.abort()),
+      cache[method]({
+        key: options.key,
+        schema: decoderOf(options.schema),
+        freshFor: options.freshFor,
+        ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
+        load: Effect.acquireUseRelease(
+          Effect.sync(() => new AbortController()),
+          (controller) =>
+            invocationFetch(controller.signal).pipe(
+              Effect.flatMap((fetch) =>
+                fromPromise(options.load)({
+                  fetch,
+                  signal: controller.signal,
+                  cache: scoped(scope, controller.signal),
+                }),
+              ),
             ),
-          }),
-        callerSignal,
-      )();
+          (controller) => Effect.sync(() => controller.abort()),
+        ),
+      });
+    // Keep the native callback on each method so framework consumers retain the
+    // invocation's scheduler, tracing and cancellation across the Promise API.
     return {
-      get: (options) => load("get", options),
-      revalidate: (options) => load("revalidate", options),
-      read: (key, schema) =>
-        toPromise(
-          () =>
-            cache.read([key]).pipe(
-              Effect.flatMap((entries) => {
-                const entry = entries[0];
-                return entry === undefined || entry === null
-                  ? Effect.succeed(undefined)
-                  : Schema.decodeUnknownEffect(decoderOf(schema))(entry.value);
-              }),
-            ),
-          callerSignal,
-        )(),
-      readMany: (keys, schema) =>
-        toPromise(
-          () =>
-            cache
-              .read(keys)
-              .pipe(
-                Effect.flatMap((entries) =>
-                  Effect.forEach(entries, (entry) =>
-                    entry === null
-                      ? Effect.succeed(undefined)
-                      : Schema.decodeUnknownEffect(decoderOf(schema))(entry.value),
-                  ),
+      get: toPromise(<A>(options: CacheGetOptions<A>) => load("get", options), callerSignal),
+      revalidate: toPromise(
+        <A>(options: CacheGetOptions<A>) => load("revalidate", options),
+        callerSignal,
+      ),
+      read: toPromise(
+        <A>(key: JsonValue, schema: AppSchema<A, boolean>) =>
+          cache.read([key]).pipe(
+            Effect.flatMap((entries) => {
+              const entry = entries[0];
+              return entry === undefined || entry === null
+                ? Effect.succeed(undefined)
+                : Schema.decodeUnknownEffect(decoderOf(schema))(entry.value);
+            }),
+          ),
+        callerSignal,
+      ),
+      readMany: toPromise(
+        <A>(keys: readonly JsonValue[], schema: AppSchema<A, boolean>) =>
+          cache
+            .read(keys)
+            .pipe(
+              Effect.flatMap((entries) =>
+                Effect.forEach(entries, (entry) =>
+                  entry === null
+                    ? Effect.succeed(undefined)
+                    : Schema.decodeUnknownEffect(decoderOf(schema))(entry.value),
                 ),
               ),
-          callerSignal,
-        )(),
+            ),
+        callerSignal,
+      ),
       write: toPromise(cache.write, callerSignal),
       invalidate: toPromise(cache.invalidate, callerSignal),
       forAccount: (account) => {

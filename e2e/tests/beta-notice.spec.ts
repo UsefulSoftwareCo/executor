@@ -30,6 +30,12 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
         yield* browser.use("Dismiss the first-visit preview", (page) =>
           page.getByRole("button", { name: "Got it", exact: true }).click(),
         );
+        // Native dialog close events run after the click's default action.
+        yield* browser.use("Wait for the preview dismissal to be saved", (page) =>
+          page.waitForFunction(
+            () => localStorage.getItem("executor-v2-early-preview-dismissed") === "true",
+          ),
+        );
         expect(
           yield* browser.use("Check the preview choice was saved", (page) =>
             page.evaluate(() => localStorage.getItem("executor-v2-early-preview-dismissed")),

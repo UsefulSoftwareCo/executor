@@ -12,6 +12,7 @@ import { withStageAdmin } from "../src/implementation/test-stage-inventory.ts";
 import { testStageLifetimeMilliseconds } from "../src/contracts/test-stage-lifetime.ts";
 
 const connectionString =
+  process.env.TEST_REGISTRY_DATABASE_URL ??
   "postgresql://admin.fixture:synthetic-test-password@127.0.0.1:55432/postgres";
 const config = ConfigProvider.fromUnknown({
   TEST_STAGE_DATABASE_ADMIN_URL: connectionString,
@@ -153,6 +154,26 @@ test("losing the control connection interrupts the operation and releases its lo
     /control connection closed/,
   );
   await run(withStageAdmin((admin) => admin.lock("lost-connection")));
+});
+
+test("control connection errors remain handled while operation finalizers run", async () => {
+  await run(
+    withStageAdmin((admin) =>
+      Effect.gen(function* () {
+        yield* admin.lock("closing-connection");
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(async () => {
+            await client.query(
+              "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'executor-test-stage' and pid <> pg_backend_pid()",
+            );
+            // Let the real TCP error arrive before the registry client closes.
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }),
+        );
+      }),
+    ),
+  );
+  await run(withStageAdmin((admin) => admin.lock("closing-connection")));
 });
 
 test("an eleventh independent preview is allowed and receives the persisted deadline", async () => {

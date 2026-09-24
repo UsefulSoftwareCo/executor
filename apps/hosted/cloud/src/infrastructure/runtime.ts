@@ -1,4 +1,5 @@
 import { AppSkills } from "apps/contracts";
+import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
 import { appRpcBridge, appFacetBridge } from "../implementation/app-bridge.ts";
@@ -153,6 +154,7 @@ export const cloudRuntime = Effect.fn(function* (
             .pipe(Effect.withSpan("runtime.cloud.worker.load"));
           // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
           const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
+          const services = yield* Effect.context<never>();
           // Native RPC carries the live callback; the fetch payload remains the existing portable protocol.
           const entrypoint = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(
             worker.getEntrypoint().raw,
@@ -186,11 +188,15 @@ export const cloudRuntime = Effect.fn(function* (
                   app === undefined
                     ? null
                     : (command) =>
-                        Effect.runPromise(
-                          databases
-                            .getByName(app)
-                            .cache(build, command)
-                            .pipe(Effect.provide(RuntimeContext.phantom)),
+                        Effect.runPromiseWith(services)(
+                          Effect.gen(function* () {
+                            const parsed = yield* Schema.decodeUnknownEffect(CacheCommand)(command);
+                            yield* Effect.annotateCurrentSpan("cache.operation", parsed.operation);
+                            return yield* databases.getByName(app).cache(build, parsed);
+                          }).pipe(
+                            Effect.provide(RuntimeContext.phantom),
+                            Effect.withSpan("runtime.cloud.cache"),
+                          ),
                         ),
                 ),
               catch: protocolFailed,

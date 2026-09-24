@@ -84,7 +84,9 @@ minute-based scheduling without adding a minute of sleep to each scenario.
 Each case owns its fixtures. Self-host runs signup and invitations against a new
 process and PGlite directory. Local uses its own process, database and pairing key.
 Cloud shares one Worker and database while each case owns a random organization
-and three synthetic identities. A runner-owned loopback process provisions Cloud
+and three synthetic identities. Managed Cloud serves the built site through that
+Worker, including its static asset rewrites and server-resolved entry pages.
+It does not start Vite's source development server. A runner-owned loopback process provisions Cloud
 fixtures. It keeps database and signing credentials in memory. Neither those
 credentials nor fixture endpoints are installed in the Worker.
 The test plan declares `appOrigin: true` for scenarios that use private app URLs.

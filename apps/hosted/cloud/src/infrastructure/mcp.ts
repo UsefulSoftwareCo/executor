@@ -25,6 +25,7 @@ import { cloudAuthDatabase } from "./auth-database.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./app-data.ts";
 import { unavailableAuthEmail } from "../contracts/email.ts";
 import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
+import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 
 const admitExecution = Context.Reference<Effect.Effect<void, ExecutionRejected>>(
   "cloud/McpExecutionAdmission",
@@ -92,6 +93,7 @@ const makeMcpSessions = Effect.gen(function* () {
           ? browser
           : http,
       ).pipe(
+        Effect.flatMap(observeMcpStream("session")),
         Effect.tap((response) =>
           Effect.annotateCurrentSpan("http.response.status_code", response.status),
         ),
@@ -131,7 +133,7 @@ export const cloudMcp = Effect.gen(function* () {
       return yield* forwardMcpRequest(traced, (attempt) =>
         sessions.getByName(mcpSessionKey(access)).fetch(attempt),
       );
-    }).pipe(Effect.withSpan("mcp.session.forward"));
+    }).pipe(Effect.flatMap(observeMcpStream("gateway")), Effect.withSpan("mcp.session.forward"));
   return {
     http: authenticatedMcp(forward),
     approvals: browserMcpRequest((access) => forward(access)),

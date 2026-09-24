@@ -60,6 +60,7 @@
         "@distilled.cloud/sentry": "1.0.0-rc.12",
         "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/sql-pg": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/app-management": "workspace:*",
         "@executor-js/app-registry": "workspace:*",

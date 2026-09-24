@@ -178,11 +178,17 @@ export const ScheduleCoordinatorLive = ScheduleCoordinator.make(makeScheduleCoor
 /** Route changes wake the coordinator promptly; a native cron heartbeat repairs missing alarms after failures. */
 export const cloudSchedules = Effect.gen(function* () {
   const coordinator = yield* ScheduleCoordinator;
+  // Worker placement does not place Durable Objects. Keep new coordinators near
+  // the hosted Postgres region instead of the first caller's edge location.
+  const locationHint = yield* Config.Literals(
+    ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"],
+    "CLOUD_SCHEDULE_LOCATION_HINT",
+  ).pipe(Config.withDefault("enam"));
   const report = yield* cloudSentry;
   const lifetime = yield* previewLifetime;
   // The namespace binding only exists at runtime, so resolve the stub when the wake runs.
   const wake = Effect.scoped(
-    report(Effect.suspend(() => coordinator.getByName("executor").wake())),
+    report(Effect.suspend(() => coordinator.getByName("executor", { locationHint }).wake())),
   ).pipe(
     Effect.withSpan("schedule.wake"),
     Effect.catch(() => Effect.logError("Schedule coordinator wake failed")),
