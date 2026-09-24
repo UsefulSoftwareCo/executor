@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAtomValue, useAtomRefresh, useAtomSet } from "@effect/atom-react";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import {
   IntegrationSlug,
@@ -27,6 +26,7 @@ import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import { useCanCreateWorkspaceConnections } from "../multiplayer/use-admin-nav";
 import type { AuthMethod } from "../lib/auth-placements";
+import { asyncResultValue, isAsyncResultLoading } from "../lib/async-result";
 import {
   connectionNeedsReconsent,
   oauthReconnectPayload,
@@ -52,6 +52,7 @@ import {
   AlertDialogTitle,
 } from "./alert-dialog";
 import { Badge } from "./badge";
+import { Skeleton } from "./skeleton";
 import { Button } from "./button";
 import {
   CardStack,
@@ -209,7 +210,10 @@ function AccountRow(props: {
   };
 
   return (
-    <CardStackEntry className="flex-wrap items-start">
+    <CardStackEntry
+      className="flex-wrap items-start"
+      data-testid={`connection-row-${String(connection.name)}`}
+    >
       <CardStackEntryContent>
         <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
           <span
@@ -379,7 +383,8 @@ function OwnerAccounts(props: {
     startErrorMessage: "Failed to reconnect",
   });
 
-  const rows: readonly Connection[] = AsyncResult.isSuccess(connections) ? connections.value : [];
+  // Retained on revalidation: a background refresh must not empty the list.
+  const rows: readonly Connection[] = asyncResultValue(connections) ?? [];
   if (rows.length === 0) return null;
 
   const handleReconnect = async (connection: Connection) => {
@@ -644,12 +649,15 @@ export function AccountsSection(props: {
   useAtomSet(addConnectionOptimistic("user"));
 
   const totalCount = useMemo(() => {
-    const orgRows = AsyncResult.isSuccess(orgConnections) ? orgConnections.value.length : 0;
-    const userRows = AsyncResult.isSuccess(userConnections) ? userConnections.value.length : 0;
+    const orgRows = asyncResultValue(orgConnections)?.length ?? 0;
+    const userRows = asyncResultValue(userConnections)?.length ?? 0;
     return orgRows + userRows;
   }, [orgConnections, userConnections]);
 
-  const loading = !AsyncResult.isSuccess(orgConnections) && !AsyncResult.isSuccess(userConnections);
+  // Loading means "nothing to show yet" — NOT "a request is in flight". Once
+  // either owner has answered, a later refresh keeps rendering what it knows
+  // instead of collapsing the list back into a placeholder.
+  const loading = isAsyncResultLoading(orgConnections) && isAsyncResultLoading(userConnections);
 
   // When there are zero connections the dashed empty-state card below carries
   // its own "Add connection" CTA, so the header button would be a redundant
@@ -697,9 +705,12 @@ export function AccountsSection(props: {
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 py-6">
-          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">Loading accounts…</p>
+        // A placeholder in the shape of the row it is holding space for — not a
+        // pulsing dot and a sentence, which is a different thing in a different
+        // place from everything it replaces.
+        <div className="space-y-2">
+          <Skeleton className="h-16 w-full rounded-lg" />
+          <Skeleton className="h-16 w-full rounded-lg opacity-60" />
         </div>
       ) : showEmptyState ? (
         <div className="rounded-lg border border-dashed border-border/60 px-6 py-8 text-center">

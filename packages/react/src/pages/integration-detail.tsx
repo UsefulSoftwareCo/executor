@@ -18,6 +18,7 @@ import {
 import {
   checkConnectionHealth,
   connectionsAllAtom,
+  connectionsForIntegrationAtom,
   integrationToolsAllAtom,
   integrationsOptimisticAtom,
   integrationAtom,
@@ -45,7 +46,7 @@ import { Button } from "../components/button";
 import { Skeleton } from "../components/skeleton";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { ErrorState } from "../components/error-state";
-import { isAsyncResultLoading } from "../lib/async-result";
+import { asyncResultValue, isAsyncResultLoading } from "../lib/async-result";
 import { useConnectionsHealth } from "../lib/use-connection-health";
 import { accountPolicyPattern } from "../lib/policy-pattern";
 import {
@@ -137,10 +138,38 @@ export function IntegrationDetailPage(props: {
     setActiveTab(integrationDetailInternalTabFromSearch(props.tab));
   }, [namespace, props.tab]);
 
-  const integrationData = AsyncResult.isSuccess(integration) ? integration.value : null;
+  // Everything the page renders about the integration hangs off this. Read
+  // with the retained value so a background refresh cannot blank the page's
+  // own identity — its name, its kind, the plugin that owns its Accounts pane.
+  const integrationData = asyncResultValue(integration) ?? null;
   useExecutorDocumentTitle(integrationData?.name || namespace);
   const isBuiltInIntegration = namespace === "executor" || integrationData?.kind === "built-in";
   const currentTab = isBuiltInIntegration ? "tools" : activeTab;
+
+  // The Accounts pane's own readiness, read from the SAME atoms it reads (the
+  // registry dedupes, so this costs no extra request). The page holds one
+  // skeleton until these have answered, which is why the pane can never paint
+  // its own second placeholder underneath this one.
+  const orgConnections = useAtomValue(
+    connectionsForIntegrationAtom({ integration: slug, owner: "org" }),
+  );
+  const userConnections = useAtomValue(
+    connectionsForIntegrationAtom({ integration: slug, owner: "user" }),
+  );
+  // Only the Accounts tab is waiting on connections; the Tools tab is not, and
+  // making it wait would hold a skeleton over content that is already there.
+  const willShowAccounts = namespace !== "executor" && activeTab === "accounts";
+  const accountsPending =
+    willShowAccounts &&
+    isAsyncResultLoading(orgConnections) &&
+    isAsyncResultLoading(userConnections);
+  // Everything on this page is derived from the catalog row: the name, whether
+  // the integration is built-in (which tabs exist), which plugin owns the
+  // Accounts pane, and the declared auth methods. Rendering before it lands
+  // does not show less — it shows a DIFFERENT page, stating things that are
+  // not true of this integration, and then replaces it. So hold one surface
+  // until the page can be itself.
+  const pending = isAsyncResultLoading(integration) || accountsPending;
   // Integrations are workspace-owned; the server refuses catalog mutations
   // (update/remove) from non-admin members, so disable the controls for them.
   const canMutateIntegration = useCanCreateWorkspaceConnections();
@@ -501,9 +530,20 @@ export function IntegrationDetailPage(props: {
       {/* Header bar */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <h2 className="truncate text-sm font-semibold text-foreground">
-            {integrationData?.name || namespace}
-          </h2>
+          {/* The slug is a machine identifier out of the URL, not this
+              integration's name. Printing it while the catalog row is in
+              flight puts a word on screen that the reader then watches get
+              replaced — so hold the space instead and say nothing. */}
+          {pending ? (
+            <Skeleton className="h-4 w-36" />
+          ) : (
+            <h2
+              data-testid="integration-detail-title"
+              className="truncate text-sm font-semibold text-foreground"
+            >
+              {integrationData?.name || namespace}
+            </h2>
+          )}
           {AsyncResult.isSuccess(tools) && (
             <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">
               {distinctToolCount} {distinctToolCount === 1 ? "tool" : "tools"}
@@ -572,134 +612,143 @@ export function IntegrationDetailPage(props: {
         </div>
       </div>
 
-      <Tabs
-        value={currentTab}
-        onValueChange={handleTabChange}
-        className="min-h-0 flex-1 gap-0 overflow-hidden"
+      <div
+        data-testid="integration-detail-body"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
-        <div className="shrink-0 border-b border-border/60 px-4 py-2">
-          <TabsList variant="line">
-            {!isBuiltInIntegration && <TabsTrigger value="accounts">Accounts</TabsTrigger>}
-            <TabsTrigger value="tools">Tools</TabsTrigger>
-          </TabsList>
-        </div>
+        {pending ? (
+          <IntegrationDetailLoading tab={willShowAccounts ? "accounts" : "tools"} />
+        ) : (
+          <Tabs
+            value={currentTab}
+            onValueChange={handleTabChange}
+            className="min-h-0 flex-1 gap-0 overflow-hidden"
+          >
+            <div className="shrink-0 border-b border-border/60 px-4 py-2">
+              <TabsList variant="line">
+                {!isBuiltInIntegration && <TabsTrigger value="accounts">Accounts</TabsTrigger>}
+                <TabsTrigger value="tools">Tools</TabsTrigger>
+              </TabsList>
+            </div>
 
-        {/* Hub: integration-level auth methods + accounts. Plugins that
-              declare auth methods fill the `accounts` slot (real methods from
-              the plugin's config); otherwise we render the generic fallback. */}
-        {!isBuiltInIntegration && (
-          <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
-            {editPlugin?.accounts ? (
-              <Suspense fallback={<AccountsSkeleton />}>
-                <editPlugin.accounts
-                  integrationId={namespace}
-                  integrationName={integrationData?.name || namespace}
-                  accountHandoff={accountHandoff}
-                />
-              </Suspense>
-            ) : (
-              <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
-                <AccountsSection
-                  integration={slug}
-                  integrationName={integrationData?.name || namespace}
-                  methods={accountsMethods}
-                  accountHandoff={accountHandoff}
-                />
-              </div>
-            )}
-          </TabsContent>
-        )}
-
-        {/* Tools -- split pane (unchanged behavior) */}
-        <TabsContent
-          value="tools"
-          className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
-        >
-          {isAsyncResultLoading(tools) ? (
-            <IntegrationDetailSkeleton />
-          ) : (
-            AsyncResult.match(tools, {
-              onInitial: () => <IntegrationDetailSkeleton />,
-              onFailure: () => (
-                <div className="p-6">
-                  <ErrorState message="Failed to load tools" onRetry={refreshTools} />
-                </div>
-              ),
-              onSuccess: () => (
-                <div className="flex min-h-0 flex-1 overflow-hidden">
-                  {/* Left: tool tree */}
-                  <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
-                    <ToolTree
-                      tools={integrationTools}
-                      selectedToolId={selectedToolId}
-                      onSelect={setSelectedToolId}
-                      onSetPolicy={onSetPolicy}
-                      onClearPolicy={onClearPolicy}
-                      policies={sortedPolicies}
-                      groupByConnection={!isBuiltInIntegration}
-                      emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
+            {/* Hub: integration-level auth methods + accounts. Plugins that
+                  declare auth methods fill the `accounts` slot (real methods from
+                  the plugin's config); otherwise we render the generic fallback. */}
+            {!isBuiltInIntegration && (
+              <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
+                {editPlugin?.accounts ? (
+                  <Suspense fallback={<AccountsSkeleton />}>
+                    <editPlugin.accounts
+                      integrationId={namespace}
+                      integrationName={integrationData?.name || namespace}
+                      accountHandoff={accountHandoff}
+                    />
+                  </Suspense>
+                ) : (
+                  <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
+                    <AccountsSection
+                      integration={slug}
+                      integrationName={integrationData?.name || namespace}
+                      methods={accountsMethods}
+                      accountHandoff={accountHandoff}
                     />
                   </div>
+                )}
+              </TabsContent>
+            )}
 
-                  {/* Right: tool detail with Schema · TypeScript · Run tabs */}
-                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                    {selectedTool && selectedAddress && selectedBareName ? (
-                      <ToolDetail
-                        address={selectedAddress}
-                        toolName={selectedTool.name}
-                        staticTool={selection?.static}
-                        policy={selectedTool.policy}
-                        onSetPolicy={onSetPolicy}
-                        onClearPolicy={onClearPolicy}
-                        // The header badge must write and look up the SAME
-                        // account-pinned pattern the tree row under this
-                        // account uses, or it cannot recognize its own rule.
-                        patternForDisplay={
-                          selection && !selection.static
-                            ? accountPolicyPattern(selection.owner, selection.connection)
-                            : undefined
-                        }
-                        {...(!selection?.static && selectedBareName
-                          ? {
-                              integration: slug,
-                              runToolName: selectedBareName,
-                              connections: integrationConnections,
-                              initialConnectionName: selection?.connection ?? null,
+            {/* Tools -- split pane (unchanged behavior) */}
+            <TabsContent
+              value="tools"
+              className="flex min-h-0 flex-col overflow-hidden data-[state=inactive]:hidden"
+            >
+              {isAsyncResultLoading(tools) ? (
+                <IntegrationDetailSkeleton />
+              ) : (
+                AsyncResult.match(tools, {
+                  onInitial: () => <IntegrationDetailSkeleton />,
+                  onFailure: () => (
+                    <div className="p-6">
+                      <ErrorState message="Failed to load tools" onRetry={refreshTools} />
+                    </div>
+                  ),
+                  onSuccess: () => (
+                    <div className="flex min-h-0 flex-1 overflow-hidden">
+                      {/* Left: tool tree */}
+                      <div className="flex w-72 shrink-0 flex-col border-r border-border/60 lg:w-80 xl:w-[22rem]">
+                        <ToolTree
+                          tools={integrationTools}
+                          selectedToolId={selectedToolId}
+                          onSelect={setSelectedToolId}
+                          onSetPolicy={onSetPolicy}
+                          onClearPolicy={onClearPolicy}
+                          policies={sortedPolicies}
+                          groupByConnection={!isBuiltInIntegration}
+                          emptyLabel={hasToolSyncIssue ? emptyToolsTitle : undefined}
+                        />
+                      </div>
+
+                      {/* Right: tool detail with Schema · TypeScript · Run tabs */}
+                      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                        {selectedTool && selectedAddress && selectedBareName ? (
+                          <ToolDetail
+                            address={selectedAddress}
+                            toolName={selectedTool.name}
+                            staticTool={selection?.static}
+                            policy={selectedTool.policy}
+                            onSetPolicy={onSetPolicy}
+                            onClearPolicy={onClearPolicy}
+                            // The header badge must write and look up the SAME
+                            // account-pinned pattern the tree row under this
+                            // account uses, or it cannot recognize its own rule.
+                            patternForDisplay={
+                              selection && !selection.static
+                                ? accountPolicyPattern(selection.owner, selection.connection)
+                                : undefined
                             }
-                          : {})}
-                      />
-                    ) : !isBuiltInIntegration && integrationConnections.length === 0 ? (
-                      <NoConnectionToolsEmptyState
-                        onAddConnection={handleOpenAddConnection}
-                        canAddConnection={accountsMethods.length > 0}
-                      />
-                    ) : hasToolSyncIssue ? (
-                      <ToolDetailEmpty
-                        hasTools={false}
-                        title={emptyToolsTitle}
-                        description={emptyToolsDescription}
-                        action={
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleRetryTools()}
-                            disabled={retryingTools}
-                          >
-                            {retryingTools ? "Checking…" : "Check and sync tools"}
-                          </Button>
-                        }
-                      />
-                    ) : (
-                      <ToolDetailEmpty hasTools={integrationTools.length > 0} />
-                    )}
-                  </div>
-                </div>
-              ),
-            })
-          )}
-        </TabsContent>
-      </Tabs>
+                            {...(!selection?.static && selectedBareName
+                              ? {
+                                  integration: slug,
+                                  runToolName: selectedBareName,
+                                  connections: integrationConnections,
+                                  initialConnectionName: selection?.connection ?? null,
+                                }
+                              : {})}
+                          />
+                        ) : !isBuiltInIntegration && integrationConnections.length === 0 ? (
+                          <NoConnectionToolsEmptyState
+                            onAddConnection={handleOpenAddConnection}
+                            canAddConnection={accountsMethods.length > 0}
+                          />
+                        ) : hasToolSyncIssue ? (
+                          <ToolDetailEmpty
+                            hasTools={false}
+                            title={emptyToolsTitle}
+                            description={emptyToolsDescription}
+                            action={
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void handleRetryTools()}
+                                disabled={retryingTools}
+                              >
+                                {retryingTools ? "Checking…" : "Check and sync tools"}
+                              </Button>
+                            }
+                          />
+                        ) : (
+                          <ToolDetailEmpty hasTools={integrationTools.length > 0} />
+                        )}
+                      </div>
+                    </div>
+                  ),
+                })
+              )}
+            </TabsContent>
+          </Tabs>
+        )}
+      </div>
 
       <IntegrationEditSheet
         slug={slug}
@@ -731,6 +780,29 @@ function NoConnectionToolsEmptyState(props: {
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The whole detail body, held in one piece until the page knows what it is.
+ *
+ * Built out of the SAME boxes the settled page uses — the tab strip's border
+ * and padding, then the pane that tab will fill — so the content that arrives
+ * lands where the skeleton already was instead of pushing it aside. `tab`
+ * picks the pane, because Accounts and Tools are shaped nothing alike and a
+ * skeleton for the wrong one is a layout jump with extra steps.
+ */
+function IntegrationDetailLoading(props: { readonly tab: "accounts" | "tools" }) {
+  return (
+    <>
+      <div className="shrink-0 border-b border-border/60 px-4 py-2">
+        <div className="flex h-9 items-center gap-5 px-2">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-11" />
+        </div>
+      </div>
+      {props.tab === "accounts" ? <AccountsSkeleton /> : <IntegrationDetailSkeleton />}
+    </>
   );
 }
 
