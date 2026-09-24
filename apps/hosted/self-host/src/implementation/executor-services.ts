@@ -25,8 +25,8 @@ import {
   OrganizationDefaults,
   organizationDefaults,
   lazyHostedApiDocument,
+  clientMetadataUrls,
   withExecutorAnalytics,
-  accountOAuthClientMetadataUrl,
 } from "@executor-js/hosted-server";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
@@ -63,8 +63,6 @@ export const selfHostExecutorServices = <E, R>(
         Config.option,
         Config.map(Option.getOrUndefined),
       );
-      const explicitMetadataUrl = clientMetadataUrl?.trim();
-      const defaultClientMetadataUrl = accountOAuthClientMetadataUrl(origin);
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
@@ -84,8 +82,7 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(explicitMetadataUrl ? { clientMetadataUrl: explicitMetadataUrl } : {}),
-          ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
+          ...clientMetadataUrls(origin, clientMetadataUrl),
         },
         {
           storage,
