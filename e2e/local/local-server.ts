@@ -115,6 +115,9 @@ export const withLocalServer = (
               EXECUTOR_DEV: "1",
               EXECUTOR_DATA_DIR: dataDir,
               EXECUTOR_SCOPE_DIR: dataDir,
+              // The stdio-MCP e2e scenarios need stdio enabled; the shipped
+              // local app defaults it off. Scoped to this harness only.
+              EXECUTOR_ALLOW_STDIO_MCP: "1",
               ...options?.env,
             },
             record: join(runDir, options?.castName ?? "terminal.cast"),
