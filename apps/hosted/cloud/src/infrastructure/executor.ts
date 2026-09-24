@@ -77,7 +77,8 @@ export const cloudExecutor = Effect.fn(function* (
     Config.option,
     Config.map(Option.getOrUndefined),
   );
-  const metadataUrl = clientMetadataUrl?.trim() || accountOAuthClientMetadataUrl(origin);
+  const explicitMetadataUrl = clientMetadataUrl?.trim();
+  const defaultClientMetadataUrl = accountOAuthClientMetadataUrl(origin);
   const connection = yield* cloudDatabaseConnection;
   const makeRuntime = yield* cloudRuntime(databases, origin);
   const workflows = yield* cloudWorkflows;
@@ -114,7 +115,8 @@ export const cloudExecutor = Effect.fn(function* (
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(metadataUrl === undefined ? {} : { clientMetadataUrl: metadataUrl }),
+          ...(explicitMetadataUrl ? { clientMetadataUrl: explicitMetadataUrl } : {}),
+          ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
         },
         { storage, webhookOrigin: origin, workflows },
       ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));

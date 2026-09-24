@@ -155,6 +155,8 @@ export interface OAuthOptions {
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
+  /** Hosted default, used for CIMD without changing saved clients for other providers. */
+  readonly defaultClientMetadataUrl?: string;
 }
 
 /** OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. */

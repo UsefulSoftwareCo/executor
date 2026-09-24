@@ -24,6 +24,7 @@ import {
 } from "../src/index.ts";
 import {
   aesGcmCredentials as credentials,
+  OAuthClientId,
   OAuthSetupFailed,
   OAuthCompletionFailed,
 } from "@executor-js/sdk/core";
@@ -407,7 +408,7 @@ async function setup(
       account?: AccountId;
       client?: {
         clientId: string;
-        clientSecret: string;
+        clientSecret?: string;
       };
     },
     host: Executor = executor,
@@ -465,6 +466,19 @@ async function setup(
   return {
     executor,
     secondExecutor,
+    withClientMetadata: (metadata: {
+      clientMetadataUrl?: string;
+      defaultClientMetadataUrl?: string;
+    }) =>
+      createExecutor({
+        ...options,
+        oauth: {
+          httpClient: options.oauth.httpClient,
+          clientName: options.oauth.clientName,
+          urlPolicy: options.oauth.urlPolicy,
+          ...metadata,
+        },
+      }),
     profile,
     storage,
     service,
@@ -771,6 +785,101 @@ for (const mode of ["cimd", "manual"] as const)
       await f.close();
     }
   });
+
+test("an implicit CIMD default preserves saved clients for other providers", async () => {
+  const f = await setup("manual");
+  try {
+    const first = await f.start();
+    await f.complete({ callbackUrl: f.service.callback(first.authorizationUrl) });
+    const upgraded = await f.withClientMetadata({
+      defaultClientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
+    });
+    const input = {
+      owner: OwnerId.make("alice"),
+      provider: f.provider,
+      method: "oauth",
+      label: "Alice again",
+      redirectUri,
+    };
+    assert.equal((await upgraded.accountConnections.oauthSetup(input)).mode, "saved");
+    const next = await f.startOAuth(input, upgraded);
+    assert.equal(new URL(next.authorizationUrl).searchParams.get("client_id"), "manual-client");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an implicit CIMD default reuses and re-encrypts a previously saved public client", async () => {
+  const f = await setup("cimd");
+  try {
+    const input = {
+      owner: OwnerId.make("alice"),
+      provider: f.provider,
+      method: "oauth",
+      label: "Alice",
+      redirectUri,
+    };
+    const oldHost = await f.withClientMetadata({});
+    const first = await f.startOAuth(
+      { ...input, client: { clientId: "previously-saved-client" } },
+      oldHost,
+    );
+    await f.complete({ callbackUrl: f.service.callback(first.authorizationUrl) }, oldHost);
+    const db = f.storage.orm("4.0.0");
+    const [oldClient] = await Effect.runPromise(db.findMany("oauthClients", {}));
+    assert.ok(oldClient);
+
+    const upgraded = await f.withClientMetadata({
+      defaultClientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
+    });
+    assert.equal((await upgraded.accountConnections.oauthSetup(input)).mode, "saved");
+    const reused = await f.startOAuth(input, upgraded);
+    assert.equal(
+      new URL(reused.authorizationUrl).searchParams.get("client_id"),
+      "previously-saved-client",
+    );
+    await f.complete({ callbackUrl: f.service.callback(reused.authorizationUrl) }, upgraded);
+    const clients = await Effect.runPromise(db.findMany("oauthClients", {}));
+    const migrated = clients.find((row) => row.id !== oldClient.id);
+    assert.equal(clients.length, 2);
+    assert.ok(migrated);
+    const decrypted = await Effect.runPromise(
+      f.credentialStore.decrypt(OAuthClientId.make(migrated.id), Redacted.make(migrated.encrypted)),
+    );
+    assert.equal(Redacted.value(decrypted).client_id, "previously-saved-client");
+    assert.equal((await upgraded.accountConnections.oauthSetup(input)).mode, "saved");
+  } finally {
+    await f.close();
+  }
+});
+
+test("CIMD uses the hosted default unless an explicit client URL is configured", async () => {
+  const f = await setup("cimd");
+  try {
+    const defaultUrl = "https://v2.executor.sh/api/oauth/client-id-metadata/default.json";
+    const input = {
+      owner: OwnerId.make("alice"),
+      provider: f.provider,
+      method: "oauth",
+      label: "Alice",
+      redirectUri,
+    };
+    const hosted = await f.withClientMetadata({ defaultClientMetadataUrl: defaultUrl });
+    assert.equal((await hosted.accountConnections.oauthSetup(input)).mode, "automatic");
+    const signIn = await f.startOAuth(input, hosted);
+    assert.equal(new URL(signIn.authorizationUrl).searchParams.get("client_id"), defaultUrl);
+
+    const explicitUrl = "https://custom.example/client.json";
+    const custom = await f.withClientMetadata({
+      clientMetadataUrl: explicitUrl,
+      defaultClientMetadataUrl: defaultUrl,
+    });
+    const customSignIn = await f.startOAuth(input, custom);
+    assert.equal(new URL(customSignIn.authorizationUrl).searchParams.get("client_id"), explicitUrl);
+  } finally {
+    await f.close();
+  }
+});
 
 test("denied, expired and modified callbacks never create an account", async () => {
   const f = await setup("dcr");

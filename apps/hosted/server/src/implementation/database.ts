@@ -45,7 +45,7 @@ export const postgresExecutor = (
   runtime: AppRuntime,
   blobs: BlobStorage,
   sources: AppSourceStorage,
-  oauth: Pick<OAuthOptions, "httpClient" | "clientMetadataUrl" | "urlPolicy">,
+  oauth: Omit<OAuthOptions, "clientName">,
   options?: Partial<
     Pick<ExecutorOptions, "storage" | "appStorage" | "webhookOrigin" | "workflows">
   >,
@@ -64,13 +64,6 @@ export const postgresExecutor = (
       sources,
       credentials,
       runtime,
-      oauth: {
-        httpClient: oauth.httpClient,
-        clientName: "Executor",
-        urlPolicy: oauth.urlPolicy,
-        ...(oauth.clientMetadataUrl === undefined
-          ? {}
-          : { clientMetadataUrl: oauth.clientMetadataUrl }),
-      },
+      oauth: { ...oauth, clientName: "Executor" },
     });
   });

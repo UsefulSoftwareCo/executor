@@ -8,6 +8,7 @@ import { organization } from "better-auth/plugins/organization";
 import { admin } from "better-auth/plugins/admin";
 import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
+import { httpsOnlyUrlPolicy, parseDestination } from "@executor-js/utils/url-policy";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   Authentication,
@@ -26,8 +27,10 @@ export const accountOAuthRedirectUri = (
 ) => HttpUrl.make(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href);
 
 export const accountOAuthClientMetadataPath = "/api/oauth/client-id-metadata/default.json";
-export const accountOAuthClientMetadataUrl = (origin: string): string | undefined =>
-  origin.startsWith("https://") ? new URL(accountOAuthClientMetadataPath, origin).href : undefined;
+export const accountOAuthClientMetadataUrl = (origin: string): string | undefined => {
+  const url = new URL(accountOAuthClientMetadataPath, origin).href;
+  return parseDestination(url, httpsOnlyUrlPolicy)?.href;
+};
 
 /** Public metadata lets OAuth providers identify this host as a client without registration. */
 export const hostedOAuthClientMetadata = Effect.gen(function* () {

@@ -60,7 +60,8 @@ export const selfHostExecutorServices = <E, R>(
         Config.option,
         Config.map(Option.getOrUndefined),
       );
-      const metadataUrl = clientMetadataUrl?.trim() || accountOAuthClientMetadataUrl(origin);
+      const explicitMetadataUrl = clientMetadataUrl?.trim();
+      const defaultClientMetadataUrl = accountOAuthClientMetadataUrl(origin);
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const ready = yield* Deferred.make<Executor>();
       const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
@@ -78,7 +79,8 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(metadataUrl === undefined ? {} : { clientMetadataUrl: metadataUrl }),
+          ...(explicitMetadataUrl ? { clientMetadataUrl: explicitMetadataUrl } : {}),
+          ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
         },
         { storage, webhookOrigin: origin, workflows },
       );
