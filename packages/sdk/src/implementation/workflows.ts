@@ -217,6 +217,7 @@ export const makeWorkflowRuns = (
   const invoke: WorkflowHost["invoke"] = (run, input) =>
     safe(
       Effect.gen(function* () {
+        const deadline = (yield* Clock.currentTimeMillis) + input.timeout;
         const current = yield* seed(run);
         const bound = yield* context(run);
         const result = yield* runtime
@@ -224,6 +225,7 @@ export const makeWorkflowRuns = (
             app: current.app,
             build: current.build,
             ...bound,
+            deadline,
             tool: `${input.kind === "query" ? "queries" : "mutations"}.${input.name}`,
             input: input.input,
             ...(input.kind === "mutation"
@@ -307,7 +309,15 @@ export const makeWorkflowRuns = (
     Effect.gen(function* () {
       if (terminal(row)) return yield* view(row);
       if (backend === undefined) return yield* unavailable();
-      const state = yield* backend.status(row.id);
+      let state = yield* backend.status(row.id);
+      if (row.status === "queued" && state.status === "missing") {
+        // The durable enqueue can commit before caller cancellation interrupts
+        // native dispatch. A status read reconciles that gap without waiting for cron.
+        const current = yield* read(row.id);
+        if (terminal(current)) return yield* view(current);
+        if (current.status === "queued") yield* backend.start(row.id);
+        state = yield* backend.status(row.id);
+      }
       if (state.status === "complete") {
         yield* finish(row.id, { ok: true, output: state.output });
         return yield* view(yield* read(row.id));

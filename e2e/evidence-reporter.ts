@@ -1,6 +1,7 @@
-/** Effect report generation consumes case artifacts after Vitest has closed every test scope. */
+/** Explicit report rendering consumes retained case artifacts without rerunning tests. */
 import { Clock, Effect, FileSystem, Path, Schema } from "effect";
-import { EvidenceEntry, type EvidenceReport } from "./report-model.ts";
+import { type EvidenceReport } from "./report-model.ts";
+import { readEvidence } from "./evidence-results.ts";
 import { renderRecording } from "./support/recording.ts";
 import { renderFocusedRecording } from "./support/recording-composition.ts";
 import { renderRecordingFilmstrip } from "./support/recording-previews.ts";
@@ -35,15 +36,10 @@ export const collectEvidence = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path;
-    const base = path.join(directory, "report/evidence");
-    if (!(yield* fs.exists(base))) return [];
-    return yield* Effect.forEach(yield* fs.readDirectory(base), (name) =>
+    return yield* Effect.forEach(yield* readEvidence(directory), (entry) =>
       Effect.gen(function* () {
-        const folder = path.join(base, name);
-        if (!(yield* fs.exists(path.join(folder, "result.json")))) return [];
-        const entry = yield* fs
-          .readFileString(path.join(folder, "result.json"))
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(EvidenceEntry))));
+        const name = entry.id;
+        const folder = path.join(directory, "report/evidence", name);
         const processingStarted = yield* Clock.currentTimeMillis;
         const captures = entry.attachments.filter(
           (item) => item.contentType === terminalCaptureType,

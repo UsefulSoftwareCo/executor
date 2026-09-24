@@ -12,7 +12,7 @@ const command = Command.make(
       Flag.withDefault("self-host"),
     ),
     name: Flag.String("test-name").pipe(Flag.withDefault("")),
-    workers: Flag.Int("workers").pipe(Flag.withDefault(4)),
+    workers: Flag.Int("workers").pipe(Flag.withDefault(16)),
   },
   runSuite,
 );

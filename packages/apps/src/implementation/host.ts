@@ -12,7 +12,7 @@ import {
 } from "../contracts/workflows.ts";
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
-import { Cause, Effect, Match, Option, Redacted, Schema } from "effect";
+import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import {
   captureTelemetry,
   invocationFetch,
@@ -22,6 +22,7 @@ import type { AccountSlots, BoundContext } from "../contracts/app.ts";
 import {
   DeclaredProvider,
   DeclaredRequirements,
+  InvocationDeadline,
   ToolResultObservation,
   HostAccountsInvalid,
   HostDeclarationInvalid,
@@ -216,6 +217,31 @@ function dispatch(
         (controller) => Effect.sync(() => controller.abort()),
       );
       const invocationSignal = AbortSignal.any([signal, lifetime.signal]);
+      const deadline =
+        context.deadline === undefined
+          ? undefined
+          : yield* safe(
+              () => Schema.decodeUnknownEffect(InvocationDeadline)(context.deadline),
+              new HostInputInvalid(),
+            );
+      const withinDeadline = <A, E>(work: Effect.Effect<A, E>) =>
+        Effect.gen(function* () {
+          if (deadline === undefined) return yield* work;
+          const remaining = deadline - (yield* Clock.currentTimeMillis);
+          if (remaining <= 0)
+            return yield* new WorkflowFailure({ reason: "engine", retryable: true });
+          const result = yield* work.pipe(
+            Effect.timeout(remaining),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
+            ),
+          );
+          // Also reject a body that blocked the event loop past its deadline before
+          // the timer could run. This check remains inside the owning transaction.
+          if ((yield* Clock.currentTimeMillis) >= deadline)
+            return yield* new WorkflowFailure({ reason: "engine", retryable: true });
+          return result;
+        });
       let running: InvocationTelemetry | undefined;
       let transactionOpen = false;
       const delivery: ElicitationHandler = (request, signal) =>
@@ -605,12 +631,14 @@ function dispatch(
               new HostInputInvalid(),
             );
       if (replay !== undefined && kind !== "mutate") return yield* new HostInputInvalid();
-      if (native.database === undefined) return yield* execute();
+      if (native.database === undefined) return yield* withinDeadline(execute());
       const storage = context.storage ?? unavailableStorage;
       return yield* storage[kind === "query" ? "read" : "mutate"](native.database.schema, (db) =>
-        replay === undefined
-          ? execute(db)
-          : db.once(replay.key, replay.fingerprint, () => execute(db)),
+        withinDeadline(
+          replay === undefined
+            ? execute(db)
+            : db.once(replay.key, replay.fingerprint, () => execute(db)),
+        ),
       ).pipe(
         Effect.catchTags({
           AppDatabaseError: () => Effect.fail(new HostOperationFailed()),

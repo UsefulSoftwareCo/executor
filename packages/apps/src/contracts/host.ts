@@ -115,8 +115,13 @@ export type ResolvedAccounts = typeof ResolvedAccounts.Type;
 export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
 export type TrustedToolApproval = typeof TrustedToolApproval.Type;
 
+/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
+export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  /** Trusted host deadline; never accepted in public operation JSON. */
+  readonly deadline?: typeof InvocationDeadline.Type;
   /** Packaged app text files supplied by the build bridge. Direct hosts may omit them for an empty package. */
   readonly files?: readonly SkillFile[];
   /** Private delivery capability. It is never accepted in public request JSON or stored in a build. */

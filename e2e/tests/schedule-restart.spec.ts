@@ -78,9 +78,9 @@ layer(TestLive, { excludeTestServices: true })("Schedule persistence", (it) => {
           );
         yield* configure("tick", true);
         yield* serverControl("stop");
-        // Deliberate downtime outlasts the schedule's whole interval, so its one due tick is
-        // missed entirely. Intervals are floored at one minute, so this wait is a real minute.
-        yield* Effect.sleep("100 seconds");
+        // Advance the stopped product's wall clock across a full interval. Persistence and
+        // scheduler recovery still run through the real process and public HTTP boundary.
+        yield* serverControl("clock/advance", 200, { milliseconds: 100_000 });
         yield* serverControl("start");
         yield* waitFor("tick", "succeeded");
         yield* configure("tick", false);

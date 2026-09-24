@@ -60,10 +60,10 @@ export const selfHostAuth = Effect.gen(function* () {
       lookupOrganizationSlug(() =>
         auth.api.getOrganization({ headers, query: { organizationId } }),
       ).pipe(Effect.withSpan("auth.organizationSlug")),
-    membership: (headers, organizationId) =>
-      lookupMembership(() =>
-        auth.api.getActiveMemberRole({ headers, query: { organizationId }, returnHeaders: true }),
-      ).pipe(Effect.withSpan("auth.membership")),
+    membership: (principal, organizationId) =>
+      lookupMembership(context.adapter, principal, organizationId).pipe(
+        Effect.withSpan("auth.membership"),
+      ),
     removeOrganization: (organizationId) =>
       deleteOrganizationRecords(context.adapter, organizationId).pipe(
         Effect.withSpan("auth.removeOrganization"),

@@ -24,7 +24,7 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
             page.getByRole("dialog").innerText(),
           ),
         ).toContain(
-          "Migration from v1 to v2 is not implemented yet, if you want to play with the product early you can now, otherwise v1 will migrate over automatically in about a week",
+          "We expect to migrate your v1 data in about a week. This is an early build of Executor v2. Try the new version, share feedback, and help us squash bugs.",
         );
         yield* browser.checkpoint("Homepage first-visit preview");
         yield* browser.use("Dismiss the first-visit preview", (page) =>
@@ -64,7 +64,7 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
           yield* browser.use("Read the homepage preview", (page) =>
             page.getByRole("dialog").innerText(),
           ),
-        ).toContain("Expect bugs. If you find one or have an idea");
+        ).toContain("Sit back enjoy v1 and you'll be cleanly migrated over soon");
         yield* browser.checkpoint("Homepage beta banner and preview");
         yield* browser.use("Close the homepage preview", (page) =>
           page.getByRole("button", { name: "Got it", exact: true }).click(),
@@ -77,6 +77,35 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
             page.locator("#early-preview-notice").evaluate((dialog) => dialog.hasAttribute("open")),
           ),
         ).toBe(false);
+
+        for (const width of [390, 320]) {
+          yield* browser.use("Use a small homepage viewport", (page) =>
+            page.setViewportSize({ width, height: 844 }),
+          );
+          const mobileHome = yield* browser.use("Measure the mobile homepage banner", (page) =>
+            page.locator('aside[aria-label="Beta notice"]').evaluate((element) => ({
+              height: element.getBoundingClientRect().height,
+              width: element.getBoundingClientRect().width,
+            })),
+          );
+          expect(mobileHome.width).toBe(width);
+          expect(mobileHome.height).toBeLessThanOrEqual(36);
+          yield* browser.checkpoint(`Mobile homepage beta banner at ${width}px`);
+          yield* browser.use("Open migration information on mobile", (page) =>
+            page.getByRole("button", { name: "Where is my v1 data?", exact: true }).click(),
+          );
+          expect(
+            yield* browser.use("Read mobile migration information", (page) =>
+              page.getByRole("dialog").innerText(),
+            ),
+          ).toContain("We expect to migrate your v1 data in about a week.");
+          yield* browser.use("Close mobile migration information", (page) =>
+            page.getByRole("button", { name: "Got it", exact: true }).click(),
+          );
+        }
+        yield* browser.use("Restore the desktop viewport", (page) =>
+          page.setViewportSize({ width: 1280, height: 900 }),
+        );
 
         yield* browser.login(actors.owner);
         yield* browser.use("Open the cloud dashboard", (page) =>
@@ -111,7 +140,7 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
           yield* browser.use("Read the dashboard preview", (page) =>
             page.getByRole("dialog").innerText(),
           ),
-        ).toContain("Expect bugs. If you find one or have an idea");
+        ).toContain("Sit back enjoy v1 and you'll be cleanly migrated over soon");
         expect(
           yield* browser.use("Check the dashboard uses the marketing dialog", (page) =>
             page
@@ -155,6 +184,17 @@ layer(HostedLive, { excludeTestServices: true })("Beta notice", (it) => {
         expect(mobileBanner.width).toBe(mobileBanner.viewport);
         expect(mobileBanner.height).toBeLessThanOrEqual(36);
         yield* browser.checkpoint("Mobile dashboard beta banner");
+        yield* browser.use("Open dashboard migration information on mobile", (page) =>
+          page.getByRole("button", { name: "Where is my v1 data?", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read dashboard migration information on mobile", (page) =>
+            page.getByRole("dialog").innerText(),
+          ),
+        ).toContain("We expect to migrate your v1 data in about a week.");
+        yield* browser.use("Close dashboard migration information on mobile", (page) =>
+          page.getByRole("button", { name: "Got it", exact: true }).click(),
+        );
 
         yield* browser.use("Dismiss the dashboard banner", (page) =>
           page.getByRole("button", { name: "Dismiss beta notice" }).click(),

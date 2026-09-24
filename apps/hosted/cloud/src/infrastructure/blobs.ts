@@ -5,6 +5,7 @@ import { retain } from "alchemy/RemovalPolicy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option } from "effect";
 import { testStage } from "./stage.ts";
+import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 /** Configured stages keep retained builds; a destroyed test stage leaves nothing behind. */
 export const AppBuilds = Cloudflare.R2.Bucket(
@@ -26,18 +27,27 @@ export const cloudBlobs = Effect.gen(function* () {
         return Option.some(new Uint8Array(yield* object.arrayBuffer()));
       }).pipe(
         Effect.provide(RuntimeContext.phantom),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+        ),
         Effect.mapError(() => new BlobStoreError({ operation: "get" })),
       ),
     put: (key, body) =>
       bucket.put(key, body).pipe(
         Effect.asVoid,
         Effect.provide(RuntimeContext.phantom),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+        ),
         Effect.mapError(() => new BlobStoreError({ operation: "put" })),
       ),
     remove: (key) =>
       bucket.delete(key).pipe(
         Effect.asVoid,
         Effect.provide(RuntimeContext.phantom),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+        ),
         Effect.mapError(() => new BlobStoreError({ operation: "remove" })),
       ),
   });

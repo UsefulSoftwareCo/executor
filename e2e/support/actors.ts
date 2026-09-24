@@ -1,6 +1,6 @@
 /** Hosted actor layers own independent organizations and sessions for each scenario. */
-import { Clock, Effect, Context, Layer, Redacted, Schema } from "effect";
-import { SessionClients, body, type Session } from "./api.ts";
+import { Clock, Effect, Context, Layer, Redacted, Schedule, Schema } from "effect";
+import { RequestFailed, SessionClients, body, type Session } from "./api.ts";
 import { Target } from "./platform.ts";
 import { Organization, Resource } from "./contracts.ts";
 import { FixtureActors, FixtureActor, FixtureFailed, fixtureRequest } from "../sdk/fixtures.ts";
@@ -148,9 +148,16 @@ export const createCloudScenarioActors = Effect.gen(function* () {
   yield* Effect.forEach(
     [actors.owner, actors.admin, actors.member],
     (actor) =>
-      clients
-        .request(actor, "POST", "/api/onboarding/prepare")
-        .pipe(Effect.flatMap((response) => ready(response.status))),
+      clients.request(actor, "POST", "/api/onboarding/prepare").pipe(
+        // A temporary deployment Worker has not run the application handler.
+        // Only fixture preparation waits for that explicit propagation state.
+        Effect.retry({
+          while: (error) => Schema.is(RequestFailed)(error) && error.reason === "deployment",
+          schedule: Schedule.spaced("500 millis"),
+          times: 20,
+        }),
+        Effect.flatMap((response) => ready(response.status)),
+      ),
     { concurrency: 3 },
   );
   return actors;

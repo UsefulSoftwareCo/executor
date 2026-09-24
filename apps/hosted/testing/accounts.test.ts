@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { betterAuth } from "better-auth";
-import { Authentication, OrganizationId } from "@executor-js/hosted-server";
+import { Authentication, OrganizationId, OrganizationForbidden } from "@executor-js/hosted-server";
 import { migrateHostedSchemas } from "@executor-js/hosted-server/migrations";
 import { ConfigProvider, Effect, Exit, FileSystem, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -76,10 +76,12 @@ for (const host of ["self-host", "cloud"] as const) {
               // The actual host service verifies the signed cookie against the persisted session.
               yield* Effect.gen(function* () {
                 const identity = yield* Authentication;
-                assert.equal((yield* identity.current(requestHeaders))?.userId, member.userId);
+                const principal = yield* identity.current(requestHeaders);
+                assert.ok(principal);
+                assert.equal(principal.userId, member.userId);
                 assert.equal(
                   (yield* identity.membership(
-                    requestHeaders,
+                    principal,
                     OrganizationId.make(member.organizationId),
                   )).role,
                   "member",
@@ -90,6 +92,31 @@ for (const host of ["self-host", "cloud"] as const) {
                   ),
                   null,
                 );
+                assert.ok(
+                  Schema.is(OrganizationForbidden)(
+                    yield* identity
+                      .membership(principal, OrganizationId.make("foreign-organization"))
+                      .pipe(Effect.flip),
+                  ),
+                );
+                yield* sql`update member set role = 'admin' where "userId" = ${member.userId} and "organizationId" = ${member.organizationId}`;
+                assert.equal(
+                  (yield* identity.membership(
+                    principal,
+                    OrganizationId.make(member.organizationId),
+                  )).role,
+                  "admin",
+                );
+                yield* sql`delete from member where "userId" = ${member.userId} and "organizationId" = ${member.organizationId}`;
+                assert.ok(
+                  Schema.is(OrganizationForbidden)(
+                    yield* identity
+                      .membership(principal, OrganizationId.make(member.organizationId))
+                      .pipe(Effect.flip),
+                  ),
+                );
+                yield* sql`delete from session where id = ${principal.sessionId}`;
+                assert.equal(yield* identity.current(requestHeaders), null);
               }).pipe(Effect.provide(native.identity));
               assert.ok(
                 Exit.isFailure(

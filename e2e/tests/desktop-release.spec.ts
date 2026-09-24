@@ -78,7 +78,9 @@ it.live("packaged desktop starts without the workspace and retains apps after re
           Effect.gen(function* () {
             const electron = yield* Effect.acquireRelease(
               driver("launch packaged desktop", () =>
-                _electron.launch({ executablePath, cwd: directory, env }),
+                // Hosted runners have no usable GPU. Exercise the packaged app
+                // with software rendering instead of repeated GPU startup failures.
+                _electron.launch({ executablePath, cwd: directory, env, args: ["--disable-gpu"] }),
               ),
               (electron) =>
                 driver("close packaged desktop", () => electron.close()).pipe(Effect.orDie),

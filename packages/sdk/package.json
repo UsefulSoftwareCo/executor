@@ -44,6 +44,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260729.1",
     "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@executor-js/app-source": "workspace:*",
     "@types/ws": "8.18.1"
   }

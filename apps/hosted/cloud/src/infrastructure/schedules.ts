@@ -1,4 +1,6 @@
 import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
+import { dispatchBackground } from "../implementation/background-dispatch.ts";
+import { makeScheduleDispatch } from "../implementation/schedule-dispatch.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
@@ -40,6 +42,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
     const pool = yield* Semaphore.make(concurrency);
     const lifecycle = yield* Semaphore.make(1);
     const alarms = yield* Semaphore.make(1);
+    const dispatch = yield* makeScheduleDispatch;
     let initialized = false;
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -77,13 +80,16 @@ const makeScheduleCoordinator = Effect.gen(function* () {
               }),
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
-            yield* executor[ProfileHost].tick(concurrency);
-            yield* executor.scheduler.tick({
-              runner: "cloud",
-              maxCandidates: concurrency,
-              authorize,
-              execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
-            });
+            yield* dispatch(
+              executor[ProfileHost].tick(concurrency),
+              executor.scheduler.tick({
+                runner: "cloud",
+                maxCandidates: concurrency,
+                authorize,
+                execute: (operation) =>
+                  pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
+              }),
+            );
             yield* arm;
           }),
         ).pipe(
@@ -143,7 +149,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
               );
             }),
           );
-          yield* state.waitUntil(run);
+          yield* dispatchBackground(run, state.waitUntil);
           // Keep considering unclaimed due work while admitted runs are waiting on external I/O.
           yield* Effect.scoped(arm).pipe(
             lifetime.background,

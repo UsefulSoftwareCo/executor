@@ -6,7 +6,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { pgliteLayer } from "fumadb-effect/pglite";
-import { Context, Deferred, Effect, Fiber, Layer, Redacted, Result, Schema, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Redacted,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 import { createExecutor as createPromiseExecutor } from "@executor-js/sdk";
 import {
   AppId,
@@ -479,6 +490,216 @@ test("app predicates match scalar and collection account selections before deplo
           (yield* executor.apps.list({ account: other })).map((app) => app.name).toSorted(),
           ["Many"],
         );
+      }),
+    ).pipe(Effect.provide(services)),
+  ));
+
+for (const failure of ["interruption", "defect"] as const) {
+  test(`profile reconciliation releases its lease after ${failure}`, { timeout: 10_000 }, () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          let failing = true;
+          const options = yield* fixture({
+            ...runtime,
+            webhook: () =>
+              !failing
+                ? Effect.succeed([])
+                : Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(
+                      failure === "interruption"
+                        ? Effect.never
+                        : Effect.die("Synthetic runtime defect"),
+                    ),
+                  ),
+          });
+          const executor = yield* createExecutor(options);
+          const { app } = yield* executor.apps.deploy({ owner, name: "Lease recovery", files });
+          const requirement = app.requirements.accounts.service;
+          assert.ok(requirement);
+          const account = yield* executor.accounts.add({
+            owner,
+            provider: requirement.provider,
+            method: "key",
+            label: "Default",
+            fields: Redacted.make({ token: "synthetic" }),
+          });
+          const profile = yield* executor.apps.profiles.create({
+            app: app.id,
+            owner,
+            subject: "alice",
+            idempotencyKey: "lease",
+            accounts: { service: account.id },
+          });
+          const input = { app: app.id, profile: profile.id };
+          if (failure === "interruption") {
+            const running = yield* executor.apps.profiles.reconcile(input).pipe(Effect.forkChild);
+            yield* Deferred.await(entered);
+            assert.equal((yield* executor.apps.profiles.reconcile(input)).status, "pending");
+            yield* Fiber.interrupt(running);
+          } else {
+            const result = yield* executor.apps.profiles.reconcile(input).pipe(Effect.exit);
+            assert.ok(Exit.isFailure(result));
+          }
+          failing = false;
+          const recovered = yield* executor.apps.profiles.reconcile(input);
+          assert.equal(recovered.status, "ready");
+          assert.equal(recovered.reconciledDeployment, app.activeDeployment);
+        }).pipe(Effect.provide(services)),
+      ),
+    ),
+  );
+}
+
+for (const operation of ["webhook-register", "webhook-unregister"] as const) {
+  for (const failure of ["interruption", "defect"] as const) {
+    test(`${operation} releases its lease after ${failure}`, { timeout: 10_000 }, () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const entered = yield* Deferred.make<void>();
+            let failing = false;
+            const options = yield* fixture({
+              ...runtime,
+              webhook: ({ command }) => {
+                if (failing && command.operation === operation)
+                  return Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(
+                      failure === "interruption"
+                        ? Effect.never
+                        : Effect.die("Synthetic webhook defect"),
+                    ),
+                  );
+                return Effect.succeed(
+                  command.operation === "webhooks"
+                    ? [{ name: "changed", account: "service", configSchema: {} }]
+                    : {},
+                );
+              },
+            });
+            const executor = yield* createExecutor({
+              ...options,
+              webhookOrigin: "https://hooks.example.test",
+            });
+            const { app } = yield* executor.apps.deploy({ owner, name: "Hook recovery", files });
+            const requirement = app.requirements.accounts.service;
+            assert.ok(requirement);
+            const account = yield* executor.accounts.add({
+              owner,
+              provider: requirement.provider,
+              method: "key",
+              label: "Default",
+              fields: Redacted.make({ token: "synthetic" }),
+            });
+            const profile = yield* executor.apps.profiles.create({
+              app: app.id,
+              owner,
+              subject: "alice",
+              idempotencyKey: "hook-lease",
+              accounts: { service: account.id },
+            });
+            const create = executor.webhooks.create({
+              app: app.id,
+              profile: profile.id,
+              key: "recovery",
+              name: "changed",
+              config: {},
+            });
+            if (operation === "webhook-unregister") yield* create;
+            failing = true;
+            const work =
+              operation === "webhook-register"
+                ? create
+                : Effect.gen(function* () {
+                    const [hook] = yield* executor.webhooks.list({ app: app.id });
+                    assert.ok(hook);
+                    return yield* executor.webhooks.remove({ app: app.id, subscription: hook.id });
+                  });
+            if (failure === "interruption") {
+              const running = yield* work.pipe(Effect.forkChild);
+              yield* Deferred.await(entered);
+              const [hook] = yield* executor.webhooks.list({ app: app.id });
+              assert.ok(hook);
+              const conflict = yield* executor.webhooks
+                .reconcile({ app: app.id, subscription: hook.id })
+                .pipe(Effect.exit);
+              assert.ok(Exit.isFailure(conflict), "An active lease still excludes another worker");
+              yield* Fiber.interrupt(running);
+            } else {
+              assert.ok(Exit.isFailure(yield* work.pipe(Effect.exit)));
+            }
+            failing = false;
+            const [hook] = yield* executor.webhooks.list({ app: app.id });
+            assert.ok(hook);
+            const recovered = yield* executor.webhooks.reconcile({
+              app: app.id,
+              subscription: hook.id,
+            });
+            assert.equal(recovered.status, operation === "webhook-register" ? "active" : "stopped");
+          }).pipe(Effect.provide(services)),
+        ),
+      ),
+    );
+  }
+}
+
+test("reading a queued workflow recovers dispatch interrupted after the durable write", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<string>();
+        const nativeRuns = new Set<string>();
+        let interrupted = false;
+        const options = yield* fixture({
+          ...runtime,
+          build: () =>
+            Effect.succeed({ build: BuildId.make("bld_workflow"), requirements: { accounts: {} } }),
+          workflow: ({ command }) =>
+            command.operation === "workflow-validate"
+              ? Effect.succeed(command.input)
+              : Effect.die("Unexpected workflow operation"),
+        });
+        const executor = yield* createExecutor({
+          ...options,
+          workflows: {
+            status: (run) =>
+              Effect.succeed({ status: nativeRuns.has(run) ? "running" : "missing" }),
+            start: (run) =>
+              Effect.gen(function* () {
+                if (!interrupted) {
+                  yield* Deferred.succeed(entered, run);
+                  yield* Effect.never;
+                }
+                nativeRuns.add(run);
+              }),
+            terminate: (run) =>
+              Effect.sync(() => {
+                nativeRuns.delete(run);
+              }),
+          },
+        });
+        const { app } = yield* executor.apps.deploy({ owner, name: "Queued workflow", files });
+        const start = yield* executor.apps.workflowRuns
+          .start({
+            app: app.id,
+            workflow: "example",
+            input: {},
+            key: "once",
+          })
+          .pipe(Effect.forkChild);
+        const run = yield* Deferred.await(entered);
+        yield* Fiber.interrupt(start);
+        interrupted = true;
+        const queued = (yield* executor.apps.workflowRuns.list({ app: app.id })).items[0];
+        assert.ok(queued);
+        assert.equal(queued.id, run);
+        assert.equal(queued.status, "running");
+        assert.deepEqual([...nativeRuns], [run]);
+        yield* executor.apps.workflowRuns.terminate({ app: app.id, run: queued.id });
+        const terminal = yield* executor.apps.workflowRuns.get({ app: app.id, run: queued.id });
+        assert.equal(terminal.status, "terminated");
+        assert.equal(nativeRuns.size, 0, "a terminated run must not be dispatched again");
       }),
     ).pipe(Effect.provide(services)),
   ));

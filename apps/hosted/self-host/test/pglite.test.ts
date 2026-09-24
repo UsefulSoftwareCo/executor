@@ -461,8 +461,10 @@ export default defineApp({ accounts: { service } }, async (appContext) => ({  mu
               yield* sql`delete from "member" where "userId" = ${saved.alice} and "organizationId" = ${saved.organization}`;
               const service = yield* Layer.build(identity.identity);
               const current = yield* Authentication.pipe(Effect.provideContext(service));
+              const principal = yield* current.current(headers);
+              assert.ok(principal);
               const denied = yield* current
-                .membership(headers, OrganizationId.make(saved.organization))
+                .membership(principal, OrganizationId.make(saved.organization))
                 .pipe(Effect.flip);
               assert.ok(Schema.is(OrganizationForbidden)(denied));
             }).pipe(

@@ -76,6 +76,8 @@ export const makeWorkflowContext = (
       return work.pipe(
         Effect.timeout(timeout),
         Effect.catchTag("TimeoutError", () =>
+          // Both the capability deadline and the native engine deadline describe
+          // the same cancellation, regardless of which timer fires first.
           Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
         ),
       );

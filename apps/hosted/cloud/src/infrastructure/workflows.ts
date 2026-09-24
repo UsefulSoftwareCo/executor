@@ -16,6 +16,8 @@ import {
 } from "@executor-js/sdk/core";
 import { cloudExecutor } from "./executor.ts";
 import { AppDataSupervisor } from "./app-data.ts";
+import { readNativeWorkflowStatus } from "../implementation/workflow-status.ts";
+import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const encode = (error: WorkflowFailure) =>
@@ -146,10 +148,26 @@ export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.Wo
     ).pipe(Effect.mapError(failure));
     const status: WorkflowRuntime["status"] = (run) =>
       binding.pipe(
-        Effect.flatMap((binding) => native(async () => (await binding.get(run)).status())),
+        Effect.flatMap((binding) =>
+          readNativeWorkflowStatus(async () => (await binding.get(run)).status()).pipe(
+            Effect.tapError((error) =>
+              Effect.annotateCurrentSpan({
+                "executor.workflow.failure.phase": "native_status",
+                "executor.workflow.failure.code": providerFailureCode(error),
+              }),
+            ),
+          ),
+        ),
         Effect.flatMap((value) =>
           Schema.decodeUnknownEffect(WorkflowBackendState)(
             value.status === "unknown" ? { status: "missing" } : value,
+          ).pipe(
+            Effect.tapError(() =>
+              Effect.annotateCurrentSpan({
+                "executor.workflow.failure.phase": "decode_status",
+                "executor.workflow.backend.status": value.status,
+              }),
+            ),
           ),
         ),
         Effect.catchCause((cause) => {
@@ -158,6 +176,13 @@ export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.Wo
             return Effect.succeed({ status: "missing" } as const);
           return Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.fail(recover(error));
         }),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({
+            "executor.workflow.failure.reason": error.reason,
+            "executor.workflow.failure.retryable": error.retryable,
+          }),
+        ),
+        Effect.withSpan("workflow.backend.status", { attributes: { "executor.run.id": run } }),
       );
     return {
       status,

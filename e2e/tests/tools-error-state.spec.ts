@@ -139,12 +139,18 @@ export default defineApp({ accounts: {} }, async () => ({
         yield* browser.use("Return to desktop", (page) =>
           page.setViewportSize({ width: 1440, height: 960 }),
         );
-        const unavailable = yield* holdQuery(paths, "fail");
-        yield* browser.use("Reopen Tools with a failed network read", (page) => page.goto(pageUrl));
-        yield* unavailable.requested;
-        yield* unavailable.release;
-        yield* browser.use("Unclassified failures still have a safe recovery", (page) =>
-          page.getByRole("alert", { name: "Action unavailable", exact: true }).waitFor(),
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const unavailable = yield* holdQuery(paths, "fail", { allRequests: true });
+            yield* browser.use("Reopen Tools with a failed network read", (page) =>
+              page.goto(pageUrl),
+            );
+            yield* unavailable.requested;
+            yield* unavailable.release;
+            yield* browser.use("Unclassified failures still have a safe recovery", (page) =>
+              page.getByRole("alert", { name: "Action unavailable", exact: true }).waitFor(),
+            );
+          }),
         );
         const recovery = yield* holdQuery(paths, "continue");
         yield* browser.use("Retry the temporary failure", (page) =>

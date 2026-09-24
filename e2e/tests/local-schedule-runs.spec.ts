@@ -1,11 +1,13 @@
 /** Real timers, mutations and cookie-authenticated approval delivery through the complete local product. */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Duration, Effect, Redacted, Schedule, Schema } from "effect";
+import { Clock, Duration, Effect, Redacted, Ref, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
+import { serverControl } from "../support/server-control.ts";
+import { Evidence } from "../support/evidence.ts";
 
 const Run = Schema.Struct({
   id: Schema.String,
@@ -45,7 +47,8 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          target = yield* Target;
+          target = yield* Target,
+          evidence = yield* Evidence;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
         const deployed = yield* session.send(
@@ -86,16 +89,33 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           .send("GET", `/v1/scheduled-runs?app=${app.id}`, undefined, headers)
           .pipe(Effect.flatMap((response) => body(Runs, response)));
         const waitFor = (name: string, status: string, within: Duration.Input = "15 seconds") =>
-          runs.pipe(
-            Effect.flatMap((rows) => {
-              const found = rows.find((row) => row.name === name && row.status === status);
-              return found === undefined ? Effect.fail(new Pending()) : Effect.succeed(found);
+          evidence.step(
+            `Wait for ${name} schedule to become ${status}`,
+            Effect.gen(function* () {
+              const observed = yield* Ref.make<typeof Runs.Type>([]);
+              return yield* runs.pipe(
+                Effect.tap((rows) => Ref.set(observed, rows)),
+                Effect.flatMap((rows) => {
+                  const found = rows.find((row) => row.name === name && row.status === status);
+                  return found === undefined ? Effect.fail(new Pending()) : Effect.succeed(found);
+                }),
+                Effect.retry({
+                  while: (error) => error instanceof Pending,
+                  schedule: Schedule.spaced("100 millis"),
+                }),
+                Effect.timeout(within),
+                Effect.tapError(() =>
+                  Ref.get(observed).pipe(
+                    Effect.flatMap((rows) =>
+                      evidence.json(`schedule-${name}-${status}.json`, {
+                        expected: { name, status },
+                        observed: rows,
+                      }),
+                    ),
+                  ),
+                ),
+              );
             }),
-            Effect.retry({
-              while: (error) => error instanceof Pending,
-              schedule: Schedule.spaced("100 millis"),
-            }),
-            Effect.timeout(within),
           );
         // Intervals are floored at one minute, so each check asks for its run now.
         const runNow = (name: string) =>
@@ -205,10 +225,11 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           headers,
         );
         expect(updated.status).toBe(200);
-        // Run now needs a live declaration, so this waits out one real interval instead.
-        expect((yield* waitFor("automatic", "failed", "90 seconds")).failure).toBe(
-          "ScheduleNotFound",
-        );
+        // Keep the missing-declaration check on the scheduler path, without a real minute's wait.
+        yield* serverControl("stop");
+        yield* serverControl("clock/advance", 200, { milliseconds: 60_000 });
+        yield* serverControl("start");
+        expect((yield* waitFor("automatic", "failed")).failure).toBe("ScheduleNotFound");
         const controls = yield* session.send(
           "GET",
           `/v1/apps/${app.id}/schedules`,

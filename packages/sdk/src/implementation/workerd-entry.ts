@@ -140,6 +140,7 @@ const invoke = (
         accounts: input.accounts,
         approval: input.approval,
         replay: input.replay,
+        deadline: input.deadline,
         workflowRun: execution?.runId,
       });
       const data =

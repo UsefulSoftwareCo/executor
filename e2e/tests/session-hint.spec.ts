@@ -51,6 +51,12 @@ layer(HostedLive, { excludeTestServices: true })("Session hints", (it) => {
         yield* browser.use("The signed-in page closes", (page) =>
           page.getByRole("button", { name: "Sign out", exact: true }).waitFor({ state: "hidden" }),
         );
+        yield* browser.use("Sign-out navigation finishes before restoring a stale hint", (page) =>
+          page.waitForURL(
+            (url) => url.pathname === (target.metadata.target === "cloud" ? "/" : "/login"),
+            { waitUntil: "domcontentloaded" },
+          ),
+        );
         const signedOut = yield* browser.use("Sign-out clears the display hint", (page) =>
           page.context().cookies(),
         );

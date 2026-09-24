@@ -102,7 +102,7 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
               builder.onLoad(
                 { filter: /sdk[/\\]src[/\\]implementation[/\\]workerd-bundle\.ts$/ },
                 () => ({
-                  contents: `import { Effect } from "effect"; export const bundleWorkerdHost = Effect.succeed([${prepared.join(",")}]);`,
+                  contents: `import { Effect } from "effect"; export const workerdHostModules = Effect.succeed([${prepared.join(",")}]);`,
                   loader: "js",
                   resolveDir: path.join(root, "packages/sdk"),
                 }),

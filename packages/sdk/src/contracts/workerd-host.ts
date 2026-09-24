@@ -2,6 +2,7 @@
 import { Schema } from "effect";
 import {
   HostRequest,
+  InvocationDeadline,
   ResolvedAccounts,
   TrustedToolApproval,
   WorkflowReplay,
@@ -21,6 +22,7 @@ export const WorkerInvocation = Schema.Struct({
   accounts: ResolvedAccounts,
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
+  deadline: Schema.optionalKey(InvocationDeadline),
   headers: Schema.Record(Schema.String, Schema.String),
 });
 export type WorkerInvocation = typeof WorkerInvocation.Type;

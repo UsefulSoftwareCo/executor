@@ -62,9 +62,18 @@ layer(TestLive, { excludeTestServices: true })("Schedule dashboard", (it) => {
           page.getByRole("button", { name: "Pause", exact: true }).waitFor(),
         );
         yield* browser.checkpoint("01 Schedule controls");
-        yield* browser.use("Request a run", (page) =>
-          page.getByRole("button", { name: "Run now", exact: true }).click(),
-        );
+        expect(
+          yield* browser.use("Request a run and wait for acceptance", (page) =>
+            Promise.all([
+              page.waitForResponse(
+                (response) =>
+                  response.request().method() === "POST" &&
+                  new URL(response.url()).pathname.endsWith("/schedules/digest/run"),
+              ),
+              page.getByRole("button", { name: "Run now", exact: true }).click(),
+            ]).then(([response]) => response.status()),
+          ),
+        ).toBe(200);
         yield* browser.use("Open approvals", (page) =>
           page.getByRole("link", { name: "Approvals", exact: true }).click(),
         );

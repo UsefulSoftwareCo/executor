@@ -5,7 +5,18 @@ import { Pool } from "pg";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Config, Effect, FileSystem, Layer, Redacted, Schema, Semaphore, Schedule } from "effect";
+import {
+  Config,
+  Console,
+  Effect,
+  FileSystem,
+  Layer,
+  Redacted,
+  Schema,
+  Semaphore,
+  Schedule,
+  Option,
+} from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -35,6 +46,16 @@ const SessionRequest = Schema.Struct({
   role: Schema.Literals(["owner", "admin", "member"]),
 });
 const Role = ["owner", "admin", "member"] as const;
+const Removal = Schema.Array(Schema.Struct({ status: Schema.Literals(["running", "done"]) }));
+const RemovalFailure = Schema.Struct({
+  _tag: Schema.Literals([
+    "AppWorkflowsActive",
+    "AccountWorkflowsActive",
+    "OrganizationForbidden",
+    "OrganizationRemovalUnavailable",
+    "StorageError",
+  ]),
+});
 
 const main = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -44,7 +65,15 @@ const main = Effect.gen(function* () {
   const configured = yield* Semaphore.make(1);
   let auth: ReturnType<typeof testAccountAuth> | undefined;
   let pool: Pool | undefined;
-  const owned = new Map<string, { label: string; gate: Semaphore.Semaphore; users: Set<string> }>();
+  const owned = new Map<
+    string,
+    {
+      label: string;
+      gate: Semaphore.Semaphore;
+      users: Set<string>;
+      organization: string | undefined;
+    }
+  >();
   yield* Effect.addFinalizer(() => {
     const database = pool;
     return database === undefined ? Effect.void : Effect.promise(() => database.end());
@@ -124,6 +153,7 @@ const main = Effect.gen(function* () {
       });
       const value = Redacted.value(session);
       scenario.users.add(value.userId);
+      scenario.organization = value.organizationId;
       return value;
     });
   const provision = Effect.gen(function* () {
@@ -131,7 +161,12 @@ const main = Effect.gen(function* () {
     const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Request)));
     let scenario = owned.get(input.id);
     if (scenario === undefined) {
-      scenario = { label: input.label, gate: yield* Semaphore.make(1), users: new Set<string>() };
+      scenario = {
+        label: input.label,
+        gate: yield* Semaphore.make(1),
+        users: new Set<string>(),
+        organization: undefined,
+      };
       owned.set(input.id, scenario);
     }
     if (scenario.label !== input.label) return yield* new TestAccountFailed({ stage: "fixture" });
@@ -194,11 +229,24 @@ const main = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ id: Id }))),
     );
     const scenario = owned.get(id),
-      current = auth;
+      current = auth,
+      database = pool;
     if (scenario === undefined) return { removed: true };
-    if (current === undefined) return yield* new TestAccountFailed({ stage: "configuration" });
+    if (current === undefined || database === undefined)
+      return yield* new TestAccountFailed({ stage: "configuration" });
+    const removal = async (organization: string) =>
+      Schema.decodeUnknownSync(Removal)(
+        (
+          await database.query(
+            "select status from hosted_organization_removal where organization_id = $1",
+            [organization],
+          )
+        ).rows,
+      )[0];
+    let cleanupPhase = "start-removal";
     yield* scenario.gate.withPermits(1)(
       Effect.gen(function* () {
+        let organizationId = scenario.organization;
         const cleanup = yield* Effect.tryPromise({
           try: async () => {
             const ctx = await current.$context;
@@ -210,6 +258,10 @@ const main = Effect.gen(function* () {
             const organization = Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(
               row,
             );
+            organizationId = organization.id;
+            // A scenario or an earlier cleanup may already have started durable removal.
+            // Tombstoned organizations reject requests; wait for the same removal below.
+            if ((await removal(organization.id)) !== undefined) return undefined;
             // Restore cleanup authority only for an organization reserved by this process.
             const found = await ctx.internalAdapter.findUserByEmail(
               `agent-${id}-owner@example.test`,
@@ -238,20 +290,36 @@ const main = Effect.gen(function* () {
                   headers: { cookie: owner.headers.cookie, origin },
                 }),
               );
-              yield* response.text;
-              if (response.status !== 200 && response.status !== 404)
+              const responseText = yield* response.text;
+              if (response.status !== 200 && response.status !== 404) {
+                const failure = Schema.decodeUnknownOption(Schema.fromJsonString(RemovalFailure))(
+                  responseText,
+                );
+                yield* Console.error({
+                  message: "Fixture organization removal failed",
+                  scenario: id,
+                  status: response.status,
+                  reason: Option.isSome(failure) ? failure.value._tag : "unexpected-response",
+                  ray: response.headers["cf-ray"],
+                });
                 return yield* new TestAccountFailed({ stage: "fixture" });
+              }
             }),
           );
         }
         yield* Effect.tryPromise({
           try: async () => {
+            cleanupPhase = "wait-for-organization";
             const ctx = await current.$context;
             const organization = await ctx.adapter.findOne({
               model: "organization",
               where: [{ field: "slug", value: organizationSlug(id) }],
             });
             if (organization !== null) throw new Error("Product cleanup is still running");
+            cleanupPhase = "wait-for-removal";
+            if (organizationId !== undefined && (await removal(organizationId))?.status !== "done")
+              throw new Error("Product cleanup has not finished");
+            cleanupPhase = "remove-users";
             // Also discover identities created before a partially failed provisioning operation returned.
             for (const role of Role) {
               const found = await ctx.internalAdapter.findUserByEmail(
@@ -262,9 +330,19 @@ const main = Effect.gen(function* () {
             for (const user of scenario.users) await ctx.internalAdapter.deleteUser(user);
           },
           catch: () => new TestAccountFailed({ stage: "fixture" }),
-        }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }));
+        }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis") }));
         owned.delete(id);
-      }),
+      }).pipe(
+        // Leave time to report the error before the runner's 60-second cleanup deadline.
+        Effect.timeout("55 seconds"),
+        Effect.tapError(() =>
+          Console.error({
+            message: "Fixture cleanup did not complete",
+            scenario: id,
+            phase: cleanupPhase,
+          }),
+        ),
+      ),
     );
     return { removed: true };
   });

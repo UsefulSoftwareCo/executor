@@ -178,10 +178,10 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         ).toBe(0);
         yield* held.release;
         yield* browser.use("The selected catalog failure is visible", (page) =>
-          page.getByText("Unable to complete this request", { exact: true }).waitFor(),
+          page.getByRole("alert", { name: "Action unavailable", exact: true }).waitFor(),
         );
         yield* browser.use("Retry Work", (page) =>
-          page.getByRole("button", { name: "Retry", exact: true }).click(),
+          page.getByRole("button", { name: "Try again", exact: true }).click(),
         );
         yield* Effect.gen(function* () {
           yield* browser.use("Work has its own full catalog", (page) =>

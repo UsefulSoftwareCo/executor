@@ -40,7 +40,7 @@ import type { Executor } from "../contracts/executor.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
-import { bundleWorkerdHost } from "./workerd-bundle.ts";
+import { workerdHostModules } from "./workerd-bundle.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -138,7 +138,7 @@ export const workerdApps = (options: {
         compatibilityDate: "2026-07-30",
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat"],
-        modules: yield* bundleWorkerdHost,
+        modules: yield* workerdHostModules,
         durableObjectNamespaces: [
           { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
         ],

@@ -1,5 +1,6 @@
 /** Native invocation totals include background cleanup; they are not response latency. */
 import { Effect, Option, Schema } from "effect";
+import { providerFailureCode } from "./provider-failure.ts";
 import {
   TraceContext,
   externalTrace,
@@ -46,6 +47,14 @@ export const invocationSummary = (input: unknown) =>
         "cloudflare.outcome": event.outcome,
         "cloudflare.truncated": event.truncated,
       };
+      if (event.exceptions !== undefined && event.exceptions.length > 0) {
+        attributes["cloudflare.exception.count"] = event.exceptions.length;
+        attributes["cloudflare.exception.codes"] = [
+          ...new Set(
+            event.exceptions.map(({ message }) => providerFailureCode(new Error(message))),
+          ),
+        ].join(",");
+      }
       for (const log of event.logs)
         for (const message of log.message) {
           const request = requestContext(message);

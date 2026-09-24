@@ -7,28 +7,29 @@ import type { Session } from "./api.ts";
 import { RecordingFocus } from "./recording-focus.ts";
 import { captureUIObservations } from "./ui-observation.ts";
 
-const launchBrowser = (purpose: "capture" | "render") =>
-  Effect.gen(function* () {
-    const target = yield* Target;
-    return yield* Effect.acquireRelease(
-      driver("launch browser", () =>
-        chromium.launch({
-          headless: target.headless ?? !target.metadata.interactive,
-          slowMo: purpose === "capture" ? target.recordingPaceMs : 0,
-        }),
-      ),
-      (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
-    );
-  });
+const launchBrowser = (options: { readonly headless: boolean; readonly slowMo: number }) =>
+  Effect.acquireRelease(
+    driver("launch browser", () => chromium.launch(options)),
+    (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
+  );
 
 /** Suite-scoped Playwright process injected into browser and recording services. */
 export class BrowserDriver extends Context.Service<BrowserDriver, NativeBrowser>()(
   "e2e/BrowserDriver",
 ) {
   /** Rendering is never paced, even when the source recording was captured slowly. */
-  static readonly layer = Layer.effect(BrowserDriver, launchBrowser("render"));
+  static readonly layer = Layer.effect(BrowserDriver, launchBrowser({ headless: true, slowMo: 0 }));
   /** Instrument individual actions, including several actions inside one use call. */
-  static readonly captureLayer = Layer.effect(BrowserDriver, launchBrowser("capture"));
+  static readonly captureLayer = Layer.effect(
+    BrowserDriver,
+    Effect.gen(function* () {
+      const target = yield* Target;
+      return yield* launchBrowser({
+        headless: target.headless ?? !target.metadata.interactive,
+        slowMo: target.recordingPaceMs,
+      });
+    }),
+  );
 }
 /** A case-scoped browser with captured steps and a single isolated context. */
 export class Browser extends Context.Service<
@@ -88,7 +89,7 @@ export class Browser extends Context.Service<
               );
             }
             const screenshot = yield* driver("failure screenshot", () =>
-              failedPage.screenshot(),
+              failedPage.screenshot({ timeout: 5000 }),
             ).pipe(Effect.result);
             if (Result.isSuccess(screenshot))
               yield* evidence.attach("failure.png", "image/png", screenshot.success);

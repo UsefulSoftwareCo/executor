@@ -1,8 +1,51 @@
 /** Bundle only trusted runtime/framework source on the host. Authored code compiles inside workerd. */
 import { build } from "esbuild";
-import { Effect, Path } from "effect";
+import { Config, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { Module } from "@alchemy.run/cloudflare-runtime/core";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
+
+const HostBundle = Schema.mutable(
+  Schema.Array(
+    Schema.Union([
+      Schema.Struct({
+        name: Schema.String,
+        type: Schema.Literals([
+          "ESModule",
+          "CommonJsModule",
+          "Text",
+          "Json",
+          "PythonModule",
+          "PythonRequirement",
+        ]),
+        content: Schema.String,
+      }),
+      Schema.Struct({
+        name: Schema.String,
+        type: Schema.Literals(["Data", "Wasm"]),
+        content: Schema.Uint8ArrayFromBase64,
+      }),
+    ]),
+  ),
+);
+
+/** Serialize a build artifact for installation or reuse by isolated processes from the same build. */
+export const writeWorkerdHostBundle = (file: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const modules = yield* bundleWorkerdHost;
+    const contents = yield* Schema.encodeEffect(Schema.fromJsonString(HostBundle))(modules);
+    yield* fs.writeFileString(file, contents);
+  });
+
+/** Load an explicitly prepared host artifact, or compile source for an ordinary development launch. */
+export const workerdHostModules = Effect.gen(function* () {
+  const file = yield* Config.String("EXECUTOR_WORKER_BUNDLE").pipe(Config.option);
+  if (Option.isNone(file)) return yield* bundleWorkerdHost;
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs
+    .readFileString(file.value)
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(HostBundle))));
+}).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
 
 /** Build the isolated compiler's framework and the trusted Worker entry point for this installation. */
 export const bundleWorkerdHost = Effect.gen(function* () {

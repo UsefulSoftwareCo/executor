@@ -1,6 +1,6 @@
 /** Discover checked source through MCP, deploy it unchanged, and exercise its optimistic UI. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -9,16 +9,12 @@ import { Browser } from "../support/browser.ts";
 import { waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { managementApp } from "../support/management-app.ts";
+import { frameworkSession } from "../support/framework.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { holdQuery } from "../support/query-transition.ts";
 
-const Completed = Schema.Struct({
-  status: Schema.Literal("completed"),
-  execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
-});
 const Reference = Schema.Struct({ version: Schema.String, digest: Schema.String });
 const Description = Schema.Struct({
   reference: Reference,
@@ -34,7 +30,6 @@ const Description = Schema.Struct({
     }),
   ),
 });
-const Document = Schema.Struct({ content: Schema.String, deployment: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => {
   it.effect(scenarios.frameworkAuthoring.title, (context) =>
@@ -45,112 +40,16 @@ layer(HostedLive, { excludeTestServices: true })("Framework authoring", (it) => 
           actors = yield* Actors,
           browser = yield* Browser,
           evidence = yield* Evidence;
-        const oauth = yield* McpOAuth,
-          mcp = yield* McpClient;
-        yield* browser.login(actors.owner);
-        const { profile } = yield* managementApp(actors.owner);
-        const grant = yield* oauth.authorize;
-        yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
-        const client = yield* mcp.connect(
-          Redacted.make(Redacted.value(grant.tokens).access_token),
-          "framework-authoring",
-        );
-        const execute = (code: string) =>
-          Effect.gen(function* () {
-            const result = yield* client.use(
-              "Read app and framework contracts through MCP",
-              (client, signal) =>
-                client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
-            );
-            return (yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent))
-              .execution.value;
-          });
-        const discovered = yield* execute(
-          'return await tools.search({query: "framework", limit: 20});',
-        );
-        yield* evidence.json("framework-tool-discovery.json", discovered);
-        const queries = `tools.executor.profiles[${JSON.stringify(profile.id)}].queries`;
-        const tools = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            items: Schema.Array(Schema.Struct({ path: Schema.String, signature: Schema.String })),
-          }),
-        )(discovered);
-        const search = tools.items.find(
-          (item) =>
-            item.path.endsWith(".queries.framework_search") && item.path.includes(profile.id),
-        );
-        expect(search?.signature).toContain("remaining: number");
-        expect(search?.signature).toContain("digest: string");
-        expect(
-          tools.items.some(
-            (item) =>
-              item.path.endsWith(".queries.framework_describe") && item.path.includes(profile.id),
-          ),
-        ).toBe(true);
-        const imported = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ items: Schema.Array(Schema.Struct({ signature: Schema.String })) }),
-        )(yield* execute('return await tools.search({query: "context_get", limit: 1});'));
-        expect(imported.items[0]?.signature).toContain("organization: string");
-        expect(imported.items[0]?.signature).toContain("slug: string");
-        const current = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ organization: Schema.String }),
-        )(yield* execute(`return await ${queries}.context_get({});`));
-        expect(current.organization).toBe(actors.organization.id);
-        const found = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({
-            reference: Reference,
-            items: Schema.Array(Schema.Struct({ symbol: Schema.String })),
-          }),
-        )(
-          yield* execute(
-            `return await ${queries}.framework_search({query: "withOptimisticUpdate"});`,
-          ),
-        );
-        expect(found.items.map((item) => item.symbol)).toContain(
-          "AppMutation.withOptimisticUpdate",
-        );
-        const describe = (symbol: string) =>
-          execute(
-            `return await ${queries}.framework_describe(${JSON.stringify({ symbol, ...found.reference })});`,
-          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Description)));
-        const hook = yield* describe("apps/react.useAppQuery");
-        expect(hook.entry.signatures.join(" ")).toContain("data: A | undefined");
-        expect(hook.entry.signatures.join(" ")).toContain("pending: boolean");
-        const update = yield* describe("AppMutation.withOptimisticUpdate");
-        expect(update.entry.signatures.join(" ")).toContain("OptimisticUpdate<Input>");
-        const guide = yield* client.use("Read the small authoring router", (client, signal) =>
-          client.callTool(
-            { name: "skills", arguments: { app: "executor", name: "app-authoring" } },
-            undefined,
-            { signal },
-          ),
-        );
-        const router = yield* Schema.decodeUnknownEffect(Document)(guide.structuredContent);
-        expect(router.content).toContain("[ui.md](ui.md)");
-        expect(router.content.split("\n").length).toBeLessThan(90);
-        const topic = yield* client.use("Follow the pinned UI topic", (client, signal) =>
-          client.callTool(
-            {
-              name: "skills",
-              arguments: {
-                app: "executor",
-                name: "app-authoring",
-                file: hook.entry.docs,
-                deployment: router.deployment,
-              },
-            },
-            undefined,
-            { signal },
-          ),
-        );
-        expect(
-          (yield* Schema.decodeUnknownEffect(Document)(topic.structuredContent)).content,
-        ).toContain("withOptimisticUpdate");
+        const { execute, queries } = yield* frameworkSession;
+        const found = yield* execute(
+          `return await ${queries}.framework_search({query: "withOptimisticUpdate"});`,
+        ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ reference: Reference }))));
+        const update = yield* execute(
+          `return await ${queries}.framework_describe(${JSON.stringify({ symbol: "AppMutation.withOptimisticUpdate", ...found.reference })});`,
+        ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Description)));
         yield* evidence.json("framework-reference.json", {
           reference: found.reference,
-          hook: hook.entry,
           update: update.entry,
-          tools,
         });
         const example = update.examples.find((example) => example.id === "live-inbox");
         if (example === undefined)

@@ -604,6 +604,7 @@
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
         "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@executor-js/app-source": "workspace:*",
         "@types/ws": "8.18.1",
       },
@@ -765,6 +766,8 @@
     "workerd",
   ],
   "patchedDependencies": {
+    "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
+    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "bun@1.3.11": "patches/bun@1.3.11.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.79": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.79.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",

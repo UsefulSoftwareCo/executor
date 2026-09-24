@@ -405,9 +405,18 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
         yield* browser.use("Select the key to revoke", (page) =>
           page.getByRole("button", { name: "Revoke Browser automation", exact: true }).click(),
         );
-        yield* browser.use("Confirm revocation", (page) =>
-          page.getByRole("button", { name: "Revoke token", exact: true }).click(),
-        );
+        expect(
+          yield* browser.use("Confirm revocation and wait for acceptance", (page) =>
+            Promise.all([
+              page.waitForResponse(
+                (response) =>
+                  response.request().method() === "POST" &&
+                  new URL(response.url()).pathname === `${lifecycle}/delete`,
+              ),
+              page.getByRole("button", { name: "Revoke token", exact: true }).click(),
+            ]).then(([response]) => response.status()),
+          ),
+        ).toBe(200);
         yield* browser.use("Revocation is visible", (page) =>
           page
             .getByRole("row")

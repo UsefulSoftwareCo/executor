@@ -25,48 +25,105 @@ const Pending = Schema.Struct({
 });
 const BrowserPending = Schema.Struct({ ...Pending.fields, approvalUrl: Schema.String });
 
+const patFixture = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors,
+    mcp = yield* McpClient,
+    evidence = yield* Evidence;
+  const organization = actors.organization.id,
+    prefix = `/api/organizations/${organization}`;
+  const anonymous = yield* api.session();
+  const keys: { actor: Session; id: string }[] = [];
+  let appId: string | undefined;
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      for (const key of keys)
+        yield* api.request(key.actor, "POST", "/api/auth/api-key/delete", {
+          keyId: key.id,
+        });
+      if (appId !== undefined)
+        yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${appId}`);
+    }).pipe(Effect.orDie),
+  );
+  const create = (actor: Session, expiresIn?: number) =>
+    Effect.gen(function* () {
+      const response = yield* api.request(actor, "POST", "/api/auth/api-key/create", {
+        name: "MCP test",
+        ...(expiresIn === undefined ? {} : { expiresIn }),
+      });
+      expect(response.status).toBe(200);
+      const key = yield* body(Token, response);
+      keys.push({ actor, id: key.id });
+      return key;
+    });
+  const [owner, other, member] = yield* Effect.all(
+    [create(actors.owner), create(actors.owner), create(actors.member)],
+    { concurrency: 3 },
+  );
+  const headers = {
+    authorization: `Bearer ${Redacted.value(owner.key)}`,
+    "x-executor-organization": organization,
+  };
+  const receipt = randomUUID();
+  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+    name: `PAT MCP ${randomUUID().slice(0, 8)}`,
+    files: [
+      {
+        path: "index.ts",
+        content: `
+import { defineApp, mutation, object } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({ accounts: {} }, async () => ({  mutations: {
+  echo: mutation({ description: "Echo receipt", input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
+  approved: mutation({ description: "Requires approval", input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} }))
+} }));`,
+      },
+    ],
+  });
+  expect(deployed.status).toBe(200);
+  const app = yield* body(App, deployed);
+  appId = app.id;
+  const code = (tool: string) =>
+    `return await tools[${JSON.stringify(app.slug)}].mutations.${tool}({})`;
+  const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization });
+  return {
+    api,
+    actors,
+    mcp,
+    evidence,
+    organization,
+    anonymous,
+    create,
+    owner,
+    other,
+    member,
+    headers,
+    receipt,
+    app,
+    code,
+    ownerClient,
+  };
+});
+
 layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
   it.effect(scenarios.patMcp.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          mcp = yield* McpClient,
-          evidence = yield* Evidence;
-        const organization = actors.organization.id,
-          prefix = `/api/organizations/${organization}`;
-        const anonymous = yield* api.session();
-        const keys: { actor: Session; id: string }[] = [];
-        let appId: string | undefined;
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            for (const key of keys)
-              yield* api.request(key.actor, "POST", "/api/auth/api-key/delete", {
-                keyId: key.id,
-              });
-            if (appId !== undefined)
-              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${appId}`);
-          }).pipe(Effect.orDie),
-        );
-        const create = (actor: Session, expiresIn?: number) =>
-          Effect.gen(function* () {
-            const response = yield* api.request(actor, "POST", "/api/auth/api-key/create", {
-              name: "MCP test",
-              ...(expiresIn === undefined ? {} : { expiresIn }),
-            });
-            expect(response.status).toBe(200);
-            const key = yield* body(Token, response);
-            keys.push({ actor, id: key.id });
-            return key;
-          });
-        const owner = yield* create(actors.owner),
-          other = yield* create(actors.owner),
-          member = yield* create(actors.member);
-        const headers = {
-          authorization: `Bearer ${Redacted.value(owner.key)}`,
-          "x-executor-organization": organization,
-        };
+        const {
+          api,
+          actors,
+          mcp,
+          evidence,
+          organization,
+          anonymous,
+          other,
+          member,
+          headers,
+          receipt,
+          code,
+          ownerClient,
+        } = yield* patFixture;
         yield* evidence.step(
           "PAT authentication requires a permitted organization and never falls back to cookies",
           Effect.gen(function* () {
@@ -98,28 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             ).toBe(400);
           }),
         );
-        const receipt = randomUUID();
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-          name: `PAT MCP ${randomUUID().slice(0, 8)}`,
-          files: [
-            {
-              path: "index.ts",
-              content: `
-import { defineApp, mutation, object } from "apps";
-import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({  mutations: {
-  echo: mutation({ description: "Echo receipt", input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
-  approved: mutation({ description: "Requires approval", input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} }))
-} }));`,
-            },
-          ],
-        });
-        expect(deployed.status).toBe(200);
-        const app = yield* body(App, deployed);
-        appId = app.id;
-        const code = (tool: string) =>
-          `return await tools[${JSON.stringify(app.slug)}].mutations.${tool}({})`;
-        const ownerClient = yield* mcp.connect(owner.key, "pat-model", { organization });
         const tools = yield* ownerClient.use("List MCP tools with a PAT", (client) =>
           client.listTools(),
         );
@@ -169,6 +204,14 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
         expect(
           (yield* Schema.decodeUnknownEffect(Completed)(denied.structuredContent)).execution.ok,
         ).toBe(false);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.patMcpRoles.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, mcp, evidence, organization, create, app } = yield* patFixture;
         yield* evidence.step(
           "An existing MCP client uses the user's current role",
           Effect.gen(function* () {
@@ -231,6 +274,26 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
             );
           }),
         );
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.patMcpApprovals.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const {
+          api,
+          actors,
+          mcp,
+          organization,
+          anonymous,
+          owner,
+          other,
+          headers,
+          receipt,
+          code,
+          ownerClient,
+        } = yield* patFixture;
         const paused = yield* ownerClient.use(
           "Tool approvals still pause PAT execution",
           (client, signal) =>
@@ -350,6 +413,14 @@ export default defineApp({ accounts: {} }, async () => ({  mutations: {
           (client) => client.listTools(),
         );
         expect(remaining.tools.map((tool) => tool.name)).toContain("execute");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.patMcpExpiry.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, mcp, organization, anonymous, create, headers } = yield* patFixture;
         // The token must remain valid for the two-request network handshake.
         // Wait for its server-issued expiry, not a fixed delay after connecting.
         const expiring = yield* create(actors.owner, 10);

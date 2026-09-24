@@ -2,9 +2,67 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { ConfigProvider, Effect, Logger, Metric, Redacted, Schema, Tracer } from "effect";
+import { ConfigProvider, Deferred, Effect, Logger, Metric, Redacted, Schema, Tracer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { telemetryConfig, TelemetryConfig, telemetryLayer } from "../src/index.ts";
+
+test(
+  "a stalled collector request is released and the same trace batch is delivered",
+  { timeout: 15000 },
+  async () => {
+    const delivered = Deferred.makeUnsafe<void>();
+    const bodies: string[] = [];
+    let released = false;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        if (bodies.length === 1) {
+          response.on("close", () => {
+            released = true;
+          });
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+        Deferred.doneUnsafe(delivered, Effect.void);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      assert.ok(address !== null && typeof address !== "string");
+      await Effect.runPromise(
+        Effect.void.pipe(
+          Effect.withSpan("delivered after stalled export"),
+          Effect.andThen(Deferred.await(delivered)),
+          Effect.timeout("9 seconds"),
+          Effect.provide(
+            telemetryLayer({
+              service: "stalled-export",
+              version: "test",
+              environment: "test",
+              traces: { url: `http://127.0.0.1:${address.port}/v1/traces` },
+            }),
+          ),
+        ),
+      );
+      assert.equal(released, true);
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies[0], bodies[1]);
+      assert.match(bodies[1] ?? "", /delivered after stalled export/);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);
 
 const Attribute = Schema.Struct({
   key: Schema.String,

@@ -8,14 +8,14 @@ const files = ${JSON.stringify(files)};
 export default {
   async fetch(request, env) {
     // This entry point has no public route or host bindings. Only the trusted loader calls it.
-    const { command, accounts, approval, replay, workflowRun } = await request.json();
+    const { command, accounts, approval, replay, deadline, workflowRun } = await request.json();
     const lifetime = new AbortController();
     const delivery = env?.ELICITATION;
     const elicitation = delivery == null ? undefined : isolatedElicitation((prompt) => delivery(prompt), lifetime);
     try {
       return await handler(new Request("https://app.internal/dispatch", {
         method: "POST", headers: { "content-type": "application/json", traceparent: request.headers.get("traceparent") ?? "" }, body: JSON.stringify(command), signal: AbortSignal.any([request.signal, lifetime.signal])
-      }), { ...hostContext(accounts, approval), files, ...(replay === undefined ? {} : { replay }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
+      }), { ...hostContext(accounts, approval), files, ...(replay === undefined ? {} : { replay }), ...(deadline === undefined ? {} : { deadline }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
     } finally { lifetime.abort(); }
   }
 };`;

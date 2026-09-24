@@ -290,11 +290,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       }),
     ),
   );
+  const listener = yield* Effect.sync(() => createServer());
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port: 0 })),
     ),
   );
+  // Scenario work has ended. Release unfinished provider requests before the
+  // HTTP adapter waits for its listener to close.
+  yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("OAuth fixture needs a TCP listener");
   const origin = `http://127.0.0.1:${server.address.port}`;

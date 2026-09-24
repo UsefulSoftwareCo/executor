@@ -60,21 +60,36 @@ live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests and manual dispatch.
-Its local checks use no secrets. The deployed Cloud job uses the staging
-environment on same-repository PRs and provisions a disposable Neon branch.
-An earlier run on the same ref is cancelled. The jobs live in `.github/workflows/checks.yml`,
+Its local checks use no secrets and include the emulated Cloud target. An earlier
+PR run on the same ref is cancelled. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
+
+`.github/workflows/cloud-tests.yml` runs deployed tests only after pushes to `main`.
+It finishes the active run and coalesces pending pushes. The functional job runs
+before the separate MCP memory soak job; manual deployed jobs share the same
+non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
+The soak job keeps three full-duration probes, runs them in parallel on its own stage,
+and preserves their 20-minute deadlines. Functional scenarios retain 60-second
+deadlines. Both jobs own their teardown and evidence artifacts. These post-merge
+checks are not required PR checks. Agents can run targeted deployments through
+the same SDK and CLI on demand.
 
 Every push to `main` deploys production directly, without a deployed-test gate.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
-Blacksmith `blacksmith-4vcpu-ubuntu-2404` runners run four jobs:
+Blacksmith runners run five check jobs. Local and Cloud E2E jobs use
+`blacksmith-16vcpu-ubuntu-2404`. Self-host uses a 12-vCPU M4 Mac for its 16 concurrent
+product servers and browsers. The load job uses a 6-vCPU M4 Mac for its
+single-threaded PGlite workload. Static checks use 4 vCPUs.
 
 - `check` runs `bun run check`: the format check, `oxlint`, the typecheck and
   the e2e boundary check.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
-  and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
+  under `xvfb-run` and `e2e:self-host` headlessly on macOS. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold.
+- `e2e-self-host-scale` runs the 1,000-account workload on its own runner, in parallel
+  with the functional jobs. This preserves its four concurrent writers and
+  60-second deadline without competing with 15 independent product servers.
 - `e2e-cloud` runs Cloud onboarding and delivered observability scenarios. It starts the local Cloud
   Worker, a throwaway Postgres container and the service emulators, so it needs
   Docker but no credentials.
@@ -86,8 +101,10 @@ Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
 and teardown. The release workflow builds and tests Docker images on release PRs
 and manual dispatch. Publication requires an explicit channel dispatch from main.
 
-A failed e2e job uploads its `.local/e2e` evidence directory as an artifact.
-Private `actors.json` session files are excluded.
+A failed e2e job uploads raw reports and server logs. Product database files,
+runtime dependencies and private `actors.json` sessions are excluded.
+Reports use Vitest's final result, including setup and cleanup failures.
+Evidence rendering runs only on request.
 
 `.github/actions/setup` pins Bun and Node and installs the workspace with
 `bun install --frozen-lockfile`. Change toolchain versions there only.

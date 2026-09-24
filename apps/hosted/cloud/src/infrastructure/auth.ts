@@ -148,18 +148,13 @@ export const cloudAuth = (send: SendAuthEmail) =>
                 ),
               )
               .pipe(Effect.withSpan("auth.organizationSlug")),
-          membership: (headers, organizationId) =>
+          membership: (principal, organizationId) =>
             auth.auth
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
-                Effect.flatMap((native) =>
-                  lookupMembership(() =>
-                    native.api.getActiveMemberRole({
-                      headers,
-                      query: { organizationId },
-                      returnHeaders: true,
-                    }),
-                  ),
+                Effect.flatMap((native) => Effect.promise(() => native.$context)),
+                Effect.flatMap((context) =>
+                  lookupMembership(context.adapter, principal, organizationId),
                 ),
               )
               .pipe(Effect.withSpan("auth.membership")),
