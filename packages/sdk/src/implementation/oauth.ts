@@ -284,7 +284,7 @@ export const makeOAuth = (
         )
           client = registered;
       }
-      const savedClient = client !== undefined;
+      let source: "saved" | "metadata" | undefined = client === undefined ? undefined : "saved";
       const metadataUrl = options.clientMetadataUrl ?? options.defaultClientMetadataUrl;
       if (
         automatic &&
@@ -297,20 +297,24 @@ export const makeOAuth = (
       ) {
         const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+        // Nothing is registered for a metadata client, so it is derived from configuration
+        // on every sign-in rather than saved; a changed metadata URL applies immediately.
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
+        source = "metadata";
       }
-      return { method, redirect, discovered, clientId, client, savedClient };
+      return { method, redirect, discovered, clientId, client, source };
     });
   const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
     resolveSetup(input, true).pipe(
-      Effect.map(({ client, discovered, method, savedClient }): OAuthClientSetup => {
-        const mode = savedClient
-          ? "saved"
-          : client !== undefined ||
-              (discovered.grant === "authorization_code" &&
-                discovered.server.registration_endpoint !== undefined)
-            ? "automatic"
-            : "client-required";
+      Effect.map(({ client, discovered, method, source }): OAuthClientSetup => {
+        const mode =
+          source === "saved"
+            ? "saved"
+            : client !== undefined ||
+                (discovered.grant === "authorization_code" &&
+                  discovered.server.registration_endpoint !== undefined)
+              ? "automatic"
+              : "client-required";
         return method.grant === "client_credentials"
           ? {
               mode,
@@ -344,6 +348,7 @@ export const makeOAuth = (
         discovered,
         clientId,
         client: availableClient,
+        source,
       } = yield* resolveSetup(input, input.client === undefined);
       const now = yield* Clock.currentTimeMillis;
       let client: OAuthRegistration | undefined;
@@ -465,7 +470,7 @@ export const makeOAuth = (
       }
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      if (input.client === undefined) yield* saveClient(db);
+      if (input.client === undefined && source !== "metadata") yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));

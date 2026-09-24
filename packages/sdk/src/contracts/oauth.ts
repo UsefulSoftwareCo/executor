@@ -155,7 +155,10 @@ export interface OAuthOptions {
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
-  /** Used when `clientMetadataUrl` is unset. Changing it does not replace saved clients. */
+  /**
+   * Fallback metadata document when `clientMetadataUrl` is unset. Unlike `clientMetadataUrl`,
+   * it is not part of saved-client identity, so enabling it keeps existing registered clients.
+   */
   readonly defaultClientMetadataUrl?: string;
 }
 

@@ -55,9 +55,14 @@ export const accountOAuthClientMetadata = (
   application_type: "web",
 });
 
-/** Public metadata lets OAuth providers identify this host as a client without registration. */
+/**
+ * Public metadata lets OAuth providers identify this host as a client without registration.
+ * Providers cache the document by these headers, so a changed callback is picked up within an hour.
+ */
 export const hostedOAuthClientMetadata = Effect.gen(function* () {
-  return HttpServerResponse.jsonUnsafe(accountOAuthClientMetadata(yield* Authentication));
+  return HttpServerResponse.jsonUnsafe(accountOAuthClientMetadata(yield* Authentication)).pipe(
+    HttpServerResponse.setHeader("cache-control", "public, max-age=3600"),
+  );
 });
 
 /** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */

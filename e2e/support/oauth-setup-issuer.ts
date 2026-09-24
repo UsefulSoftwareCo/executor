@@ -94,6 +94,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           redirect === null ||
           challenge === null ||
           params.get("code_challenge_method") !== "S256" ||
+          // A real issuer fetches the metadata document to check the redirect. This loopback
+          // fixture cannot reach it, so the scenario checks the served `redirect_uris` instead.
           !(
             (clientIdMetadata && clientId === e2eClientMetadataUrl) ||
             clients.get(clientId)?.includes(redirect)

@@ -876,6 +876,35 @@ test("CIMD uses the hosted default unless an explicit client URL is configured",
   }
 });
 
+test("a metadata client is never saved, so a changed metadata URL applies to the next sign-in", async () => {
+  const f = await setup("cimd");
+  try {
+    const input = {
+      owner: OwnerId.make("alice"),
+      provider: f.provider,
+      method: "oauth",
+      label: "Alice",
+      redirectUri,
+    };
+    const db = f.storage.orm("4.0.0");
+    const first = await f.start();
+    await f.complete({ callbackUrl: f.service.callback(first.authorizationUrl) });
+    assert.deepEqual(f.service.requestClients, ["https://client.example/oauth.json"]);
+    assert.deepEqual(await Effect.runPromise(db.findMany("oauthClients", {})), []);
+
+    const movedUrl = "https://moved.executor.sh/api/oauth/client-id-metadata/default.json";
+    const moved = await f.withClientMetadata({ defaultClientMetadataUrl: movedUrl });
+    assert.equal((await moved.accountConnections.oauthSetup(input)).mode, "automatic");
+    const next = await f.startOAuth(input, moved);
+    assert.equal(new URL(next.authorizationUrl).searchParams.get("client_id"), movedUrl);
+    await f.complete({ callbackUrl: f.service.callback(next.authorizationUrl) }, moved);
+    assert.deepEqual(f.service.requestClients, ["https://client.example/oauth.json", movedUrl]);
+    assert.deepEqual(await Effect.runPromise(db.findMany("oauthClients", {})), []);
+  } finally {
+    await f.close();
+  }
+});
+
 test("denied, expired and modified callbacks never create an account", async () => {
   const f = await setup("dcr");
   try {
