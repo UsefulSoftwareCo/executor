@@ -505,6 +505,8 @@ export const makeOAuth = (
       ) {
         const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+        // Nothing is registered for a metadata client, so it is derived from configuration
+        // on every sign-in rather than saved; a changed metadata URL applies immediately.
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }
       return { method, redirect, discovered, clientId, client, savedClient, reused };
@@ -694,7 +696,8 @@ export const makeOAuth = (
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       // A reused client is already saved; writing it again could restore one discarded meanwhile.
-      if (input.client === undefined && reused === undefined) yield* saveClient(db);
+      if (input.client === undefined && reused === undefined && source !== "metadata")
+        yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
@@ -710,14 +713,16 @@ export const makeOAuth = (
         client: registered,
         ...(input.client !== undefined
           ? { clientKey: clientId }
-          : {
-              savedClient: {
-                key: clientId,
-                version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
-                ...(source === undefined ? {} : { source }),
-                fresh: reused === undefined,
-              },
-            }),
+          : reused === undefined && source === "metadata"
+            ? {}
+            : {
+                savedClient: {
+                  key: clientId,
+                  version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
+                  ...(source === undefined ? {} : { source }),
+                  fresh: reused === undefined,
+                },
+              }),
         response: method.response,
       });
       const encrypted = yield* encrypt(id, attempt);
