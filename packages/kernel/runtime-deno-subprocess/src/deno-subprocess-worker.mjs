@@ -186,15 +186,17 @@ const sandboxConsole = {
 const runUserCode = async (code) => {
   outputs = [];
   const tools = createToolsProxy();
+  const skills = createToolsProxy(["skills"]);
 
   const execute = new Function(
     "tools",
+    "skills",
     "console",
     "emit",
     `"use strict"; return (async () => {\n${code}\n})();`,
   );
 
-  const result = await execute(tools, sandboxConsole, emit);
+  const result = await execute(tools, skills, sandboxConsole, emit);
   return { result, output: outputs.length > 0 ? outputs : undefined };
 };
 

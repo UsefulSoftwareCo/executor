@@ -1,9 +1,11 @@
 import { reattachDefs } from "@executor-js/sdk/host-internal";
-import { Data, Duration, Effect, Match, Option, Predicate, Result, Schema } from "effect";
+import { Data, Duration, Effect, Encoding, Match, Option, Predicate, Result, Schema } from "effect";
 import * as Cause from "effect/Cause";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   ContentBlockSchema,
+  ErrorCode,
+  McpError,
   type ClientCapabilities,
   type ContentBlock,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -23,6 +25,7 @@ import * as z from "zod/v4";
 
 import {
   CurrentOrgWriteAccess,
+  ManagedSkillId,
   ToolAddress,
   IntegrationSlug,
   ConnectionName,
@@ -48,6 +51,7 @@ import type {
   ToolFileValue,
   Executor,
   ToolSchemaView,
+  ManagedSkillSummary,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
 import {
@@ -253,6 +257,12 @@ type SharedMcpServerConfig = {
   /** Scoped integration metadata for the search/invoke account inventory. */
   readonly integrations?: McpIntegrationsPort;
   /**
+   * Live managed Agent Skills catalog. The port is optional for embedders that
+   * have not wired persistence yet; the skills tool still registers and
+   * reports that delivery is unavailable instead of hiding the capability.
+   */
+  readonly skills?: McpSkillsPort;
+  /**
    * Builds the web-app deep link for a saved artifact. Clients that can't
    * render MCP Apps get this URL instead of an inline widget. Absent (stdio has
    * no origin at all) means `create-artifact` still persists and reports the id, but
@@ -323,6 +333,9 @@ export type McpIntegrationsPort = {
 
 /** The same list and schema APIs used by codemode discovery. */
 export type McpToolsPort = Pick<Executor["tools"], "list" | "schema">;
+
+/** The managed skill reads required by MCP delivery. */
+export type McpSkillsPort = Pick<Executor["skills"], "list" | "get" | "readFile">;
 
 /** A passthrough session was requested but the host gave the factory no
  *  catalog to serve. A configuration defect, not a runtime condition. */
@@ -923,7 +936,7 @@ const fallbackOutcomeResult = (
 };
 
 // The `skills` tool serves named, static how-to docs (see the execution
-// package's skills registry). No name -> the index; a known name -> that
+// package's guides registry). No name -> the index; a known name -> that
 // skill's body; an unknown name -> the index plus a not-found note so the model
 // retries with a listed name instead of the same miss.
 //
@@ -943,9 +956,9 @@ const fallbackOutcomeResult = (
 // sees what is connected without a second round trip.
 //
 // The catalog is per-session: a connection that opted out of artifacts never
-// sees the artifact skills, so the index cannot advertise a how-to for tools it
+// sees the artifact guides, so the index cannot advertise a how-to for tools it
 // does not have, and fetching one by name misses like any unknown skill.
-const skillsResult = (
+const builtInSkillsResult = (
   name: string | undefined,
   executeInventory: string,
   catalog: readonly Skill[],
@@ -972,6 +985,736 @@ const skillsResult = (
       : skill.body;
   return { content: [{ type: "text", text }] };
 };
+
+interface ManagedSkillsToolInput {
+  readonly query?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly ref?: string;
+  readonly name?: string;
+  readonly owner?: "user" | "org";
+  readonly path?: string;
+  readonly file?: string;
+}
+
+const managedSkillUri = (input: {
+  readonly id: string;
+  readonly packageDigest: string;
+  readonly path: string;
+}): string =>
+  `skill://executor/managed/${encodeURIComponent(input.id)}/${encodeURIComponent(input.packageDigest)}/${encodeURIComponent(input.path)}`;
+
+const SKILLS_EXTENSION = "io.modelcontextprotocol/skills";
+const SKILLS_PAGE_SIZE = 50;
+const SKILLS_CACHE_TTL_MS = 30_000;
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+
+const ListSkillsRequestSchema = z.object({
+  method: z.literal("skills/list"),
+  params: z.object({ cursor: z.string().optional() }).loose().optional(),
+});
+
+const GetSkillRequestSchema = z.object({
+  method: z.literal("skills/get"),
+  params: z.object({ uri: z.string() }).loose(),
+});
+
+const extensionSkillUri = (input: {
+  readonly id: string;
+  readonly name: string;
+  readonly path: string;
+}): string =>
+  `skill://executor/skills/${encodeURIComponent(input.id)}/${encodeURIComponent(input.name)}/${encodeURIComponent(input.path)}`;
+
+const legacyExtensionSkillUri = (input: {
+  readonly owner: "user" | "org";
+  readonly name: string;
+  readonly path: string;
+}): string =>
+  `skill://${input.owner}/${encodeURIComponent(input.name)}/${encodeURIComponent(input.path)}`;
+
+type ExtensionSkill = {
+  readonly uri: string;
+  readonly frontmatter: Readonly<Record<string, unknown>> & {
+    readonly name: string;
+    readonly description: string;
+  };
+  readonly resources: ReadonlyArray<{
+    readonly uri: string;
+    readonly digest: string;
+    readonly size: number;
+  }>;
+};
+
+const extensionSkillEntries = (
+  skills: McpSkillsPort,
+  invocation: "model" | "any",
+): Effect.Effect<readonly ExtensionSkill[], unknown> =>
+  Effect.gen(function* () {
+    const summaries = yield* skills.list();
+    const eligible = summaries
+      .filter((skill) => skill.delivery.kind === "enabled")
+      .filter(
+        (skill) =>
+          invocation === "any" ||
+          (skill.delivery.kind === "enabled" && skill.delivery.invocation === "model"),
+      )
+      .sort((left, right) => {
+        const byName = (left.name ?? "").localeCompare(right.name ?? "");
+        if (byName !== 0) return byName;
+        if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+        return String(left.id).localeCompare(String(right.id));
+      });
+    return yield* Effect.forEach(eligible, (summary) =>
+      Effect.gen(function* () {
+        const detail = yield* skills.get({ skillId: summary.id });
+        const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+        if (
+          !revision ||
+          revision.name === null ||
+          revision.description === null ||
+          revision.frontmatter === null
+        ) {
+          return yield* new McpSkillResourceError({ reason: "Active skill revision is invalid" });
+        }
+        const uriFor = (path: string) =>
+          extensionSkillUri({ id: String(detail.id), name: String(revision.name), path });
+        return {
+          uri: uriFor("SKILL.md"),
+          frontmatter: {
+            ...revision.frontmatter,
+            name: String(revision.name),
+            description: revision.description,
+          },
+          resources: revision.files.map((file) => ({
+            uri: uriFor(file.path),
+            digest: file.digest,
+            size: file.size,
+          })),
+        } satisfies ExtensionSkill;
+      }),
+    );
+  });
+
+const decodeSkillsCursor = (cursor: string | undefined): Effect.Effect<number, McpError> => {
+  if (cursor === undefined) return Effect.succeed(0);
+  const offset = Number(cursor);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    return Effect.fail(new McpError(ErrorCode.InvalidParams, "Invalid skills cursor"));
+  }
+  return Effect.succeed(offset);
+};
+
+const listExtensionSkills = (
+  skills: McpSkillsPort,
+  cursor: string | undefined,
+): Effect.Effect<
+  {
+    readonly resultType: "complete";
+    readonly skills: readonly ExtensionSkill[];
+    readonly ttlMs: number;
+    readonly cacheScope: "private";
+    readonly nextCursor?: string;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const offset = yield* decodeSkillsCursor(cursor);
+    const entries = yield* extensionSkillEntries(skills, "model");
+    const page = entries.slice(offset, offset + SKILLS_PAGE_SIZE);
+    const nextOffset = offset + page.length;
+    return {
+      resultType: "complete",
+      skills: page,
+      ttlMs: SKILLS_CACHE_TTL_MS,
+      cacheScope: "private",
+      ...(nextOffset < entries.length ? { nextCursor: String(nextOffset) } : {}),
+    };
+  });
+
+const getExtensionSkill = (
+  skills: McpSkillsPort,
+  uri: string,
+): Effect.Effect<
+  {
+    readonly resultType: "complete";
+    readonly skill: ExtensionSkill;
+    readonly ttlMs: number;
+    readonly cacheScope: "private";
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const entries = yield* extensionSkillEntries(skills, "any");
+    const skill = entries.find((entry) => entry.uri === uri);
+    if (!skill) {
+      // oxlint-disable-next-line executor/prefer-yield-tagged-error -- boundary: MCP SDK errors are not Effect yieldable errors
+      return yield* Effect.fail(new McpError(ErrorCode.InvalidParams, "Unknown managed skill URI"));
+    }
+    return {
+      resultType: "complete",
+      skill,
+      ttlMs: SKILLS_CACHE_TTL_MS,
+      cacheScope: "private",
+    };
+  });
+
+const managedSkillsResult = (
+  input: ManagedSkillsToolInput,
+  skills: McpSkillsPort | undefined,
+): Effect.Effect<McpToolResult> =>
+  Effect.gen(function* () {
+    const requestedPath = input.path ?? input.file;
+    const hasReadSelector = input.ref !== undefined || input.name !== undefined;
+    const hasSearchSelector =
+      input.query !== undefined || input.limit !== undefined || input.offset !== undefined;
+    if (
+      (input.ref !== undefined && input.name !== undefined) ||
+      (hasReadSelector && hasSearchSelector) ||
+      (input.path !== undefined && input.file !== undefined) ||
+      (!hasReadSelector && (input.owner !== undefined || requestedPath !== undefined))
+    ) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "Choose one skills operation: search with query/limit/offset, or read with ref or name and an optional owner/path.",
+          },
+        ],
+      };
+    }
+
+    if (!skills) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "Managed skills are not available on this Executor host.",
+          },
+        ],
+      };
+    }
+
+    const all = yield* skills.list();
+    if (!hasReadSelector) {
+      const query = input.query?.trim().toLocaleLowerCase("en-US") ?? "";
+      const limit = Math.min(50, Math.max(1, input.limit ?? 12));
+      const offset = Math.max(0, input.offset ?? 0);
+      const eligible = all
+        .filter(
+          (skill) => skill.delivery.kind === "enabled" && skill.delivery.invocation === "model",
+        )
+        .filter((skill) => {
+          if (query === "") return true;
+          return `${skill.name ?? ""}\n${skill.description ?? ""}`
+            .toLocaleLowerCase("en-US")
+            .includes(query);
+        })
+        .sort((left, right) => {
+          const byName = (left.name ?? "").localeCompare(right.name ?? "");
+          if (byName !== 0) return byName;
+          if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+          return String(left.id).localeCompare(String(right.id));
+        });
+      const selected = eligible.slice(offset, offset + limit);
+      const items = yield* Effect.forEach(selected, (skill) =>
+        Effect.gen(function* () {
+          const detail = yield* skills.get({ skillId: skill.id });
+          const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+          if (!revision) {
+            return yield* new McpSkillResourceError({ reason: "Active revision missing" });
+          }
+          return {
+            ref: String(skill.id),
+            name: skill.name,
+            description: skill.description,
+            owner: skill.owner,
+            invocation: "model" as const,
+            revision: String(skill.activeRevisionId),
+            uri: managedSkillUri({
+              id: String(skill.id),
+              packageDigest: String(revision.packageDigest),
+              path: "SKILL.md",
+            }),
+          };
+        }),
+      );
+      const nextOffset =
+        offset + selected.length < eligible.length ? offset + selected.length : null;
+      const page = {
+        items,
+        total: eligible.length,
+        hasMore: nextOffset !== null,
+        nextOffset,
+        diagnostics: [],
+      };
+      const text =
+        items.length === 0
+          ? "No model-invocable managed skills matched."
+          : items
+              .map(
+                (item) =>
+                  `${item.name ?? "unnamed"} (${item.owner}, ref ${item.ref}): ${item.description ?? "No description"}`,
+              )
+              .join("\n");
+      return { content: [{ type: "text" as const, text }], structuredContent: page };
+    }
+
+    const candidates = all
+      .filter((skill) => skill.delivery.kind === "enabled")
+      .filter((skill) =>
+        input.ref !== undefined
+          ? String(skill.id) === input.ref
+          : skill.name === input.name && (input.owner === undefined || skill.owner === input.owner),
+      )
+      .sort((left, right) => {
+        if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+        return String(left.id).localeCompare(String(right.id));
+      });
+    const selected = candidates[0];
+    if (!selected) {
+      return {
+        isError: true,
+        content: [
+          { type: "text" as const, text: "No enabled managed skill matched that selector." },
+        ],
+      };
+    }
+    const detail = yield* skills.get({ skillId: ManagedSkillId.make(String(selected.id)) });
+    const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+    const path = requestedPath ?? "SKILL.md";
+    const manifest = revision?.files.find((file) => file.path === path);
+    if (!revision || !manifest) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: `The active skill package has no file named "${path}".`,
+          },
+        ],
+      };
+    }
+    const file = yield* skills.readFile({
+      skillId: detail.id,
+      revisionId: revision.id,
+      path,
+    });
+    const uri = managedSkillUri({
+      id: String(detail.id),
+      packageDigest: String(revision.packageDigest),
+      path,
+    });
+    const textual =
+      manifest.mediaType.startsWith("text/") ||
+      manifest.mediaType.includes("json") ||
+      manifest.mediaType.includes("yaml") ||
+      manifest.mediaType.includes("xml") ||
+      manifest.mediaType.includes("javascript");
+    if (textual) {
+      const text = new TextDecoder().decode(file.bytes);
+      if (path !== "SKILL.md") return { content: [{ type: "text" as const, text }] };
+      const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+      const lines = normalized.split("\n");
+      const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+      const body =
+        lines[0]?.trim() === "---" && closing !== -1
+          ? lines
+              .slice(closing + 1)
+              .join("\n")
+              .trim()
+          : normalized;
+      const resources = revision.files.filter((entry) => entry.path !== "SKILL.md");
+      const resourceList =
+        resources.length === 0
+          ? ""
+          : [
+              "",
+              "<skill_resources>",
+              ...resources.map(
+                (entry) =>
+                  `  <file>${entry.path.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</file>`,
+              ),
+              "</skill_resources>",
+              `Read a bundled file with \`skills({ name: "${selected.name}", owner: "${selected.owner}", file: "<path>" })\`. Relative paths in the instructions above are relative to the skill's root.`,
+            ].join("\n");
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `<skill_content name="${selected.name}" owner="${selected.owner}">\n${body}${resourceList}\n</skill_content>`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "resource" as const,
+          resource: {
+            uri,
+            mimeType: manifest.mediaType,
+            blob: Encoding.encodeBase64(file.bytes),
+          },
+        },
+      ],
+    };
+  }).pipe(
+    Effect.catch(() =>
+      Effect.succeed({
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "Executor could not read the managed skills catalog.",
+          },
+        ],
+      }),
+    ),
+  );
+
+const skillsResult = (
+  input: ManagedSkillsToolInput,
+  executeInventory: string,
+  catalog: readonly Skill[],
+  skills: McpSkillsPort | undefined,
+): Effect.Effect<McpToolResult> => {
+  const hasOnlyNameSelector =
+    input.name !== undefined &&
+    input.ref === undefined &&
+    input.query === undefined &&
+    input.limit === undefined &&
+    input.offset === undefined &&
+    input.owner === undefined &&
+    input.path === undefined &&
+    input.file === undefined;
+  if (hasOnlyNameSelector && findSkill(input.name?.trim() ?? "", catalog) !== undefined) {
+    return Effect.succeed(builtInSkillsResult(input.name, executeInventory, catalog));
+  }
+
+  const hasNoSelector = Object.values(input).every((value) => value === undefined);
+  if (skills === undefined) {
+    return hasNoSelector || hasOnlyNameSelector
+      ? Effect.succeed(builtInSkillsResult(input.name, executeInventory, catalog))
+      : managedSkillsResult(input, skills);
+  }
+  if (!hasNoSelector) return managedSkillsResult(input, skills);
+
+  return Effect.map(managedSkillsResult(input, skills), (managed) => {
+    const managedText = managed.content
+      .filter(
+        (content): content is Extract<(typeof managed.content)[number], { type: "text" }> =>
+          content.type === "text",
+      )
+      .map(({ text }) => text)
+      .join("\n");
+    return {
+      ...managed,
+      content: [
+        {
+          type: "text" as const,
+          text: `${renderSkillsIndex(catalog)}\n\n## Managed skills\n\n${managedText}`,
+        },
+      ],
+    };
+  });
+};
+
+const managedSkillActivationResult = (
+  ref: string,
+  skills: McpSkillsPort,
+): Effect.Effect<McpToolResult> =>
+  Effect.gen(function* () {
+    const current = (yield* skills.list()).find((skill) => String(skill.id) === ref);
+    if (current?.delivery.kind !== "enabled" || current.delivery.invocation !== "model") {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "This managed skill no longer allows model invocation.",
+          },
+        ],
+      };
+    }
+    return yield* managedSkillsResult({ ref }, skills);
+  }).pipe(
+    Effect.catch(() =>
+      Effect.succeed({
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "Executor could not read the managed skills catalog.",
+          },
+        ],
+      }),
+    ),
+  );
+
+class McpSkillResourceError extends Data.TaggedError("McpSkillResourceError")<{
+  readonly reason: string;
+}> {}
+
+const modelSkillResources = (
+  skills: McpSkillsPort,
+): Effect.Effect<
+  {
+    resources: Array<{ uri: string; name: string; description?: string; mimeType: string }>;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const summaries = yield* skills.list();
+    const eligible = summaries
+      .filter((skill) => skill.delivery.kind === "enabled" && skill.delivery.invocation === "model")
+      .sort((left, right) => {
+        const byName = (left.name ?? "").localeCompare(right.name ?? "");
+        return byName !== 0 ? byName : String(left.id).localeCompare(String(right.id));
+      });
+    const resources = yield* Effect.forEach(eligible, (summary) =>
+      Effect.gen(function* () {
+        const detail = yield* skills.get({ skillId: summary.id });
+        const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+        if (!revision)
+          return yield* new McpSkillResourceError({ reason: "Active revision missing" });
+        return {
+          uri: managedSkillUri({
+            id: String(detail.id),
+            packageDigest: String(revision.packageDigest),
+            path: "SKILL.md",
+          }),
+          name: detail.name ?? "unnamed-skill",
+          ...(detail.description === null ? {} : { description: detail.description }),
+          mimeType: "text/markdown",
+        };
+      }),
+    );
+    return { resources };
+  });
+
+const MANAGED_SKILL_DESCRIPTION_LIMIT = 40;
+const MANAGED_SKILL_ACTIVATION_LIMIT = 50;
+const MANAGED_SKILL_ACTIVATION_DESCRIPTION_LIMIT = 140;
+
+const managedSkillActivationToolName = (name: string): string =>
+  `skill_${name.replaceAll("-", "_")}`;
+
+const managedSkillActivationDescription = (description: string | null): string => {
+  const normalized = description?.replaceAll(/\s+/g, " ").trim() ?? "";
+  return normalized.length > 0
+    ? normalized.slice(0, MANAGED_SKILL_ACTIVATION_DESCRIPTION_LIMIT)
+    : "Load this Executor-managed skill.";
+};
+
+const managedSkillCatalogDescription = (
+  skills: readonly ManagedSkillSummary[],
+): readonly string[] => {
+  const eligible = skills
+    .filter(
+      (skill) =>
+        skill.delivery.kind === "enabled" &&
+        skill.delivery.invocation === "model" &&
+        skill.name !== null,
+    )
+    .sort((left, right) => {
+      const byName = (left.name ?? "").localeCompare(right.name ?? "");
+      if (byName !== 0) return byName;
+      if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+      return String(left.id).localeCompare(String(right.id));
+    });
+  if (eligible.length === 0) return ["No managed skills currently allow model selection."];
+  const shown = eligible.slice(0, MANAGED_SKILL_DESCRIPTION_LIMIT);
+  const hidden = eligible.length - shown.length;
+  return [
+    "Managed skills available for model selection:",
+    ...shown.map(
+      (skill) =>
+        `- \`${skill.name}\` (${skill.owner === "user" ? "personal" : "workspace"}): ${skill.description ?? "No description"}`,
+    ),
+    ...(hidden > 0
+      ? [`- ${hidden} more. Call this tool with no arguments for the full index.`]
+      : []),
+  ];
+};
+
+const readManagedSkillResource = (
+  skills: McpSkillsPort,
+  variables: Readonly<Record<string, string | string[]>>,
+): Effect.Effect<
+  {
+    contents: Array<
+      | { uri: string; mimeType: string; text: string }
+      | { uri: string; mimeType: string; blob: string }
+    >;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const scalar = (name: string): Effect.Effect<string, McpSkillResourceError> => {
+      const value = variables[name];
+      return typeof value === "string"
+        ? Effect.succeed(decodeURIComponent(value))
+        : Effect.fail(new McpSkillResourceError({ reason: `Invalid ${name}` }));
+    };
+    const skillId = ManagedSkillId.make(yield* scalar("skillId"));
+    const digest = yield* scalar("digest");
+    const path = yield* scalar("path");
+    const detail = yield* skills.get({ skillId });
+    if (detail.delivery.kind !== "enabled") {
+      return yield* new McpSkillResourceError({ reason: "Skill delivery is not enabled" });
+    }
+    const revision = detail.revisions.find((item) => String(item.packageDigest) === digest);
+    if (!revision) {
+      return yield* new McpSkillResourceError({ reason: "Skill revision not found" });
+    }
+    const manifest = revision.files.find((file) => file.path === path);
+    if (!manifest) return yield* new McpSkillResourceError({ reason: "Skill file not found" });
+    const file = yield* skills.readFile({ skillId, revisionId: revision.id, path });
+    const uri = managedSkillUri({ id: String(skillId), packageDigest: digest, path });
+    const textual =
+      manifest.mediaType.startsWith("text/") ||
+      manifest.mediaType.includes("json") ||
+      manifest.mediaType.includes("yaml") ||
+      manifest.mediaType.includes("xml") ||
+      manifest.mediaType.includes("javascript");
+    return {
+      contents: [
+        textual
+          ? { uri, mimeType: manifest.mediaType, text: new TextDecoder().decode(file.bytes) }
+          : { uri, mimeType: manifest.mediaType, blob: Encoding.encodeBase64(file.bytes) },
+      ],
+    };
+  });
+
+const readExtensionSkillResource = (
+  skills: McpSkillsPort,
+  variables: Readonly<Record<string, string | string[]>>,
+): Effect.Effect<
+  {
+    contents: Array<
+      | { uri: string; mimeType: string; text: string }
+      | { uri: string; mimeType: string; blob: string }
+    >;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const scalar = (name: string): Effect.Effect<string, McpSkillResourceError> => {
+      const value = variables[name];
+      return typeof value === "string"
+        ? Effect.succeed(decodeURIComponent(value))
+        : Effect.fail(new McpSkillResourceError({ reason: `Invalid ${name}` }));
+    };
+    const skillId = ManagedSkillId.make(yield* scalar("skillId"));
+    const expectedName = yield* scalar("name");
+    const path = yield* scalar("path");
+    return yield* readEnabledSkillResource(skills, {
+      skillId,
+      expectedName,
+      path,
+      uri: extensionSkillUri({ id: String(skillId), name: expectedName, path }),
+    });
+  });
+
+const readEnabledSkillResource = (
+  skills: McpSkillsPort,
+  input: {
+    readonly skillId: ManagedSkillId;
+    readonly expectedName: string;
+    readonly path: string;
+    readonly uri: string;
+  },
+): Effect.Effect<
+  {
+    contents: Array<
+      | { uri: string; mimeType: string; text: string }
+      | { uri: string; mimeType: string; blob: string }
+    >;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const detail = yield* skills.get({ skillId: input.skillId });
+    if (detail.delivery.kind !== "enabled" || detail.name !== input.expectedName) {
+      return yield* new McpSkillResourceError({ reason: "Skill resource is unavailable" });
+    }
+    const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+    const manifest = revision?.files.find((file) => file.path === input.path);
+    if (!revision || !manifest) {
+      return yield* new McpSkillResourceError({ reason: "Skill file not found" });
+    }
+    const file = yield* skills.readFile({
+      skillId: input.skillId,
+      revisionId: revision.id,
+      path: input.path,
+    });
+    const textual =
+      manifest.mediaType.startsWith("text/") ||
+      manifest.mediaType.includes("json") ||
+      manifest.mediaType.includes("yaml") ||
+      manifest.mediaType.includes("xml") ||
+      manifest.mediaType.includes("javascript");
+    return {
+      contents: [
+        textual
+          ? {
+              uri: input.uri,
+              mimeType: manifest.mediaType,
+              text: new TextDecoder().decode(file.bytes),
+            }
+          : {
+              uri: input.uri,
+              mimeType: manifest.mediaType,
+              blob: Encoding.encodeBase64(file.bytes),
+            },
+      ],
+    };
+  });
+
+const readLegacyExtensionSkillResource = (
+  skills: McpSkillsPort,
+  variables: Readonly<Record<string, string | string[]>>,
+): Effect.Effect<
+  {
+    contents: Array<
+      | { uri: string; mimeType: string; text: string }
+      | { uri: string; mimeType: string; blob: string }
+    >;
+  },
+  unknown
+> =>
+  Effect.gen(function* () {
+    const scalar = (name: string): Effect.Effect<string, McpSkillResourceError> => {
+      const value = variables[name];
+      return typeof value === "string"
+        ? Effect.succeed(decodeURIComponent(value))
+        : Effect.fail(new McpSkillResourceError({ reason: `Invalid ${name}` }));
+    };
+    const owner = yield* scalar("owner");
+    if (owner !== "user" && owner !== "org") {
+      return yield* new McpSkillResourceError({ reason: "Invalid owner" });
+    }
+    const name = yield* scalar("name");
+    const path = yield* scalar("path");
+    const summary = (yield* skills.list()).find(
+      (candidate) =>
+        candidate.owner === owner &&
+        candidate.name === name &&
+        candidate.delivery.kind === "enabled",
+    );
+    if (!summary) {
+      return yield* new McpSkillResourceError({ reason: "Skill resource is unavailable" });
+    }
+    return yield* readEnabledSkillResource(skills, {
+      skillId: summary.id,
+      expectedName: name,
+      path,
+      uri: legacyExtensionSkillUri({ owner, name, path }),
+    });
+  });
 
 /** Pull the live integration inventory block out of the built execute
  *  description (it runs from its header to the end), so the `skills` tool can
@@ -1532,7 +2275,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const executeInventory = extractInventory(description);
     // Artifacts are on unless this connection opted out (`?artifacts=false`).
     // One flag decides the whole surface: the tools, the shell resource, and
-    // the skills catalog below.
+    // the guides catalog below.
     const artifactsEnabled = config.artifactsEnabled ?? true;
     const skillCatalog: readonly Skill[] =
       config.mode === "passthrough"
@@ -1544,6 +2287,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             }),
           ]
         : skillCatalogFor({ artifacts: artifactsEnabled });
+    const managedSkillsAtBuild = config.skills
+      ? yield* config.skills.list().pipe(
+          Effect.catchCause(() => Effect.succeed([])),
+          Effect.withSpan("mcp.host.list_managed_skills"),
+        )
+      : [];
     // Per-integration search tools are off unless this connection opted in
     // (`?search_tools=true`).
     const searchToolsEnabled = config.searchToolsEnabled ?? false;
@@ -1657,7 +2406,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             // `ui://executor/shell.html`; it stays advertised even when no
             // shell loader is configured so the capability set doesn't vary
             // per host.
-            capabilities: { resources: {}, tools: {} },
+            capabilities: {
+              resources: { listChanged: true },
+              tools: {},
+              ...(config.skills ? { extensions: { [SKILLS_EXTENSION]: {} } } : {}),
+            },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
             ...(passthrough
               ? {
@@ -1667,6 +2420,85 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
+
+    const runResourceEffect = <A, EffE>(effect: Effect.Effect<A, EffE>): Promise<A> =>
+      Effect.runPromiseWith(context)(anchor(effect));
+
+    yield* Effect.sync(() => {
+      const configuredSkills = config.skills;
+      if (configuredSkills) {
+        server.server.setRequestHandler(ListSkillsRequestSchema, (request) =>
+          runResourceEffect(listExtensionSkills(configuredSkills, request.params?.cursor)),
+        );
+        server.server.setRequestHandler(GetSkillRequestSchema, (request) =>
+          runResourceEffect(getExtensionSkill(configuredSkills, request.params.uri)),
+        );
+        const extensionTemplate = new ResourceTemplate(
+          "skill://executor/skills/{skillId}/{name}/{path}",
+          { list: undefined },
+        );
+        server.registerResource(
+          "managed-skill-extension-file",
+          extensionTemplate,
+          {
+            title: "Executor managed skill file",
+            description: "A file exposed through the MCP Skills extension.",
+          },
+          (_uri, variables) =>
+            runResourceEffect(readExtensionSkillResource(configuredSkills, variables)),
+        );
+        const template = new ResourceTemplate(
+          "skill://executor/managed/{skillId}/{digest}/{path}",
+          { list: () => runResourceEffect(modelSkillResources(configuredSkills)) },
+        );
+        server.registerResource(
+          "managed-skill-file",
+          template,
+          {
+            title: "Executor managed skill file",
+            description: "An immutable file from an enabled Executor-managed Agent Skill.",
+          },
+          (_uri, variables) =>
+            runResourceEffect(readManagedSkillResource(configuredSkills, variables)),
+        );
+        const legacyExtensionTemplate = new ResourceTemplate("skill://{owner}/{name}/{+path}", {
+          list: undefined,
+        });
+        server.registerResource(
+          "managed-skill-extension-file-legacy",
+          legacyExtensionTemplate,
+          {
+            title: "Executor managed skill file compatibility alias",
+            description: "The owner/name resource form used by the initial Skills extension.",
+          },
+          (_uri, variables) =>
+            runResourceEffect(readLegacyExtensionSkillResource(configuredSkills, variables)),
+        );
+      }
+      server.registerResource(
+        "managed-skills-index",
+        "skill://index.json",
+        {
+          title: "Executor managed skills index",
+          description: "Discovery metadata for model-invocable managed skills.",
+          mimeType: "application/json",
+        },
+        async (uri) => {
+          const page = config.skills
+            ? await runResourceEffect(modelSkillResources(config.skills))
+            : { resources: [] };
+          return {
+            contents: [
+              {
+                uri: uri.href,
+                mimeType: "application/json",
+                text: encodeUnknownJson(page.resources),
+              },
+            ],
+          };
+        },
+      );
+    }).pipe(Effect.withSpan("mcp.host.register_skill_resources"));
 
     const executeWithNativeElicitation = (
       code: string,
@@ -2073,31 +2905,88 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         "skills",
         {
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-          description: passthrough
-            ? 'Documentation for this server only, not harness or project skills. Call with no name to list guides, or skills({ name: "search-invoke" }) for account discovery, tool search, invocation, and pagination.'
-            : [
-                "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
-                "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
-                'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
-                "Call with no name to list the few docs available.",
-              ].join("\n"),
+          description: [
+            // Deferred-tool clients may retain only this sentence, capped at
+            // 60 characters. Keep managed-skill discovery visible there.
+            "Load named skills; search model-enabled skills for tasks.",
+            `Read Executor's built-in ${passthrough ? "search and artifact" : "execute and artifact"} guides by name.`,
+            "Search Executor-managed Agent Skills or read one managed package file on demand.",
+            "Managed search returns only skills that allow model invocation. An exact ref or name can also read an enabled manual skill named by the user.",
+            `Call with no arguments to list the built-in guides and discover managed skills. Call with name: "${passthrough ? "search-invoke" : "execute"}" to read the main built-in guide.`,
+            "",
+            ...managedSkillCatalogDescription(managedSkillsAtBuild),
+          ].join("\n"),
           inputSchema: {
-            name: z
+            query: z.string().optional().describe("Search text. Omit or leave blank to enumerate."),
+            limit: z.number().int().min(1).max(50).optional(),
+            offset: z.number().int().min(0).optional(),
+            ref: z.string().optional().describe("Stable managed skill reference to read."),
+            name: z.string().optional().describe("Built-in guide or managed skill name to read."),
+            owner: z.enum(["user", "org"]).optional(),
+            path: z.string().optional().describe("Package path. Defaults to SKILL.md."),
+            file: z
               .string()
               .optional()
-              .describe(
-                `A doc from this server's own catalog, e.g. "${passthrough ? "search-invoke" : "execute"}". Omit to list the catalog.`,
-              ),
+              .describe("Bundled package file to read. Alias for path; do not provide both."),
           },
         },
-        ({ name }, extra) =>
-          runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog)), extra),
+        (input, extra) =>
+          runToolEffect(skillsResult(input, executeInventory, skillCatalog, config.skills), extra),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
         attributes: { "mcp.tool.name": "skills" },
       }),
     );
+
+    if (config.skills !== undefined) {
+      const managedSkills = config.skills;
+      const selectedByName = new Map<string, (typeof managedSkillsAtBuild)[number]>();
+      const eligible = managedSkillsAtBuild
+        .filter(
+          (skill) =>
+            skill.delivery.kind === "enabled" &&
+            skill.delivery.invocation === "model" &&
+            skill.name !== null,
+        )
+        .sort((left, right) => {
+          const byName = (left.name ?? "").localeCompare(right.name ?? "");
+          if (byName !== 0) return byName;
+          if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+          return String(left.id).localeCompare(String(right.id));
+        });
+      for (const skill of eligible) {
+        if (skill.name !== null && !selectedByName.has(skill.name)) {
+          selectedByName.set(skill.name, skill);
+        }
+      }
+      const activationSkills = [...selectedByName.values()].slice(
+        0,
+        MANAGED_SKILL_ACTIVATION_LIMIT,
+      );
+      yield* Effect.sync(() => {
+        for (const skill of activationSkills) {
+          if (skill.name === null) continue;
+          const toolName = managedSkillActivationToolName(skill.name);
+          server.registerTool(
+            toolName,
+            {
+              description: managedSkillActivationDescription(skill.description),
+              inputSchema: {},
+            },
+            (_input, extra) =>
+              runToolEffect(managedSkillActivationResult(String(skill.id), managedSkills), extra),
+          );
+        }
+      }).pipe(
+        Effect.withSpan("mcp.host.register_tool", {
+          attributes: {
+            "mcp.tool.name": "skill_<name>",
+            "mcp.skill_activation.count": activationSkills.length,
+          },
+        }),
+      );
+    }
 
     if (!passthrough)
       yield* Effect.sync(() => {

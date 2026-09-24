@@ -7,6 +7,7 @@ import {
   HttpApiBuilder,
   isValidPattern,
   matchPattern,
+  ManagedSkillId,
   Schema,
   type DynamicToolScope,
   type EffectivePolicy,
@@ -55,6 +56,14 @@ const ToolkitConnectionRecord = Schema.Struct({
 });
 type ToolkitConnectionRecord = typeof ToolkitConnectionRecord.Type;
 
+const ToolkitSkillRecord = Schema.Struct({
+  id: Schema.String,
+  toolkitId: Schema.String,
+  skillId: ManagedSkillId,
+  position: Schema.String,
+});
+type ToolkitSkillRecord = typeof ToolkitSkillRecord.Type;
+
 const toolkitsCollection = definePluginStorageCollection("toolkits", ToolkitRecord, {
   indexes: ["slug", "name", "updatedAt"],
 });
@@ -75,10 +84,15 @@ const toolkitConnectionsCollection = definePluginStorageCollection(
   },
 );
 
+const toolkitSkillsCollection = definePluginStorageCollection("toolkitSkills", ToolkitSkillRecord, {
+  indexes: ["toolkitId", "skillId", "position", ["toolkitId", "position"]],
+});
+
 type ToolkitStorage = {
   readonly toolkits: PluginStorageCollectionFacade<typeof toolkitsCollection>;
   readonly policies: PluginStorageCollectionFacade<typeof toolkitPoliciesCollection>;
   readonly connections: PluginStorageCollectionFacade<typeof toolkitConnectionsCollection>;
+  readonly skills: PluginStorageCollectionFacade<typeof toolkitSkillsCollection>;
 };
 
 export interface ToolkitsPluginOptions {
@@ -267,10 +281,17 @@ const connectionToResponse = (connection: ToolkitConnectionRecord) => ({
   updatedAt: connection.updatedAt,
 });
 
+const skillToResponse = (skill: ToolkitSkillRecord) => ({
+  toolkitId: skill.toolkitId,
+  skillId: skill.skillId,
+  position: skill.position,
+});
+
 const makeToolkitStorage = (pluginStorage: PluginStorageFacade): ToolkitStorage => ({
   toolkits: pluginStorage.collection(toolkitsCollection),
   policies: pluginStorage.collection(toolkitPoliciesCollection),
   connections: pluginStorage.collection(toolkitConnectionsCollection),
+  skills: pluginStorage.collection(toolkitSkillsCollection),
 });
 
 const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
@@ -323,6 +344,11 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
 
   const listConnectionsForRecord = (toolkitId: string) =>
     storage.connections
+      .query({ where: { toolkitId } })
+      .pipe(Effect.map((entries) => entries.map((entry) => entry.data).sort(comparePositioned)));
+
+  const listSkillsForRecord = (toolkitId: string) =>
+    storage.skills
       .query({ where: { toolkitId } })
       .pipe(Effect.map((entries) => entries.map((entry) => entry.data).sort(comparePositioned)));
 
@@ -391,6 +417,7 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       const toolkit = yield* requireToolkit(toolkitId);
       const policies = yield* listPoliciesForRecord(toolkitId);
       const connections = yield* listConnectionsForRecord(toolkitId);
+      const skills = yield* listSkillsForRecord(toolkitId);
       yield* ctx.pluginStorage.removeMany({
         owner: toolkit.owner,
         entries: [
@@ -402,6 +429,10 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
           ...connections.map((connection) => ({
             collection: toolkitConnectionsCollection.name,
             key: connection.id,
+          })),
+          ...skills.map((skill) => ({
+            collection: toolkitSkillsCollection.name,
+            key: skill.id,
           })),
         ],
       });
@@ -522,6 +553,70 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       yield* storage.connections.remove({ owner: toolkit.owner, key: connectionId });
     });
 
+  const listSkills = (toolkitId: string) =>
+    requireToolkit(toolkitId).pipe(Effect.flatMap(() => listSkillsForRecord(toolkitId)));
+
+  const setSkills = (
+    toolkitId: string,
+    input: { readonly expectedUpdatedAt: number; readonly skillIds: readonly ManagedSkillId[] },
+  ) =>
+    Effect.gen(function* () {
+      const toolkit = yield* requireToolkit(toolkitId);
+      if (toolkit.data.updatedAt !== input.expectedUpdatedAt) {
+        return yield* fail("Toolkit changed in another session. Refresh and try again.");
+      }
+      const skillIds = [...new Set(input.skillIds)];
+      const managedSkills = yield* Effect.forEach(skillIds, (skillId) =>
+        ctx.core.skills
+          .get(skillId)
+          .pipe(
+            Effect.flatMap((skill) =>
+              skill === null ? fail(`Managed skill not found: ${skillId}`) : Effect.succeed(skill),
+            ),
+          ),
+      );
+      if (toolkit.owner === "org" && managedSkills.some((skill) => skill.owner !== "org")) {
+        return yield* fail("A workspace toolkit can include only workspace-owned skills.");
+      }
+      const existing = yield* listSkillsForRecord(toolkitId);
+      yield* ctx.pluginStorage.removeMany({
+        owner: toolkit.owner,
+        entries: existing.map((skill) => ({
+          collection: toolkitSkillsCollection.name,
+          key: skill.id,
+        })),
+      });
+      let previousPosition: string | null = null;
+      const next = yield* Effect.forEach(skillIds, (skillId) => {
+        const position = generateKeyBetween(previousPosition, null);
+        previousPosition = position;
+        const id = newId("tkskill");
+        return storage.skills
+          .put({
+            owner: toolkit.owner,
+            key: id,
+            data: { id, toolkitId, skillId, position },
+          })
+          .pipe(Effect.map((entry) => entry.data));
+      });
+      yield* storage.toolkits.put({
+        owner: toolkit.owner,
+        key: toolkitId,
+        data: { ...toolkit.data, updatedAt: Date.now() },
+      });
+      return next;
+    });
+
+  const skillIdsForSlug = (
+    slug: string,
+  ): Effect.Effect<ReadonlySet<ManagedSkillId>, StorageFailure> =>
+    Effect.gen(function* () {
+      const toolkit = yield* getBySlugEntry(slug);
+      if (!toolkit) return new Set<ManagedSkillId>();
+      const skills = yield* listSkillsForRecord(toolkit.data.id);
+      return new Set(skills.map((skill) => skill.skillId));
+    });
+
   const policyRulesForSlug = (
     slug: string,
   ): Effect.Effect<readonly ToolPolicyProviderRule[], StorageFailure> =>
@@ -601,6 +696,13 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       ),
     createConnection,
     removeConnection,
+    listSkills: (toolkitId: string) =>
+      listSkills(toolkitId).pipe(Effect.map((skills) => skills.map(skillToResponse))),
+    setSkills: (
+      toolkitId: string,
+      input: { readonly expectedUpdatedAt: number; readonly skillIds: readonly ManagedSkillId[] },
+    ) => setSkills(toolkitId, input).pipe(Effect.map((skills) => skills.map(skillToResponse))),
+    skillIdsForSlug,
     policyRulesForSlug,
     resolvePolicyForSlug,
     preparePolicyResolverForSlug,
@@ -711,6 +813,22 @@ const ToolkitsHandlers = HttpApiBuilder.group(ExecutorApiWithToolkits, "toolkits
           return { removed: true };
         }),
       ),
+    )
+    .handle("listSkills", ({ params }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return { skills: yield* ext.listSkills(params.toolkitId) };
+        }),
+      ),
+    )
+    .handle("setSkills", ({ params, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* ToolkitsExtensionService;
+          return { skills: yield* ext.setSkills(params.toolkitId, payload) };
+        }),
+      ),
     ),
 );
 
@@ -738,6 +856,7 @@ export const toolkitsPlugin = definePlugin((options: ToolkitsPluginOptions = {})
       toolkits: toolkitsCollection,
       toolkitPolicies: toolkitPoliciesCollection,
       toolkitConnections: toolkitConnectionsCollection,
+      toolkitSkills: toolkitSkillsCollection,
     },
     storage: ({ pluginStorage }) => makeToolkitStorage(pluginStorage),
     extension: makeToolkitsExtension,
@@ -748,6 +867,12 @@ export const toolkitsPlugin = definePlugin((options: ToolkitsPluginOptions = {})
       ? {
           toolPolicyProvider: (ctx: PluginCtx<ToolkitStorage>) =>
             makePolicyProvider(makeToolkitsExtension(ctx), activeToolkitSlug),
+          skillCatalogProvider: (ctx: PluginCtx<ToolkitStorage>) => {
+            const extension = makeToolkitsExtension(ctx);
+            return {
+              listAllowedSkillIds: () => extension.skillIdsForSlug(activeToolkitSlug),
+            };
+          },
         }
       : {}),
   };

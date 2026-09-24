@@ -646,9 +646,9 @@ export default {
     if (!request.url.endsWith("/run")) return new Response("Not Found", { status: 404 });
     logs.length = 0;
     try {
-      const fn = env.UNSAFE_EVAL.eval(${JSON.stringify(`(async (tools, console) => { ${body} })`)});
+      const fn = env.UNSAFE_EVAL.eval(${JSON.stringify(`(async (tools, skills, console) => { ${body} })`)});
       const result = await Promise.race([
-        fn(makeToolsProxy(env), sandboxConsole),
+        fn(makeToolsProxy(env), makeToolsProxy(env, ["skills"]), sandboxConsole),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Execution timed out after ${timeoutMs}ms")), ${timeoutMs})),
       ]);
       return Response.json({ result, logs });

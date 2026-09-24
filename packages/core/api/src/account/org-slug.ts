@@ -47,6 +47,7 @@ export const RESERVED_ORG_SLUGS: ReadonlySet<string> = new Set([
   "integrations",
   "policies",
   "secrets",
+  "skills",
   "tools",
   "toolkits",
   "artifacts",

@@ -47,6 +47,10 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
       const procs = await bootSelfhost({
         port,
         webBaseUrl: `http://localhost:${port}`,
+        // Bun resolves localhost to IPv4 in its fetch client even when the OS
+        // resolver and Vite choose IPv6. Bind IPv4 explicitly so readiness,
+        // API clients, and the browser all reach the same listener.
+        host: "127.0.0.1",
         admin: SELFHOST_ADMIN,
         logFile: bootLogFile,
         sandboxTimeoutMs: E2E_SANDBOX_TIMEOUT_MS,

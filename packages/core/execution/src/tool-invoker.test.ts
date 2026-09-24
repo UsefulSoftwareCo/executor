@@ -711,6 +711,58 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("discovers model skills lazily and reads manual skills by exact reference", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const manual = yield* executor.skills.create({
+        owner: "user",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: manual-skill\ndescription: User-selected instructions.\ndisable-model-invocation: true\n---\n\n# Manual\n",
+              ),
+            },
+          ],
+        },
+      });
+      yield* executor.skills.create({
+        owner: "org",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: model-skill\ndescription: Automatically discoverable instructions.\n---\n\n# Model\n",
+              ),
+            },
+          ],
+        },
+        delivery: { kind: "enabled", invocation: "model" },
+      });
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const search = yield* engine.execute('return await skills.search({ query: "skill" });', {
+        onElicitation: acceptAll,
+      });
+      expect(search.error).toBeUndefined();
+      expect(search.result).toEqual(
+        expect.objectContaining({
+          items: [expect.objectContaining({ name: "model-skill" })],
+          total: 1,
+        }),
+      );
+
+      const read = yield* engine.execute(
+        `return await skills.get({ ref: ${JSON.stringify(String(manual.id))} });`,
+        { onElicitation: acceptAll },
+      );
+      expect(read.error).toBeUndefined();
+      expect(read.result).toContain("# Manual");
+    }),
+  );
+
   it.effect("lets execution hosts provide custom tool discovery", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();

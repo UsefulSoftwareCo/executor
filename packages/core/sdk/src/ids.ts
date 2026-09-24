@@ -63,6 +63,21 @@ export type PolicyId = typeof PolicyId.Type;
 export const ArtifactId = Schema.String.pipe(Schema.brand("ArtifactId"));
 export type ArtifactId = typeof ArtifactId.Type;
 
+export const ManagedSkillId = Schema.String.pipe(Schema.brand("ManagedSkillId"));
+export type ManagedSkillId = typeof ManagedSkillId.Type;
+
+export const SkillRevisionId = Schema.String.pipe(Schema.brand("SkillRevisionId"));
+export type SkillRevisionId = typeof SkillRevisionId.Type;
+
+export const SkillCandidateId = Schema.String.pipe(Schema.brand("SkillCandidateId"));
+export type SkillCandidateId = typeof SkillCandidateId.Type;
+
+export const SkillPackageDigest = Schema.String.pipe(Schema.brand("SkillPackageDigest"));
+export type SkillPackageDigest = typeof SkillPackageDigest.Type;
+
+export const SkillName = Schema.String.pipe(Schema.brand("SkillName"));
+export type SkillName = typeof SkillName.Type;
+
 /**
  * The isolation partition (the org/workspace). Owns the catalog and namespaces
  * every connection. The executor is bound to one; `owner: "org"` files at this

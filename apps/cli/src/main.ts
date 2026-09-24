@@ -91,6 +91,8 @@ import {
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
   type ExecutorServerHeaders,
+  type ManagedSkillId,
+  type Owner,
 } from "@executor-js/sdk/shared";
 import {
   decodeAccessTokenClaims,
@@ -167,6 +169,11 @@ import {
   validateCliServerConnectionProfileName,
   type CliServerConnectionStore,
 } from "./server-profile";
+import {
+  defaultAgentSkillsDirectory,
+  defaultClaudeSkillsDirectory,
+  materializeSkills,
+} from "./skill-materializer";
 import {
   buildResumeContentTemplate,
   buildDescribeToolCode,
@@ -2219,6 +2226,471 @@ const toolsCommand = Command.make("tools").pipe(
   Command.withDescription("Discover available tools and integrations"),
 );
 
+interface CliSkillSummary {
+  readonly id: ManagedSkillId;
+  readonly owner: Owner;
+  readonly name: string | null;
+  readonly delivery:
+    | { readonly kind: "blocked" }
+    | { readonly kind: "disabled" }
+    | { readonly kind: "enabled"; readonly invocation: "manual" | "model" };
+}
+
+const selectCliSkill = (skills: readonly CliSkillSummary[], selector: string): CliSkillSummary => {
+  const byId = skills.find((skill) => skill.id === selector);
+  if (byId) return byId;
+  const slash = selector.indexOf("/");
+  const owner = slash === -1 ? null : selector.slice(0, slash);
+  const name = slash === -1 ? selector : selector.slice(slash + 1);
+  const matches = skills
+    .filter((skill) => skill.name === name && (owner === null || skill.owner === owner))
+    .sort((left, right) => (left.owner === right.owner ? 0 : left.owner === "user" ? -1 : 1));
+  const selected = matches[0];
+  if (!selected) throw new Error(`Managed skill not found: ${selector}`);
+  return selected;
+};
+
+const skillCommandTarget = (input: {
+  readonly baseUrl: Option.Option<string>;
+  readonly server: Option.Option<string>;
+  readonly scope: Option.Option<string>;
+}) =>
+  Effect.gen(function* () {
+    applyScope(input.scope);
+    const target = serverTargetFromOptions(input);
+    const connection = yield* resolveExecutorServerConnection(target);
+    const client = yield* makeApiClient(connection, target);
+    return { client, target };
+  });
+
+const skillsListCommand = Command.make(
+  "list",
+  { baseUrl: serverBaseUrl, server: serverProfile, scope },
+  (options) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const skills = yield* client.skills.list({});
+      if (skills.length === 0) {
+        console.log("No managed skills.");
+        return;
+      }
+      for (const skill of skills) {
+        const delivery =
+          skill.delivery.kind === "enabled"
+            ? `enabled:${skill.delivery.invocation}`
+            : skill.delivery.kind;
+        console.log(`${skill.owner}/${skill.name ?? "blocked"}\t${delivery}\t${skill.id}`);
+      }
+    }),
+).pipe(Command.withDescription("List Executor-managed Agent Skills"));
+
+const skillsShowCommand = Command.make(
+  "show",
+  {
+    selector: Args.string("selector"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const skill = yield* client.skills.get({ params: { skillId: selected.id } });
+      console.log(JSON.stringify(skill, null, 2));
+    }),
+).pipe(Command.withDescription("Show one managed skill and its revision history"));
+
+const skillsAddCommand = Command.make(
+  "add",
+  {
+    source: Args.string("source"),
+    owner: Options.choice("owner", ["user", "org"] as const).pipe(Options.withDefault("user")),
+    follow: Options.boolean("follow"),
+    yes: Options.boolean("yes"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ source: sourceInput, owner, follow, yes, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const preview = yield* client.skills.discover({
+        payload: { source: sourceInput, owner, tracking: follow ? "follow" : "pin" },
+      });
+      for (const candidate of preview.candidates) {
+        console.log(
+          `${candidate.revision.name ?? "blocked"}\t${candidate.revision.description ?? "No description"}\t${candidate.upstreamRevision}`,
+        );
+      }
+      for (const rejected of preview.rejected) {
+        console.error(`Rejected ${rejected.directory || "."}: ${rejected.reason}`);
+      }
+      if (!yes) {
+        console.log("Preview only. Run again with --yes to import these candidates.");
+        return;
+      }
+      for (const candidate of preview.candidates) {
+        const imported = yield* client.skills.importCandidate({
+          payload: { candidateId: candidate.id },
+        });
+        console.log(`Imported ${imported.owner}/${imported.name ?? "blocked"} (${imported.id})`);
+      }
+    }),
+).pipe(Command.withDescription("Preview and import skills from GitHub or skills.sh"));
+
+const skillsDeliveryCommand = (
+  name: "enable" | "disable",
+  delivery: "manual" | "model" | "disabled",
+) =>
+  Command.make(
+    name,
+    {
+      selector: Args.string("selector"),
+      yes: Options.boolean("yes"),
+      baseUrl: serverBaseUrl,
+      server: serverProfile,
+      scope,
+    },
+    ({ selector, yes, ...options }) =>
+      Effect.gen(function* () {
+        if (delivery === "model" && !yes) {
+          return yield* Effect.fail(
+            new Error("Model invocation requires explicit confirmation with --yes."),
+          );
+        }
+        const { client } = yield* skillCommandTarget(options);
+        const selected = selectCliSkill(yield* client.skills.list({}), selector);
+        const skill = yield* client.skills.setDelivery({
+          params: { skillId: selected.id },
+          payload: {
+            delivery:
+              delivery === "disabled"
+                ? { kind: "disabled" }
+                : { kind: "enabled", invocation: delivery },
+          },
+        });
+        console.log(`${skill.owner}/${skill.name ?? "blocked"}: ${delivery}`);
+      }),
+  );
+
+const skillsEnableCommand = Command.make(
+  "enable",
+  {
+    selector: Args.string("selector"),
+    invocation: Options.choice("invocation", ["manual", "model"] as const).pipe(
+      Options.withDefault("manual"),
+    ),
+    yes: Options.boolean("yes"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, invocation, yes, ...options }) =>
+    Effect.gen(function* () {
+      if (invocation === "model" && !yes) {
+        return yield* Effect.fail(
+          new Error("Model invocation requires explicit confirmation with --yes."),
+        );
+      }
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const skill = yield* client.skills.setDelivery({
+        params: { skillId: selected.id },
+        payload: { delivery: { kind: "enabled", invocation } },
+      });
+      console.log(`${skill.owner}/${skill.name ?? "blocked"}: enabled:${invocation}`);
+    }),
+).pipe(Command.withDescription("Enable delivery, with explicit opt-in for model selection"));
+
+const skillsDisableCommand = skillsDeliveryCommand("disable", "disabled").pipe(
+  Command.withDescription("Disable delivery while retaining the managed package"),
+);
+
+const skillsDetachCommand = Command.make(
+  "detach-source",
+  {
+    selector: Args.string("selector"),
+    yes: Options.boolean("yes"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, yes, ...options }) =>
+    Effect.gen(function* () {
+      if (!yes) return yield* Effect.fail(new Error("Source detach requires --yes."));
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      yield* client.skills.setSource({
+        params: { skillId: selected.id },
+        payload: { change: { kind: "detach" } },
+      });
+      console.log(`Detached source from ${selected.owner}/${selected.name ?? "blocked"}.`);
+    }),
+).pipe(Command.withDescription("Keep the package but stop tracking its source"));
+
+const skillsCheckCommand = Command.make(
+  "check",
+  {
+    selector: Args.string("selector"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const result = yield* client.skills.checkSource({ params: { skillId: selected.id } });
+      if (result.kind === "noUpdate") {
+        console.log("No source update available.");
+        return;
+      }
+      if (result.kind === "sourceFailure") {
+        return yield* Effect.fail(new Error(result.message));
+      }
+      console.log(`Candidate ${result.candidate.id} (${result.candidate.upstreamRevision})`);
+      for (const change of result.review.changes) {
+        console.log(`${change.kind}\t${change.conflict ? "conflict" : "clean"}\t${change.path}`);
+      }
+    }),
+).pipe(Command.withDescription("Check a tracked source and print its file-level diff"));
+
+const skillsSyncCommand = Command.make(
+  "sync",
+  {
+    selector: Args.string("selector"),
+    yes: Options.boolean("yes"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, yes, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const result = yield* client.skills.checkSource({ params: { skillId: selected.id } });
+      if (result.kind === "noUpdate") {
+        console.log("No source update available.");
+        return;
+      }
+      if (result.kind === "sourceFailure") return yield* Effect.fail(new Error(result.message));
+      for (const change of result.review.changes) {
+        console.log(`${change.kind}\t${change.conflict ? "conflict" : "clean"}\t${change.path}`);
+      }
+      if (result.review.conflicts.length > 0) {
+        return yield* Effect.fail(
+          new Error(`Resolve conflicts in the dashboard: ${result.review.conflicts.join(", ")}`),
+        );
+      }
+      if (!yes) {
+        console.log("Preview only. Run again with --yes to apply this candidate.");
+        return;
+      }
+      const updated = yield* client.skills.applyUpdate({
+        params: { skillId: selected.id, candidateId: result.candidate.id },
+        payload: {
+          expectedActiveRevisionId: result.review.expectedActiveRevisionId,
+          expectedBaselineRevisionId: result.review.expectedBaselineRevisionId,
+          resolutions: [],
+        },
+      });
+      console.log(`Updated ${updated.owner}/${updated.name ?? "blocked"}.`);
+    }),
+).pipe(Command.withDescription("Check, review, and apply a conflict-free source update"));
+
+const sourceSymbolicReference = (source: {
+  readonly kind: "github" | "wellKnown" | "mcp" | "local";
+  readonly requestedRef?: string;
+  readonly entryId?: string;
+  readonly uri?: string;
+  readonly path?: string;
+}): string =>
+  source.kind === "github"
+    ? (source.requestedRef ?? "main")
+    : source.kind === "wellKnown"
+      ? (source.entryId ?? "default")
+      : source.kind === "mcp"
+        ? (source.uri ?? "skill")
+        : (source.path ?? ".");
+
+const skillsPinCommand = Command.make(
+  "pin",
+  {
+    selector: Args.string("selector"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const skill = yield* client.skills.get({ params: { skillId: selected.id } });
+      if (skill.source.kind !== "imported")
+        return yield* Effect.fail(new Error("Skill has no source."));
+      const upstreamRevision =
+        skill.source.tracking.kind === "tracked"
+          ? skill.source.tracking.resolvedRevision
+          : skill.source.tracking.upstreamRevision;
+      yield* client.skills.setSource({
+        params: { skillId: skill.id },
+        payload: {
+          change: { kind: "setTracking", tracking: { kind: "pinned", upstreamRevision } },
+        },
+      });
+      console.log(`Pinned ${skill.owner}/${skill.name ?? "blocked"} to ${upstreamRevision}.`);
+    }),
+).pipe(Command.withDescription("Pin a source to its current immutable revision"));
+
+const skillsFollowCommand = Command.make(
+  "follow",
+  {
+    selector: Args.string("selector"),
+    reference: Options.string("ref").pipe(Options.optional),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, reference, ...options }) =>
+    Effect.gen(function* () {
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      const skill = yield* client.skills.get({ params: { skillId: selected.id } });
+      if (skill.source.kind !== "imported")
+        return yield* Effect.fail(new Error("Skill has no source."));
+      const resolvedRevision =
+        skill.source.tracking.kind === "tracked"
+          ? skill.source.tracking.resolvedRevision
+          : skill.source.tracking.upstreamRevision;
+      const symbolicReference =
+        Option.getOrUndefined(reference) ?? sourceSymbolicReference(skill.source.locator);
+      yield* client.skills.setSource({
+        params: { skillId: skill.id },
+        payload: {
+          change: {
+            kind: "setTracking",
+            tracking: { kind: "tracked", symbolicReference, resolvedRevision },
+          },
+        },
+      });
+      console.log(`Following ${symbolicReference} for ${skill.owner}/${skill.name ?? "blocked"}.`);
+    }),
+).pipe(Command.withDescription("Follow a symbolic source ref with manual update review"));
+
+const skillsRemoveCommand = Command.make(
+  "remove",
+  {
+    selector: Args.string("selector"),
+    yes: Options.boolean("yes"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ selector, yes, ...options }) =>
+    Effect.gen(function* () {
+      if (!yes) return yield* Effect.fail(new Error("Skill removal requires --yes."));
+      const { client } = yield* skillCommandTarget(options);
+      const selected = selectCliSkill(yield* client.skills.list({}), selector);
+      yield* client.skills.remove({ params: { skillId: selected.id } });
+      console.log(`Removed ${selected.owner}/${selected.name ?? "blocked"}.`);
+    }),
+).pipe(Command.withDescription("Remove a managed skill and its revision history"));
+
+const skillsPullCommand = Command.make(
+  "pull",
+  {
+    directory: Options.string("dir").pipe(Options.optional),
+    target: Options.choice("target", ["agents", "claude", "all"] as const).pipe(
+      Options.withDefault("agents"),
+    ),
+    force: Options.boolean("force"),
+    baseUrl: serverBaseUrl,
+    server: serverProfile,
+    scope,
+  },
+  ({ directory, target: projectionTarget, force, ...options }) =>
+    Effect.gen(function* () {
+      const { client, target } = yield* skillCommandTarget(options);
+      const connection = yield* resolveExecutorServerConnection(target);
+      const summaries = (yield* client.skills.list({})).filter(
+        (skill) => skill.delivery.kind === "enabled" && skill.name !== null,
+      );
+      const skills = yield* Effect.forEach(summaries, (summary) =>
+        Effect.gen(function* () {
+          const detail = yield* client.skills.get({ params: { skillId: summary.id } });
+          const exported = yield* client.skills.export({
+            params: { skillId: summary.id },
+            query: { kind: "portable" },
+          });
+          if (exported.kind !== "portable") {
+            return yield* Effect.fail(new Error(`Unexpected backup for ${summary.id}.`));
+          }
+          const revision = detail.revisions.find(
+            (candidate) => candidate.packageDigest === exported.packageDigest,
+          );
+          if (!revision) {
+            return yield* Effect.fail(new Error(`Missing active revision for ${summary.id}.`));
+          }
+          const digests = new Map(revision.files.map((file) => [file.path, file.digest]));
+          return {
+            id: summary.id,
+            owner: summary.owner,
+            name: String(exported.name),
+            revisionDigest: exported.packageDigest,
+            files: exported.files.map((file) => ({
+              path: file.path,
+              digest: digests.get(file.path) ?? "",
+              bytes: Uint8Array.from(Buffer.from(file.bytes, "base64")),
+            })),
+          };
+        }),
+      );
+      const explicit = Option.getOrUndefined(directory);
+      const roots = explicit
+        ? [resolve(explicit)]
+        : projectionTarget === "all"
+          ? [defaultAgentSkillsDirectory(), defaultClaudeSkillsDirectory()]
+          : projectionTarget === "claude"
+            ? [defaultClaudeSkillsDirectory()]
+            : [defaultAgentSkillsDirectory()];
+      for (const root of roots) {
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            materializeSkills({
+              root,
+              origin: connection.origin,
+              skills,
+              force,
+            }),
+          catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+        });
+        console.log(
+          `${root}: ${result.added} added, ${result.updated} updated, ${result.removed} removed, ${result.unchanged} unchanged`,
+        );
+        for (const reason of result.skipped) console.error(`Skipped: ${reason}`);
+      }
+    }),
+).pipe(Command.withDescription("Materialize enabled managed skills into native agent directories"));
+
+const skillsCommand = Command.make("skills").pipe(
+  Command.withSubcommands([
+    skillsListCommand,
+    skillsShowCommand,
+    skillsAddCommand,
+    skillsEnableCommand,
+    skillsDisableCommand,
+    skillsCheckCommand,
+    skillsSyncCommand,
+    skillsPinCommand,
+    skillsFollowCommand,
+    skillsDetachCommand,
+    skillsRemoveCommand,
+    skillsPullCommand,
+  ] as const),
+  Command.withDescription("Manage Executor-owned Agent Skills"),
+);
+
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -3328,6 +3800,7 @@ const root = Command.make("executor").pipe(
     callCommand,
     resumeCommand,
     toolsCommand,
+    skillsCommand,
     installCommand,
     loginCommand,
     logoutCommand,

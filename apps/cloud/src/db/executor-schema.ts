@@ -251,6 +251,83 @@ export const artifact = pgTable(
   (table) => [uniqueIndex("artifact_uidx").on(table.tenant, table.owner, table.subject, table.id)],
 );
 
+export const skill = pgTable(
+  "skill",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }),
+    description: text("description"),
+    active_revision_id: varchar("active_revision_id", { length: 255 }).notNull(),
+    delivery: json("delivery").notNull(),
+    source: json("source").notNull(),
+    requirements: json("requirements"),
+    created_at: timestamp("created_at").notNull(),
+    updated_at: timestamp("updated_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("skill_uidx").on(table.tenant, table.owner, table.subject, table.id),
+    uniqueIndex("skill_name_uidx").on(table.tenant, table.owner, table.subject, table.name),
+  ],
+);
+
+export const skill_revision = pgTable(
+  "skill_revision",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    skill_id: varchar("skill_id", { length: 255 }).notNull(),
+    package_digest: varchar("package_digest", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }),
+    description: text("description"),
+    frontmatter: json("frontmatter"),
+    files: json("files").notNull(),
+    diagnostics: json("diagnostics").notNull(),
+    created_at: timestamp("created_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("skill_revision_uidx").on(table.tenant, table.owner, table.subject, table.id),
+  ],
+);
+
+export const skill_candidate = pgTable(
+  "skill_candidate",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    source: json("source").notNull(),
+    package_digest: varchar("package_digest", { length: 255 }).notNull(),
+    name: varchar("name", { length: 255 }),
+    description: text("description"),
+    frontmatter: json("frontmatter"),
+    files: json("files").notNull(),
+    diagnostics: json("diagnostics").notNull(),
+    created_at: timestamp("created_at").notNull(),
+    expires_at: timestamp("expires_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+    owner: varchar("owner", { length: 255 }).notNull(),
+    subject: varchar("subject", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("skill_candidate_uidx").on(table.tenant, table.owner, table.subject, table.id),
+  ],
+);
+
 export const plugin_storage = pgTable(
   "plugin_storage",
   {

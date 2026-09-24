@@ -8,11 +8,24 @@ import {
   BootReadinessTimeoutError,
   bootProcesses,
   isBootReadinessTimeout,
+  waitForHttp,
   waitForBoot,
 } from "../setup/boot";
 import { claimAndBoot, isAddrInUse } from "../src/ports";
 
 describe("e2e boot process lifecycle", () => {
+  it("uses integer probe deadlines accepted by Bun", async () => {
+    let failure: unknown;
+    try {
+      await waitForHttp("http://127.0.0.1:1", { timeoutMs: 10 });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(BootReadinessTimeoutError);
+    expect((failure as BootReadinessTimeoutError).lastError).not.toBeInstanceOf(RangeError);
+  });
+
   it("fails immediately with the boot log when a child exits", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "executor-e2e-boot-"));
     const logFile = join(tempDir, "boot.log");

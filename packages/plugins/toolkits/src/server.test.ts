@@ -5,6 +5,49 @@ import { makeTestExecutor } from "@executor-js/sdk/testing";
 import { toolkitsPlugin } from "./server";
 
 describe("toolkitsPlugin", () => {
+  it.effect("filters managed skill discovery through the active toolkit", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin({ activeToolkitSlug: "focused" })] as const,
+      });
+      const toolkit = yield* executor.toolkits.create({ owner: "user", name: "Focused" });
+      const included = yield* executor.skills.create({
+        owner: "user",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: included\ndescription: Included skill.\n---\nBody",
+              ),
+            },
+          ],
+        },
+      });
+      yield* executor.skills.create({
+        owner: "org",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: excluded\ndescription: Excluded skill.\n---\nBody",
+              ),
+            },
+          ],
+        },
+      });
+
+      expect(yield* executor.skills.list()).toEqual([]);
+      const memberships = yield* executor.toolkits.setSkills(toolkit.id, {
+        expectedUpdatedAt: toolkit.updatedAt,
+        skillIds: [included.id],
+      });
+      expect(memberships.map((membership) => membership.skillId)).toEqual([included.id]);
+      expect((yield* executor.skills.list()).map((skill) => skill.id)).toEqual([included.id]);
+    }),
+  );
+
   it.effect("creates toolkits and manages ordered policy rules", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

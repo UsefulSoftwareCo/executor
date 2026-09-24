@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import type * as Cause from "effect/Cause";
+import * as z from "zod/v4";
 
 import {
   ElicitationId,
@@ -13,7 +14,9 @@ import {
   ToolAddress,
   ToolResult,
   UrlElicitation,
+  createExecutor,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 import type { ToolFileValue } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
@@ -68,6 +71,7 @@ type TestServerConfig<E extends Cause.YieldableError> = Pick<
   | "pausedExecutionHooks"
   | "pausedExecutionLeaseMs"
   | "resumeFallback"
+  | "skills"
 >;
 
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */
@@ -1916,12 +1920,17 @@ describe("MCP host server — skills tool", () => {
   // `executor_skills` as the general skill reader they are missing, so the
   // description has to scope itself to this server before a model tries to
   // read a SKILL.md through it.
-  it("scopes the skills tool description to this server's own docs", async () => {
+  it("describes built-in guides and managed skills", async () => {
     await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
       const { tools } = await client.listTools();
       const description = tools.find((t) => t.name === "skills")?.description ?? "";
-      expect(description).toContain("Not a general skill reader");
-      expect(description).toContain("SKILL.md");
+      // Progressive-disclosure clients may keep only the first sentence, capped
+      // at 60 characters, when they defer an MCP tool's full schema.
+      const firstSentence = description.slice(0, description.indexOf(".") + 1);
+      expect(firstSentence).toBe("Load named skills; search model-enabled skills for tasks.");
+      expect(firstSentence.length).toBeLessThanOrEqual(60);
+      expect(description).toContain("built-in");
+      expect(description).toContain("managed Agent Skills");
     });
   });
 
@@ -1989,6 +1998,312 @@ describe("MCP host server — skills tool", () => {
       expect(textOf(result)).toContain("only Executor's own docs");
       expect(textOf(result)).toContain("`execute`");
       expect(result.structuredContent).toBeUndefined();
+    });
+  });
+});
+
+describe("MCP host server — managed skills tool", () => {
+  it("exposes model-invocable skills as small activation tools", async () => {
+    const executor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    await Effect.runPromise(
+      executor.skills.create({
+        owner: "user",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: test-one\ndescription: Respond with Hello World when explicitly requested.\ndisable-model-invocation: true\n---\n\n# Test one\n\nHello World!\n",
+              ),
+            },
+          ],
+        },
+      }),
+    );
+    const automatic = await Effect.runPromise(
+      executor.skills.create({
+        owner: "org",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: test-two\ndescription: Send Hello The Netherlands when discussing the Netherlands.\n---\n\n# Test two\n\nHello The Netherlands\n",
+              ),
+            },
+          ],
+        },
+        delivery: { kind: "enabled", invocation: "model" },
+      }),
+    );
+
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        const { tools } = await client.listTools();
+        expect(tools.map(({ name }) => name)).toContain("skill_test_two");
+        expect(tools.map(({ name }) => name)).not.toContain("skill_test_one");
+
+        const activationTool = tools.find(({ name }) => name === "skill_test_two");
+        expectDefined(activationTool);
+        expect(activationTool.description).toBe(
+          "Send Hello The Netherlands when discussing the Netherlands.",
+        );
+        expect(JSON.stringify(activationTool).length).toBeLessThan(300);
+
+        const result = await client.callTool({ name: "skill_test_two", arguments: {} });
+        expect(textOf(result)).toContain("Hello The Netherlands");
+        expect(textOf(result)).not.toContain("description:");
+
+        await Effect.runPromise(
+          executor.skills.setDelivery({
+            skillId: automatic.id,
+            delivery: { kind: "enabled", invocation: "manual" },
+          }),
+        );
+        const afterDisablingModelInvocation = await client.callTool({
+          name: "skill_test_two",
+          arguments: {},
+        });
+        expect(afterDisablingModelInvocation.isError).toBe(true);
+        expect(textOf(afterDisablingModelInvocation)).toContain(
+          "no longer allows model invocation",
+        );
+      },
+      { skills: executor.skills },
+    );
+  });
+
+  it("advertises and serves the final MCP Skills extension contract", async () => {
+    const executor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const automatic = await Effect.runPromise(
+      executor.skills.create({
+        owner: "org",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: public-guide\ndescription: Discoverable instructions.\nlicense: MIT\n---\n\n# Public guide\n",
+              ),
+            },
+            { path: "references/example.txt", bytes: new TextEncoder().encode("example") },
+          ],
+        },
+        delivery: { kind: "enabled", invocation: "model" },
+      }),
+    );
+
+    const SkillResult = z.object({
+      resultType: z.literal("complete"),
+      ttlMs: z.number(),
+      cacheScope: z.literal("private"),
+      skills: z.array(
+        z.object({
+          uri: z.string(),
+          frontmatter: z.object({ name: z.string(), description: z.string() }).loose(),
+          resources: z.array(z.object({ uri: z.string(), digest: z.string(), size: z.number() })),
+        }),
+      ),
+      nextCursor: z.string().optional(),
+    });
+    const GetResult = z.object({
+      resultType: z.literal("complete"),
+      ttlMs: z.number(),
+      cacheScope: z.literal("private"),
+      skill: SkillResult.shape.skills.element,
+    });
+
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        expect(client.getServerCapabilities()?.extensions).toMatchObject({
+          "io.modelcontextprotocol/skills": {},
+        });
+        const listed = await client.request({ method: "skills/list", params: {} }, SkillResult);
+        const tools = await client.listTools();
+        expect(tools.tools.find(({ name }) => name === "skills")?.description).toContain(
+          "`public-guide`",
+        );
+        expect(listed.skills).toHaveLength(1);
+        expect(listed.skills[0]).toMatchObject({
+          frontmatter: {
+            name: "public-guide",
+            description: "Discoverable instructions.",
+            license: "MIT",
+          },
+          resources: [
+            expect.objectContaining({ digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }),
+            expect.objectContaining({ digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }),
+          ],
+        });
+        const entry = listed.skills[0];
+        expectDefined(entry);
+        expect(entry.uri).toContain(`/${automatic.id}/public-guide/SKILL.md`);
+        const fetched = await client.request(
+          { method: "skills/get", params: { uri: entry.uri } },
+          GetResult,
+        );
+        expect(fetched.skill).toEqual(entry);
+        const supporting = entry.resources.find((resource) => resource.uri.endsWith("example.txt"));
+        expectDefined(supporting);
+        const resource = await client.readResource({ uri: supporting.uri });
+        expect(resource.contents).toEqual([
+          expect.objectContaining({ text: "example", mimeType: "text/plain; charset=utf-8" }),
+        ]);
+        const legacyResource = await client.readResource({
+          uri: "skill://org/public-guide/references/example.txt",
+        });
+        expect(legacyResource.contents).toEqual([
+          expect.objectContaining({ text: "example", mimeType: "text/plain; charset=utf-8" }),
+        ]);
+
+        const instructions = await client.callTool({
+          name: "skills",
+          arguments: { name: "public-guide", owner: "org" },
+        });
+        expect(textOf(instructions)).toContain("<skill_content");
+        expect(textOf(instructions)).toContain("# Public guide");
+        expect(textOf(instructions)).toContain("<file>references/example.txt</file>");
+        expect(textOf(instructions)).not.toContain("description: Discoverable instructions.");
+
+        const bundledFile = await client.callTool({
+          name: "skills",
+          arguments: { name: "public-guide", owner: "org", file: "references/example.txt" },
+        });
+        expect(textOf(bundledFile)).toBe("example");
+      },
+      { skills: executor.skills },
+    );
+  });
+
+  it("keeps manual skills out of discovery but permits an exact read", async () => {
+    const executor = await Effect.runPromise(createExecutor(makeTestConfig()));
+    const manual = await Effect.runPromise(
+      executor.skills.create({
+        owner: "user",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: private-guide\ndescription: Only when the user asks.\ndisable-model-invocation: true\n---\n\n# Private guide\n",
+              ),
+            },
+          ],
+        },
+      }),
+    );
+    const automatic = await Effect.runPromise(
+      executor.skills.create({
+        owner: "org",
+        package: {
+          files: [
+            {
+              path: "SKILL.md",
+              bytes: new TextEncoder().encode(
+                "---\nname: public-guide\ndescription: Discoverable instructions.\n---\n\n# Public guide\n",
+              ),
+            },
+          ],
+        },
+        delivery: { kind: "enabled", invocation: "model" },
+      }),
+    );
+
+    await withClient(
+      makeStubEngine({}),
+      NO_CAPS,
+      async (client) => {
+        const builtIn = await client.callTool({
+          name: "skills",
+          arguments: { name: "execute" },
+        });
+        expect(textOf(builtIn)).toContain("## Workflow");
+
+        const search = await client.callTool({ name: "skills", arguments: {} });
+        expect(textOf(search)).toContain("public-guide");
+        expect(textOf(search)).not.toContain("private-guide");
+        expect(search.structuredContent).toMatchObject({ total: 1, hasMore: false });
+        expect(search.structuredContent).toMatchObject({
+          items: [
+            {
+              uri: `skill://executor/managed/${automatic.id}/${encodeURIComponent(String(automatic.revisions[0]?.packageDigest))}/SKILL.md`,
+            },
+          ],
+        });
+
+        const exact = await client.callTool({
+          name: "skills",
+          arguments: { ref: manual.id },
+        });
+        expect(textOf(exact)).toContain("# Private guide");
+
+        const automaticRead = await client.callTool({
+          name: "skills",
+          arguments: { ref: automatic.id },
+        });
+        expect(textOf(automaticRead)).toContain("# Public guide");
+
+        const resources = await client.listResources();
+        const skillResource = resources.resources.find((resource) =>
+          resource.uri.includes(String(automatic.id)),
+        );
+        expectDefined(skillResource);
+        const resource = await client.readResource({ uri: skillResource.uri });
+        expect(resource.contents).toEqual([
+          expect.objectContaining({ text: expect.stringContaining("# Public guide") }),
+        ]);
+
+        await Effect.runPromise(
+          executor.skills.setDelivery({
+            skillId: manual.id,
+            delivery: { kind: "enabled", invocation: "model" },
+          }),
+        );
+        const searchAfterOverride = await client.callTool({ name: "skills", arguments: {} });
+        expect(textOf(searchAfterOverride)).toContain("private-guide");
+        expect(searchAfterOverride.structuredContent).toMatchObject({ total: 2 });
+
+        const extensionAfterOverride = await client.request(
+          { method: "skills/list", params: {} },
+          z
+            .object({
+              skills: z.array(
+                z.object({ frontmatter: z.object({ name: z.string() }).loose() }).loose(),
+              ),
+            })
+            .loose(),
+        );
+        expect(extensionAfterOverride.skills.map(({ frontmatter }) => frontmatter.name)).toContain(
+          "private-guide",
+        );
+      },
+      { skills: executor.skills },
+    );
+  });
+
+  it("rejects mixed search and read selectors", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "skills",
+        arguments: { query: "guide", name: "public-guide" },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("Choose one skills operation");
+    });
+  });
+
+  it("rejects path and file together", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "skills",
+        arguments: { name: "public-guide", path: "SKILL.md", file: "SKILL.md" },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("Choose one skills operation");
     });
   });
 });

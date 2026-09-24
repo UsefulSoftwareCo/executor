@@ -46,6 +46,11 @@ export const CONSOLE_ROUTE_PATHS = [
   "/toolkits/$toolkitSlug",
   "/artifacts",
   "/artifacts/$artifactId",
+  "/skills",
+  "/skills/new",
+  "/skills/$skillId",
+  "/skills/$skillId/edit",
+  "/skills/$skillId/updates/$candidateId",
   "/resume/$executionId",
   "/plugins/$pluginId/$",
 ] as const;
@@ -91,6 +96,17 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     ["/toolkits/$toolkitSlug", route("/toolkits/$toolkitSlug", file("toolkits.$toolkitSlug.tsx"))],
     ["/artifacts", route("/artifacts", file("artifacts.tsx"))],
     ["/artifacts/$artifactId", route("/artifacts/$artifactId", file("artifacts.$artifactId.tsx"))],
+    ["/skills", route("/skills", file("skills.tsx"))],
+    ["/skills/new", route("/skills/new", file("skills.new.tsx"))],
+    ["/skills/$skillId", route("/skills/$skillId", file("skills.$skillId.tsx"))],
+    ["/skills/$skillId/edit", route("/skills/$skillId/edit", file("skills.$skillId.edit.tsx"))],
+    [
+      "/skills/$skillId/updates/$candidateId",
+      route(
+        "/skills/$skillId/updates/$candidateId",
+        file("skills.$skillId.updates.$candidateId.tsx"),
+      ),
+    ],
     ["/resume/$executionId", route("/resume/$executionId", file("resume.$executionId.tsx"))],
     ["/plugins/$pluginId/$", route("/plugins/$pluginId/$", file("plugins.$pluginId.$.tsx"))],
   ];

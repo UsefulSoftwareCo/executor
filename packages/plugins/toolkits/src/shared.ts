@@ -1,6 +1,11 @@
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import { InternalError, Owner, ToolPolicyActionSchema } from "@executor-js/sdk/shared";
+import {
+  InternalError,
+  ManagedSkillId,
+  Owner,
+  ToolPolicyActionSchema,
+} from "@executor-js/sdk/shared";
 
 export class ToolkitError extends Schema.TaggedErrorClass<ToolkitError>()(
   "ToolkitError",
@@ -52,6 +57,13 @@ export const ToolkitConnectionResponse = Schema.Struct({
   updatedAt: Schema.Number,
 });
 export type ToolkitConnectionResponse = typeof ToolkitConnectionResponse.Type;
+
+export const ToolkitSkillResponse = Schema.Struct({
+  toolkitId: Schema.String,
+  skillId: ManagedSkillId,
+  position: Schema.String,
+});
+export type ToolkitSkillResponse = typeof ToolkitSkillResponse.Type;
 
 const CreateToolkitPayload = Schema.Struct({
   owner: Owner,
@@ -161,6 +173,24 @@ export const ToolkitsApi = HttpApiGroup.make("toolkits")
     HttpApiEndpoint.delete("removeConnection", "/toolkits/:toolkitId/connections/:connectionId", {
       params: ToolkitConnectionParams,
       success: Schema.Struct({ removed: Schema.Boolean }),
+      error: ToolkitErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listSkills", "/toolkits/:toolkitId/skills", {
+      params: ToolkitParams,
+      success: Schema.Struct({ skills: Schema.Array(ToolkitSkillResponse) }),
+      error: ToolkitErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setSkills", "/toolkits/:toolkitId/skills", {
+      params: ToolkitParams,
+      payload: Schema.Struct({
+        expectedUpdatedAt: Schema.Number,
+        skillIds: Schema.Array(ManagedSkillId),
+      }),
+      success: Schema.Struct({ skills: Schema.Array(ToolkitSkillResponse) }),
       error: ToolkitErrors,
     }),
   );

@@ -81,6 +81,7 @@ describe("isValidOrgSlug", () => {
       "users",
       "toolkits",
       "secrets",
+      "skills",
       "tools",
       "resume",
       "plugins",

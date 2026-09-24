@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { EXECUTE_SKILL, SKILLS, findSkill, renderSkillsIndex, skillCatalogFor } from "./skills";
 
-describe("skills registry", () => {
+describe("guides registry", () => {
   it("includes the execute skill with the full how-to body", () => {
     expect(SKILLS).toContain(EXECUTE_SKILL);
     // The workflow + rules that the execute description used to inline now live

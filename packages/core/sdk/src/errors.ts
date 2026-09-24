@@ -6,10 +6,14 @@ import {
   ArtifactId,
   ConnectionName,
   IntegrationSlug,
+  ManagedSkillId,
   Owner,
   ProviderKey,
+  SkillCandidateId,
+  SkillRevisionId,
   ToolAddress,
 } from "./ids";
+import { SkillDiagnostic } from "./skill-package";
 
 export interface UserActionableError {
   readonly __executorUserActionable: true;
@@ -279,6 +283,95 @@ export class ArtifactNotFoundError extends Schema.TaggedErrorClass<ArtifactNotFo
   }
 }
 
+export class ManagedSkillNotFoundError extends Schema.TaggedErrorClass<ManagedSkillNotFoundError>()(
+  "ManagedSkillNotFoundError",
+  { skillId: ManagedSkillId },
+  { httpApiStatus: 404 },
+) {
+  override get message(): string {
+    return `Managed skill not found: ${this.skillId}`;
+  }
+}
+
+export class SkillRevisionNotFoundError extends Schema.TaggedErrorClass<SkillRevisionNotFoundError>()(
+  "SkillRevisionNotFoundError",
+  { skillId: ManagedSkillId, revisionId: SkillRevisionId },
+  { httpApiStatus: 404 },
+) {}
+
+export class SkillCandidateNotFoundError extends Schema.TaggedErrorClass<SkillCandidateNotFoundError>()(
+  "SkillCandidateNotFoundError",
+  { candidateId: SkillCandidateId },
+  { httpApiStatus: 404 },
+) {}
+
+export class SkillCandidateExpiredError extends Schema.TaggedErrorClass<SkillCandidateExpiredError>()(
+  "SkillCandidateExpiredError",
+  { candidateId: SkillCandidateId, expiredAt: Schema.String },
+  { httpApiStatus: 410 },
+) {}
+
+export class SkillSourceUnavailableError extends Schema.TaggedErrorClass<SkillSourceUnavailableError>()(
+  "SkillSourceUnavailableError",
+  { message: Schema.String },
+  { httpApiStatus: 502 },
+) {}
+
+export class SkillCandidateMismatchError extends Schema.TaggedErrorClass<SkillCandidateMismatchError>()(
+  "SkillCandidateMismatchError",
+  { skillId: ManagedSkillId, candidateId: SkillCandidateId, reason: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+export class SkillUpdateConflictError extends Schema.TaggedErrorClass<SkillUpdateConflictError>()(
+  "SkillUpdateConflictError",
+  { skillId: ManagedSkillId, paths: Schema.Array(Schema.String) },
+  { httpApiStatus: 409 },
+) {}
+
+export class SkillPackageRejectedError
+  extends Schema.TaggedErrorClass<SkillPackageRejectedError>()(
+    "SkillPackageRejectedError",
+    { diagnostics: Schema.Array(SkillDiagnostic) },
+    { httpApiStatus: 400 },
+  )
+  implements UserActionableError
+{
+  readonly __executorUserActionable = true;
+  readonly code = "skill_package_rejected";
+  get userMessage(): string {
+    return this.diagnostics[0]?.message ?? "The skill package was rejected.";
+  }
+}
+
+export class SkillRevisionConflictError extends Schema.TaggedErrorClass<SkillRevisionConflictError>()(
+  "SkillRevisionConflictError",
+  {
+    skillId: ManagedSkillId,
+    expectedRevisionId: SkillRevisionId,
+    actualRevisionId: SkillRevisionId,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class SkillNameConflictError extends Schema.TaggedErrorClass<SkillNameConflictError>()(
+  "SkillNameConflictError",
+  { owner: Owner, name: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+export class SkillInvalidTransitionError extends Schema.TaggedErrorClass<SkillInvalidTransitionError>()(
+  "SkillInvalidTransitionError",
+  { skillId: ManagedSkillId, reason: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+export class PortableSkillExportRejectedError extends Schema.TaggedErrorClass<PortableSkillExportRejectedError>()(
+  "PortableSkillExportRejectedError",
+  { skillId: ManagedSkillId, diagnostics: Schema.Array(SkillDiagnostic) },
+  { httpApiStatus: 400 },
+) {}
+
 // ---------------------------------------------------------------------------
 // Union — the failure channel of `execute`.
 // ---------------------------------------------------------------------------
@@ -302,4 +395,16 @@ export type ExecuteError =
 export type ExecutorError =
   | ExecuteError
   | IntegrationRemovalNotAllowedError
-  | ArtifactNotFoundError;
+  | ArtifactNotFoundError
+  | ManagedSkillNotFoundError
+  | SkillRevisionNotFoundError
+  | SkillCandidateNotFoundError
+  | SkillCandidateExpiredError
+  | SkillSourceUnavailableError
+  | SkillCandidateMismatchError
+  | SkillUpdateConflictError
+  | SkillPackageRejectedError
+  | SkillRevisionConflictError
+  | SkillNameConflictError
+  | SkillInvalidTransitionError
+  | PortableSkillExportRejectedError;

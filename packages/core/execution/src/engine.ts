@@ -1,4 +1,4 @@
-import { Deferred, Effect, Fiber, Predicate, Queue, Ref } from "effect";
+import { Deferred, Effect, Encoding, Fiber, Predicate, Queue, Ref } from "effect";
 import type * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 
@@ -348,6 +348,138 @@ const makeFullInvoker = (
   const base = makeExecutorToolInvoker(executor, { invokeOptions, onConnectedToolCall });
   return {
     invoke: ({ path, args }) => {
+      if (path === "skills.search") {
+        if (!isRecord(args)) {
+          return Effect.fail(
+            new ExecutionToolError({
+              message:
+                "skills.search expects an object: { query?: string; limit?: number; offset?: number }",
+            }),
+          );
+        }
+        if (args.query !== undefined && typeof args.query !== "string") {
+          return Effect.fail(
+            new ExecutionToolError({
+              message: "skills.search query must be a string when provided",
+            }),
+          );
+        }
+        const limit = readOptionalLimit(args.limit, "skills.search");
+        if (Predicate.isTagged(limit, "ExecutionToolError")) return Effect.fail(limit);
+        const offset = readOptionalOffset(args.offset, "skills.search");
+        if (Predicate.isTagged(offset, "ExecutionToolError")) return Effect.fail(offset);
+        const query = (args.query ?? "").trim().toLocaleLowerCase("en-US");
+        return executor.skills.list().pipe(
+          Effect.map((skills) => {
+            const eligible = skills
+              .filter(
+                (skill) =>
+                  skill.delivery.kind === "enabled" && skill.delivery.invocation === "model",
+              )
+              .filter((skill) =>
+                query === ""
+                  ? true
+                  : `${skill.name ?? ""}\n${skill.description ?? ""}`
+                      .toLocaleLowerCase("en-US")
+                      .includes(query),
+              )
+              .sort((left, right) => {
+                const byName = (left.name ?? "").localeCompare(right.name ?? "");
+                if (byName !== 0) return byName;
+                if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+                return String(left.id).localeCompare(String(right.id));
+              });
+            const selected = eligible.slice(offset, offset + Math.min(limit, 50));
+            const nextOffset =
+              offset + selected.length < eligible.length ? offset + selected.length : null;
+            return {
+              items: selected.map((skill) => ({
+                ref: skill.id,
+                name: skill.name,
+                description: skill.description,
+                owner: skill.owner,
+                invocation: "model" as const,
+                revision: skill.activeRevisionId,
+              })),
+              total: eligible.length,
+              hasMore: nextOffset !== null,
+              nextOffset,
+              diagnostics: [],
+            };
+          }),
+        );
+      }
+      if (path === "skills.get") {
+        if (!isRecord(args)) {
+          return Effect.fail(
+            new ExecutionToolError({
+              message: "skills.get expects an object with exactly one of ref or name",
+            }),
+          );
+        }
+        const ref = args.ref;
+        const name = args.name;
+        const owner = args.owner;
+        const filePath = args.path ?? "SKILL.md";
+        if (
+          (typeof ref !== "string" && typeof name !== "string") ||
+          (ref !== undefined && name !== undefined) ||
+          (owner !== undefined && owner !== "user" && owner !== "org") ||
+          typeof filePath !== "string"
+        ) {
+          return Effect.fail(
+            new ExecutionToolError({
+              message: "skills.get expects { ref, path? } or { name, owner?, path? }",
+            }),
+          );
+        }
+        return Effect.gen(function* () {
+          const skills = yield* executor.skills.list();
+          const selected = skills
+            .filter((skill) => skill.delivery.kind === "enabled")
+            .filter((skill) =>
+              typeof ref === "string"
+                ? String(skill.id) === ref
+                : skill.name === name && (owner === undefined || skill.owner === owner),
+            )
+            .sort((left, right) => {
+              if (left.owner !== right.owner) return left.owner === "user" ? -1 : 1;
+              return String(left.id).localeCompare(String(right.id));
+            })[0];
+          if (!selected) {
+            return yield* new ExecutionToolError({ message: "No enabled managed skill matched" });
+          }
+          const detail = yield* executor.skills.get({ skillId: selected.id });
+          const revision = detail.revisions.find((item) => item.id === detail.activeRevisionId);
+          const manifest = revision?.files.find((file) => file.path === filePath);
+          if (!revision || !manifest) {
+            return yield* new ExecutionToolError({
+              message: `The active skill package has no file named "${filePath}"`,
+            });
+          }
+          const file = yield* executor.skills.readFile({
+            skillId: detail.id,
+            revisionId: revision.id,
+            path: filePath,
+          });
+          const textual =
+            manifest.mediaType.startsWith("text/") ||
+            manifest.mediaType.includes("json") ||
+            manifest.mediaType.includes("yaml") ||
+            manifest.mediaType.includes("xml") ||
+            manifest.mediaType.includes("javascript");
+          return textual
+            ? new TextDecoder().decode(file.bytes)
+            : {
+                ref: detail.id,
+                revision: revision.packageDigest,
+                path: filePath,
+                mediaType: manifest.mediaType,
+                encoding: "base64" as const,
+                bytes: Encoding.encodeBase64(file.bytes),
+              };
+        });
+      }
       if (path === "search") {
         if (!isRecord(args)) {
           return Effect.fail(

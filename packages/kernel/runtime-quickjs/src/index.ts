@@ -249,6 +249,7 @@ const buildExecutionSource = (code: string): string => {
     "  },",
     "});",
     "const tools = __makeToolsProxy();",
+    "const skills = __makeToolsProxy(['skills']);",
     "const console = {",
     "  log: (...args) => __log('log', __formatLogLine(args)),",
     "  warn: (...args) => __log('warn', __formatLogLine(args)),",

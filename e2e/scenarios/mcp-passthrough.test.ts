@@ -211,7 +211,7 @@ scenario(
               expect(
                 await page
                   .getByText(
-                    "Discover connected accounts with integrations and read the guide with skills.",
+                    "Discover connected accounts with integrations, then read Executor guides or managed Agent Skills with skills.",
                     { exact: false },
                   )
                   .isVisible(),

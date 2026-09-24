@@ -14,11 +14,16 @@ import {
   matchPattern,
   type EffectivePolicy,
   type Integration,
+  type ManagedSkillId,
   type Owner,
   type ToolAddress,
   type ToolPolicyAction,
 } from "@executor-js/sdk/shared";
-import { integrationsOptimisticAtom, toolsAllAtom } from "@executor-js/react/api/atoms";
+import {
+  integrationsOptimisticAtom,
+  skillsOptimisticAtom,
+  toolsAllAtom,
+} from "@executor-js/react/api/atoms";
 import { ReactivityKey } from "@executor-js/react/api/reactivity-keys";
 import { useOrganizationSlug } from "@executor-js/react/api/organization-context";
 import {
@@ -29,6 +34,7 @@ import {
 import { ownerLabel, useOwnerDisplay } from "@executor-js/react/api/owner-display";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
+import { Checkbox } from "@executor-js/react/components/checkbox";
 import { CopyButton } from "@executor-js/react/components/copy-button";
 import {
   AlertDialog,
@@ -77,6 +83,7 @@ const toolkitWriteKeys = [
   ReactivityKey.connections,
   ReactivityKey.policies,
   ReactivityKey.tools,
+  ReactivityKey.skills,
 ] as const;
 
 const toolkitsAtom = ToolkitsClient.query("toolkits", "list", {
@@ -100,6 +107,14 @@ const toolkitConnectionsAtom = Atom.family((toolkitId: string) =>
   }),
 );
 
+const toolkitSkillsAtom = Atom.family((toolkitId: string) =>
+  ToolkitsClient.query("toolkits", "listSkills", {
+    params: { toolkitId },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.skills],
+  }),
+);
+
 const createToolkit = ToolkitsClient.mutation("toolkits", "create");
 const removeToolkit = ToolkitsClient.mutation("toolkits", "remove");
 const createToolkitPolicy = ToolkitsClient.mutation("toolkits", "createPolicy");
@@ -107,6 +122,7 @@ const updateToolkitPolicy = ToolkitsClient.mutation("toolkits", "updatePolicy");
 const removeToolkitPolicy = ToolkitsClient.mutation("toolkits", "removePolicy");
 const createToolkitConnection = ToolkitsClient.mutation("toolkits", "createConnection");
 const removeToolkitConnection = ToolkitsClient.mutation("toolkits", "removeConnection");
+const setToolkitSkills = ToolkitsClient.mutation("toolkits", "setSkills");
 
 type ToolRow = {
   readonly address: ToolAddress;
@@ -1027,6 +1043,13 @@ function ToolkitHeader(props: {
   );
 }
 
+interface ToolkitSkillChoice {
+  readonly id: ManagedSkillId;
+  readonly owner: Owner;
+  readonly name: string | null;
+  readonly description: string | null;
+}
+
 function ToolkitWorkspace(props: {
   toolkit: ToolkitResponse;
   showOwnerLabels: boolean;
@@ -1042,9 +1065,16 @@ function ToolkitWorkspace(props: {
   onRemoveConnection: (connectionId: string) => Promise<void> | void;
   onSetPolicy: (pattern: string, action: ToolPolicyAction) => Promise<void> | void;
   onClearPolicy: (pattern: string) => Promise<void> | void;
+  skills: readonly ToolkitSkillChoice[];
+  selectedSkillIds: readonly ManagedSkillId[];
+  onSetSkills: (skillIds: readonly ManagedSkillId[]) => Promise<void> | void;
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [draftSkillIds, setDraftSkillIds] = useState<readonly ManagedSkillId[]>(
+    props.selectedSkillIds,
+  );
   const visibleTools = useMemo(
     () => props.tools.filter((tool) => toolCanAppearInToolkit(props.toolkit, tool)),
     [props.toolkit, props.tools],
@@ -1130,6 +1160,24 @@ function ToolkitWorkspace(props: {
         onRemove={props.onRemoveToolkit}
       />
 
+      <div className="flex items-center justify-between border-b border-border px-5 py-2.5">
+        <p className="text-xs text-muted-foreground">
+          {props.selectedSkillIds.length} managed{" "}
+          {props.selectedSkillIds.length === 1 ? "skill" : "skills"}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setDraftSkillIds(props.selectedSkillIds);
+            setSkillsOpen(true);
+          }}
+        >
+          Manage skills
+        </Button>
+      </div>
+
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ToolkitToolsPanel
           tools={toolkitTools}
@@ -1173,6 +1221,72 @@ function ToolkitWorkspace(props: {
         }}
         onRemoveConnection={props.onRemoveConnection}
       />
+      <Dialog open={skillsOpen} onOpenChange={setSkillsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Managed skills</DialogTitle>
+            <DialogDescription>
+              Agents using this toolkit can discover only the selected managed skills.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-80 space-y-2 overflow-auto">
+            {props.skills.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-5 py-8 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Add a managed skill before assigning skills to this toolkit.
+                </p>
+                <Button asChild size="sm" className="mt-4">
+                  <Link to="/{-$orgSlug}/skills/new">Add skill</Link>
+                </Button>
+              </div>
+            ) : (
+              props.skills.map((skill) => {
+                const checked = draftSkillIds.includes(skill.id);
+                return (
+                  <Label
+                    key={skill.id}
+                    className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(nextChecked) =>
+                        setDraftSkillIds((current) =>
+                          nextChecked === true
+                            ? [...current, skill.id]
+                            : current.filter((id) => id !== skill.id),
+                        )
+                      }
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">
+                        {skill.name ?? "Blocked package"}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {ownerLabel(skill.owner)} · {skill.description ?? "No description"}
+                      </span>
+                    </span>
+                  </Label>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSkillsOpen(false)}>
+              Cancel
+            </Button>
+            {props.skills.length > 0 ? (
+              <Button
+                onClick={() => {
+                  void props.onSetSkills(draftSkillIds);
+                  setSkillsOpen(false);
+                }}
+              >
+                Save skills
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1292,13 +1406,30 @@ function ToolkitDetailView(props: {
 }) {
   const policies = useAtomValue(toolkitPoliciesAtom(props.toolkit.id));
   const connections = useAtomValue(toolkitConnectionsAtom(props.toolkit.id));
-  const doCreatePolicy = useAtomSet(createToolkitPolicy, { mode: "promiseExit" });
-  const doUpdatePolicy = useAtomSet(updateToolkitPolicy, { mode: "promiseExit" });
-  const doRemovePolicy = useAtomSet(removeToolkitPolicy, { mode: "promiseExit" });
-  const doCreateConnection = useAtomSet(createToolkitConnection, { mode: "promiseExit" });
-  const doRemoveConnection = useAtomSet(removeToolkitConnection, { mode: "promiseExit" });
+  const memberships = useAtomValue(toolkitSkillsAtom(props.toolkit.id));
+  const managedSkills = useAtomValue(skillsOptimisticAtom);
+  const doCreatePolicy = useAtomSet(createToolkitPolicy, {
+    mode: "promiseExit",
+  });
+  const doUpdatePolicy = useAtomSet(updateToolkitPolicy, {
+    mode: "promiseExit",
+  });
+  const doRemovePolicy = useAtomSet(removeToolkitPolicy, {
+    mode: "promiseExit",
+  });
+  const doCreateConnection = useAtomSet(createToolkitConnection, {
+    mode: "promiseExit",
+  });
+  const doRemoveConnection = useAtomSet(removeToolkitConnection, {
+    mode: "promiseExit",
+  });
+  const doSetSkills = useAtomSet(setToolkitSkills, { mode: "promiseExit" });
   const policyRows = AsyncResult.isSuccess(policies) ? policies.value.policies : [];
   const connectionRows = AsyncResult.isSuccess(connections) ? connections.value.connections : [];
+  const skillRows = AsyncResult.isSuccess(memberships) ? memberships.value.skills : [];
+  const skillChoices = AsyncResult.isSuccess(managedSkills)
+    ? managedSkills.value.filter((skill) => props.toolkit.owner === "user" || skill.owner === "org")
+    : [];
 
   const setPolicyHandler = async (pattern: string, action: ToolPolicyAction) => {
     const existing = policyRows.find((policy) => policy.pattern === pattern);
@@ -1341,10 +1472,28 @@ function ToolkitDetailView(props: {
     });
   };
 
-  if (AsyncResult.isFailure(policies) || AsyncResult.isFailure(connections)) {
+  const setSkillsHandler = async (skillIds: readonly ManagedSkillId[]) => {
+    await doSetSkills({
+      params: { toolkitId: props.toolkit.id },
+      payload: { expectedUpdatedAt: props.toolkit.updatedAt, skillIds },
+      reactivityKeys: toolkitWriteKeys,
+    });
+  };
+
+  if (
+    AsyncResult.isFailure(policies) ||
+    AsyncResult.isFailure(connections) ||
+    AsyncResult.isFailure(memberships) ||
+    AsyncResult.isFailure(managedSkills)
+  ) {
     return <div className="p-6 text-sm text-destructive">Failed to load toolkit</div>;
   }
-  if (!AsyncResult.isSuccess(policies) || !AsyncResult.isSuccess(connections)) {
+  if (
+    !AsyncResult.isSuccess(policies) ||
+    !AsyncResult.isSuccess(connections) ||
+    !AsyncResult.isSuccess(memberships) ||
+    !AsyncResult.isSuccess(managedSkills)
+  ) {
     return <ToolkitDetailSkeleton />;
   }
 
@@ -1364,6 +1513,9 @@ function ToolkitDetailView(props: {
       onRemoveConnection={removeConnectionHandler}
       onSetPolicy={setPolicyHandler}
       onClearPolicy={clearPolicyHandler}
+      skills={skillChoices}
+      selectedSkillIds={skillRows.map((membership) => membership.skillId)}
+      onSetSkills={setSkillsHandler}
     />
   );
 }

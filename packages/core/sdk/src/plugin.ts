@@ -25,6 +25,7 @@ import type {
   AuthTemplateSlug,
   ConnectionName,
   IntegrationSlug,
+  ManagedSkillId,
   Owner,
   ProviderItemId,
   ProviderKey,
@@ -62,6 +63,7 @@ import type {
   UpdateToolPolicyInput,
 } from "./policies";
 import type { Tool, ToolAnnotations, ToolDef } from "./tool";
+import type { ManagedSkill, ManagedSkillSummary } from "./managed-skill";
 
 // ---------------------------------------------------------------------------
 // OwnerBinding — replaces v1's scope stack. The (tenant, subject?) the executor
@@ -153,6 +155,10 @@ export interface PreparedToolPolicy {
   readonly dynamicScope?: readonly DynamicToolScope[];
 }
 
+export interface SkillCatalogProvider {
+  readonly listAllowedSkillIds: () => Effect.Effect<ReadonlySet<ManagedSkillId>, StorageFailure>;
+}
+
 // ---------------------------------------------------------------------------
 // IntegrationRecord — the catalog row a plugin reads back (its own opaque
 // `config` included). Returned by `ctx.core.integrations.get`.
@@ -229,6 +235,10 @@ export interface PluginCtx<TStore = unknown> {
       readonly remove: (
         input: RemoveToolPolicyInput,
       ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
+    };
+    readonly skills: {
+      readonly list: () => Effect.Effect<readonly ManagedSkillSummary[], StorageFailure>;
+      readonly get: (skillId: ManagedSkillId) => Effect.Effect<ManagedSkill | null, StorageFailure>;
     };
   };
 
@@ -737,6 +747,10 @@ export interface PluginSpec<
   readonly toolPolicyProvider?: (
     ctx: PluginCtx<TStore>,
   ) => ToolPolicyProvider | null | Effect.Effect<ToolPolicyProvider | null, StorageFailure>;
+
+  readonly skillCatalogProvider?: (
+    ctx: PluginCtx<TStore>,
+  ) => SkillCatalogProvider | null | Effect.Effect<SkillCatalogProvider | null, StorageFailure>;
 
   /** Produce a connection's tools (and shared $defs). The v2 successor to
    *  registering per-source tools — called by the executor at connection

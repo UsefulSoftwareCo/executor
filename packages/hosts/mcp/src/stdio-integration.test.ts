@@ -5,8 +5,8 @@ import {
   LATEST_PROTOCOL_VERSION,
   type JSONRPCMessage,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Effect, Option, Schema } from "effect";
-import { spawnSync } from "node:child_process";
+import { Data, Effect, Option, Schema } from "effect";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -14,6 +14,11 @@ import { join, resolve } from "node:path";
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 const cliEntry = resolve(repoRoot, "apps/cli/src/main.ts");
 const testScope = resolve(repoRoot, "apps/local");
+
+class TestDaemonStartError extends Data.TaggedError("TestDaemonStartError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 const decodeServerManifest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ pid: Schema.optional(Schema.Number) })),
@@ -43,15 +48,81 @@ const manifestPid = (dataDir: string): number | undefined =>
  * back to a free port if this one is taken, and writes the port it chose into
  * the manifest that `executor mcp` reads, so the exact number is not load-bearing.
  */
-const startDaemon = (dataDir: string): void => {
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
-  const result = spawnSync(
-    "bun",
-    ["run", cliEntry, "daemon", "run", "--port", String(port), "--hostname", "127.0.0.1"],
-    { env: { ...process.env, EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: testScope } },
-  );
-  expect(result.status, `daemon run failed: ${result.stderr?.toString() ?? ""}`).toBe(0);
-};
+const startDaemon = (dataDir: string): Effect.Effect<void, TestDaemonStartError> =>
+  Effect.callback<void, TestDaemonStartError>((resume) => {
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const child = spawn(
+      "bun",
+      [
+        "run",
+        cliEntry,
+        "daemon",
+        "run",
+        "--foreground",
+        "--port",
+        String(port),
+        "--hostname",
+        "127.0.0.1",
+      ],
+      {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: testScope },
+      },
+    );
+    child.unref();
+
+    let completed = false;
+    let poll: ReturnType<typeof setInterval> | null = null;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (poll) clearInterval(poll);
+      if (timeout) clearTimeout(timeout);
+      child.off("error", failedToSpawn);
+      child.off("exit", exited);
+    };
+    const finish = (effect: Effect.Effect<void, TestDaemonStartError>) => {
+      if (completed) return;
+      completed = true;
+      cleanup();
+      resume(effect);
+    };
+    const failedToSpawn = (cause: Error) =>
+      finish(
+        Effect.fail(new TestDaemonStartError({ message: "daemon process failed to start", cause })),
+      );
+    const exited = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(
+        Effect.fail(
+          new TestDaemonStartError({
+            message: `daemon exited before readiness (code ${code}, signal ${signal})`,
+          }),
+        ),
+      );
+
+    poll = setInterval(() => {
+      const pid = child.pid;
+      if (pid !== undefined && manifestPid(dataDir) === pid) finish(Effect.void);
+    }, 50);
+    timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish(
+        Effect.fail(
+          new TestDaemonStartError({
+            message: "daemon did not publish its local server manifest within 30000ms",
+          }),
+        ),
+      );
+    }, 30_000);
+
+    child.once("error", failedToSpawn);
+    child.once("exit", exited);
+
+    return Effect.sync(() => {
+      cleanup();
+      child.kill("SIGTERM");
+    });
+  });
 
 /** Stop the daemon started above; the manifest carries its pid. */
 const stopDaemon = (dataDir: string): Effect.Effect<void> =>
@@ -67,10 +138,12 @@ const stopDaemon = (dataDir: string): Effect.Effect<void> =>
   );
 
 const withDaemon = Effect.acquireRelease(
-  Effect.sync(() => {
+  Effect.gen(function* () {
     const dataDir = mkdtempSync(join(tmpdir(), "executor-mcp-discover-test-"));
-    startDaemon(dataDir);
-    return dataDir;
+    return yield* startDaemon(dataDir).pipe(
+      Effect.as(dataDir),
+      Effect.tapError(() => Effect.sync(() => rmSync(dataDir, { recursive: true, force: true }))),
+    );
   }),
   (dataDir) =>
     stopDaemon(dataDir).pipe(

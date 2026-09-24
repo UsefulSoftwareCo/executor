@@ -533,7 +533,7 @@ describe("MCP host — artifact tool visibility", () => {
     );
   });
 
-  it("drops the artifact skills from an opted-out session's inventory", async () => {
+  it("drops the artifact guides from an opted-out session's inventory", async () => {
     const store = makeArtifactStore();
     await withClient(
       makeStubEngine({}),

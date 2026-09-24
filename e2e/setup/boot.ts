@@ -191,7 +191,7 @@ export const waitForHttp = async (
   while (performance.now() < deadline) {
     options.signal?.throwIfAborted();
     try {
-      const remainingMs = Math.max(1, deadline - performance.now());
+      const remainingMs = Math.max(1, Math.floor(deadline - performance.now()));
       const probeTimeout = AbortSignal.timeout(Math.min(HTTP_PROBE_TIMEOUT_MS, remainingMs));
       const signal = options.signal
         ? AbortSignal.any([options.signal, probeTimeout])

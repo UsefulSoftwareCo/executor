@@ -7,6 +7,9 @@ import {
   type Connection,
   type ConnectionName,
   type IntegrationSlug,
+  type ManagedSkillId,
+  type SkillCandidateId,
+  type SkillRevisionId,
   type OAuthClientSlug,
   type OAuthClientSummary,
   type OAuthGrant,
@@ -174,6 +177,45 @@ export const artifactAtom = Atom.family((artifactId: ArtifactId) =>
   }),
 );
 
+export const skillsAtom = ExecutorApiClient.query("skills", "list", {
+  timeToLive: "30 seconds",
+  reactivityKeys: [ReactivityKey.skills],
+});
+
+export const skillAtom = Atom.family((skillId: ManagedSkillId) =>
+  ExecutorApiClient.query("skills", "get", {
+    params: { skillId },
+    timeToLive: "30 seconds",
+    reactivityKeys: [ReactivityKey.skills],
+  }),
+);
+
+export const skillFileAtom = Atom.family(
+  (key: {
+    readonly skillId: ManagedSkillId;
+    readonly path: string;
+    readonly revisionId?: SkillRevisionId;
+  }) =>
+    ExecutorApiClient.query("skills", "readFile", {
+      params: { skillId: key.skillId },
+      query: {
+        path: key.path,
+        ...(key.revisionId === undefined ? {} : { revisionId: key.revisionId }),
+      },
+      timeToLive: "5 minutes",
+      reactivityKeys: [ReactivityKey.skills],
+    }),
+);
+
+export const skillUpdateReviewAtom = Atom.family(
+  (key: { readonly skillId: ManagedSkillId; readonly candidateId: SkillCandidateId }) =>
+    ExecutorApiClient.query("skills", "reviewUpdate", {
+      params: key,
+      timeToLive: "30 seconds",
+      reactivityKeys: [ReactivityKey.skills],
+    }),
+);
+
 // ---------------------------------------------------------------------------
 // Mutation atoms — reactivityKeys must be passed at call site (effect-atom
 // does not accept them at definition time). See `reactivity-keys.tsx` for the
@@ -303,6 +345,23 @@ export const removePolicy = ExecutorApiClient.mutation("policies", "remove");
 export const renameArtifact = ExecutorApiClient.mutation("artifacts", "rename");
 
 export const removeArtifact = ExecutorApiClient.mutation("artifacts", "remove");
+
+export const createSkill = ExecutorApiClient.mutation("skills", "create");
+export const discoverSkills = ExecutorApiClient.mutation("skills", "discover");
+export const importSkillCandidate = ExecutorApiClient.mutation("skills", "importCandidate");
+
+export const editSkill = ExecutorApiClient.mutation("skills", "edit");
+
+export const setSkillDelivery = ExecutorApiClient.mutation("skills", "setDelivery");
+export const setSkillSource = ExecutorApiClient.mutation("skills", "setSource");
+export const checkSkillSource = ExecutorApiClient.mutation("skills", "checkSource");
+export const applySkillUpdate = ExecutorApiClient.mutation("skills", "applyUpdate");
+
+export const restoreSkillRevision = ExecutorApiClient.mutation("skills", "restoreRevision");
+
+export const removeSkill = ExecutorApiClient.mutation("skills", "remove");
+
+export const exportSkill = ExecutorApiClient.mutation("skills", "export");
 
 /**
  * Upgrade an artifact's gallery preview to a snapshot of a settled render.
@@ -556,6 +615,44 @@ export const removeArtifactOptimistic = artifactsOptimisticAtom.pipe(
     reducer: (current, arg: { readonly params: { readonly artifactId: ArtifactId } }) =>
       AsyncResult.map(current, (rows) => rows.filter((row) => row.id !== arg.params.artifactId)),
     fn: removeArtifact,
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Skills — optimistic delivery changes and removals.
+// ---------------------------------------------------------------------------
+
+export const skillsOptimisticAtom = Atom.optimistic(skillsAtom);
+
+export const setSkillDeliveryOptimistic = skillsOptimisticAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (
+      current,
+      arg: {
+        readonly params: { readonly skillId: ManagedSkillId };
+        readonly payload: {
+          readonly delivery:
+            | { readonly kind: "disabled" }
+            | { readonly kind: "enabled"; readonly invocation: "manual" | "model" };
+        };
+      },
+    ) =>
+      AsyncResult.map(current, (rows) =>
+        rows.map((row) =>
+          row.id === arg.params.skillId
+            ? { ...row, delivery: arg.payload.delivery, updatedAt: Date.now() }
+            : row,
+        ),
+      ),
+    fn: setSkillDelivery,
+  }),
+);
+
+export const removeSkillOptimistic = skillsOptimisticAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, arg: { readonly params: { readonly skillId: ManagedSkillId } }) =>
+      AsyncResult.map(current, (rows) => rows.filter((row) => row.id !== arg.params.skillId)),
+    fn: removeSkill,
   }),
 );
 

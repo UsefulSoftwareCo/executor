@@ -55,6 +55,7 @@ import {
   ARTIFACT_SUMMARY_COLUMNS,
   coreSchema,
   isToolPolicyAction,
+  SKILL_SUMMARY_COLUMNS,
   TOOL_INVOCATION_COLUMNS,
   type ConnectionRow,
   type CoreSchema,
@@ -97,6 +98,40 @@ import {
   type SetArtifactPreviewInput,
 } from "./artifact";
 import {
+  managedSkillSummaryFromRow,
+  skillCandidateFromRow,
+  skillRevisionFromRow,
+  type CreateManagedSkillInput,
+  type ImportSkillCandidateInput,
+  type ApplySkillCandidateInput,
+  type EditManagedSkillInput,
+  type ExportManagedSkillInput,
+  type ManagedSkill,
+  type ManagedSkillExport,
+  type ManagedSkillFile,
+  type ManagedSkillSummary,
+  type SkillCandidate,
+  type SkillUpdateReview,
+  type ReviewSkillCandidateInput,
+  type ReadManagedSkillFileInput,
+  type RemoveManagedSkillInput,
+  type RestoreManagedSkillRevisionInput,
+  type SetManagedSkillDeliveryInput,
+  type SetManagedSkillSourceInput,
+  type SetManagedSkillRequirementsInput,
+  type SkillRequirementStatus,
+  type StageSkillCandidateInput,
+  type SkillDelivery,
+  type SkillSource,
+  type SkillRevision,
+} from "./managed-skill";
+import {
+  defaultSkillInvocation,
+  prepareSkillPackage,
+  type PreparedSkillRevision,
+} from "./skill-package";
+import { makeSkillPackageRepository } from "./skill-package-repository";
+import {
   ArtifactNotFoundError,
   ConnectionAlreadyExistsError,
   ConnectionNotFoundError,
@@ -105,9 +140,20 @@ import {
   IntegrationNotFoundError,
   InvalidConnectionInputError,
   IntegrationRemovalNotAllowedError,
+  ManagedSkillNotFoundError,
   NoHandlerError,
   OrgWriteDeniedError,
   PluginNotLoadedError,
+  PortableSkillExportRejectedError,
+  SkillInvalidTransitionError,
+  SkillNameConflictError,
+  SkillCandidateExpiredError,
+  SkillCandidateNotFoundError,
+  SkillCandidateMismatchError,
+  SkillPackageRejectedError,
+  SkillUpdateConflictError,
+  SkillRevisionConflictError,
+  SkillRevisionNotFoundError,
   ToolBlockedError,
   ToolInvocationError,
   ToolNotFoundError,
@@ -119,6 +165,7 @@ import {
   ConnectionAddress,
   ConnectionName,
   IntegrationSlug,
+  ManagedSkillId,
   NO_AUTH_TEMPLATE,
   OAuthClientSlug,
   Owner,
@@ -126,6 +173,8 @@ import {
   ProviderItemId,
   ProviderKey,
   Subject,
+  SkillRevisionId,
+  SkillCandidateId,
   Tenant,
   ToolAddress,
   ToolName,
@@ -184,6 +233,7 @@ import type {
   PreparedToolPolicy,
   ToolPolicyProvider,
   ToolPolicyProviderRule,
+  SkillCatalogProvider,
   ToolInvocationCredential,
 } from "./plugin";
 import {
@@ -519,6 +569,115 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     readonly setPreview: (
       input: SetArtifactPreviewInput,
     ) => Effect.Effect<void, ArtifactNotFoundError | StorageFailure>;
+  };
+
+  readonly skills: {
+    readonly list: () => Effect.Effect<readonly ManagedSkillSummary[], StorageFailure>;
+    readonly get: (input: {
+      readonly skillId: ManagedSkillId;
+    }) => Effect.Effect<ManagedSkill, ManagedSkillNotFoundError | StorageFailure>;
+    readonly readFile: (
+      input: ReadManagedSkillFileInput,
+    ) => Effect.Effect<
+      ManagedSkillFile,
+      ManagedSkillNotFoundError | SkillRevisionNotFoundError | StorageFailure
+    >;
+    readonly create: (
+      input: CreateManagedSkillInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      SkillPackageRejectedError | OrgWriteDeniedError | StorageFailure
+    >;
+    readonly stageCandidate: (
+      input: StageSkillCandidateInput,
+    ) => Effect.Effect<
+      SkillCandidate,
+      SkillPackageRejectedError | OrgWriteDeniedError | StorageFailure
+    >;
+    readonly importCandidate: (
+      input: ImportSkillCandidateInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | OrgWriteDeniedError
+      | StorageFailure
+    >;
+    readonly reviewCandidate: (
+      input: ReviewSkillCandidateInput,
+    ) => Effect.Effect<
+      SkillUpdateReview,
+      | ManagedSkillNotFoundError
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | SkillCandidateMismatchError
+      | StorageFailure
+    >;
+    readonly applyCandidate: (
+      input: ApplySkillCandidateInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | SkillCandidateMismatchError
+      | SkillRevisionConflictError
+      | SkillUpdateConflictError
+      | SkillPackageRejectedError
+      | OrgWriteDeniedError
+      | StorageFailure
+    >;
+    readonly edit: (
+      input: EditManagedSkillInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillPackageRejectedError
+      | SkillNameConflictError
+      | SkillRevisionConflictError
+      | OrgWriteDeniedError
+      | StorageFailure
+    >;
+    readonly restoreRevision: (
+      input: RestoreManagedSkillRevisionInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillRevisionNotFoundError
+      | SkillRevisionConflictError
+      | OrgWriteDeniedError
+      | StorageFailure
+    >;
+    readonly remove: (
+      input: RemoveManagedSkillInput,
+    ) => Effect.Effect<void, ManagedSkillNotFoundError | OrgWriteDeniedError | StorageFailure>;
+    readonly setDelivery: (
+      input: SetManagedSkillDeliveryInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | SkillInvalidTransitionError | OrgWriteDeniedError | StorageFailure
+    >;
+    readonly setSource: (
+      input: SetManagedSkillSourceInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | SkillInvalidTransitionError | OrgWriteDeniedError | StorageFailure
+    >;
+    readonly setRequirements: (
+      input: SetManagedSkillRequirementsInput,
+    ) => Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | OrgWriteDeniedError | StorageFailure
+    >;
+    readonly export: (
+      input: ExportManagedSkillInput,
+    ) => Effect.Effect<
+      ManagedSkillExport,
+      | ManagedSkillNotFoundError
+      | SkillRevisionNotFoundError
+      | PortableSkillExportRejectedError
+      | StorageFailure
+    >;
   };
 
   /**
@@ -2038,6 +2197,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }),
     );
     const blobs = config.blobs ?? makeFumaBlobStore(fuma);
+    const blobPartitions: OwnerPartitions = {
+      org: `o:${tenant}`,
+      user: subject != null ? `u:${tenant}:${subject}` : null,
+    };
+    const skillPackages = makeSkillPackageRepository(blobs);
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => fuma.transaction(effect);
 
     // Runtime-observed output shapes ("muscle memory"): learned on the
@@ -2055,6 +2219,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const staticTools = new Map<string, StaticTools>();
     const runtimes = new Map<string, PluginRuntime>();
     let activeToolPolicyProvider: ToolPolicyProvider | null = null;
+    let activeSkillCatalogProvider: SkillCatalogProvider | null = null;
     // Credential providers keyed by `provider.key`, in registration order.
     const credentialProviders = new Map<string, CredentialProvider>();
     const credentialProviderOrder: string[] = [];
@@ -6333,6 +6498,1135 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       core.deleteMany("artifact", { where: artifactById(input.id) });
 
     // ------------------------------------------------------------------
+    // Managed Agent Skills
+    // ------------------------------------------------------------------
+
+    const skillById =
+      (skillId: ManagedSkillId): CoreWhere =>
+      (b: AnyCb) =>
+        b("id", "=", String(skillId));
+
+    const skillRevisionById =
+      (skillId: ManagedSkillId, revisionId: SkillRevisionId): CoreWhere =>
+      (b: AnyCb) =>
+        b.and(b("skill_id", "=", String(skillId)), b("id", "=", String(revisionId)));
+
+    const skillOwnerPartition = (owner: Owner): Effect.Effect<string, StorageFailure> => {
+      if (owner === "org") return Effect.succeed(blobPartitions.org);
+      return blobPartitions.user === null
+        ? Effect.fail(
+            new StorageError({
+              message: 'Cannot read or write an owner "user" skill without a subject.',
+              cause: undefined,
+            }),
+          )
+        : Effect.succeed(blobPartitions.user);
+    };
+
+    const decodeSkillSummary = (
+      row: CoreRow<"skill"> | CoreProjectedRow<"skill", typeof SKILL_SUMMARY_COLUMNS>,
+    ): Effect.Effect<ManagedSkillSummary, StorageFailure> =>
+      Option.match(managedSkillSummaryFromRow(row), {
+        onNone: () =>
+          Effect.fail(
+            new StorageError({
+              message: `Managed skill row ${row.id} is corrupt.`,
+              cause: undefined,
+            }),
+          ),
+        onSome: Effect.succeed,
+      });
+
+    const decodeSkillRevision = (
+      row: CoreRow<"skill_revision">,
+    ): Effect.Effect<SkillRevision, StorageFailure> =>
+      Option.match(skillRevisionFromRow(row), {
+        onNone: () =>
+          Effect.fail(
+            new StorageError({
+              message: `Managed skill revision ${row.id} is corrupt.`,
+              cause: undefined,
+            }),
+          ),
+        onSome: Effect.succeed,
+      });
+
+    const skillsListUnfiltered = (): Effect.Effect<
+      readonly ManagedSkillSummary[],
+      StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const rows = yield* core.findMany("skill", {
+          orderBy: [
+            ["updated_at", "desc"],
+            ["id", "desc"],
+          ],
+          select: SKILL_SUMMARY_COLUMNS,
+        });
+        return yield* Effect.forEach(rows, decodeSkillSummary);
+      });
+
+    const resolveSkillRequirements = (
+      skills: readonly ManagedSkillSummary[],
+    ): Effect.Effect<readonly ManagedSkillSummary[], StorageFailure> =>
+      Effect.gen(function* () {
+        if (skills.every((skill) => skill.requirements.length === 0)) return skills;
+        const integrations = yield* integrationsList();
+        const connections = yield* connectionsList();
+        const tools = yield* toolsList();
+        const allowed =
+          activeSkillCatalogProvider === null
+            ? null
+            : yield* activeSkillCatalogProvider.listAllowedSkillIds();
+        const statusFor = (skill: ManagedSkillSummary): readonly SkillRequirementStatus[] =>
+          skill.requirements.map((requirement): SkillRequirementStatus => {
+            if (requirement.kind === "runtime") {
+              return { requirement, status: "unknown", evidence: null };
+            }
+            if (requirement.kind === "skill") {
+              const dependency = skills.find(
+                (candidate) =>
+                  candidate.name === requirement.name &&
+                  (requirement.owner === null || candidate.owner === requirement.owner),
+              );
+              if (!dependency) return { requirement, status: "missing", evidence: null };
+              if (
+                dependency.delivery.kind === "blocked" ||
+                dependency.delivery.kind === "disabled" ||
+                (allowed !== null && !allowed.has(dependency.id))
+              ) {
+                return {
+                  requirement,
+                  status: "blocked",
+                  evidence: `${dependency.owner}/${dependency.name ?? dependency.id}`,
+                };
+              }
+              return {
+                requirement,
+                status: "satisfied",
+                evidence: `${dependency.owner}/${dependency.name ?? dependency.id}`,
+              };
+            }
+            const integration = integrations.find(
+              (candidate) => String(candidate.slug) === requirement.integration,
+            );
+            if (!integration) return { requirement, status: "missing", evidence: null };
+            if (requirement.kind === "mcp") {
+              return integration.kind === "mcp"
+                ? { requirement, status: "satisfied", evidence: String(integration.slug) }
+                : { requirement, status: "missing", evidence: null };
+            }
+            if (requirement.kind === "integration") {
+              const patternsSatisfied = requirement.toolPatterns.every((pattern) =>
+                tools.some((tool) => {
+                  const address = String(tool.address);
+                  return (
+                    matchPattern(pattern, address) ||
+                    matchPattern(pattern, address.replace(/^tools\./, ""))
+                  );
+                }),
+              );
+              return requirement.toolPatterns.length === 0 || patternsSatisfied
+                ? { requirement, status: "satisfied", evidence: String(integration.slug) }
+                : { requirement, status: "blocked", evidence: String(integration.slug) };
+            }
+            const visibleConnections = connections.filter(
+              (connection) =>
+                String(connection.integration) === requirement.integration &&
+                (skill.owner === "user" || connection.owner === "org"),
+            );
+            if (visibleConnections.length === 0) {
+              return { requirement, status: "needs-user-action", evidence: null };
+            }
+            const compatible = visibleConnections.find((connection) => {
+              if (
+                requirement.authMethod !== null &&
+                String(connection.template) !== requirement.authMethod
+              ) {
+                return false;
+              }
+              const scopes = new Set((connection.oauthScope ?? "").split(/\s+/).filter(Boolean));
+              return requirement.oauthScopes.every((scope) => scopes.has(scope));
+            });
+            if (!compatible) {
+              return { requirement, status: "needs-user-action", evidence: null };
+            }
+            return compatible.lastHealth?.status === "expired" ||
+              compatible.lastHealth?.status === "misconfigured"
+              ? {
+                  requirement,
+                  status: "needs-user-action",
+                  evidence: String(compatible.address),
+                }
+              : {
+                  requirement,
+                  status: "satisfied",
+                  evidence: String(compatible.address),
+                };
+          });
+        return skills.map((skill) => ({ ...skill, requirementStatuses: statusFor(skill) }));
+      });
+
+    const skillsList = (): Effect.Effect<readonly ManagedSkillSummary[], StorageFailure> =>
+      Effect.gen(function* () {
+        const skills = yield* resolveSkillRequirements(yield* skillsListUnfiltered());
+        if (activeSkillCatalogProvider === null) return skills;
+        const allowed = yield* activeSkillCatalogProvider.listAllowedSkillIds();
+        return skills.filter((skill) => allowed.has(skill.id));
+      });
+
+    const skillRow = (
+      skillId: ManagedSkillId,
+    ): Effect.Effect<CoreRow<"skill">, ManagedSkillNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("skill", { where: skillById(skillId) });
+        return row ?? (yield* new ManagedSkillNotFoundError({ skillId }));
+      });
+
+    const skillsGet = (input: {
+      readonly skillId: ManagedSkillId;
+    }): Effect.Effect<ManagedSkill, ManagedSkillNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* skillRow(input.skillId);
+        const decodedSummary = yield* decodeSkillSummary(row);
+        const summary =
+          decodedSummary.requirements.length === 0
+            ? decodedSummary
+            : ((yield* resolveSkillRequirements(yield* skillsListUnfiltered())).find(
+                (candidate) => candidate.id === decodedSummary.id,
+              ) ?? decodedSummary);
+        const revisionRows = yield* core.findMany("skill_revision", {
+          where: (b: AnyCb) => b("skill_id", "=", String(input.skillId)),
+          orderBy: [
+            ["created_at", "asc"],
+            ["id", "asc"],
+          ],
+        });
+        const revisions = yield* Effect.forEach(revisionRows, decodeSkillRevision);
+        return { ...summary, revisions };
+      });
+
+    const manifestFor = (revision: PreparedSkillRevision) =>
+      revision.files.map(({ path, size, digest, mediaType, encoding }) => ({
+        path,
+        size,
+        digest,
+        mediaType,
+        encoding,
+      }));
+
+    const revisionId = (): SkillRevisionId =>
+      SkillRevisionId.make(`skr_${crypto.randomUUID().replaceAll("-", "")}`);
+
+    const candidateId = (): SkillCandidateId =>
+      SkillCandidateId.make(`skc_${crypto.randomUUID().replaceAll("-", "")}`);
+
+    const skillId = (): ManagedSkillId =>
+      ManagedSkillId.make(`skl_${crypto.randomUUID().replaceAll("-", "")}`);
+
+    const deliveryForCreate = (
+      prepared: PreparedSkillRevision,
+      requested: CreateManagedSkillInput["delivery"],
+    ): SkillDelivery =>
+      prepared.diagnostics.some(({ severity }) => severity === "blocking")
+        ? { kind: "blocked", diagnostics: prepared.diagnostics }
+        : (requested ?? {
+            kind: "enabled",
+            invocation: defaultSkillInvocation(prepared.frontmatter),
+          });
+
+    const deliveryForRevision = (
+      prepared: PreparedSkillRevision | SkillRevision,
+      previous: SkillDelivery,
+    ): SkillDelivery => {
+      if (prepared.diagnostics.some(({ severity }) => severity === "blocking")) {
+        return { kind: "blocked", diagnostics: prepared.diagnostics };
+      }
+      if (previous.kind === "disabled") return previous;
+      if (previous.kind === "enabled") return previous;
+      return {
+        kind: "enabled",
+        invocation: defaultSkillInvocation(prepared.frontmatter),
+      };
+    };
+
+    const revisionRow = (input: {
+      readonly keys: OwnedKeys;
+      readonly skillId: ManagedSkillId;
+      readonly revisionId: SkillRevisionId;
+      readonly revision: PreparedSkillRevision;
+      readonly createdAt: Date;
+    }): Record<string, unknown> => ({
+      tenant: input.keys.tenant,
+      owner: input.keys.owner,
+      subject: input.keys.subject,
+      id: String(input.revisionId),
+      skill_id: String(input.skillId),
+      package_digest: String(input.revision.packageDigest),
+      name: input.revision.name === null ? null : String(input.revision.name),
+      description: input.revision.description,
+      frontmatter: input.revision.frontmatter,
+      files: manifestFor(input.revision),
+      diagnostics: input.revision.diagnostics,
+      created_at: input.createdAt,
+    });
+
+    const prepareManagedSkillPackage = (
+      files: CreateManagedSkillInput["package"]["files"],
+    ): Effect.Effect<PreparedSkillRevision, SkillPackageRejectedError> =>
+      Effect.gen(function* () {
+        const prepared = yield* prepareSkillPackage(files);
+        if (prepared.kind === "rejected") {
+          return yield* new SkillPackageRejectedError({ diagnostics: prepared.diagnostics });
+        }
+        return prepared.revision;
+      });
+
+    const decodeSkillCandidate = (
+      row: CoreRow<"skill_candidate">,
+    ): Effect.Effect<SkillCandidate, StorageFailure> =>
+      Option.match(skillCandidateFromRow(row), {
+        onNone: () =>
+          Effect.fail(
+            new StorageError({
+              message: `Managed skill candidate ${row.id} is corrupt.`,
+              cause: undefined,
+            }),
+          ),
+        onSome: Effect.succeed,
+      });
+
+    const skillsStageCandidate = (
+      input: StageSkillCandidateInput,
+    ): Effect.Effect<
+      SkillCandidate,
+      SkillPackageRejectedError | OrgWriteDeniedError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
+        yield* requireUserSubject(input.owner);
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(input.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill candidate owner", cause),
+        });
+        const prepared = yield* prepareManagedSkillPackage(input.package.files);
+        const partition = yield* skillOwnerPartition(input.owner);
+        yield* skillPackages.put(partition, prepared);
+        const id = candidateId();
+        const createdAt = new Date();
+        const expiresAt = new Date(createdAt.getTime() + 30 * 60 * 1000);
+        const row = yield* core.create("skill_candidate", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          id: String(id),
+          source: input.source,
+          package_digest: String(prepared.packageDigest),
+          name: prepared.name === null ? null : String(prepared.name),
+          description: prepared.description,
+          frontmatter: prepared.frontmatter,
+          files: manifestFor(prepared),
+          diagnostics: prepared.diagnostics,
+          created_at: createdAt,
+          expires_at: expiresAt,
+        });
+        return yield* decodeSkillCandidate(row);
+      });
+
+    const skillsImportCandidate = (
+      input: ImportSkillCandidateInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | OrgWriteDeniedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("skill_candidate", {
+          where: (b: AnyCb) => b("id", "=", String(input.candidateId)),
+        });
+        if (row === null) {
+          return yield* new SkillCandidateNotFoundError({ candidateId: input.candidateId });
+        }
+        const candidate = yield* decodeSkillCandidate(row);
+        yield* guardOrgWrite(candidate.owner);
+        if (candidate.expiresAt.getTime() <= Date.now()) {
+          return yield* new SkillCandidateExpiredError({
+            candidateId: candidate.id,
+            expiredAt: candidate.expiresAt.toISOString(),
+          });
+        }
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(candidate.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill candidate owner", cause),
+        });
+        const newSkillId = skillId();
+        const newRevisionId = revisionId();
+        const now = new Date();
+        const revision = candidate.revision;
+        const delivery: SkillDelivery = revision.diagnostics.some(
+          ({ severity }) => severity === "blocking",
+        )
+          ? { kind: "blocked", diagnostics: revision.diagnostics }
+          : (input.delivery ?? {
+              kind: "enabled",
+              invocation: defaultSkillInvocation(revision.frontmatter),
+            });
+        yield* transaction(
+          Effect.gen(function* () {
+            yield* core.create("skill_revision", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(newRevisionId),
+              skill_id: String(newSkillId),
+              package_digest: String(revision.packageDigest),
+              name: revision.name === null ? null : String(revision.name),
+              description: revision.description,
+              frontmatter: revision.frontmatter,
+              files: revision.files,
+              diagnostics: revision.diagnostics,
+              created_at: now,
+            });
+            yield* core.create("skill", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(newSkillId),
+              name: revision.name === null ? null : String(revision.name),
+              description: revision.description,
+              active_revision_id: String(newRevisionId),
+              delivery,
+              source: {
+                kind: "imported",
+                locator: candidate.source.locator,
+                tracking: candidate.source.tracking,
+                baselineRevisionId: newRevisionId,
+              },
+              requirements: [],
+              created_at: now,
+              updated_at: now,
+            });
+            yield* core.deleteMany("skill_candidate", {
+              where: (b: AnyCb) => b("id", "=", String(candidate.id)),
+            });
+          }),
+        );
+        return yield* skillsGet({ skillId: newSkillId }).pipe(
+          Effect.catchTag("ManagedSkillNotFoundError", (cause) =>
+            Effect.fail(
+              new StorageError({
+                message: `Managed skill ${newSkillId} disappeared after candidate import.`,
+                cause,
+              }),
+            ),
+          ),
+        );
+      });
+
+    const candidateForUpdate = (
+      skill: ManagedSkill,
+      candidateId: SkillCandidateId,
+    ): Effect.Effect<
+      SkillCandidate,
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | SkillCandidateMismatchError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("skill_candidate", {
+          where: (b: AnyCb) => b("id", "=", String(candidateId)),
+        });
+        if (row === null) return yield* new SkillCandidateNotFoundError({ candidateId });
+        const candidate = yield* decodeSkillCandidate(row);
+        if (candidate.expiresAt.getTime() <= Date.now()) {
+          return yield* new SkillCandidateExpiredError({
+            candidateId,
+            expiredAt: candidate.expiresAt.toISOString(),
+          });
+        }
+        if (candidate.owner !== skill.owner || skill.source.kind !== "imported") {
+          return yield* new SkillCandidateMismatchError({
+            skillId: skill.id,
+            candidateId,
+            reason: "The candidate does not belong to this imported skill.",
+          });
+        }
+        const current = skill.source.locator;
+        const next = candidate.source.locator;
+        const matches =
+          current.kind === next.kind &&
+          (current.kind === "github" && next.kind === "github"
+            ? current.repository === next.repository &&
+              current.directory === next.directory &&
+              current.requestedRef === next.requestedRef
+            : current.kind === "wellKnown" && next.kind === "wellKnown"
+              ? current.indexUrl === next.indexUrl && current.entryId === next.entryId
+              : current.kind === "mcp" && next.kind === "mcp"
+                ? current.connection === next.connection && current.uri === next.uri
+                : current.kind === "local" && next.kind === "local"
+                  ? current.path === next.path
+                  : false);
+        if (!matches) {
+          return yield* new SkillCandidateMismatchError({
+            skillId: skill.id,
+            candidateId,
+            reason: "The candidate was fetched from a different source.",
+          });
+        }
+        return candidate;
+      });
+
+    const digestAt = (
+      files: readonly { readonly path: string; readonly digest: string }[],
+      path: string,
+    ): string | null => files.find((file) => file.path === path)?.digest ?? null;
+
+    const skillsReviewCandidate = (
+      input: ReviewSkillCandidateInput,
+    ): Effect.Effect<
+      SkillUpdateReview,
+      | ManagedSkillNotFoundError
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | SkillCandidateMismatchError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const skill = yield* skillsGet({ skillId: input.skillId });
+        const candidate = yield* candidateForUpdate(skill, input.candidateId);
+        if (skill.source.kind !== "imported") {
+          return yield* new SkillCandidateMismatchError({
+            skillId: skill.id,
+            candidateId: candidate.id,
+            reason: "An authored skill has no source baseline.",
+          });
+        }
+        const source = skill.source;
+        const baseline = skill.revisions.find(
+          (revision) => revision.id === source.baselineRevisionId,
+        );
+        const active = skill.revisions.find((revision) => revision.id === skill.activeRevisionId);
+        if (baseline === undefined || active === undefined) {
+          return yield* new StorageError({
+            message: `Managed skill ${skill.id} has a missing source revision.`,
+            cause: undefined,
+          });
+        }
+        const paths = new Set([
+          ...baseline.files.map((file) => file.path),
+          ...active.files.map((file) => file.path),
+          ...candidate.revision.files.map((file) => file.path),
+        ]);
+        const changes = [...paths].sort().flatMap((path) => {
+          const baselineDigest = digestAt(baseline.files, path);
+          const activeDigest = digestAt(active.files, path);
+          const candidateDigest = digestAt(candidate.revision.files, path);
+          if (candidateDigest === baselineDigest) return [];
+          return [
+            {
+              path,
+              kind:
+                baselineDigest === null
+                  ? ("added" as const)
+                  : candidateDigest === null
+                    ? ("removed" as const)
+                    : ("changed" as const),
+              conflict: activeDigest !== baselineDigest && activeDigest !== candidateDigest,
+              baselineDigest,
+              activeDigest,
+              candidateDigest,
+            },
+          ];
+        });
+        return {
+          skillId: skill.id,
+          candidateId: candidate.id,
+          expectedActiveRevisionId: skill.activeRevisionId,
+          expectedBaselineRevisionId: source.baselineRevisionId,
+          changes,
+          conflicts: changes.filter((change) => change.conflict).map((change) => change.path),
+        };
+      });
+
+    const skillsApplyCandidate = (
+      input: ApplySkillCandidateInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillCandidateNotFoundError
+      | SkillCandidateExpiredError
+      | SkillCandidateMismatchError
+      | SkillRevisionConflictError
+      | SkillUpdateConflictError
+      | SkillPackageRejectedError
+      | OrgWriteDeniedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const skill = yield* skillsGet({ skillId: input.skillId });
+        yield* guardOrgWrite(skill.owner);
+        if (skill.activeRevisionId !== input.expectedActiveRevisionId) {
+          return yield* new SkillRevisionConflictError({
+            skillId: skill.id,
+            expectedRevisionId: input.expectedActiveRevisionId,
+            actualRevisionId: skill.activeRevisionId,
+          });
+        }
+        if (
+          skill.source.kind !== "imported" ||
+          skill.source.baselineRevisionId !== input.expectedBaselineRevisionId
+        ) {
+          return yield* new SkillCandidateMismatchError({
+            skillId: skill.id,
+            candidateId: input.candidateId,
+            reason: "The source baseline changed after this review opened.",
+          });
+        }
+        const candidate = yield* candidateForUpdate(skill, input.candidateId);
+        const review = yield* skillsReviewCandidate({
+          skillId: skill.id,
+          candidateId: candidate.id,
+        });
+        const resolutions = new Map(
+          input.resolutions.map((resolution) => [resolution.path, resolution]),
+        );
+        const unresolved = review.conflicts.filter((path) => !resolutions.has(path));
+        if (unresolved.length > 0) {
+          return yield* new SkillUpdateConflictError({ skillId: skill.id, paths: unresolved });
+        }
+        const baseline = skill.revisions.find(
+          (revision) => revision.id === input.expectedBaselineRevisionId,
+        );
+        const active = skill.revisions.find(
+          (revision) => revision.id === input.expectedActiveRevisionId,
+        );
+        if (baseline === undefined || active === undefined) {
+          return yield* new StorageError({
+            message: `Managed skill ${skill.id} has a missing update revision.`,
+            cause: undefined,
+          });
+        }
+        const partition = yield* skillOwnerPartition(skill.owner);
+        const paths = new Set([
+          ...baseline.files.map((file) => file.path),
+          ...active.files.map((file) => file.path),
+          ...candidate.revision.files.map((file) => file.path),
+        ]);
+        const files = yield* Effect.forEach([...paths].sort(), (path) =>
+          Effect.gen(function* () {
+            const baselineFile = baseline.files.find((file) => file.path === path);
+            const activeFile = active.files.find((file) => file.path === path);
+            const candidateFile = candidate.revision.files.find((file) => file.path === path);
+            const localChanged = activeFile?.digest !== baselineFile?.digest;
+            const upstreamChanged = candidateFile?.digest !== baselineFile?.digest;
+            const conflict =
+              localChanged && upstreamChanged && activeFile?.digest !== candidateFile?.digest;
+            const resolution = conflict ? resolutions.get(path) : undefined;
+            if (resolution?.choice === "custom") {
+              return { path, bytes: resolution.bytes, mediaType: resolution.mediaType };
+            }
+            const selected =
+              resolution?.choice === "local"
+                ? activeFile
+                : resolution?.choice === "upstream" || upstreamChanged
+                  ? candidateFile
+                  : activeFile;
+            if (selected === undefined) return null;
+            const bytes = yield* skillPackages.read(partition, selected);
+            return { path, bytes, mediaType: selected.mediaType };
+          }),
+        );
+        const prepared = yield* prepareManagedSkillPackage(files.filter(Predicate.isNotNull));
+        yield* skillPackages.put(partition, prepared);
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(skill.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill owner", cause),
+        });
+        const baselineRevisionId = revisionId();
+        const activeRevisionId =
+          prepared.packageDigest === candidate.revision.packageDigest
+            ? baselineRevisionId
+            : revisionId();
+        const now = new Date();
+        const delivery = deliveryForRevision(prepared, skill.delivery);
+        yield* transaction(
+          Effect.gen(function* () {
+            const current = yield* skillRow(skill.id);
+            yield* assertActiveRevision(current, input.expectedActiveRevisionId);
+            const currentSummary = yield* decodeSkillSummary(current);
+            if (
+              currentSummary.source.kind !== "imported" ||
+              currentSummary.source.baselineRevisionId !== input.expectedBaselineRevisionId
+            ) {
+              return yield* new SkillCandidateMismatchError({
+                skillId: skill.id,
+                candidateId: candidate.id,
+                reason: "The source baseline changed while applying the update.",
+              });
+            }
+            yield* core.create("skill_revision", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(baselineRevisionId),
+              skill_id: String(skill.id),
+              package_digest: String(candidate.revision.packageDigest),
+              name: candidate.revision.name === null ? null : String(candidate.revision.name),
+              description: candidate.revision.description,
+              frontmatter: candidate.revision.frontmatter,
+              files: candidate.revision.files,
+              diagnostics: candidate.revision.diagnostics,
+              created_at: now,
+            });
+            if (activeRevisionId !== baselineRevisionId) {
+              yield* core.create(
+                "skill_revision",
+                revisionRow({
+                  keys,
+                  skillId: skill.id,
+                  revisionId: activeRevisionId,
+                  revision: prepared,
+                  createdAt: now,
+                }),
+              );
+            }
+            yield* core.updateMany("skill", {
+              where: skillById(skill.id),
+              set: {
+                name: prepared.name === null ? null : String(prepared.name),
+                description: prepared.description,
+                active_revision_id: String(activeRevisionId),
+                delivery,
+                source: {
+                  kind: "imported",
+                  locator: candidate.source.locator,
+                  tracking: candidate.source.tracking,
+                  baselineRevisionId,
+                },
+                updated_at: now,
+              },
+            });
+            yield* core.deleteMany("skill_candidate", {
+              where: (b: AnyCb) => b("id", "=", String(candidate.id)),
+            });
+          }),
+        );
+        return yield* skillsGet({ skillId: skill.id });
+      });
+
+    const skillsCreate = (
+      input: CreateManagedSkillInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      SkillPackageRejectedError | OrgWriteDeniedError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        yield* guardOrgWrite(input.owner);
+        yield* requireUserSubject(input.owner);
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(input.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill owner", cause),
+        });
+        const prepared = yield* prepareManagedSkillPackage(input.package.files);
+        const partition = yield* skillOwnerPartition(input.owner);
+        yield* skillPackages.put(partition, prepared);
+
+        const newSkillId = skillId();
+        const newRevisionId = revisionId();
+        const now = new Date();
+        const delivery = deliveryForCreate(prepared, input.delivery);
+        yield* transaction(
+          Effect.gen(function* () {
+            yield* core.create(
+              "skill_revision",
+              revisionRow({
+                keys,
+                skillId: newSkillId,
+                revisionId: newRevisionId,
+                revision: prepared,
+                createdAt: now,
+              }),
+            );
+            yield* core.create("skill", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(newSkillId),
+              name: prepared.name === null ? null : String(prepared.name),
+              description: prepared.description,
+              active_revision_id: String(newRevisionId),
+              delivery,
+              source: { kind: "authored" },
+              requirements: input.requirements ?? [],
+              created_at: now,
+              updated_at: now,
+            });
+          }),
+        );
+        return yield* skillsGet({ skillId: newSkillId }).pipe(
+          Effect.catchTag("ManagedSkillNotFoundError", (cause) =>
+            Effect.fail(
+              new StorageError({
+                message: `Managed skill ${newSkillId} disappeared after creation.`,
+                cause,
+              }),
+            ),
+          ),
+        );
+      });
+
+    const assertActiveRevision = (
+      row: CoreRow<"skill">,
+      expectedRevisionId: SkillRevisionId,
+    ): Effect.Effect<void, SkillRevisionConflictError> =>
+      row.active_revision_id === String(expectedRevisionId)
+        ? Effect.void
+        : Effect.fail(
+            new SkillRevisionConflictError({
+              skillId: ManagedSkillId.make(row.id),
+              expectedRevisionId,
+              actualRevisionId: SkillRevisionId.make(row.active_revision_id),
+            }),
+          );
+
+    const skillsEdit = (
+      input: EditManagedSkillInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillPackageRejectedError
+      | SkillNameConflictError
+      | SkillRevisionConflictError
+      | OrgWriteDeniedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const existingSummary = yield* decodeSkillSummary(existing);
+        const targetOwner = input.owner ?? existingSummary.owner;
+        yield* guardOrgWrite(existingSummary.owner);
+        yield* guardOrgWrite(targetOwner);
+        yield* requireUserSubject(targetOwner);
+        yield* assertActiveRevision(existing, input.expectedActiveRevisionId);
+        const prepared = yield* prepareManagedSkillPackage(input.package.files);
+        if (prepared.name !== null) {
+          const conflicting = yield* core.findFirst("skill", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(targetOwner)(b),
+                b("name", "=", String(prepared.name)),
+                b("id", "!=", String(input.skillId)),
+              ),
+          });
+          if (conflicting !== null) {
+            return yield* new SkillNameConflictError({
+              owner: targetOwner,
+              name: String(prepared.name),
+            });
+          }
+        }
+        const sourcePartition = yield* skillOwnerPartition(existingSummary.owner);
+        const targetPartition = yield* skillOwnerPartition(targetOwner);
+        if (targetOwner !== existingSummary.owner) {
+          const existingSkill = yield* skillsGet({ skillId: input.skillId });
+          yield* skillPackages.copy(
+            sourcePartition,
+            targetPartition,
+            existingSkill.revisions.flatMap((revision) => revision.files),
+          );
+        }
+        yield* skillPackages.put(targetPartition, prepared);
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(targetOwner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill owner", cause),
+        });
+        const newRevisionId = revisionId();
+        const now = new Date();
+        const delivery = deliveryForRevision(prepared, existingSummary.delivery);
+        yield* transaction(
+          Effect.gen(function* () {
+            const current = yield* skillRow(input.skillId);
+            yield* assertActiveRevision(current, input.expectedActiveRevisionId);
+            yield* core.create(
+              "skill_revision",
+              revisionRow({
+                keys,
+                skillId: input.skillId,
+                revisionId: newRevisionId,
+                revision: prepared,
+                createdAt: now,
+              }),
+            );
+            if (targetOwner !== existingSummary.owner) {
+              yield* core.updateMany("skill_revision", {
+                where: (b: AnyCb) => b("skill_id", "=", String(input.skillId)),
+                set: {
+                  tenant: keys.tenant,
+                  owner: keys.owner,
+                  subject: keys.subject,
+                },
+              });
+            }
+            yield* core.updateMany("skill", {
+              where: skillById(input.skillId),
+              set: {
+                ...(targetOwner === existingSummary.owner
+                  ? {}
+                  : { tenant: keys.tenant, owner: keys.owner, subject: keys.subject }),
+                name: prepared.name === null ? null : String(prepared.name),
+                description: prepared.description,
+                active_revision_id: String(newRevisionId),
+                delivery,
+                updated_at: now,
+              },
+            });
+          }),
+        );
+        return yield* skillsGet({ skillId: input.skillId });
+      });
+
+    const skillsReadFile = (
+      input: ReadManagedSkillFileInput,
+    ): Effect.Effect<
+      ManagedSkillFile,
+      ManagedSkillNotFoundError | SkillRevisionNotFoundError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const skill = yield* skillsGet({ skillId: input.skillId });
+        const wantedRevisionId = input.revisionId ?? skill.activeRevisionId;
+        const revision = skill.revisions.find(({ id }) => id === wantedRevisionId);
+        if (revision === undefined) {
+          return yield* new SkillRevisionNotFoundError({
+            skillId: input.skillId,
+            revisionId: wantedRevisionId,
+          });
+        }
+        const manifest = revision.files.find(({ path }) => path === input.path);
+        if (manifest === undefined) {
+          return yield* new StorageError({
+            message: `Managed skill file not found: ${input.path}`,
+            cause: undefined,
+          });
+        }
+        const partition = yield* skillOwnerPartition(skill.owner);
+        const bytes = yield* skillPackages.read(partition, manifest);
+        return { manifest, bytes };
+      });
+
+    const skillsRestoreRevision = (
+      input: RestoreManagedSkillRevisionInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      | ManagedSkillNotFoundError
+      | SkillRevisionNotFoundError
+      | SkillRevisionConflictError
+      | OrgWriteDeniedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const summary = yield* decodeSkillSummary(existing);
+        yield* guardOrgWrite(summary.owner);
+        yield* assertActiveRevision(existing, input.expectedActiveRevisionId);
+        const targetRow = yield* core.findFirst("skill_revision", {
+          where: skillRevisionById(input.skillId, input.revisionId),
+        });
+        if (targetRow === null) {
+          return yield* new SkillRevisionNotFoundError({
+            skillId: input.skillId,
+            revisionId: input.revisionId,
+          });
+        }
+        const target = yield* decodeSkillRevision(targetRow);
+        const keys = yield* Effect.try({
+          try: () => ownedKeys(summary.owner),
+          catch: (cause) => storageFailureFromUnknown("invalid skill owner", cause),
+        });
+        const newRevisionId = revisionId();
+        const now = new Date();
+        const delivery = deliveryForRevision(target, summary.delivery);
+        yield* transaction(
+          Effect.gen(function* () {
+            const current = yield* skillRow(input.skillId);
+            yield* assertActiveRevision(current, input.expectedActiveRevisionId);
+            yield* core.create("skill_revision", {
+              tenant: keys.tenant,
+              owner: keys.owner,
+              subject: keys.subject,
+              id: String(newRevisionId),
+              skill_id: String(input.skillId),
+              package_digest: String(target.packageDigest),
+              name: target.name === null ? null : String(target.name),
+              description: target.description,
+              frontmatter: target.frontmatter,
+              files: target.files,
+              diagnostics: target.diagnostics,
+              created_at: now,
+            });
+            yield* core.updateMany("skill", {
+              where: skillById(input.skillId),
+              set: {
+                name: target.name === null ? null : String(target.name),
+                description: target.description,
+                active_revision_id: String(newRevisionId),
+                delivery,
+                updated_at: now,
+              },
+            });
+          }),
+        );
+        return yield* skillsGet({ skillId: input.skillId });
+      });
+
+    const skillsRemove = (
+      input: RemoveManagedSkillInput,
+    ): Effect.Effect<void, ManagedSkillNotFoundError | OrgWriteDeniedError | StorageFailure> =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const summary = yield* decodeSkillSummary(existing);
+        yield* guardOrgWrite(summary.owner);
+        yield* transaction(
+          Effect.gen(function* () {
+            yield* core.deleteMany("skill_revision", {
+              where: (b: AnyCb) => b("skill_id", "=", String(input.skillId)),
+            });
+            yield* core.deleteMany("skill", { where: skillById(input.skillId) });
+          }),
+        );
+      });
+
+    const skillsSetDelivery = (
+      input: SetManagedSkillDeliveryInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | SkillInvalidTransitionError | OrgWriteDeniedError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const summary = yield* decodeSkillSummary(existing);
+        yield* guardOrgWrite(summary.owner);
+        if (summary.delivery.kind === "blocked") {
+          return yield* new SkillInvalidTransitionError({
+            skillId: input.skillId,
+            reason: "A blocked skill must be repaired before its delivery can change.",
+          });
+        }
+        yield* core.updateMany("skill", {
+          where: skillById(input.skillId),
+          set: { delivery: input.delivery, updated_at: new Date() },
+        });
+        return yield* skillsGet({ skillId: input.skillId });
+      });
+
+    const skillsSetSource = (
+      input: SetManagedSkillSourceInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | SkillInvalidTransitionError | OrgWriteDeniedError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const summary = yield* decodeSkillSummary(existing);
+        yield* guardOrgWrite(summary.owner);
+        const source: SkillSource | null =
+          input.change.kind === "detach"
+            ? { kind: "authored" }
+            : summary.source.kind === "authored"
+              ? null
+              : { ...summary.source, tracking: input.change.tracking };
+        if (source === null) {
+          return yield* new SkillInvalidTransitionError({
+            skillId: input.skillId,
+            reason: "An authored skill has no source to pin or follow.",
+          });
+        }
+        yield* core.updateMany("skill", {
+          where: skillById(input.skillId),
+          set: { source, updated_at: new Date() },
+        });
+        return yield* skillsGet({ skillId: input.skillId });
+      });
+
+    const skillsSetRequirements = (
+      input: SetManagedSkillRequirementsInput,
+    ): Effect.Effect<
+      ManagedSkill,
+      ManagedSkillNotFoundError | OrgWriteDeniedError | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const existing = yield* skillRow(input.skillId);
+        const summary = yield* decodeSkillSummary(existing);
+        yield* guardOrgWrite(summary.owner);
+        yield* core.updateMany("skill", {
+          where: skillById(input.skillId),
+          set: { requirements: input.requirements, updated_at: new Date() },
+        });
+        return yield* skillsGet({ skillId: input.skillId });
+      });
+
+    const skillsExport = (
+      input: ExportManagedSkillInput,
+    ): Effect.Effect<
+      ManagedSkillExport,
+      | ManagedSkillNotFoundError
+      | SkillRevisionNotFoundError
+      | PortableSkillExportRejectedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        const skill = yield* skillsGet({ skillId: input.skillId });
+        const wantedRevisionId = input.revisionId ?? skill.activeRevisionId;
+        const revision = skill.revisions.find(({ id }) => id === wantedRevisionId);
+        if (revision === undefined) {
+          return yield* new SkillRevisionNotFoundError({
+            skillId: input.skillId,
+            revisionId: wantedRevisionId,
+          });
+        }
+        if (
+          input.kind === "portable" &&
+          (revision.name === null ||
+            revision.description === null ||
+            revision.diagnostics.some(({ severity }) => severity === "blocking"))
+        ) {
+          return yield* new PortableSkillExportRejectedError({
+            skillId: input.skillId,
+            diagnostics: revision.diagnostics,
+          });
+        }
+        const files = yield* Effect.forEach(revision.files, (manifest) =>
+          skillsReadFile({
+            skillId: input.skillId,
+            revisionId: wantedRevisionId,
+            path: manifest.path,
+          }).pipe(
+            Effect.map(({ bytes }) => ({
+              path: manifest.path,
+              mediaType: manifest.mediaType,
+              bytes,
+            })),
+          ),
+        );
+        if (input.kind === "backup") return { kind: "backup", skill, revision, files };
+        if (revision.name === null) {
+          return yield* new PortableSkillExportRejectedError({
+            skillId: input.skillId,
+            diagnostics: revision.diagnostics,
+          });
+        }
+        return {
+          kind: "portable",
+          revisionId: wantedRevisionId,
+          packageDigest: revision.packageDigest,
+          name: revision.name,
+          files,
+        };
+      });
+
+    // ------------------------------------------------------------------
     // Elicitation
     // ------------------------------------------------------------------
 
@@ -6888,11 +8182,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // register credential providers.
     // ------------------------------------------------------------------
 
-    const blobPartitions: OwnerPartitions = {
-      org: `o:${tenant}`,
-      user: subject != null ? `u:${tenant}:${subject}` : null,
-    };
-
     // Pending approvals file under the narrowest partition this executor has:
     // a subject-bound executor keeps them private to that member, and a pure-org
     // executor (no subject) files them at the org. Either way the partition IS
@@ -6969,6 +8258,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             update: (input) => policiesUpdate(input),
             remove: (input) => policiesRemove(input),
           },
+          skills: {
+            list: () => skillsListUnfiltered(),
+            get: (skillId) =>
+              skillsGet({ skillId }).pipe(
+                Effect.catchTag("ManagedSkillNotFoundError", () => Effect.succeed(null)),
+              ),
+          },
         },
         connections: {
           create: (input) => connectionsCreate(input),
@@ -7006,6 +8302,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
           }
           activeToolPolicyProvider = provider;
+        }
+      }
+
+      if (plugin.skillCatalogProvider) {
+        const rawProvider = plugin.skillCatalogProvider(ctx);
+        const provider = Effect.isEffect(rawProvider) ? yield* rawProvider : rawProvider;
+        if (provider) {
+          if (activeSkillCatalogProvider) {
+            return yield* new StorageError({
+              message: "Only one plugin can provide the active skill catalog source.",
+              cause: undefined,
+            });
+          }
+          activeSkillCatalogProvider = provider;
         }
       }
 
@@ -7321,6 +8631,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         rename: artifactsRename,
         remove: artifactsRemove,
         setPreview: artifactsSetPreview,
+      },
+      skills: {
+        list: skillsList,
+        get: skillsGet,
+        readFile: skillsReadFile,
+        create: skillsCreate,
+        stageCandidate: skillsStageCandidate,
+        importCandidate: skillsImportCandidate,
+        reviewCandidate: skillsReviewCandidate,
+        applyCandidate: skillsApplyCandidate,
+        edit: skillsEdit,
+        restoreRevision: skillsRestoreRevision,
+        remove: skillsRemove,
+        setDelivery: skillsSetDelivery,
+        setSource: skillsSetSource,
+        setRequirements: skillsSetRequirements,
+        export: skillsExport,
       },
       pendingApprovals,
       execute,

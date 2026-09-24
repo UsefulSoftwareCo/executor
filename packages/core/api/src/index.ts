@@ -39,6 +39,16 @@ export {
 export { PoliciesApi } from "./policies/api";
 export { ArtifactsApi } from "./artifacts/api";
 export {
+  SkillsApi,
+  SkillPackageFilePayload,
+  SkillPackagePayload,
+  SkillRevisionResponse,
+  ManagedSkillSummaryResponse,
+  ManagedSkillResponse,
+  ManagedSkillFileResponse,
+  ManagedSkillExportResponse,
+} from "./skills/api";
+export {
   AccountApi,
   AccountHttpApi,
   AccountError,

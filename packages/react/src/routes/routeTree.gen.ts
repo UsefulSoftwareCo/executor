@@ -13,17 +13,22 @@ import { Route as DotIndexRouteImport } from './index'
 import { Route as DotUsersRouteImport } from './users'
 import { Route as DotToolsRouteImport } from './tools'
 import { Route as DotToolkitsRouteImport } from './toolkits'
+import { Route as DotSkillsRouteImport } from './skills'
 import { Route as DotSecretsRouteImport } from './secrets'
 import { Route as DotPoliciesRouteImport } from './policies'
 import { Route as DotArtifactsRouteImport } from './artifacts'
 import { Route as DotToolkitsDottoolkitSlugRouteImport } from './toolkits.$toolkitSlug'
+import { Route as DotSkillsDotnewRouteImport } from './skills.new'
+import { Route as DotSkillsDotskillIdRouteImport } from './skills.$skillId'
 import { Route as DotResumeDotexecutionIdRouteImport } from './resume.$executionId'
 import { Route as DotIntegrationsDotbrowseRouteImport } from './integrations.browse'
 import { Route as DotIntegrationsDotnamespaceRouteImport } from './integrations.$namespace'
 import { Route as DotConnectDotintegrationSlugRouteImport } from './connect.$integrationSlug'
 import { Route as DotArtifactsDotartifactIdRouteImport } from './artifacts.$artifactId'
+import { Route as DotSkillsDotskillIdDoteditRouteImport } from './skills.$skillId.edit'
 import { Route as DotPluginsDotpluginIdDotsplatRouteImport } from './plugins.$pluginId.$'
 import { Route as DotIntegrationsDotaddDotpluginKeyRouteImport } from './integrations.add.$pluginKey'
+import { Route as DotSkillsDotskillIdDotupdatesDotcandidateIdRouteImport } from './skills.$skillId.updates.$candidateId'
 
 const DotIndexRoute = DotIndexRouteImport.update({
   id: '/{-$orgSlug}/',
@@ -43,6 +48,11 @@ const DotToolsRoute = DotToolsRouteImport.update({
 const DotToolkitsRoute = DotToolkitsRouteImport.update({
   id: '/{-$orgSlug}/toolkits',
   path: '/{-$orgSlug}/toolkits',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DotSkillsRoute = DotSkillsRouteImport.update({
+  id: '/{-$orgSlug}/skills',
+  path: '/{-$orgSlug}/skills',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DotSecretsRoute = DotSecretsRouteImport.update({
@@ -66,6 +76,16 @@ const DotToolkitsDottoolkitSlugRoute =
     path: '/$toolkitSlug',
     getParentRoute: () => DotToolkitsRoute,
   } as any)
+const DotSkillsDotnewRoute = DotSkillsDotnewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => DotSkillsRoute,
+} as any)
+const DotSkillsDotskillIdRoute = DotSkillsDotskillIdRouteImport.update({
+  id: '/$skillId',
+  path: '/$skillId',
+  getParentRoute: () => DotSkillsRoute,
+} as any)
 const DotResumeDotexecutionIdRoute = DotResumeDotexecutionIdRouteImport.update({
   id: '/{-$orgSlug}/resume/$executionId',
   path: '/{-$orgSlug}/resume/$executionId',
@@ -95,6 +115,12 @@ const DotArtifactsDotartifactIdRoute =
     path: '/$artifactId',
     getParentRoute: () => DotArtifactsRoute,
   } as any)
+const DotSkillsDotskillIdDoteditRoute =
+  DotSkillsDotskillIdDoteditRouteImport.update({
+    id: '/edit',
+    path: '/edit',
+    getParentRoute: () => DotSkillsDotskillIdRoute,
+  } as any)
 const DotPluginsDotpluginIdDotsplatRoute =
   DotPluginsDotpluginIdDotsplatRouteImport.update({
     id: '/{-$orgSlug}/plugins/$pluginId/$',
@@ -107,11 +133,18 @@ const DotIntegrationsDotaddDotpluginKeyRoute =
     path: '/{-$orgSlug}/integrations/add/$pluginKey',
     getParentRoute: () => rootRouteImport,
   } as any)
+const DotSkillsDotskillIdDotupdatesDotcandidateIdRoute =
+  DotSkillsDotskillIdDotupdatesDotcandidateIdRouteImport.update({
+    id: '/updates/$candidateId',
+    path: '/updates/$candidateId',
+    getParentRoute: () => DotSkillsDotskillIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
+  '/{-$orgSlug}/skills': typeof DotSkillsRouteWithChildren
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}/users': typeof DotUsersRoute
@@ -121,14 +154,19 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
+  '/{-$orgSlug}/skills/$skillId': typeof DotSkillsDotskillIdRouteWithChildren
+  '/{-$orgSlug}/skills/new': typeof DotSkillsDotnewRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
   '/{-$orgSlug}/plugins/$pluginId/$': typeof DotPluginsDotpluginIdDotsplatRoute
+  '/{-$orgSlug}/skills/$skillId/edit': typeof DotSkillsDotskillIdDoteditRoute
+  '/{-$orgSlug}/skills/$skillId/updates/$candidateId': typeof DotSkillsDotskillIdDotupdatesDotcandidateIdRoute
 }
 export interface FileRoutesByTo {
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
+  '/{-$orgSlug}/skills': typeof DotSkillsRouteWithChildren
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}/users': typeof DotUsersRoute
@@ -138,15 +176,20 @@ export interface FileRoutesByTo {
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
+  '/{-$orgSlug}/skills/$skillId': typeof DotSkillsDotskillIdRouteWithChildren
+  '/{-$orgSlug}/skills/new': typeof DotSkillsDotnewRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
   '/{-$orgSlug}/plugins/$pluginId/$': typeof DotPluginsDotpluginIdDotsplatRoute
+  '/{-$orgSlug}/skills/$skillId/edit': typeof DotSkillsDotskillIdDoteditRoute
+  '/{-$orgSlug}/skills/$skillId/updates/$candidateId': typeof DotSkillsDotskillIdDotupdatesDotcandidateIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
+  '/{-$orgSlug}/skills': typeof DotSkillsRouteWithChildren
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
   '/{-$orgSlug}/tools': typeof DotToolsRoute
   '/{-$orgSlug}/users': typeof DotUsersRoute
@@ -156,9 +199,13 @@ export interface FileRoutesById {
   '/{-$orgSlug}/integrations/$namespace': typeof DotIntegrationsDotnamespaceRoute
   '/{-$orgSlug}/integrations/browse': typeof DotIntegrationsDotbrowseRoute
   '/{-$orgSlug}/resume/$executionId': typeof DotResumeDotexecutionIdRoute
+  '/{-$orgSlug}/skills/$skillId': typeof DotSkillsDotskillIdRouteWithChildren
+  '/{-$orgSlug}/skills/new': typeof DotSkillsDotnewRoute
   '/{-$orgSlug}/toolkits/$toolkitSlug': typeof DotToolkitsDottoolkitSlugRoute
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotIntegrationsDotaddDotpluginKeyRoute
   '/{-$orgSlug}/plugins/$pluginId/$': typeof DotPluginsDotpluginIdDotsplatRoute
+  '/{-$orgSlug}/skills/$skillId/edit': typeof DotSkillsDotskillIdDoteditRoute
+  '/{-$orgSlug}/skills/$skillId/updates/$candidateId': typeof DotSkillsDotskillIdDotupdatesDotcandidateIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -166,6 +213,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
+    | '/{-$orgSlug}/skills'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/users'
@@ -175,14 +223,19 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
+    | '/{-$orgSlug}/skills/$skillId'
+    | '/{-$orgSlug}/skills/new'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
     | '/{-$orgSlug}/plugins/$pluginId/$'
+    | '/{-$orgSlug}/skills/$skillId/edit'
+    | '/{-$orgSlug}/skills/$skillId/updates/$candidateId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
+    | '/{-$orgSlug}/skills'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/users'
@@ -192,14 +245,19 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
+    | '/{-$orgSlug}/skills/$skillId'
+    | '/{-$orgSlug}/skills/new'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
     | '/{-$orgSlug}/plugins/$pluginId/$'
+    | '/{-$orgSlug}/skills/$skillId/edit'
+    | '/{-$orgSlug}/skills/$skillId/updates/$candidateId'
   id:
     | '__root__'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
+    | '/{-$orgSlug}/skills'
     | '/{-$orgSlug}/toolkits'
     | '/{-$orgSlug}/tools'
     | '/{-$orgSlug}/users'
@@ -209,15 +267,20 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/integrations/$namespace'
     | '/{-$orgSlug}/integrations/browse'
     | '/{-$orgSlug}/resume/$executionId'
+    | '/{-$orgSlug}/skills/$skillId'
+    | '/{-$orgSlug}/skills/new'
     | '/{-$orgSlug}/toolkits/$toolkitSlug'
     | '/{-$orgSlug}/integrations/add/$pluginKey'
     | '/{-$orgSlug}/plugins/$pluginId/$'
+    | '/{-$orgSlug}/skills/$skillId/edit'
+    | '/{-$orgSlug}/skills/$skillId/updates/$candidateId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   DotArtifactsRoute: typeof DotArtifactsRouteWithChildren
   DotPoliciesRoute: typeof DotPoliciesRoute
   DotSecretsRoute: typeof DotSecretsRoute
+  DotSkillsRoute: typeof DotSkillsRouteWithChildren
   DotToolkitsRoute: typeof DotToolkitsRouteWithChildren
   DotToolsRoute: typeof DotToolsRoute
   DotUsersRoute: typeof DotUsersRoute
@@ -260,6 +323,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotToolkitsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/{-$orgSlug}/skills': {
+      id: '/{-$orgSlug}/skills'
+      path: '/{-$orgSlug}/skills'
+      fullPath: '/{-$orgSlug}/skills'
+      preLoaderRoute: typeof DotSkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/{-$orgSlug}/secrets': {
       id: '/{-$orgSlug}/secrets'
       path: '/{-$orgSlug}/secrets'
@@ -287,6 +357,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/{-$orgSlug}/toolkits/$toolkitSlug'
       preLoaderRoute: typeof DotToolkitsDottoolkitSlugRouteImport
       parentRoute: typeof DotToolkitsRoute
+    }
+    '/{-$orgSlug}/skills/new': {
+      id: '/{-$orgSlug}/skills/new'
+      path: '/new'
+      fullPath: '/{-$orgSlug}/skills/new'
+      preLoaderRoute: typeof DotSkillsDotnewRouteImport
+      parentRoute: typeof DotSkillsRoute
+    }
+    '/{-$orgSlug}/skills/$skillId': {
+      id: '/{-$orgSlug}/skills/$skillId'
+      path: '/$skillId'
+      fullPath: '/{-$orgSlug}/skills/$skillId'
+      preLoaderRoute: typeof DotSkillsDotskillIdRouteImport
+      parentRoute: typeof DotSkillsRoute
     }
     '/{-$orgSlug}/resume/$executionId': {
       id: '/{-$orgSlug}/resume/$executionId'
@@ -323,6 +407,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotArtifactsDotartifactIdRouteImport
       parentRoute: typeof DotArtifactsRoute
     }
+    '/{-$orgSlug}/skills/$skillId/edit': {
+      id: '/{-$orgSlug}/skills/$skillId/edit'
+      path: '/edit'
+      fullPath: '/{-$orgSlug}/skills/$skillId/edit'
+      preLoaderRoute: typeof DotSkillsDotskillIdDoteditRouteImport
+      parentRoute: typeof DotSkillsDotskillIdRoute
+    }
     '/{-$orgSlug}/plugins/$pluginId/$': {
       id: '/{-$orgSlug}/plugins/$pluginId/$'
       path: '/{-$orgSlug}/plugins/$pluginId/$'
@@ -337,6 +428,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotIntegrationsDotaddDotpluginKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/{-$orgSlug}/skills/$skillId/updates/$candidateId': {
+      id: '/{-$orgSlug}/skills/$skillId/updates/$candidateId'
+      path: '/updates/$candidateId'
+      fullPath: '/{-$orgSlug}/skills/$skillId/updates/$candidateId'
+      preLoaderRoute: typeof DotSkillsDotskillIdDotupdatesDotcandidateIdRouteImport
+      parentRoute: typeof DotSkillsDotskillIdRoute
+    }
   }
 }
 
@@ -350,6 +448,34 @@ const DotArtifactsRouteChildren: DotArtifactsRouteChildren = {
 
 const DotArtifactsRouteWithChildren = DotArtifactsRoute._addFileChildren(
   DotArtifactsRouteChildren,
+)
+
+interface DotSkillsDotskillIdRouteChildren {
+  DotSkillsDotskillIdDoteditRoute: typeof DotSkillsDotskillIdDoteditRoute
+  DotSkillsDotskillIdDotupdatesDotcandidateIdRoute: typeof DotSkillsDotskillIdDotupdatesDotcandidateIdRoute
+}
+
+const DotSkillsDotskillIdRouteChildren: DotSkillsDotskillIdRouteChildren = {
+  DotSkillsDotskillIdDoteditRoute: DotSkillsDotskillIdDoteditRoute,
+  DotSkillsDotskillIdDotupdatesDotcandidateIdRoute:
+    DotSkillsDotskillIdDotupdatesDotcandidateIdRoute,
+}
+
+const DotSkillsDotskillIdRouteWithChildren =
+  DotSkillsDotskillIdRoute._addFileChildren(DotSkillsDotskillIdRouteChildren)
+
+interface DotSkillsRouteChildren {
+  DotSkillsDotskillIdRoute: typeof DotSkillsDotskillIdRouteWithChildren
+  DotSkillsDotnewRoute: typeof DotSkillsDotnewRoute
+}
+
+const DotSkillsRouteChildren: DotSkillsRouteChildren = {
+  DotSkillsDotskillIdRoute: DotSkillsDotskillIdRouteWithChildren,
+  DotSkillsDotnewRoute: DotSkillsDotnewRoute,
+}
+
+const DotSkillsRouteWithChildren = DotSkillsRoute._addFileChildren(
+  DotSkillsRouteChildren,
 )
 
 interface DotToolkitsRouteChildren {
@@ -368,6 +494,7 @@ const rootRouteChildren: RootRouteChildren = {
   DotArtifactsRoute: DotArtifactsRouteWithChildren,
   DotPoliciesRoute: DotPoliciesRoute,
   DotSecretsRoute: DotSecretsRoute,
+  DotSkillsRoute: DotSkillsRouteWithChildren,
   DotToolkitsRoute: DotToolkitsRouteWithChildren,
   DotToolsRoute: DotToolsRoute,
   DotUsersRoute: DotUsersRoute,

@@ -454,7 +454,7 @@ describe("passthrough mode server", () => {
           "search",
           "skills",
         ]);
-        expect(JSON.stringify(listed).length).toBeLessThan(4000);
+        expect(JSON.stringify(listed).length).toBeLessThan(5000);
         expect(lists).toEqual([]);
         expect(schemaReads).toEqual([]);
         const result = await client.callTool({

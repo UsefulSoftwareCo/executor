@@ -11,6 +11,11 @@
 // Branded ids + the owner literal.
 export {
   ArtifactId,
+  ManagedSkillId,
+  SkillCandidateId,
+  SkillRevisionId,
+  SkillPackageDigest,
+  SkillName,
   AuthTemplateSlug,
   ConnectionAddress,
   ConnectionName,
@@ -28,6 +33,7 @@ export {
   ToolName,
 } from "./ids";
 export { connectionIdentifier, isConnectionIdentifier } from "./connection-name-identifier";
+export { parseGitHubSkillInput, type GitHubSkillInput } from "./skill-source-input";
 
 // Domain projections (types only — no runtime cost).
 export type {
@@ -66,6 +72,18 @@ export {
   CredentialProviderNotRegisteredError,
   CredentialResolutionError,
   ArtifactNotFoundError,
+  ManagedSkillNotFoundError,
+  SkillRevisionNotFoundError,
+  SkillCandidateNotFoundError,
+  SkillCandidateExpiredError,
+  SkillSourceUnavailableError,
+  SkillCandidateMismatchError,
+  SkillUpdateConflictError,
+  SkillPackageRejectedError,
+  SkillRevisionConflictError,
+  SkillNameConflictError,
+  SkillInvalidTransitionError,
+  PortableSkillExportRejectedError,
   isUserActionableError,
   type ExecuteError,
   type ExecutorError,
@@ -119,6 +137,58 @@ export type {
   SetArtifactPreviewInput,
 } from "./artifact";
 export { ARTIFACT_PREVIEW_MARKUP_LIMIT } from "./artifact-preview";
+
+export {
+  SkillInvocation,
+  SkillDelivery,
+  SkillSourceLocator,
+  SkillTracking,
+  SkillSource,
+  StagedSkillSource,
+  SkillUpdateFileChange,
+  SkillRequirement,
+  SkillRequirementStatus,
+  type SkillRevision,
+  type ManagedSkillSummary,
+  type ManagedSkill,
+  type CreateManagedSkillInput,
+  type StageSkillCandidateInput,
+  type ImportSkillCandidateInput,
+  type SkillCandidate,
+  type SkillUpdateReview,
+  type ReviewSkillCandidateInput,
+  type ApplySkillCandidateInput,
+  type SkillUpdateConflictResolution,
+  type EditManagedSkillInput,
+  type ExportManagedSkillInput,
+  type ReadManagedSkillFileInput,
+  type RestoreManagedSkillRevisionInput,
+  type RemoveManagedSkillInput,
+  type SetManagedSkillDeliveryInput,
+  type SetManagedSkillSourceInput,
+  type ManagedSkillSourceChange,
+  type SetManagedSkillRequirementsInput,
+  type ManagedSkillFile,
+  type ManagedSkillExportFile,
+  type ManagedSkillExport,
+} from "./managed-skill";
+export {
+  SkillDiagnosticSeverity,
+  SkillDiagnostic,
+  SkillPackageManifestFile,
+  prepareSkillPackage,
+  isValidSkillName,
+  isSafeSkillFilePath,
+  SKILL_MD_PATH,
+  SKILL_MAX_FILES,
+  SKILL_MAX_FILE_BYTES,
+  SKILL_MAX_TOTAL_BYTES,
+  SKILL_MAX_PATH_BYTES,
+  SKILL_MAX_PATH_SEGMENTS,
+  type SkillPackageFileInput,
+  type PreparedSkillRevision,
+  type PreparedSkillPackage,
+} from "./skill-package";
 
 // Schema-side views + onboarding autodetect.
 export { ToolSchemaView, IntegrationDetectionResult } from "./types";

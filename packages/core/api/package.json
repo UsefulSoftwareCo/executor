@@ -17,6 +17,7 @@
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "@zip.js/zip.js": "^2.8.26",
     "effect": "catalog:"
   },
   "devDependencies": {

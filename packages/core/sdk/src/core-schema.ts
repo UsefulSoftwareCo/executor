@@ -128,6 +128,56 @@ const ownedExecutorTable = <const TColumns extends UserColumns>(
 const defineTables = <const TTables extends Record<string, AnyTable>>(tables: TTables): TTables =>
   tables;
 
+const skillTable = ownedExecutorTable(
+  "skill",
+  {
+    id: keyColumn("id"),
+    name: nullableKeyColumn("name"),
+    description: nullableTextColumn("description"),
+    active_revision_id: keyColumn("active_revision_id"),
+    delivery: jsonColumn("delivery"),
+    source: jsonColumn("source"),
+    requirements: nullableJsonColumn("requirements"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  },
+  ["tenant", "owner", "subject", "id"],
+);
+skillTable.unique("skill_name_uidx", ["tenant", "owner", "subject", "name"]);
+
+const skillRevisionTable = ownedExecutorTable(
+  "skill_revision",
+  {
+    id: keyColumn("id"),
+    skill_id: keyColumn("skill_id"),
+    package_digest: keyColumn("package_digest"),
+    name: nullableKeyColumn("name"),
+    description: nullableTextColumn("description"),
+    frontmatter: nullableJsonColumn("frontmatter"),
+    files: jsonColumn("files"),
+    diagnostics: jsonColumn("diagnostics"),
+    created_at: dateColumn("created_at"),
+  },
+  ["tenant", "owner", "subject", "id"],
+);
+
+const skillCandidateTable = ownedExecutorTable(
+  "skill_candidate",
+  {
+    id: keyColumn("id"),
+    source: jsonColumn("source"),
+    package_digest: keyColumn("package_digest"),
+    name: nullableKeyColumn("name"),
+    description: nullableTextColumn("description"),
+    frontmatter: nullableJsonColumn("frontmatter"),
+    files: jsonColumn("files"),
+    diagnostics: jsonColumn("diagnostics"),
+    created_at: dateColumn("created_at"),
+    expires_at: dateColumn("expires_at"),
+  },
+  ["tenant", "owner", "subject", "id"],
+);
+
 export const coreTables = defineTables({
   // The catalog — tenant-shared integration definitions. `config` is the owning
   // plugin's opaque blob (openapi auth templates + spec; mcp url). Core never
@@ -416,6 +466,12 @@ export const coreTables = defineTables({
     ["tenant", "owner", "subject", "id"],
   ),
 
+  skill: skillTable,
+
+  skill_revision: skillRevisionTable,
+
+  skill_candidate: skillCandidateTable,
+
   // Host-owned plugin storage (shared `plugin_storage` table, owner-scoped).
   plugin_storage: ownedExecutorTable(
     "plugin_storage",
@@ -492,6 +548,22 @@ export const ARTIFACT_SUMMARY_COLUMNS = [
 ] as const satisfies readonly (keyof ArtifactRow)[];
 /** The artifact-row projection {@link ARTIFACT_SUMMARY_COLUMNS} selects. */
 export type ArtifactSummaryRow = Pick<ArtifactRow, (typeof ARTIFACT_SUMMARY_COLUMNS)[number]>;
+export type SkillRow = FumaRow<CoreSchema["skill"]>;
+export type SkillRevisionRow = FumaRow<CoreSchema["skill_revision"]>;
+export type SkillCandidateRow = FumaRow<CoreSchema["skill_candidate"]>;
+export const SKILL_SUMMARY_COLUMNS = [
+  "owner",
+  "id",
+  "name",
+  "description",
+  "active_revision_id",
+  "delivery",
+  "source",
+  "requirements",
+  "created_at",
+  "updated_at",
+] as const satisfies readonly (keyof SkillRow)[];
+export type SkillSummaryRow = Pick<SkillRow, (typeof SKILL_SUMMARY_COLUMNS)[number]>;
 export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
 export type BlobRow = FumaRow<CoreSchema["blob"]>;
 

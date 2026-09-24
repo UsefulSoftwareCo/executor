@@ -37,6 +37,9 @@ import {
   oauth_client,
   oauth_session,
   plugin_storage,
+  skill,
+  skill_candidate,
+  skill_revision,
   subject,
   tool,
   tool_policy,
@@ -159,6 +162,56 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     subject: "s",
   });
 
+  await db.insert(skill_revision).values({
+    id: `skr-${tag}`,
+    skill_id: `skl-${tag}`,
+    package_digest: `sha256:${tag}`,
+    name: `skill-${tag}`,
+    description: "Skill",
+    frontmatter: { name: `skill-${tag}`, description: "Skill" },
+    files: [],
+    diagnostics: [],
+    created_at: now,
+    tenant,
+    owner: "o",
+    subject: "s",
+  });
+  await db.insert(skill).values({
+    id: `skl-${tag}`,
+    name: `skill-${tag}`,
+    description: "Skill",
+    active_revision_id: `skr-${tag}`,
+    delivery: { kind: "enabled", invocation: "manual" },
+    source: { kind: "authored" },
+    created_at: now,
+    updated_at: now,
+    tenant,
+    owner: "o",
+    subject: "s",
+  });
+  await db.insert(skill_candidate).values({
+    id: `skc-${tag}`,
+    source: {
+      locator: {
+        kind: "local",
+        path: `/skills/${tag}`,
+        digest: `sha256:${tag}`,
+      },
+      tracking: { kind: "pinned", upstreamRevision: `sha256:${tag}` },
+    },
+    package_digest: `sha256:${tag}`,
+    name: `candidate-${tag}`,
+    description: "Candidate",
+    frontmatter: { name: `candidate-${tag}`, description: "Candidate" },
+    files: [],
+    diagnostics: [],
+    created_at: now,
+    expires_at: new Date(now.getTime() + 30 * 60 * 1000),
+    tenant,
+    owner: "o",
+    subject: "s",
+  });
+
   const orgNs = `o:${tenant}/plugin`;
   const userNs = `u:${tenant}:subject/plugin`;
   await db.insert(blob).values({
@@ -186,6 +239,9 @@ const TENANT_TABLES = [
   plugin_storage,
   subject,
   artifact,
+  skill_revision,
+  skill_candidate,
+  skill,
 ] as const;
 
 // Tables that are NOT purged by org id, each with the reason it is exempt. Any

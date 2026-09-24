@@ -213,6 +213,7 @@ export const buildExecutorModule = (body: string, timeoutMs: number): string =>
     "      },",
     "    });",
     "    const tools = __makeToolsProxy();",
+    "    const skills = __makeToolsProxy(['skills']);",
     "",
     "    let __watchdogInterval;",
     "    const __watchdog = new Promise((_, reject) => {",

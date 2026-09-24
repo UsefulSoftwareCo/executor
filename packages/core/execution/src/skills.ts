@@ -39,9 +39,14 @@ const EXECUTE_SKILL_BODY = [
   "5. For live saved-connection inventory, call `tools.executor.coreTools.connections.list({})`; after checking `result.ok`, read `result.data.connections`.",
   "6. Call the tool: `const result = await tools.<path>(input);`",
   "",
+  "## Agent Skills",
+  "",
+  "Use `skills.search({ query, limit, offset })` to discover managed instructions that explicitly allow model selection. Use `skills.get({ ref })` to load their SKILL.md, or `skills.get({ ref, path })` for a bundled file. When the user names a manual skill, read it directly with its ref or qualified name instead of searching for it.",
+  "",
   "## Rules",
   "",
   "- `tools.search()` returns paginated, ranked matches: `{ items, total, hasMore, nextOffset }`. Best-first. Use short intent phrases like `github issues`, `repo details`, or `create calendar event`.",
+  "- `skills` is a separate lazy proxy for instructions. It is not enumerable, and managed skills never appear in `tools.search()`.",
   '- When you already know the namespace, narrow with `tools.search({ namespace: "github", query: "issues" })`.',
   "- `tools.executor.coreTools.connections.list({})` returns saved connections with `{ address, integration, owner, name, ... }`. The `address` field includes the leading `tools.` root.",
   "- Tool calls return a value union: `{ ok: true, data }` for success or `{ ok: false, error: { code, message, status?, details?, retryable? } }` for expected tool/domain failures. Branch on `result.ok`.",
@@ -686,7 +691,7 @@ export const findSkill = (name: string, catalog: readonly Skill[] = SKILLS): Ski
 export const renderSkillsIndex = (catalog: readonly Skill[] = SKILLS): string =>
   [
     "How-to docs for Executor's own tools — this is the complete list, and there is nothing else to fetch.",
-    'Fetch one with `skills({ name: "<name>" })`. Names outside this list, file paths, and skills belonging to your harness or the user are not served here.',
+    'Fetch one with `skills({ name: "<name>" })`. Built-in names take precedence over managed skills with the same name.',
     "",
     ...catalog.map((skill) => `- \`${skill.name}\` — ${skill.summary}`),
   ].join("\n");
