@@ -1,5 +1,5 @@
 import type { OpenAPI, OpenAPIV3, OpenAPIV3_1 } from "openapi-types";
-import { Duration, Effect, Predicate, Schema, Stream } from "effect";
+import { Duration, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { JSON_SCHEMA, load as parseYamlDocument } from "js-yaml";
 
@@ -107,29 +107,12 @@ export const fetchSpecText = Effect.fn("OpenApi.fetchSpecText")(function* (
       message: specTooLargeMessage(declaredLength, MAX_SPEC_TEXT_CHARS),
     });
   }
-  let downloadedBytes = 0;
-  const specText = yield* response.stream.pipe(
-    Stream.mapEffect((chunk) => {
-      downloadedBytes += chunk.byteLength;
-      return downloadedBytes > MAX_SPEC_TEXT_CHARS
-        ? Effect.fail(
-            new OpenApiParseError({
-              message: specTooLargeMessage(downloadedBytes, MAX_SPEC_TEXT_CHARS),
-            }),
-          )
-        : Effect.succeed(chunk);
-    }),
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (text, chunk) => text + chunk,
-    ),
-    Effect.mapError((cause) =>
-      Predicate.isTagged(cause, "OpenApiParseError")
-        ? cause
-        : new OpenApiParseError({
-            message: "Failed to read OpenAPI document body",
-          }),
+  const specText = yield* response.text.pipe(
+    Effect.mapError(
+      (_cause) =>
+        new OpenApiParseError({
+          message: "Failed to read OpenAPI document body",
+        }),
     ),
   );
   return specText;

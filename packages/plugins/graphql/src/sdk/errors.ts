@@ -13,7 +13,6 @@ export class GraphqlIntrospectionError extends Schema.TaggedErrorClass<GraphqlIn
         "http",
         "invalid-endpoint",
         "invalid-json",
-        "response-too-large",
         "invalid-shape",
         "missing-schema",
         "graphql-errors",

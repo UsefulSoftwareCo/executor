@@ -1,10 +1,7 @@
-import { Effect, Option, Predicate, Schema, Stream } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { GraphqlIntrospectionError } from "./errors";
-
-/** Maximum bytes downloaded before parsing an introspection response. */
-export const MAX_INTROSPECTION_BYTES = 32 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Introspection query — standard GraphQL introspection
@@ -323,35 +320,8 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
     ),
   );
 
-  let downloadedBytes = 0;
-  const responseText = yield* response.stream.pipe(
-    Stream.mapEffect((chunk) => {
-      downloadedBytes += chunk.byteLength;
-      return downloadedBytes > MAX_INTROSPECTION_BYTES
-        ? Effect.fail(
-            new GraphqlIntrospectionError({
-              message: "Introspection response exceeds the 32 MiB limit",
-              reason: "response-too-large",
-            }),
-          )
-        : Effect.succeed(chunk);
-    }),
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (text, chunk) => text + chunk,
-    ),
-    Effect.mapError((cause) =>
-      Predicate.isTagged(cause, "GraphqlIntrospectionError")
-        ? cause
-        : new GraphqlIntrospectionError({
-            message: "Failed to read introspection response",
-            reason: "network",
-          }),
-    ),
-  );
-
   if (response.status !== 200) {
+    const responseText = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")));
     const raw = responseText
       ? yield* Schema.decodeUnknownEffect(JsonTextSchema)(responseText).pipe(
           Effect.catch(() => Effect.succeed(null)),
@@ -370,7 +340,7 @@ export const introspect = Effect.fn("GraphQL.introspect")(function* (
     });
   }
 
-  const raw = yield* Schema.decodeUnknownEffect(JsonTextSchema)(responseText).pipe(
+  const raw = yield* response.json.pipe(
     Effect.tapCause(() => Effect.logError("graphql introspection JSON parse failed")),
     Effect.mapError(
       () =>
