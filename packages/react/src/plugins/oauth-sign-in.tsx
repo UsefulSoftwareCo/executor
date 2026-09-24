@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useAtomSet } from "@effect/atom-react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { RegistryContext, useAtomSet } from "@effect/atom-react";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as AtomRegistry from "effect/unstable/reactivity/AtomRegistry";
 
-import { cancelOAuth, oauthConnectionCompleted, startOAuth } from "../api/atoms";
+import { oauthConnectionCompleted } from "../api/atoms";
+import { ExecutorApiClient } from "../api/client";
 import { trackEvent } from "../api/analytics";
 import { messageFromExit, messageFromUnknown, useReportHandledError } from "../api/error-reporting";
 import {
@@ -186,12 +188,11 @@ export function useOAuthPopupFlow<
     popupName,
     startErrorMessage,
   } = options;
-  const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
-  const doCancelOAuth = useAtomSet(cancelOAuth, { mode: "promiseExit" });
+  const registry = useContext(RegistryContext);
   const doOAuthConnectionCompleted = useAtomSet(oauthConnectionCompleted, { mode: "promiseExit" });
   const reportHandledError = useReportHandledError();
   const blockedMessage = popupBlockedMessage ?? POPUP_BLOCKED_MESSAGE;
-  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "preparing" | "authorizing" | "saving">("idle");
   const [error, setError] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<{ readonly state: string } | null>(null);
@@ -200,6 +201,7 @@ export function useOAuthPopupFlow<
   // exists. Hold it here so cancel and unmount can close it, or abandoning a
   // connect mid-probe strands a blank popup on screen.
   const reservationRef = useRef<ReservedOAuthPopup | null>(null);
+  const generationRef = useRef(0);
 
   const releaseReservation = useCallback(() => {
     reservationRef.current?.popup.close();
@@ -208,23 +210,33 @@ export function useOAuthPopupFlow<
 
   const cancelSession = useCallback(
     (state: string) => {
-      void doCancelOAuth({ payload: { state: OAuthState.make(state) } });
+      // Each cancellation owns its request; cancelling an older attempt must
+      // not interrupt cleanup of another session.
+      const request = ExecutorApiClient.runtime.atom(
+        ExecutorApiClient.use((client) =>
+          client.oauth.cancel({ payload: { state: OAuthState.make(state) } }),
+        ),
+      );
+      void Effect.runPromiseExit(AtomRegistry.getResult(registry, request));
     },
-    [doCancelOAuth],
+    [registry],
   );
 
   const cancel = useCallback(() => {
+    generationRef.current += 1;
+    setError(null);
     const session = sessionRef.current;
     cleanupRef.current?.();
     cleanupRef.current = null;
     sessionRef.current = null;
     releaseReservation();
     if (session) cancelSession(session.state);
-    setBusy(false);
+    setPhase("idle");
   }, [cancelSession, releaseReservation]);
 
   useEffect(
     () => () => {
+      generationRef.current += 1;
       const session = sessionRef.current;
       cleanupRef.current?.();
       cleanupRef.current = null;
@@ -267,21 +279,20 @@ export function useOAuthPopupFlow<
       // `reserve`; cancelling again here would close the window it reserved.
       const reservation = input.reservation ?? reserve();
       if (reservation.kind === "blocked") {
-        setBusy(false);
+        setPhase("idle");
         setError(blockedMessage);
         input.onError?.(blockedMessage);
         return;
       }
-      setBusy(true);
+      setPhase("preparing");
       setError(null);
       // Desktop hosts open the auth URL in the user's real browser, so they
       // reserve no in-page window and rely on the polling channel for the
       // result.
       const desktopBridge = reservation.kind === "desktop" ? reservation.bridge : null;
       const reservedPopup = reservation.kind === "window" ? reservation.popup : null;
-      // The window's lifetime now belongs to this flow's teardown, which closes
-      // it on every failure path below.
-      reservationRef.current = null;
+      // Cancel/unmount owns this window even while the start request is pending.
+      const generation = generationRef.current;
       const startExit = await Effect.runPromiseExit(
         Effect.tryPromise({
           try: input.run,
@@ -292,6 +303,14 @@ export function useOAuthPopupFlow<
             }),
         }),
       );
+      if (generation !== generationRef.current) {
+        reservedPopup?.popup.close();
+        if (Exit.isSuccess(startExit) && startExit.value.authorizationUrl !== null) {
+          cancelSession(startExit.value.state);
+        }
+        return;
+      }
+      reservationRef.current = null;
       if (Exit.isFailure(startExit)) {
         const message = messageFromExit(startExit, startErrorMessage ?? "Failed to start sign-in");
         reportHandledError(startExit.cause, {
@@ -301,7 +320,7 @@ export function useOAuthPopupFlow<
           metadata: input.reportMetadata,
         });
         reservedPopup?.popup.close();
-        setBusy(false);
+        setPhase("idle");
         setError(message);
         input.onError?.(message);
         return;
@@ -311,29 +330,33 @@ export function useOAuthPopupFlow<
         const message =
           noAuthorizationUrlMessage ?? "OAuth start did not produce an authorization URL";
         reservedPopup?.popup.close();
-        setBusy(false);
+        setPhase("idle");
         setError(message);
         input.onError?.(message);
         return;
       }
 
+      setPhase("authorizing");
       sessionRef.current = { state: response.state };
       input.onAuthorizationStarted?.(response);
       const handleResult = async (result: OAuthPopupResult<TPayload>) => {
+        if (generation !== generationRef.current) return;
         cleanupRef.current = null;
         sessionRef.current = null;
 
         if (!result.ok) {
           trackEvent("oauth_completed", { success: false });
-          setBusy(false);
+          setPhase("idle");
           setError(result.error);
           input.onError?.(result.error, result.errorDetails);
           return;
         }
 
+        setPhase("saving");
         const refreshExit = await doOAuthConnectionCompleted({
           reactivityKeys: connectionWriteKeys,
         });
+        if (generation !== generationRef.current) return;
         if (Exit.isFailure(refreshExit)) {
           const message = messageFromExit(refreshExit, "Failed to refresh connection");
           reportHandledError(refreshExit.cause, {
@@ -343,7 +366,7 @@ export function useOAuthPopupFlow<
             metadata: input.reportMetadata,
           });
           trackEvent("oauth_completed", { success: false });
-          setBusy(false);
+          setPhase("idle");
           setError(message);
           input.onError?.(message);
           return;
@@ -362,15 +385,18 @@ export function useOAuthPopupFlow<
             metadata: input.reportMetadata,
           });
           trackEvent("oauth_completed", { success: false });
-          setBusy(false);
-          setError(message);
-          input.onError?.(message);
+          if (generation === generationRef.current) {
+            setPhase("idle");
+            setError(message);
+            input.onError?.(message);
+          }
           return;
         }
         trackEvent("oauth_completed", { success: true });
-        setBusy(false);
+        if (generation === generationRef.current) setPhase("idle");
       };
       const handleClosed = () => {
+        if (generation !== generationRef.current) return;
         cleanupRef.current = null;
         sessionRef.current = null;
         // `popup.closed` is advisory: COOP redirects can make a live popup
@@ -379,16 +405,17 @@ export function useOAuthPopupFlow<
         const message =
           popupClosedMessage ?? "Sign-in cancelled - popup was closed before completing the flow.";
         trackEvent("oauth_completed", { success: false });
-        setBusy(false);
+        setPhase("idle");
         setError(message);
         input.onError?.(message);
       };
       const handleOpenFailed = () => {
+        if (generation !== generationRef.current) return;
         cleanupRef.current = null;
         sessionRef.current = null;
         cancelSession(response.state);
         trackEvent("oauth_completed", { success: false });
-        setBusy(false);
+        setPhase("idle");
         setError(blockedMessage);
         input.onError?.(blockedMessage);
       };
@@ -442,20 +469,29 @@ export function useOAuthPopupFlow<
           name: String(input.payload.name),
           owner: input.payload.owner,
         },
-        run: () =>
-          doStartOAuth({
-            payload: {
-              client: input.payload.client,
-              clientOwner: input.payload.clientOwner,
-              owner: input.payload.owner,
-              name: input.payload.name,
-              integration: input.payload.integration,
-              template: input.payload.template,
-              identityLabel: input.payload.identityLabel,
-              newConnection: input.payload.newConnection,
-              redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
-            },
-          }).then((exit) =>
+        run: () => {
+          // A shared mutation atom returns its latest result to every waiter.
+          // A fast retry could give the cancelled attempt the NEW session's
+          // state and make it cancel that session. Keep one atom per attempt;
+          // its subscription lives until this request settles, even on cancel.
+          const request = ExecutorApiClient.runtime.atom(
+            ExecutorApiClient.use((client) =>
+              client.oauth.start({
+                payload: {
+                  client: input.payload.client,
+                  clientOwner: input.payload.clientOwner,
+                  owner: input.payload.owner,
+                  name: input.payload.name,
+                  integration: input.payload.integration,
+                  template: input.payload.template,
+                  identityLabel: input.payload.identityLabel,
+                  newConnection: input.payload.newConnection,
+                  redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
+                },
+              }),
+            ),
+          );
+          return Effect.runPromiseExit(AtomRegistry.getResult(registry, request)).then((exit) =>
             Exit.isSuccess(exit)
               ? // The redirect branch carries `authorizationUrl` + `state`; the
                 // inline "connected" (client_credentials) branch has no URL to
@@ -469,14 +505,16 @@ export function useOAuthPopupFlow<
                     message: messageFromExit(exit, startErrorMessage ?? "Failed to start sign-in"),
                   }),
                 ),
-          ),
+          );
+        },
       });
     },
-    [callbackPath, doStartOAuth, openAuthorization, startErrorMessage],
+    [callbackPath, registry, openAuthorization, startErrorMessage],
   );
 
   return {
-    busy,
+    busy: phase !== "idle",
+    phase,
     error,
     setError,
     start,
