@@ -10,10 +10,16 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 
+/** The client metadata URL self-host e2e servers are configured with. */
+export const e2eClientMetadataUrl =
+  "https://executor.example/api/oauth/client-id-metadata/default.json";
+
 /** Start a loopback issuer with controllable discovery and registration metadata. */
 export const oauthSetupIssuer = Effect.gen(function* () {
   const address = yield* Deferred.make<string>();
   let registration = true;
+  let clientIdMetadata = false;
+  let lastRedirect: string | undefined;
   let postChallenge = false;
   let challenge = true;
   let probes = 0;
@@ -88,9 +94,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           redirect === null ||
           challenge === null ||
           params.get("code_challenge_method") !== "S256" ||
-          !clients.get(clientId)?.includes(redirect)
+          !(
+            (clientIdMetadata && clientId === e2eClientMetadataUrl) ||
+            clients.get(clientId)?.includes(redirect)
+          )
         )
           return HttpServerResponse.empty({ status: 400 });
+        lastRedirect = redirect;
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
         codes.set(code, { clientId, redirect, challenge, nonce: params.get("nonce") });
@@ -123,7 +133,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           separator < 0
             ? undefined
             : decodeURIComponent(decoded.slice(separator + 1).replace(/\+/g, " "));
-        tokenChecks = {
+        const common = {
           issued: issued !== undefined,
           grant: input.get("grant_type") === "authorization_code",
           redirect: issued !== undefined && input.get("redirect_uri") === issued.redirect,
@@ -131,11 +141,21 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             issued !== undefined &&
             verifier !== null &&
             createHash("sha256").update(verifier).digest("base64url") === issued.challenge,
-          authHeader: authorization !== undefined,
-          authScheme: authorization?.startsWith("Basic ") === true,
-          authClient: issued !== undefined && username === issued.clientId,
-          authSecret: password === "synthetic-client-secret",
         };
+        tokenChecks =
+          issued?.clientId === e2eClientMetadataUrl
+            ? {
+                ...common,
+                publicClient: authorization === undefined,
+                bodyClient: input.get("client_id") === issued.clientId,
+              }
+            : {
+                ...common,
+                authHeader: authorization !== undefined,
+                authScheme: authorization?.startsWith("Basic ") === true,
+                authClient: issued !== undefined && username === issued.clientId,
+                authSecret: password === "synthetic-client-secret",
+              };
         if (issued === undefined || code === null || !Object.values(tokenChecks).every(Boolean))
           return yield* HttpServerResponse.json({ error: "invalid_grant" }, { status: 400 });
         codes.delete(code);
@@ -243,6 +263,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             : { id_token_signing_alg_values_supported: idTokenAlgorithms }),
           jwks_uri: `${origin}/jwks`,
           scopes_supported: scopes,
+          ...(clientIdMetadata ? { client_id_metadata_document_supported: true } : {}),
           ...(registration
             ? { registration_endpoint: `${origin}/register?fixture=PRIVATE_QUERY` }
             : {}),
@@ -303,6 +324,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     origin,
     configure: (input: {
       readonly registration?: boolean;
+      readonly clientIdMetadata?: boolean;
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
       readonly registrationError?: typeof registrationError;
@@ -332,6 +354,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.registrationError !== undefined) registrationError = input.registrationError;
         if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
         if (input.registration !== undefined) registration = input.registration;
+        if (input.clientIdMetadata !== undefined) clientIdMetadata = input.clientIdMetadata;
         if (input.expiresAt !== undefined) expiresAt = input.expiresAt;
         if (input.discovery !== undefined) discovery = input.discovery;
         if (input.scopes !== undefined) scopes = [...input.scopes];
@@ -341,6 +364,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       registrations,
       discoveries,
       lastRegistration,
+      lastRedirect,
       probes,
       tokenExchanges,
       tokenChecks,

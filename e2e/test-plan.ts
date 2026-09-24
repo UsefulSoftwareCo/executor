@@ -793,6 +793,15 @@ export const scenarios = {
       local: na("Hosted OAuth client metadata."),
     },
   },
+  oauthClientMetadataConnect: {
+    file: "oauth-client-setup.spec.ts",
+    title: "An issuer without registration connects through the client metadata document",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host fixture configures the client metadata URL."),
+      local: na("Hosted OAuth client metadata."),
+    },
+  },
   oauthClientSetup: {
     file: "oauth-client-setup.spec.ts",
     title:

@@ -24,7 +24,6 @@ import {
 } from "../src/index.ts";
 import {
   aesGcmCredentials as credentials,
-  OAuthClientId,
   OAuthSetupFailed,
   OAuthCompletionFailed,
 } from "@executor-js/sdk/core";
@@ -809,7 +808,7 @@ test("an implicit CIMD default preserves saved clients for other providers", asy
   }
 });
 
-test("an implicit CIMD default reuses and re-encrypts a previously saved public client", async () => {
+test("an implicit CIMD default keeps using a previously saved public client", async () => {
   const f = await setup("cimd");
   try {
     const input = {
@@ -840,14 +839,10 @@ test("an implicit CIMD default reuses and re-encrypts a previously saved public 
     );
     await f.complete({ callbackUrl: f.service.callback(reused.authorizationUrl) }, upgraded);
     const clients = await Effect.runPromise(db.findMany("oauthClients", {}));
-    const migrated = clients.find((row) => row.id !== oldClient.id);
-    assert.equal(clients.length, 2);
-    assert.ok(migrated);
-    const decrypted = await Effect.runPromise(
-      f.credentialStore.decrypt(OAuthClientId.make(migrated.id), Redacted.make(migrated.encrypted)),
+    assert.deepEqual(
+      clients.map((row) => row.id),
+      [oldClient.id],
     );
-    assert.equal(Redacted.value(decrypted).client_id, "previously-saved-client");
-    assert.equal((await upgraded.accountConnections.oauthSetup(input)).mode, "saved");
   } finally {
     await f.close();
   }

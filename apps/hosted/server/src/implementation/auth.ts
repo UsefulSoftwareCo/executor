@@ -27,24 +27,37 @@ export const accountOAuthRedirectUri = (
 ) => HttpUrl.make(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href);
 
 export const accountOAuthClientMetadataPath = "/api/oauth/client-id-metadata/default.json";
-export const accountOAuthClientMetadataUrl = (origin: string): string | undefined => {
-  const url = new URL(accountOAuthClientMetadataPath, origin).href;
-  return parseDestination(url, httpsOnlyUrlPolicy)?.href;
+
+/** Providers fetch the default document themselves, so it only applies on public HTTPS hosts. */
+export const clientMetadataUrls = (origin: string, configured?: string) => {
+  const clientMetadataUrl = configured?.trim();
+  const defaultClientMetadataUrl = parseDestination(
+    new URL(accountOAuthClientMetadataPath, origin).href,
+    httpsOnlyUrlPolicy,
+  )?.href;
+  return {
+    ...(clientMetadataUrl ? { clientMetadataUrl } : {}),
+    ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
+  };
 };
+
+/** Providers reject the document unless `client_id` matches the URL it was fetched from. */
+export const accountOAuthClientMetadata = (
+  auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
+) => ({
+  client_id: new URL(accountOAuthClientMetadataPath, auth.origin).href,
+  client_name: "Executor",
+  client_uri: auth.origin,
+  redirect_uris: [accountOAuthRedirectUri(auth)],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
+  application_type: "web",
+});
 
 /** Public metadata lets OAuth providers identify this host as a client without registration. */
 export const hostedOAuthClientMetadata = Effect.gen(function* () {
-  const auth = yield* Authentication;
-  return HttpServerResponse.jsonUnsafe({
-    client_id: new URL(accountOAuthClientMetadataPath, auth.origin).href,
-    client_name: "Executor",
-    client_uri: auth.origin,
-    redirect_uris: [accountOAuthRedirectUri(auth)],
-    grant_types: ["authorization_code", "refresh_token"],
-    response_types: ["code"],
-    token_endpoint_auth_method: "none",
-    application_type: "web",
-  });
+  return HttpServerResponse.jsonUnsafe(accountOAuthClientMetadata(yield* Authentication));
 });
 
 /** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */

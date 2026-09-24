@@ -1,14 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { accountOAuthClientMetadataUrl } from "../src/implementation/auth.ts";
+import { accountOAuthClientMetadata, clientMetadataUrls } from "../src/implementation/auth.ts";
 
-test("hosted OAuth defaults to a publicly addressable HTTPS metadata URL", () => {
-  assert.equal(
-    accountOAuthClientMetadataUrl("https://v2.executor.sh"),
-    "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
-  );
-  assert.equal(accountOAuthClientMetadataUrl("http://127.0.0.1:4400"), undefined);
-  assert.equal(accountOAuthClientMetadataUrl("https://executor.localhost"), undefined);
-  assert.equal(accountOAuthClientMetadataUrl("https://10.0.0.2"), undefined);
-  assert.equal(accountOAuthClientMetadataUrl("https://dashboard.internal"), undefined);
+const origin = "https://v2.executor.sh";
+const defaultClientMetadataUrl = `${origin}/api/oauth/client-id-metadata/default.json`;
+
+test("hosted OAuth defaults to a metadata URL only on public HTTPS hosts", () => {
+  assert.deepEqual(clientMetadataUrls(origin), { defaultClientMetadataUrl });
+  for (const privateOrigin of [
+    "http://127.0.0.1:4400",
+    "https://executor.localhost",
+    "https://10.0.0.2",
+    "https://dashboard.internal",
+  ])
+    assert.deepEqual(clientMetadataUrls(privateOrigin), {});
+});
+
+test("a configured metadata URL takes precedence over the hosted default", () => {
+  assert.deepEqual(clientMetadataUrls(origin, "  "), { defaultClientMetadataUrl });
+  assert.deepEqual(clientMetadataUrls(origin, " https://custom.example/c.json "), {
+    clientMetadataUrl: "https://custom.example/c.json",
+    defaultClientMetadataUrl,
+  });
+});
+
+test("the served document identifies itself by the default metadata URL", () => {
+  const document = accountOAuthClientMetadata({ origin, oauthRedirectUri: undefined });
+  assert.equal(document.client_id, defaultClientMetadataUrl);
+  assert.deepEqual(document.redirect_uris, [`${origin}/api/oauth/callback`]);
 });

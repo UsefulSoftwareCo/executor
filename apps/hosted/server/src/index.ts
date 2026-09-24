@@ -16,8 +16,8 @@ export {
 export {
   authOptions,
   authSettings,
+  clientMetadataUrls,
   accountOAuthClientMetadataPath,
-  accountOAuthClientMetadataUrl,
   hostedOAuthClientMetadata,
   requireUserLive,
   sessionPrincipal,

@@ -255,50 +255,28 @@ export const makeOAuth = (
       ) {
         return yield* new OAuthSetupFailed({ reason: "unsupported" });
       }
-      const metadataUrl = options.clientMetadataUrl ?? options.defaultClientMetadataUrl;
-      const canUseMetadata =
-        discovered.grant === "authorization_code" &&
-        (method.tokenEndpointAuthMethod === undefined ||
-          method.tokenEndpointAuthMethod === "none") &&
-        discovered.server.client_id_metadata_document_supported === true &&
-        metadataUrl !== undefined;
       // A client registered for fewer scopes cannot be assumed to allow new ones.
-      const clientIdFor = (url: string | undefined) =>
-        hash(
+      // The hosted default stays out of this key so enabling it keeps existing saved clients.
+      const clientId = OAuthClientId.make(
+        `client_${yield* hash(
           JSON.stringify([
             input.owner,
             input.provider,
             input.method,
             redirect?.href,
             discovered.server.issuer,
-            url,
+            options.clientMetadataUrl,
             [...discovered.scopes].sort(),
           ]),
-        ).pipe(Effect.map((digest) => OAuthClientId.make(`client_${digest}`)));
-      const clientId = yield* clientIdFor(
-        options.clientMetadataUrl ??
-          (canUseMetadata ? options.defaultClientMetadataUrl : undefined),
+        )}`,
       );
       const now = yield* Clock.currentTimeMillis;
-      let savedId = clientId;
-      let saved = automatic
+      const saved = automatic
         ? yield* query(() => db.findFirst("oauthClients", { where: (b) => b("id", "=", clientId) }))
         : null;
-      if (
-        saved === null &&
-        automatic &&
-        canUseMetadata &&
-        options.clientMetadataUrl === undefined
-      ) {
-        // An implicit default must not discard a client saved before the host published CIMD.
-        savedId = yield* clientIdFor(undefined);
-        saved = yield* query(() =>
-          db.findFirst("oauthClients", { where: (b) => b("id", "=", savedId) }),
-        );
-      }
       let client: OAuthRegistration | undefined;
       if (saved !== null) {
-        const registered = yield* decrypt(savedId, saved.encrypted, OAuthRegistration);
+        const registered = yield* decrypt(clientId, saved.encrypted, OAuthRegistration);
         if (
           registered.client_secret_expires_at === undefined ||
           registered.client_secret_expires_at === 0 ||
@@ -307,7 +285,16 @@ export const makeOAuth = (
           client = registered;
       }
       const savedClient = client !== undefined;
-      if (automatic && client === undefined && canUseMetadata && metadataUrl !== undefined) {
+      const metadataUrl = options.clientMetadataUrl ?? options.defaultClientMetadataUrl;
+      if (
+        automatic &&
+        discovered.grant === "authorization_code" &&
+        client === undefined &&
+        (method.tokenEndpointAuthMethod === undefined ||
+          method.tokenEndpointAuthMethod === "none") &&
+        discovered.server.client_id_metadata_document_supported === true &&
+        metadataUrl !== undefined
+      ) {
         const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
