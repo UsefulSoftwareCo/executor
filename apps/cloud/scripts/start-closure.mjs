@@ -16,6 +16,10 @@
 //   app     - the Effect app plane. `/api/*` dispatches at the Worker entry and
 //             skips Start entirely, so an API request evaluates this instead of
 //             `start`; reported separately because the two planes now diverge.
+//   auth    - the session/auth plane (`./app-auth`). The session routes are
+//             dispatched ahead of `app` and mount none of the plugin/OpenAPI/
+//             MCP/GraphQL/execution graph, so a sign-out on a cold isolate
+//             evaluates this closure instead of `app`.
 //
 // Anything reachable only through a dynamic import is not counted: making a
 // heavy dependency lazy is exactly the outcome this rewards.
@@ -84,8 +88,16 @@ const startRoots = [...graph.get(ENTRY).dynamic].filter((f) =>
   /(start|router|tanstack)/.test(name(f)),
 );
 const start = closure(startRoots);
-const appRoots = [...graph.get(ENTRY).dynamic].filter((f) => /\/app-[A-Za-z0-9_-]+\.js$/.test(f));
+// Rollup names an entry chunk after its module, so `./app` emits `app-<hash>.js`
+// and `./app-auth` emits `app-auth-<hash>.js`. Match the auth root first and
+// subtract it, or the app pattern would claim both.
+const dynamicRoots = [...graph.get(ENTRY).dynamic];
+const authRoots = dynamicRoots.filter((f) => /\/app-auth-[A-Za-z0-9_-]+\.js$/.test(f));
+const appRoots = dynamicRoots.filter(
+  (f) => /\/app-[A-Za-z0-9_-]+\.js$/.test(f) && !authRoots.includes(f),
+);
 const app = closure([ENTRY, ...appRoots]);
+const auth = closure([ENTRY, ...authRoots]);
 // The budget tracks the worst plane: whichever costs a cold isolate more.
 const evaluated = new Set([...startup, ...start]);
 
@@ -99,9 +111,17 @@ const report = (label, files) => {
 
 report("startup", startup);
 report("start", start);
+if (authRoots.length > 0) report("auth", auth);
 console.log(`\npage request  (startup + start): ${mb(bytes(evaluated))}`);
 console.log(
   `API request   (startup + app):   ${mb(bytes(app))}${appRoots.length ? "" : "  [no app chunk - /api still routes through Start]"}`,
+);
+console.log(
+  `auth request  (startup + auth):  ${mb(bytes(auth))}${
+    authRoots.length
+      ? `  [+${mb(bytes(auth) - bytes(startup))} over startup]`
+      : "  [no auth chunk - session routes still route through the app plane]"
+  }`,
 );
 const lazyOnly = [...graph.keys()].filter((f) => !evaluated.has(f));
 console.log(

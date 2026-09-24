@@ -10,7 +10,7 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
-import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
+import { isAppOwnedPath, servedByAppPlane, servedByAuthPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
 import { runWorkOsEventsSync } from "./auth/workos-events-runner";
@@ -303,6 +303,26 @@ const prewarmAppPlane = (ctx: ExecutionContext): void => {
   );
 };
 
+// The AUTH plane — the same seam one level finer. `ExecutorApp.make` builds
+// every HttpApi group into one router at layer-build time, so the app plane
+// above cannot be made lazy from the inside: the first `/api/*` request
+// evaluates the plugin/OpenAPI/MCP/GraphQL catalogs, the execution substrate
+// and Swagger whatever it asked for. `./app-auth` mounts ONLY the session
+// routes (the same Layer values, see extensions/session-routes.ts), so
+// `POST /api/auth/logout` on a cold isolate pays that closure instead of the
+// whole app graph. `servedByAuthPlane` (./app-paths) is the exact allowlist.
+let authPlane: ReturnType<typeof import("./app-auth").cloudAuthHandler> | undefined;
+let authGraphEntered = false;
+
+const getAuthPlane = async (): Promise<NonNullable<typeof authPlane>> => {
+  if (authPlane === undefined) {
+    const { cloudAuthHandler } = await import("./app-auth");
+    authPlane = cloudAuthHandler();
+    authGraphEntered = true;
+  }
+  return authPlane;
+};
+
 const cloudflareHandler: ExportedHandler<Env> = {
   fetch: async (request, env, ctx) => {
     isolateRequestSeq += 1;
@@ -399,15 +419,25 @@ const cloudflareHandler: ExportedHandler<Env> = {
           // `start_graph.entered` says nothing about it. `app_graph.entered`
           // is the app-plane analogue - false means this request paid for the
           // Effect graph's first evaluation in this isolate.
-          const appPlaneRequest = servedByAppPlane(url.pathname, request.method);
-          span.setAttribute("executor.dispatch.plane", appPlaneRequest ? "app" : "start");
+          const authPlaneRequest = servedByAuthPlane(url.pathname, request.method);
+          const appPlaneRequest =
+            !authPlaneRequest && servedByAppPlane(url.pathname, request.method);
+          span.setAttribute(
+            "executor.dispatch.plane",
+            authPlaneRequest ? "auth" : appPlaneRequest ? "app" : "start",
+          );
+          // `auth_graph.entered` mirrors `app_graph.entered`: false means this
+          // request paid for the auth plane's first evaluation in this isolate.
+          if (authPlaneRequest) span.setAttribute("executor.auth_graph.entered", authGraphEntered);
           if (appPlaneRequest) span.setAttribute("executor.app_graph.entered", appGraphEntered);
           // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; observe response/error for span status, keep the flush alive past the response
           try {
             const traced = withTraceparent(request, span.spanContext());
-            const response = appPlaneRequest
-              ? await (await getAppPlane()).handler(prepareMcpOrgScope(traced))
-              : await fetchHandler(traced, env, ctx);
+            const response = authPlaneRequest
+              ? await (await getAuthPlane()).handler(traced)
+              : appPlaneRequest
+                ? await (await getAppPlane()).handler(prepareMcpOrgScope(traced))
+                : await fetchHandler(traced, env, ctx);
             span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
             return response;
           } catch (err) {

@@ -45,3 +45,70 @@ export const isStartOwnedApiPath = (pathname: string, method: string): boolean =
 
 export const servedByAppPlane = (pathname: string, method: string): boolean =>
   isApiPath(pathname) && !isStartOwnedApiPath(pathname, method);
+
+// ---------------------------------------------------------------------------
+// Which paths the AUTH plane serves (`app-auth.ts`), ahead of the app plane.
+//
+// The app plane is `ExecutorApp.make`'s single handler: one `HttpApiBuilder`
+// router built in one pass, so the first `/api/*` request in an isolate
+// evaluates the plugin + OpenAPI + MCP + GraphQL catalogs, the execution
+// substrate and Swagger — cold p50 ~2.2s against ~120ms warm, on ~31% of
+// requests. The session routes need none of that, so they get their own small
+// handler and `server.ts` tries this classifier first.
+//
+// It is an EXACT allowlist rather than an `/api/auth/` prefix test, because the
+// two planes 404 differently: a path this claims but `app-auth.ts` does not
+// mount would answer from the wrong router. Every entry below is a route
+// `makeSessionRoutes` / `makeOrgRoutes` register — keep them in step.
+// ---------------------------------------------------------------------------
+
+// A Map, not an object literal: the method comes off the wire, and an object
+// would resolve `constructor` (a legal HTTP token) to `Object` and then throw.
+const AUTH_PLANE_EXACT_PATHS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  // CloudAuthPublicApi (no session required) + the read side of CloudAuthApi.
+  [
+    "GET",
+    new Set([
+      "/api/auth/login",
+      "/api/auth/callback",
+      "/api/auth/cli-login",
+      "/api/auth/me",
+      "/api/auth/organizations",
+      "/api/auth/pending-invitations",
+      "/api/org/domains",
+    ]),
+  ],
+  [
+    "POST",
+    new Set([
+      "/api/auth/logout",
+      "/api/auth/create-organization",
+      "/api/auth/delete-organization",
+      "/api/auth/accept-invitation",
+      "/api/org/domains/verify-link",
+    ]),
+  ],
+]);
+
+// The parameterised routes. `:mcpSessionId` / `:executionId` / `:domainId` are
+// single path segments, so an anchored one-segment match is the same grammar
+// the Effect router applies.
+const MCP_APPROVAL_GET = /^\/api\/mcp-sessions\/[^/]+\/executions\/[^/]+$/;
+const MCP_APPROVAL_RESUME = /^\/api\/mcp-sessions\/[^/]+\/executions\/[^/]+\/resume$/;
+const ORG_DOMAIN_DELETE = /^\/api\/org\/domains\/[^/]+$/;
+
+/**
+ * Does the small auth-plane handler serve this request?
+ *
+ * Gated on `servedByAppPlane` first so the Start-owned `/api` paths keep their
+ * route no matter what this list says — the auth plane must never be a second
+ * way to lose `sentryTunnelMiddleware` or the signed-out OAuth redirect.
+ */
+export const servedByAuthPlane = (pathname: string, method: string): boolean => {
+  if (!servedByAppPlane(pathname, method)) return false;
+  if (AUTH_PLANE_EXACT_PATHS.get(method)?.has(pathname) === true) return true;
+  if (method === "GET") return MCP_APPROVAL_GET.test(pathname);
+  if (method === "POST") return MCP_APPROVAL_RESUME.test(pathname);
+  if (method === "DELETE") return ORG_DOMAIN_DELETE.test(pathname);
+  return false;
+};
