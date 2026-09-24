@@ -50,46 +50,62 @@ export function ErrorNotice({
       </AlertTitle>
       <AlertDescription
         className={cn(
-          "col-span-2 col-start-1 gap-3 pt-2 text-[13px] text-foreground/85",
+          "col-span-2 col-start-1 gap-1 pt-1.5 text-[13px] text-foreground/85",
           layout === "panel" && "gap-2 pt-4 text-muted-foreground",
         )}
       >
         <p>{error.description}</p>
         <p>{error.recovery.action}</p>
       </AlertDescription>
+      {error.detail && (
+        <div className="col-span-2 col-start-1 mt-3 flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium text-muted-foreground">
+            {error.detail.label}
+          </span>
+          <div className="flex items-center gap-2 rounded-md border border-border bg-background/60 py-1 pr-1 pl-2.5">
+            <code className="min-w-0 flex-1 font-mono text-[12px] break-all [user-select:all]">
+              {error.detail.value}
+            </code>
+            <CopyButton
+              code={error.detail.value}
+              label={`Copy ${error.detail.label}`}
+              text=""
+              inline
+            />
+          </div>
+        </div>
+      )}
       <div
         className={cn(
-          "col-span-2 col-start-1 mt-4 flex flex-col gap-3 border-t border-destructive/10 pt-3",
-          layout === "panel" && "mt-5 gap-4 border-border pt-5",
+          "col-span-2 col-start-1 mt-4 flex flex-wrap items-center gap-2",
+          layout === "panel" && "mt-5 gap-3 border-t border-border pt-5",
         )}
       >
-        <div className="flex flex-wrap items-center gap-2">
-          {action}
-          {error.retryable && retry && (
-            <Button
-              type="button"
-              size="sm"
-              variant={layout === "panel" ? "default" : "outline"}
-              className="min-w-28 text-xs max-[740px]:min-h-11"
-              disabled={retrying}
-              onClick={retry}
-            >
-              {retrying && <Spinner className="size-3.5" aria-hidden />}
-              {retrying ? "Checking…" : "Try again"}
-            </Button>
-          )}
+        {action}
+        {error.retryable && retry && (
+          <Button
+            type="button"
+            size="sm"
+            variant={layout === "panel" ? "default" : "outline"}
+            className="min-w-28 text-xs max-[740px]:min-h-11"
+            disabled={retrying}
+            onClick={retry}
+          >
+            {retrying && <Spinner className="size-3.5" aria-hidden />}
+            {retrying ? "Checking…" : "Try again"}
+          </Button>
+        )}
+        {error.agentFixable && (
           <CopyButton
             code={`${context}\n\n${error.fixPrompt}`}
             label="Copy fix prompt"
             text="Copy fix prompt"
-            size="sm"
-            variant={layout === "panel" ? "outline" : "ghost"}
+            size={layout === "panel" ? "sm" : "xs"}
+            variant="outline"
             inline
           />
-        </div>
-        <code className="text-[11px] leading-relaxed break-all text-muted-foreground">
-          {error.code}
-        </code>
+        )}
+        <code className="ml-auto text-[11px] break-all text-muted-foreground">{error.code}</code>
       </div>
       {retrying && (
         <span role="status" aria-label={retryStatus} className="sr-only">

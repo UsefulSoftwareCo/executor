@@ -11,12 +11,19 @@ export interface ErrorPresentation {
   };
   /** Repeating the failed operation can help. Configuration changes are not retries. */
   readonly retryable?: boolean;
+  /** False when the user's agent cannot act on the fix prompt, so hosts do not offer it. */
+  readonly agentFixable?: boolean;
+  /** One safe value the user needs for recovery, such as a URL to send to the service. */
+  readonly detail?: { readonly label: string; readonly value: string };
 }
 
-type PresentationProperties = Required<ErrorPresentation> & {
+type PresentationProperties = Required<Omit<ErrorPresentation, "detail">> & {
+  readonly detail: ErrorPresentation["detail"];
   readonly code: string;
   readonly fixPrompt: string;
 };
+
+const TypeId = Symbol.for("@executor-js/utils/UserFacingError");
 
 /** A yieldable error that owns its safe user explanation and agent recovery task. */
 export interface UserFacingError extends Cause.YieldableError, PresentationProperties {
@@ -106,12 +113,22 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
         return presentation(this).retryable ?? false;
       },
     },
+    agentFixable: {
+      get(this: Self) {
+        return presentation(this).agentFixable ?? true;
+      },
+    },
+    detail: {
+      get(this: Self) {
+        return presentation(this).detail;
+      },
+    },
     fixPrompt: {
       get(this: Self) {
         const details = presentation(this);
         return [
           "Diagnose and fix this problem in Executor. Use the current app context where relevant.",
-          `Error: ${details.title}\nError code: ${this.code}\nKnown cause: ${details.description}`,
+          `Error: ${details.title}\nError code: ${this.code}\nKnown cause: ${details.description}${details.detail === undefined ? "" : `\n${details.detail.label}: ${details.detail.value}`}`,
           `Investigation and recovery:\n${details.recovery.instructions}`,
           "Make the smallest justified fix. Preserve existing account selections and credentials. Do not expose secrets in code, logs, or your reply. If you need a user action or access you do not have, explain the exact next step.",
           "Verify the failed operation after the fix and explain what changed. If you cannot verify it, state what remains blocked.",
@@ -125,6 +142,7 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
   };
   Object.defineProperties(DefinedError.prototype, {
     ...properties,
+    [TypeId]: { value: TypeId },
     message: {
       get(this: Self) {
         return presentation(this).description;
@@ -155,8 +173,12 @@ function define<Tag extends string, Fields extends Schema.Struct.Fields>(
     : withFields({ ...definition, fields: {} });
 }
 
+/** Recognize any defined error, including one decoded from an API response. */
+const is = (value: unknown): value is UserFacingError =>
+  typeof value === "object" && value !== null && TypeId in value;
+
 /** Define the schema, error constructor, user copy, and agent recovery together. */
-export const UserFacingError = { define };
+export const UserFacingError = { define, is };
 
 /** Defects get a safe explanation without exposing an arbitrary cause. */
 export const UnexpectedError = define({

@@ -317,6 +317,7 @@
         "@executor-js/sdk": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "@executor-js/ui": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@hugeicons/core-free-icons": "^4.3.3",
         "@hugeicons/react": "^1.1.10",
         "@tanstack/react-router": "^1.170.38",

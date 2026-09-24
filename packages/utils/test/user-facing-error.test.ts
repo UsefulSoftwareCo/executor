@@ -144,3 +144,29 @@ test("typed clients can decode both the old and new response shapes", () => {
     Schema.decodeUnknownSync(Unavailable)({ _tag: "TestUnavailable", message: 42 }),
   );
 });
+
+test("defined errors are recognized after JSON decoding; other values are not", () => {
+  const error = new InvalidSettings({ reason: "invalid", privateDiagnostic: "PRIVATE_VALUE" });
+  const decoded = Schema.decodeUnknownSync(InvalidSettings)(
+    JSON.parse(JSON.stringify(Schema.encodeSync(InvalidSettings)(error))),
+  );
+  assert.equal(UserFacingError.is(error), true);
+  assert.equal(UserFacingError.is(decoded), true);
+  assert.equal(UserFacingError.is(new UnexpectedError()), true);
+  assert.equal(UserFacingError.is(new Error("plain")), false);
+  assert.equal(UserFacingError.is({ _tag: "TestUnavailable", fixPrompt: "copied" }), false);
+  assert.equal(UserFacingError.is(null), false);
+});
+
+test("errors offer a fix prompt unless the user's agent cannot act on it", () => {
+  const NeedsService = UserFacingError.define({
+    tag: "TestNeedsService",
+    status: 422,
+    title: "Service approval needed",
+    description: "The service must approve this app.",
+    recovery: { action: "Ask the service.", instructions: "Prepare the request." },
+    agentFixable: false,
+  });
+  assert.equal(new Unavailable().agentFixable, true);
+  assert.equal(new NeedsService().agentFixable, false);
+});
