@@ -3,6 +3,7 @@ import type { Atom } from "effect/unstable/reactivity";
 import { Schema, type Exit } from "effect";
 import type { App, Provider, OAuthClientSetup } from "@executor-js/sdk";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import type { ImportedApp } from "@executor-js/catalog/contracts";
 import type { AccountSubmission, OAuthSubmission } from "../src/contracts/credentials.ts";
 import type { FailureProps, InstallApp, Query } from "../src/contracts/dashboard.ts";
 import { QueryView } from "../src/implementation/dashboard/context.tsx";
@@ -38,7 +39,7 @@ function checkQueries(query: Query<string, Errors>) {
 }
 
 function checkMutations(
-  mutation: Atom.AtomResultFn<InstallApp, App, Errors>,
+  mutation: Atom.AtomResultFn<InstallApp, ImportedApp, Errors>,
   entry: Parameters<typeof CatalogInstall>[0]["entry"],
 ) {
   CatalogInstall({

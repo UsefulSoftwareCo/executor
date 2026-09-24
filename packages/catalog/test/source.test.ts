@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer, type Server } from "node:http";
 import { Effect, Exit } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { safeHttpClient, type AddressLookup } from "@executor-js/utils/safe-fetch";
 import {
   defaultUrlPolicy,
   httpsOnlyUrlPolicy,
   type UrlPolicy,
 } from "@executor-js/utils/url-policy";
-import { readApiDocument } from "../src/implementation/source.ts";
+import { catalogSource, readApiDocument } from "../src/implementation/source.ts";
 
 const spec = JSON.stringify({ openapi: "3.1.0", paths: {} });
 
@@ -107,4 +108,27 @@ test("a redirect hop is judged by the address its name resolves to", async () =>
   assert.ok(
     Exit.isFailure(await read(`${origin}/openapi.json`, defaultUrlPolicy, resolving("10.0.0.5"))),
   );
+});
+
+test("a catalog entry reads its definition from connectUrl, not its feed names", async () => {
+  const requested: string[] = [];
+  const client = HttpClient.make((request) =>
+    Effect.sync(() => {
+      requested.push(request.url);
+      return HttpClientResponse.fromWeb(request, new Response(spec, { status: 200 }));
+    }),
+  );
+  const exit = await Effect.runPromiseExit(
+    catalogSource(client).document({
+      id: "curated/example-com-openapi",
+      kind: "openapi",
+      name: "Example",
+      description: "",
+      domain: "example.com",
+      feeds: ["curated"],
+      connectUrl: "https://openapi.example.com",
+    }),
+  );
+  assert.ok(Exit.isSuccess(exit));
+  assert.deepEqual(requested, ["https://openapi.example.com/"]);
 });

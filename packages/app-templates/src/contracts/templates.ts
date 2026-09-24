@@ -59,3 +59,49 @@ export interface StdioAppInput {
   readonly environment: readonly string[];
   readonly timeoutMs?: number | undefined;
 }
+
+/**
+ * One API operation left out of an otherwise usable import. It holds only names from the API
+ * definition and a reason code, never upstream text. `summary` gives the fixed copy for a code.
+ */
+export const SkippedOperation = Schema.Struct({
+  tool: Schema.String,
+  method: Schema.String,
+  path: Schema.String,
+  reason: TemplateErrorCode,
+});
+export type SkippedOperation = typeof SkippedOperation.Type;
+
+/** Short, fixed copy for why an operation was skipped. */
+export const skippedOperationSummary = (reason: SkippedOperation["reason"]): string => {
+  switch (reason) {
+    case "multiple_hosts":
+      return "Uses a different API host.";
+    case "request_body":
+      return "Uses an unsupported request body.";
+    case "parameter_encoding":
+      return "Uses an unsupported parameter encoding.";
+    case "parameter_style":
+      return "Uses an unsupported parameter style.";
+    case "auth_method":
+    case "combined_oauth":
+      return "Uses an unsupported authentication method.";
+    case "operation_path":
+      return "Has an invalid path.";
+    case "duplicate_operation":
+      return "Has the same tool name as another operation.";
+    case "server_missing":
+    case "server_url":
+    case "server_protocol":
+      return "Has no usable server URL.";
+    case "input_schema":
+    case "schema_keyword":
+    case "schema_reference":
+    case "missing_component":
+    case "external_reference":
+    case "circular_reference":
+      return "Uses a schema that cannot be imported.";
+    default:
+      return "Uses an API feature that cannot be imported.";
+  }
+};

@@ -75,8 +75,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     DeploymentBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
-    CatalogImportFailed: () =>
-      "The app could not be imported. Check its source or try a different catalog entry.",
+    CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,
     AccountRequired: () => "Connect an account to load this app’s tools.",
     AccountSelectionInvalid: () => "Select accounts that match this app’s requirements.",
     AccountFieldsInvalid: () => "Check the account details and try again.",

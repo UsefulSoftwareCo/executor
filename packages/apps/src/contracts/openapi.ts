@@ -86,6 +86,11 @@ export type OpenapiAccount = typeof OpenapiAccount.Type;
 /** Parsed options for one account's evaluation. */
 export const OpenapiToolsOptions = Schema.Struct({
   operations: Schema.Array(OpenapiOperation),
+  /**
+   * Component schemas stored once per app and referenced as `#/$defs/<name>`. Operations
+   * generated before shared definitions carry their own `$defs` and omit this.
+   */
+  definitions: Schema.optional(Schema.Record(Schema.String, JsonObject)),
   methods: Schema.Record(Schema.String, Schema.Array(CredentialBinding)),
   oauth: Schema.Array(Schema.String),
   account: Schema.optional(OpenapiAccount),
@@ -95,8 +100,12 @@ export const OpenapiToolsOptions = Schema.Struct({
   ),
 });
 /** JSON imports are decoded at the helper boundary, without assertions in app source. */
-export type OpenapiToolsOptions = Omit<typeof OpenapiToolsOptions.Type, "operations"> & {
+export type OpenapiToolsOptions = Omit<
+  typeof OpenapiToolsOptions.Type,
+  "operations" | "definitions"
+> & {
   readonly operations: unknown;
+  readonly definitions?: unknown;
 };
 
 /** Safe failures omit request headers, credentials and upstream bodies. */

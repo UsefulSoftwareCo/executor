@@ -1,7 +1,7 @@
 /** Spec-to-wire coverage through the portable app handler and its public fetch seam. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { defineApp } from "apps";
 import { createAppHandler, hostContext } from "apps/host";
 import { openapiOperations, type OpenapiToolsOptions } from "apps/openapi";
@@ -419,4 +419,142 @@ test("canceling a tool cancels its upstream fetch", { timeout: 5_000 }, async ()
   controller.abort();
   await call.catch(() => undefined);
   assert.equal(canceled, true);
+});
+
+test("an operation with an unsupported body is skipped and the rest are kept", async () => {
+  const metadata = await Effect.runPromise(
+    compileOpenApi(
+      { name: "Wire fixture" },
+      document({
+        "/empty": {
+          post: { operationId: "sendNothing", requestBody: { content: {} }, responses: response },
+        },
+        "/json": {
+          post: {
+            operationId: "sendJson",
+            requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+            responses: response,
+          },
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(
+    metadata.operations.map(({ name }) => name),
+    ["sendJson"],
+  );
+  assert.deepEqual(metadata.skippedOperations, [
+    { tool: "sendNothing", method: "POST", path: "/empty", reason: "request_body" },
+  ]);
+});
+
+test("an import fails when every operation is skipped for different reasons", async () => {
+  const exit = await Effect.runPromiseExit(
+    compileOpenApi(
+      { name: "Wire fixture" },
+      document({
+        "/empty": {
+          post: { operationId: "sendNothing", requestBody: { content: {} }, responses: response },
+        },
+        relative: { get: { operationId: "badPath", responses: response } },
+      }),
+    ),
+  );
+  assert.ok(Exit.isFailure(exit));
+  assert.match(JSON.stringify(exit.cause), /no_supported_operations/);
+});
+
+/** A Google-style resource name that may span path segments. */
+const reserved = document({
+  "/{name}": {
+    get: {
+      operationId: "getRecord",
+      parameters: [
+        {
+          name: "name",
+          in: "path",
+          required: true,
+          allowReserved: true,
+          schema: { type: "string" },
+        },
+      ],
+      responses: response,
+    },
+  },
+  "/{parent}/smartNotes:list": {
+    get: {
+      operationId: "listNotes",
+      parameters: [
+        {
+          name: "parent",
+          in: "path",
+          required: true,
+          allowReserved: true,
+          schema: { type: "string" },
+        },
+      ],
+      responses: response,
+    },
+  },
+  "/users/{id}/posts": {
+    get: {
+      operationId: "listPosts",
+      parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+      responses: response,
+    },
+  },
+});
+
+test("an allowReserved path value keeps its slashes and the operation's fixed path", async () => {
+  const f = await fixture(reserved);
+  await f.call("queries.getRecord", { path: { name: "conferenceRecords/abc" } });
+  await f.call("queries.listNotes", { path: { parent: "conferenceRecords/abc/participants/x" } });
+  assert.deepEqual(
+    f.received.map(({ url }) => url),
+    [
+      "https://eu.example.test/v2/conferenceRecords/abc",
+      "https://eu.example.test/v2/conferenceRecords/abc/participants/x/smartNotes:list",
+    ],
+  );
+});
+
+test("an allowReserved path value cannot leave the operation path", async () => {
+  const f = await fixture(reserved);
+  for (const name of [
+    "../x",
+    "a/../../b",
+    "./x",
+    "a/.",
+    "%2e%2e/x",
+    "a/%2E%2E/b",
+    "a%2fb",
+    "a%5c..",
+    "%252e%252e",
+    "a?b",
+    "a#b",
+    "/x",
+    "//evil.example/x",
+    "a\\b",
+    "a//b",
+    "a/",
+    "",
+  ]) {
+    const result = await f.call("queries.getRecord", { path: { name } });
+    assert.deepEqual(result, { ok: false, error: { _tag: "HostOperationFailed" } }, name);
+  }
+  assert.deepEqual(f.received, []);
+});
+
+test("a path value without allowReserved is escaped and cannot add dot segments", async () => {
+  const f = await fixture(reserved);
+  await f.call("queries.listPosts", { path: { id: "a/b?c#d" } });
+  assert.deepEqual(
+    f.received.map(({ url }) => url),
+    ["https://eu.example.test/v2/users/a%2Fb%3Fc%23d/posts"],
+  );
+  for (const id of ["..", "."]) {
+    const result = await f.call("queries.listPosts", { path: { id } });
+    assert.deepEqual(result, { ok: false, error: { _tag: "HostOperationFailed" } }, id);
+  }
+  assert.equal(f.received.length, 1);
 });

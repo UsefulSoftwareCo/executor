@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
 import type { AppOperation, OperationContext } from "../contracts/operations.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import { nativeOperation, operationDeclaration, type Operation } from "./operations.ts";
-import { importedJsonSchema, nestJsonSchema, withJsonSchemaDocument } from "./schema.ts";
+import { importedJsonSchema, nestJsonSchema, once, withLazyJsonSchemaDocument } from "./schema.ts";
 
 type Kind = "query" | "mutation";
 type Operations = {
@@ -24,6 +24,12 @@ const inputDocument = (operation: AppOperation) => {
   return Schema.decodeUnknownSync(JsonObject)({ ...document.schema, $defs: document.definitions });
 };
 
+/** Read whether an output schema is declared without building one that is computed on demand. */
+const declaresOutput = (operation: AppOperation) => {
+  const property = Object.getOwnPropertyDescriptor(operation, "outputSchema");
+  return property !== undefined && (property.get !== undefined || property.value !== undefined);
+};
+
 const combine = <K extends Kind>(kind: K, groups: ReadonlyMap<string, Map<string, AppOperation>>) =>
   Object.fromEntries(
     [...groups].map(([name, accounts]) => {
@@ -37,15 +43,13 @@ const combine = <K extends Kind>(kind: K, groups: ReadonlyMap<string, Map<string
           throw new Error("Account selection must be decoded before execution");
         return operation;
       };
-      const outputs = variants.flatMap((operation) =>
-        operation.outputSchema === undefined ? [] : [operation.outputSchema],
-      );
       const input = Schema.Union(
         [...accounts].map(([accountId, operation]) =>
           Schema.Struct({ accountId: Schema.Literal(accountId), input: operation.input }),
         ),
       );
-      const inputSchema = {
+      // Combined schemas are built when a tool is described, not on every evaluation for a call.
+      const inputSchema = () => ({
         type: "object",
         anyOf: [...accounts].map(([accountId, operation], index) => ({
           type: "object",
@@ -55,53 +59,56 @@ const combine = <K extends Kind>(kind: K, groups: ReadonlyMap<string, Map<string
           },
           required: ["accountId", "input"],
         })),
-      };
-      return [
-        name,
-        operationDeclaration({
-          kind,
-          ...(first.description === undefined ? {} : { description: first.description }),
-          ...(first.title === undefined ? {} : { title: first.title }),
-          ...(first.annotations === undefined ||
-          !variants.every(
-            (operation) =>
-              JSON.stringify(operation.annotations) === JSON.stringify(first.annotations),
-          )
-            ? {}
-            : { annotations: first.annotations }),
-          ...(first._meta === undefined ||
-          !variants.every(
-            (operation) => JSON.stringify(operation._meta) === JSON.stringify(first._meta),
-          )
-            ? {}
-            : { _meta: first._meta }),
-          input: withJsonSchemaDocument(input, inputSchema),
-          ...(outputs.length !== variants.length
-            ? {}
-            : {
-                outputSchema: {
-                  anyOf: outputs.map((output, index) => nestJsonSchema(output, `#/anyOf/${index}`)),
-                },
-              }),
-          approval: (context) => {
-            const operation = select(context.toolInput);
-            return operation.approval === undefined
-              ? Effect.succeed("approved" as const)
-              : operation.approval({ ...context, toolInput: context.toolInput.input });
-          },
-          run: (context, input: Selection) => {
-            const operation = select(input);
-            return operation.run(context, input.input).pipe(
-              Effect.mapError((error) => accountProviderError(error, input.accountId)),
-              Effect.flatMap((output) =>
-                operation.output === undefined
-                  ? Effect.succeed(output)
-                  : Schema.decodeUnknownEffect(operation.output)(output),
-              ),
-            );
-          },
-        }),
-      ];
+      });
+      const declaration = operationDeclaration({
+        kind,
+        ...(first.description === undefined ? {} : { description: first.description }),
+        ...(first.title === undefined ? {} : { title: first.title }),
+        ...(first.annotations === undefined ||
+        !variants.every(
+          (operation) =>
+            JSON.stringify(operation.annotations) === JSON.stringify(first.annotations),
+        )
+          ? {}
+          : { annotations: first.annotations }),
+        ...(first._meta === undefined ||
+        !variants.every(
+          (operation) => JSON.stringify(operation._meta) === JSON.stringify(first._meta),
+        )
+          ? {}
+          : { _meta: first._meta }),
+        input: withLazyJsonSchemaDocument(input, inputSchema),
+        approval: (context) => {
+          const operation = select(context.toolInput);
+          return operation.approval === undefined
+            ? Effect.succeed("approved" as const)
+            : operation.approval({ ...context, toolInput: context.toolInput.input });
+        },
+        run: (context, input: Selection) => {
+          const operation = select(input);
+          return operation.run(context, input.input).pipe(
+            Effect.mapError((error) => accountProviderError(error, input.accountId)),
+            Effect.flatMap((output) =>
+              operation.output === undefined
+                ? Effect.succeed(output)
+                : Schema.decodeUnknownEffect(operation.output)(output),
+            ),
+          );
+        },
+      });
+      if (variants.every(declaresOutput)) {
+        const outputSchema = once(() => ({
+          anyOf: variants
+            .flatMap((operation) =>
+              operation.outputSchema === undefined ? [] : [operation.outputSchema],
+            )
+            .map((output, index) => nestJsonSchema(output, `#/anyOf/${index}`)),
+        }));
+        const native = nativeOperation(declaration);
+        if (native !== undefined)
+          Object.defineProperty(native, "outputSchema", { enumerable: true, get: outputSchema });
+      }
+      return [name, declaration];
     }),
   );
 

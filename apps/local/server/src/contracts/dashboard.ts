@@ -25,7 +25,6 @@ import {
   AccountRequired,
   AccountSelectionInvalid,
   App,
-  DeployedApp,
   AppNotDeployed,
   AppEvaluationFailed,
   AppProviderFailed,
@@ -72,6 +71,7 @@ import {
   CatalogUnavailable,
   CatalogImport,
   CustomAppInput,
+  ImportedApp,
 } from "@executor-js/catalog/contracts";
 import { ConnectionSignIn } from "./account-connections.ts";
 import { AuthStorageError } from "./auth.ts";
@@ -409,7 +409,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.post("importApp", "/dashboard/api/catalog/import", {
         payload: Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString }),
-        success: DeployedApp,
+        success: ImportedApp,
         error: [
           CatalogUnavailable,
           CatalogImportFailed,
@@ -430,7 +430,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.post("importCustomApp", "/dashboard/api/apps/import", {
         payload: Schema.Struct({ source: CustomAppInput }),
-        success: DeployedApp,
+        success: ImportedApp,
         error: [
           CatalogImportFailed,
           StorageError,

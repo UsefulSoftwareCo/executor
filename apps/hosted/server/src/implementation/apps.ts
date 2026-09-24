@@ -31,7 +31,8 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
       Effect.tapError((error) => Effect.annotateCurrentSpan("catalog.error.reason", error.code)),
       Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
-    return (yield* executor.apps.deploy({ owner, name: input.name, files })).app;
+    const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
+    return { ...app, skippedOperations: generated.skippedOperations };
   });
 /**
  * Generate remote protocol source and create an organization app without replacing a name.
@@ -55,7 +56,8 @@ export const importCustomApp = (owner: OwnerId, input: RemoteCustomAppInput) =>
       Effect.tapError((error) => Effect.annotateCurrentSpan("catalog.error.reason", error.code)),
       Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
-    return (yield* executor.apps.deploy({ owner, name: input.name, files })).app;
+    const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
+    return { ...app, skippedOperations: generated.skippedOperations };
   });
 /** Direct source deployment uses the same create-only operation as a catalog install. */
 export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>

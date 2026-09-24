@@ -6,6 +6,12 @@ import { jsonSchema } from "apps";
 import type { JsonObject } from "@executor-js/sdk";
 import { compileOpenApi } from "../src/implementation/openapi.ts";
 
+/** Attach the app's shared definitions, as the runtime does for a used schema. */
+const standalone = (schema: JsonObject, definitions: Readonly<Record<string, JsonObject>>) => ({
+  ...schema,
+  $defs: { ...definitions, ...(typeof schema.$defs === "object" ? schema.$defs : {}) },
+});
+
 const compile = async (schema: JsonObject, version = "3.1.0", schemas: JsonObject = {}) => {
   const metadata = await Effect.runPromise(
     compileOpenApi(
@@ -28,7 +34,7 @@ const compile = async (schema: JsonObject, version = "3.1.0", schemas: JsonObjec
   );
   const operation = metadata.operations[0];
   assert.ok(operation);
-  return operation;
+  return { ...operation, input: standalone(operation.input, metadata.definitions) };
 };
 
 test("OpenAPI 3.0 nullable does not override enum or an exclusive bound", async () => {
@@ -168,7 +174,7 @@ test("error references preserve sibling constraints and unsupported wrappers do 
     [422, 423],
   );
   for (const error of errors) {
-    const validator = jsonSchema(error.schema);
+    const validator = jsonSchema(standalone(error.schema, metadata.definitions));
     const body = { _tag: "Rejected", message: "public" };
     assert.deepEqual(validator.parse(body), body);
     assert.throws(() => validator.parse({ ...body, message: "private" }));
@@ -198,4 +204,65 @@ test("security keeps AND requirements, OR alternatives and anonymous access", as
     ["a"],
     [],
   ]);
+});
+
+test("OpenAPI 3.0 binary bodies and results use Executor's own schemas", async () => {
+  const metadata = await Effect.runPromise(
+    compileOpenApi(
+      { name: "Files" },
+      {
+        openapi: "3.0.3",
+        servers: [{ url: "https://example.test" }],
+        paths: {
+          "/files": {
+            put: {
+              operationId: "upload",
+              requestBody: {
+                required: true,
+                content: {
+                  "application/octet-stream": { schema: { type: "string", format: "binary" } },
+                  "multipart/form-data": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        file: { type: "string", format: "binary" },
+                        note: { type: "string", nullable: true, maxLength: 3 },
+                      },
+                      required: ["file"],
+                    },
+                  },
+                },
+              },
+              responses: {
+                "200": {
+                  content: {
+                    "application/octet-stream": { schema: { type: "string", format: "binary" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ),
+  );
+  const operation = metadata.operations[0];
+  assert.ok(operation?.outputSchema);
+  const input = jsonSchema(operation.input);
+  assert.deepEqual(input.parse({ body: "AAE=" }), { body: "AAE=" });
+  const form = { contentType: "multipart/form-data", body: { file: "AAE=", note: null } };
+  assert.deepEqual(input.parse(form), form);
+  // The form's API constraints still use OpenAPI 3.0 semantics.
+  assert.throws(() => input.parse({ ...form, body: { file: "AAE=", note: "long" } }));
+  assert.throws(() => input.parse({ ...form, body: { note: "ok" } }));
+  const output = jsonSchema(operation.outputSchema);
+  const bytes = { base64: "AAE=", contentType: "application/octet-stream" };
+  assert.deepEqual(output.parse(bytes), bytes);
+});
+
+test("OpenAPI 3.0 schemas still reject keywords outside their dialect", async () => {
+  await assert.rejects(
+    compile({ type: "object", patternProperties: { "^x$": { type: "string" } } }, "3.0.3"),
+    (error: { code?: string }) => error.code === "schema_keyword",
+  );
 });

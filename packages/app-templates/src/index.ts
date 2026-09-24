@@ -2,6 +2,8 @@
 export {
   TemplateError,
   TemplateErrorCode,
+  SkippedOperation,
+  skippedOperationSummary,
   type RemoteAuth,
   type StdioAppInput,
 } from "./contracts/templates.ts";

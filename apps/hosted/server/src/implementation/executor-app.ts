@@ -59,10 +59,12 @@ export const executorAppSource = (
   generateOpenApiApp(executorCatalogEntry(origin), document, { baseUrl: origin }).pipe(
     Effect.map((generated) => ({
       toolCount: generated.toolCount + 2,
+      skippedOperations: generated.skippedOperations,
       files: SourceFiles.make([
         { path: "index.ts", content: managementIndex(origin) },
+        // operations.json holds the whole metadata, including shared definitions.
         ...generated.files.filter(
-          (file) => file.path !== "index.ts" && file.path !== "operations.json",
+          (file) => !["index.ts", "operations.json", "definitions.json"].includes(file.path),
         ),
         { path: "operations.json", content: JSON.stringify(generated.metadata) },
         ...skills.filter((file) => !file.path.startsWith("skills/")),

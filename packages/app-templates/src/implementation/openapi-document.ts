@@ -65,8 +65,15 @@ export async function openApiDocument(input: unknown) {
     components: { ...record(restored.components), schemas: components },
   });
 
+  // Component schemas converted once for the whole app. Operation schemas keep
+  // `#/$defs/<name>` references; the runtime attaches the definitions a schema reaches.
+  const definitions = new Map<string, JsonObject>();
+  // Component names each definition references directly, for transitive reach checks.
+  const references = new Map<string, ReadonlySet<string>>();
+
   return {
     spec: parsed,
+    definitions,
     /** Inspect a component schema without expanding its children. OpenAPI object refs must already be resolved by Swagger. */
     resolve(value: JsonObject): JsonObject {
       const visited = new Set<string>();
@@ -88,10 +95,16 @@ export async function openApiDocument(input: unknown) {
       }
       return value;
     },
-    /** Convert with Effect and retain only reachable component definitions. No references are inlined. */
-    schema(input: JsonObject): JsonObject {
-      const definitions = new Map<string, JsonObject>();
-      const visit = (input: JsonObject): JsonObject => {
+    /** Compose a Draft 2020-12 schema around API Schema Objects. Only values passed to
+     * `api` use the document's OpenAPI dialect; Executor-authored wrappers are already
+     * Draft 2020-12 and must not be reinterpreted. Reached components are converted once into
+     * the shared `definitions` and stay references here; nothing is inlined or copied per operation.
+     */
+    schema(build: (api: (input: Schema.Json) => JsonObject) => JsonObject): JsonObject {
+      const added: string[] = [];
+      const direct = new Set<string>();
+      const local: Record<string, Schema.Json> = {};
+      const visit = (input: JsonObject, direct: Set<string>): JsonObject => {
         const document = convert(input, {
           onReference(ref) {
             const path = JsonPointer.parseUriFragment(ref);
@@ -106,9 +119,14 @@ export async function openApiDocument(input: unknown) {
             const component = Object.hasOwn(components, name) ? components[name] : undefined;
             if (component === undefined)
               fail("missing_component", "An API schema references a missing component.");
+            direct.add(name);
             if (!definitions.has(name)) {
+              // The placeholder ends recursion; a cycle stays a reference to the same definition.
+              added.push(name);
               definitions.set(name, {});
-              definitions.set(name, visit(component));
+              const names = new Set<string>();
+              definitions.set(name, visit(component, names));
+              references.set(name, names);
             }
           },
         });
@@ -117,20 +135,46 @@ export async function openApiDocument(input: unknown) {
           ...(Object.keys(document.definitions).length ? { $defs: document.definitions } : {}),
         });
       };
+      const api = (input: Schema.Json): JsonObject => {
+        const { $defs, ...converted } = visit(record(input), direct);
+        for (const [name, definition] of Object.entries($defs === undefined ? {} : record($defs))) {
+          if (
+            Object.hasOwn(local, name) &&
+            JSON.stringify(local[name]) !== JSON.stringify(definition)
+          )
+            fail("schema_reference", "An API schema has conflicting local definitions.");
+          local[name] = definition;
+        }
+        return converted;
+      };
       try {
-        const converted = visit(input);
-        const local = converted.$defs === undefined ? {} : record(converted.$defs);
-        if ([...definitions.keys()].some((name) => Object.hasOwn(local, name)))
-          fail(
-            "schema_reference",
-            "An API schema has conflicting local and component definitions.",
-          );
+        const converted = build(api);
+        if (Object.keys(local).length) {
+          // Local definitions share the `$defs` scope with every component this schema reaches.
+          const reached = new Set<string>();
+          const pending = [...direct];
+          for (let name = pending.pop(); name !== undefined; name = pending.pop()) {
+            if (reached.has(name)) continue;
+            reached.add(name);
+            pending.push(...(references.get(name) ?? []));
+          }
+          if ([...reached].some((name) => Object.hasOwn(local, name)))
+            fail(
+              "schema_reference",
+              "An API schema has conflicting local and component definitions.",
+            );
+        }
         return {
           ...converted,
-          $defs: { ...local, ...Object.fromEntries(definitions) },
+          ...(Object.keys(local).length ? { $defs: local } : {}),
           $schema: JsonSchema.META_SCHEMA_URI_DRAFT_2020_12,
         };
       } catch (error) {
+        // A failed conversion leaves no placeholder or partial definition for later schemas.
+        for (const name of added) {
+          definitions.delete(name);
+          references.delete(name);
+        }
         if (error instanceof TemplateError) throw error;
         return fail(
           "schema_keyword",

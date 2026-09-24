@@ -118,7 +118,8 @@ export const catalogSource = (client: HttpClient.HttpClient): CatalogSource => {
             code: "document_kind",
             reason: "MCP entries are generated without an API definition.",
           });
-        const url = URL.parse(entry.feeds?.[0] ?? entry.connectUrl ?? "");
+        // `connectUrl` locates the definition; `feeds` names the registry lists an entry came from.
+        const url = URL.parse(entry.connectUrl ?? "");
         if (url === null || url.protocol !== "https:")
           return yield* new CatalogImportFailed({
             code: "document_url",

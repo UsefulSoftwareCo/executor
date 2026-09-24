@@ -169,6 +169,23 @@ export const withJsonSchemaDocument = <S extends EffectSchema.Decoder<unknown>>(
   document: JsonObject,
 ): S => Object.assign(decoder, { [ImportedJsonSchema]: document });
 
+/** Compute a value on first use and reuse it. */
+export const once = <A>(compute: () => A): (() => A) => {
+  let state: { readonly value: A } | undefined;
+  return () => (state ??= { value: compute() }).value;
+};
+
+/** Attach a discovery document that is built only when it is first read. */
+export const withLazyJsonSchemaDocument = <S extends EffectSchema.Decoder<unknown>>(
+  decoder: S,
+  document: () => JsonObject,
+): S =>
+  Object.defineProperty(decoder, ImportedJsonSchema, {
+    configurable: true,
+    enumerable: true,
+    get: once(document),
+  });
+
 /**
  * Relocate a self-contained JSON Schema under a document pointer. Resolve references
  * before nesting so account schemas can reuse definition names, IDs and anchors.
@@ -338,16 +355,17 @@ export const compileJsonSchemaDecoder = (document: JsonObject) =>
     return Object.assign(decoder, { [ImportedJsonSchema]: document });
   });
 
-/** Preserve the JSON document; compile its validator only when a value is first decoded. */
-export const jsonSchemaDecoder = (input: unknown) =>
+/**
+ * Build the document only when a value is first decoded or the schema is described, then
+ * compile its validator once. Imported apps can share definitions between many schemas
+ * without making each one self-contained up front.
+ */
+export const lazyJsonSchemaDecoder = (document: () => JsonObject) =>
   Effect.gen(function* () {
-    const document = yield* parse(
-      EffectSchema.Record(EffectSchema.String, EffectSchema.Json),
-      input,
-    );
+    const read = once(document);
     // Reuse only this tool's compiled decoder. Every app evaluation still obtains
     // fresh account-specific metadata; no catalog or credentials are cached here.
-    const compiled = yield* Effect.cached(compileJsonSchemaDecoder(document));
+    const compiled = yield* Effect.cached(Effect.suspend(() => compileJsonSchemaDecoder(read())));
     const decoder = EffectSchema.declareConstructor<EffectSchema.Json>()(
       [],
       () => (input, _ast, options) =>
@@ -358,8 +376,14 @@ export const jsonSchemaDecoder = (input: unknown) =>
           Effect.flatMap((schema) => SchemaParser.decodeUnknownEffect(schema)(input, options)),
         ),
     );
-    return Object.assign(decoder, { [ImportedJsonSchema]: document });
+    return withLazyJsonSchemaDocument(decoder, read);
   });
+
+/** Preserve the JSON document; compile its validator only when a value is first decoded. */
+export const jsonSchemaDecoder = (input: unknown) =>
+  parse(EffectSchema.Record(EffectSchema.String, EffectSchema.Json), input).pipe(
+    Effect.flatMap((document) => lazyJsonSchemaDecoder(() => document)),
+  );
 
 /** Import JSON metadata now; unsupported schemas and invalid values fail when parsed. */
 export const jsonSchema = (input: unknown): Schema<EffectSchema.Json> =>
