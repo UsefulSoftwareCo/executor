@@ -911,23 +911,6 @@ const storageFailureFromUnknown = (message: string, cause: unknown): StorageFail
 const pluginStorageFailure = (pluginId: string, hook: string, cause: unknown): StorageFailure =>
   storageFailureFromUnknown(`${hook} failed for plugin ${pluginId}`, cause);
 
-// oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: render an arbitrary failure into one readable log field
-/** One-line rendering of a failed rebuild, for the operator-facing warning.
- *  A `StorageError` carries the actionable detail in its `cause` (the plugin's
- *  own failure) while its own message only names the hook, and structural
- *  stringification drops a `cause` that is an `Error` — so unwrap one level and
- *  keep both halves. */
-const describeSyncFailure = (error: unknown): string => {
-  const base =
-    error instanceof Error && error.message.length > 0
-      ? error.message
-      : Inspectable.toStringUnknown(error, 0);
-  const cause = (error as { readonly cause?: unknown } | null | undefined)?.cause;
-  if (cause instanceof Error && cause.message.length > 0) return `${base}: ${cause.message}`;
-  return base;
-};
-// oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message
-
 const createDefaultMemoryDb = (tables: FumaTables): ExecutorDb => {
   const version = "1.0.0";
   const latestSchema = fumaSchema<string, FumaTables, RelationsMap<FumaTables>>({
@@ -4228,11 +4211,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     rowDeleteAttempted
                       ? Effect.logError(
                           "executor connection create could not confirm its compensating row delete: the connection row may be deleted or stranded",
-                          { ...logContext, cause },
+                          { ...logContext, causeKind: Cause.isCause(cause) ? "Cause" : "Error" },
                         ).pipe(Effect.as("unknown" as const))
                       : Effect.logError(
                           "executor connection create stranded a connection row it could not delete",
-                          { ...logContext, cause },
+                          { ...logContext, causeKind: Cause.isCause(cause) ? "Cause" : "Error" },
                         ).pipe(Effect.as("failed" as const)),
                   ),
                 );
@@ -4298,7 +4281,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 if (Predicate.isTagged(restoreOutcome, "Failed")) {
                   yield* Effect.logError(
                     "executor connection create failed to restore credential writes",
-                    { ...logContext, cause: restoreOutcome.cause },
+                    { ...logContext, causeKind: "CredentialRestoreError" },
                   );
                 }
               });
@@ -4624,7 +4607,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                       owner: input.owner,
                       integration: String(input.integration),
                       connection: String(name),
-                      cause,
+                      causeKind: Cause.isCause(cause) ? "Cause" : "Error",
                     },
                   ).pipe(Effect.as(false)),
                 ),
@@ -4702,7 +4685,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     Effect.logWarning("executor OAuth tool sync failed", {
                       integration: String(ref.integration),
                       connection: String(ref.name),
-                      error: describeSyncFailure(error),
+                      errorTag: Predicate.isTagged(error, "StorageError")
+                        ? "StorageError"
+                        : "Unknown",
                     }),
                   ),
                   Effect.withSpan("executor.oauth.tools.sync", {
@@ -5658,7 +5643,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 Effect.logWarning("executor stale tool sync failed", {
                   integration: connection.integration,
                   connection: connection.name,
-                  error: describeSyncFailure(error),
+                  errorTag: Predicate.isTagged(error, "StorageError") ? "StorageError" : "Unknown",
                 }).pipe(Effect.as([] as readonly Tool[])),
               ),
               Effect.withSpan("executor.tools.sync_stale", {
@@ -5704,7 +5689,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         syncStaleConnectionTools("bounded").pipe(
           Effect.catch((error) =>
             Effect.logWarning("executor stale tool sync scan failed", {
-              error: describeSyncFailure(error),
+              errorTag: Predicate.isTagged(error, "StorageError") ? "StorageError" : "Unknown",
             }),
           ),
         ),

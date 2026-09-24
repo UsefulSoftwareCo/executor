@@ -395,11 +395,6 @@ const readDebugDefault = (): boolean => {
   return value === "1" || value === "true";
 };
 
-const capabilitySnapshot = (server: McpServer) => ({
-  clientCapabilities: server.server.getClientCapabilities() ?? null,
-  elicitationSupport: getElicitationSupport(server),
-});
-
 class McpNativeElicitationTransportError extends Data.TaggedError(
   "McpNativeElicitationTransportError",
 )<{
@@ -835,10 +830,9 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
     Predicate.isTagged("McpNativeElicitationTransportError")(defect.success);
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: best-effort defect logging must tolerate non-serializable causes
   try {
-    console.error(
-      `[executor:mcp] execute defect correlation_id=${correlationId}`,
-      Cause.pretty(cause),
-    );
+    console.error(`[executor:mcp] execute defect correlation_id=${correlationId}`, {
+      nativeElicitationFailed,
+    });
   } catch {
     /* ignore logger failures */
   }
@@ -2383,9 +2377,14 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             smoke(input.code),
           ).pipe(
             Effect.catchCause((cause) =>
-              Effect.as(Effect.logWarning("create-artifact smoke render was unavailable", cause), {
-                status: "ok",
-              } satisfies ArtifactSmokeRenderResult),
+              Effect.as(
+                Effect.logWarning("create-artifact smoke render was unavailable", {
+                  causeKind: Cause.isCause(cause) ? "Cause" : "Error",
+                }),
+                {
+                  status: "ok",
+                } satisfies ArtifactSmokeRenderResult,
+              ),
             ),
           );
           const renderRejection = smokeRenderRejection(smokeResult);
@@ -2896,7 +2895,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       console.error(
         "[executor] MCP session mode",
         JSON.stringify({
-          ...capabilitySnapshot(server),
+          elicitationSupport: getElicitationSupport(server),
           elicitationMode: elicitationMode.mode,
           resumeEnabled: elicitationMode.mode !== "native",
         }),
