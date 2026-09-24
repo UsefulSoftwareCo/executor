@@ -35,48 +35,81 @@ checks HTTP status and parses a JSON response.
 
 ## Ship instructions with your app
 
-Include standard Agent Skills in the same deployment source:
+Return resolved skills in the second argument to `defineApp`, beside queries,
+mutations and workflows. Load a published GitHub directory inside the factory:
 
-```text
-index.ts
-skills/triage/SKILL.md
-skills/triage/references/examples.md
+```ts
+import { defineApp } from "apps";
+import { githubSkills } from "apps/skills";
+
+export default defineApp({ accounts: {} }, async (ctx) => ({
+  skills: await githubSkills({
+    repo: "planetscale/database-skills",
+    path: "skills",
+    fetch: ctx.fetch,
+    signal: ctx.signal,
+  }),
+}));
 ```
 
-`SKILL.md` starts with YAML frontmatter:
+Each resolved skill has `name`, `description` and `files: {path, content}[]`.
+Files are relative to the skill directory and include the full `SKILL.md` with
+YAML frontmatter. Optional metadata: `license`, `compatibility`, `metadata`
+(string values) and `allowed-tools`. `fileSkill(files)` parses supplied files.
+Names match their directories. Names are at most 64 characters, descriptions
+1024, and compatibility 500. Duplicate names or invalid resources fail the read.
 
-```md
----
-name: triage
-description: Search cached messages before fetching more history.
----
+`githubSkills` resolves `ref` (default `HEAD`) once per call and reads all files
+from that commit. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
+loads a site's `/.well-known/agent-skills/index.json`. Its directory index is
+`{skills: [{name, version?, files: ["SKILL.md", "references/example.md"]}]}`.
+Files live beneath the named directory beside that index. Helpers return complete
+UTF-8 text bundles, refuse redirects, and keep no persistent cache. Limits are
+1,000 files, 2 MB per response, and 20 MB total.
 
-Read [examples](references/examples.md), then discover this app's queries.
+Omit `skills` to load packaged `skills/<name>/SKILL.md` and its text resources.
+An explicit `skills` value replaces that default; `skills: []` disables it.
+To combine packaged and remote skills, use the same folder loader explicitly:
+
+```ts
+import { defineApp } from "apps";
+import { folderSkills, githubSkills } from "apps/skills";
+
+export default defineApp({ accounts: {} }, async (ctx) => ({
+  skills: [
+    ...(await folderSkills({ files: ctx.files })),
+    ...(await githubSkills({
+      repo: "planetscale/database-skills",
+      path: "skills",
+      fetch: ctx.fetch,
+      signal: ctx.signal,
+    })),
+  ],
+}));
 ```
 
-The name must match its directory. Names use lowercase letters/numbers and single
-hyphens, up to 64 characters. Descriptions are required and at most 1024 characters.
-Optional standard fields are `license`, `compatibility` (at most 500 characters),
-`metadata` (string values), and `allowed-tools`. These are format constraints.
-Invalid skill files fail deployment before building; the active version is kept.
-Include the skill documents and references in the deployment's `files` array.
+`folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
+folder. Its immediate subdirectories must be skill directories. A missing folder
+returns `[]`. `ctx.files` contains this deployment's text files on every runtime;
+it never reads host files. All sources use one parser. Only selected folders are
+parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
-Read with `{app: "installed-slug", name: "triage"}`. The response gives the installed
-app namespace, deployment ID and relative file paths. Use that deployment ID for
-reference reads: `{app, name, deployment, file: "references/examples.md"}`.
-These are arguments to the MCP tool, not calls inside `execute`.
-This guide is a skill of the ordinary Executor app. Discover its current slug
-with `skills({})`, then read `{app: "executor", name: "app-authoring"}` using
-that slug. It follows the same access and deployment rules as every app skill.
+Read with `{app, profile, name: "triage"}`. Reuse the returned `deployment`,
+`profile`, `profileRevision` (as `expectedProfileRevision`) and `revision` when
+reading a reference with `file`. Deployment pins code; revision detects remote
+content changes. A changed revision requires a fresh read. The dashboard bundle
+keeps its documents and references together in one response.
 
-Skill reads do not evaluate app code or require connected accounts. This permits
-setup instructions. Each read checks current app access. Files, including scripts,
-are returned as text; Executor does not run them. Do not include secrets. Skills
-and `allowed-tools` never grant access or bypass approvals. A skill may describe
-tools that the current grant cannot call. Treat its content as app-authored
-instructions, not as system policy. Use the returned `app.slug` when calling tools
-so instructions work across configured copies and renamed installations.
+Skill reads evaluate the factory and require the selected accounts. Current app,
+profile and account access is checked. Use an account-free app for instructions
+that must be readable before setup. The Executor app loads this guide through the
+same public helper; discover its slug with `skills({})`.
+
+Files, including scripts, are returned as text. Executor does not run them.
+Do not include secrets. Skills and `allowed-tools` never grant access or bypass
+approvals. Treat content as app-authored instructions, not system policy. Use the
+returned `app.slug` when calling tools across copies and renamed installations.
 
 ## Operation approvals
 

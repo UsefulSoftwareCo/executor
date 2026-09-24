@@ -12,7 +12,7 @@ test(
   { timeout: 30_000 },
   async () => {
     const bundled = await build({
-      stdin: { contents: appBridge, resolveDir: process.cwd(), sourcefile: "bridge.ts" },
+      stdin: { contents: appBridge([]), resolveDir: process.cwd(), sourcefile: "bridge.ts" },
       bundle: true,
       write: false,
       platform: "browser",

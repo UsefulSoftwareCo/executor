@@ -2,7 +2,7 @@ import { workflowBindings } from "./resources.ts";
 import type { DashboardError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
 /** Deployment and account identities invalidate discovery without freezing dynamic catalogs. */
-import type { App, AppId, DeploymentId, Profile } from "@executor-js/sdk";
+import type { App, AppId, DeploymentId, ProfileId, Profile } from "@executor-js/sdk";
 import { Cause, Data, Match, Option } from "effect";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { DashboardClient } from "./api.ts";
@@ -30,17 +30,27 @@ const protectedQuery = <A, E extends DashboardError>(
 class AppKey extends Data.Class<{
   readonly app: AppId;
   readonly deployment: DeploymentId | null;
+  readonly profile: ProfileId | undefined;
+  readonly expectedProfileRevision: number | undefined;
 }> {}
 const skills = Atom.family((key: AppKey) =>
   DashboardClient.query("appBrowser", "skills", {
     params: { app: key.app },
-    query: key.deployment === null ? {} : { deployment: key.deployment },
+    query: {
+      deployment: key.deployment ?? undefined,
+      profile: key.profile,
+      expectedProfileRevision: key.expectedProfileRevision,
+    },
   }).pipe(Atom.refreshOnWindowFocus, protectedQuery),
 );
 const bundle = Atom.family((key: AppKey) =>
   DashboardClient.query("appBrowser", "skillBundle", {
     params: { app: key.app },
-    query: key.deployment === null ? {} : { deployment: key.deployment },
+    query: {
+      deployment: key.deployment ?? undefined,
+      profile: key.profile,
+      expectedProfileRevision: key.expectedProfileRevision,
+    },
   }).pipe(Atom.refreshOnWindowFocus, protectedQuery),
 );
 /** Product-owned query bindings share stable identities between overview and detail sections. */
@@ -51,6 +61,8 @@ export function appBrowserBindings(
   const key = new AppKey({
     app: app.id,
     deployment: app.activeDeployment,
+    profile: profile?.id,
+    expectedProfileRevision: profile?.revision,
   });
   return {
     skills: skills(key),

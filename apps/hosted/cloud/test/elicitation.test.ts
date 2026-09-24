@@ -70,7 +70,7 @@ test(
   "Dynamic Worker returns user input into the same live invocation across two callbacks",
   { timeout: 30_000 },
   async () => {
-    const app = await bundle(appBridge, true);
+    const app = await bundle(appBridge([]), true);
     const rpc = appRpcBridge("app.js");
     const parent = await bundle(`
     import {Effect,Schema} from "effect";
@@ -160,7 +160,7 @@ test(
   "a Durable Object resumes the same Dynamic Worker invocation across separate requests",
   { timeout: 30_000 },
   async () => {
-    const app = await bundle(appBridge, true);
+    const app = await bundle(appBridge([]), true);
     const rpc = appRpcBridge("app.js");
     const parent = await bundle(`
     import {DurableObject} from "cloudflare:workers";
@@ -317,7 +317,7 @@ test(
 
 test("cached Worker code evaluates fresh and owns each call's cancellation independently", async () => {
   const app = await bundle(
-    appBridge,
+    appBridge([]),
     `import { defineApp, mutation, object, number } from "apps";
     let boot; let evaluations = 0;
     export default defineApp({ accounts: {} }, async () => {

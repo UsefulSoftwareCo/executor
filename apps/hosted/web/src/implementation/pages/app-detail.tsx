@@ -275,15 +275,6 @@ export function AppDetailPage({
             pending={pending}
           >
             {(current) => {
-              if (selectedView === "skills")
-                return (
-                  <AppSkills
-                    canEdit={canManage}
-                    app={current}
-                    bindings={appBrowserBindings(organization, current)}
-                    Failure={HostedFailure}
-                  />
-                );
               if (selectedView === "settings")
                 return (
                   <AppSettings
@@ -390,6 +381,18 @@ export function AppDetailPage({
                           accountContexts(current, entries, true),
                           profile,
                         );
+                        if (selectedView === "skills")
+                          return context === undefined ? (
+                            empty
+                          ) : (
+                            <AppSkills
+                              key={context.key}
+                              canEdit={canManage}
+                              app={current}
+                              bindings={appBrowserBindings(organization, current, context.profile)}
+                              Failure={HostedFailure}
+                            />
+                          );
                         if (selectedView === "tools")
                           return context === undefined ? (
                             empty
@@ -440,7 +443,11 @@ export function AppDetailPage({
                               entries={
                                 <AppOverviewEntries
                                   app={current}
-                                  bindings={appBrowserBindings(organization, current)}
+                                  bindings={appBrowserBindings(
+                                    organization,
+                                    current,
+                                    context?.profile,
+                                  )}
                                   workflows={
                                     <AppWorkflowPreview
                                       empty={previewEmpty}

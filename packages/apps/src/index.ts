@@ -179,3 +179,5 @@ export {
   type WorkflowControls,
 } from "./contracts/workflows.ts";
 export { interval, cron, type ScheduleDeclaration } from "./implementation/schedules.ts";
+
+export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";

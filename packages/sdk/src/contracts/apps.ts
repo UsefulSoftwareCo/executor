@@ -4,7 +4,6 @@ import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Profiles hold account selections. */
 import { Schema } from "effect";
-import { SkillDefinitionInvalid } from "./skill-source.ts";
 import { StorageError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { AccountId, AppCodeId, AppId, DeploymentId, OwnerId, ProviderId } from "./shared.ts";
@@ -36,6 +35,7 @@ export type AccountRequirement = typeof AccountRequirement.Type;
 
 /** App-wide requirements, extracted from the deployed app's declaration. */
 export const AppRequirements = Schema.Struct({
+  capabilities: DeclaredRequirements.fields.capabilities,
   database: DeclaredRequirements.fields.database,
   accounts: Schema.Record(Schema.NonEmptyString, AccountRequirement),
 });
@@ -323,7 +323,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNotDeployed,
         DeploymentBuildFailed,
         BuildMemoryExceeded,
-        SkillDefinitionInvalid,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
@@ -336,7 +335,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         StorageError,
         DeploymentBuildFailed,
         BuildMemoryExceeded,
-        SkillDefinitionInvalid,
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,

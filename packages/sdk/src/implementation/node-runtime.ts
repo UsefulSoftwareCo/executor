@@ -1,3 +1,4 @@
+import { AppSkills } from "apps/contracts";
 /** Retained trusted-code builds using Effect platform services and direct handler invocation. */
 import { build as compile } from "esbuild";
 import { captureTelemetry, traceHeaders } from "@executor-js/telemetry";
@@ -211,9 +212,10 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
                 'import app from "./source/index.ts";',
                 'import { createAppHandler, hostContext } from "apps/host";',
                 "const handler = createAppHandler(app);",
+                `const files = ${JSON.stringify(source)};`,
                 // Redacted owns a private store per Effect instance. Decode on
                 // the host side and re-wrap with the selected app framework.
-                "export default (request, context, accounts) => handler(request, { ...context, ...hostContext(accounts, context.approval) });",
+                "export default (request, context, accounts) => handler(request, { ...context, ...hostContext(accounts, context.approval), files });",
               ].join("\n"),
             )
             .pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
@@ -396,6 +398,13 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
       ).pipe(Effect.withSpan("runtime.node.build")),
     asset: ({ build, path: assetPath }) =>
       nodeBuildAsset(build, assetPath).pipe(Effect.withSpan("runtime.node.asset")),
+    skills: ({ build, ...context }) =>
+      load(build).pipe(
+        Effect.flatMap((handler) =>
+          dispatch(handler, { operation: "skills" }, context, AppSkills, HostInspectError),
+        ),
+        Effect.withSpan("runtime.node.skills"),
+      ),
     inspect: ({ build, ...context }) =>
       load(build)
         .pipe(

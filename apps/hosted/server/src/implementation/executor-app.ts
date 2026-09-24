@@ -19,8 +19,9 @@ export const executorCatalogEntry = (origin: string) =>
   });
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
-const managementIndex = (apiKey = false) => `import { defineApp } from "apps";
+const managementIndex = (origin: string, apiKey = false) => `import { defineApp } from "apps";
 import { openapiOperations } from "apps/openapi";
+import { wellKnownSkills } from "apps/skills";
 import { provider } from "./provider.ts";
 import metadata from "./operations.json";
 import { frameworkQueries } from "./framework.ts";
@@ -45,7 +46,8 @@ export default defineApp({ accounts: { service: provider } }, async (context) =>
     }
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
-  return { ...operations, queries: { ...operations.queries, ...frameworkQueries(reference) } };
+  const skills = await wellKnownSkills({ url: ${JSON.stringify(`${origin}/.well-known/agent-skills/index.json`)}, fetch: context.fetch, signal: context.signal });
+  return { ...operations, skills, queries: { ...operations.queries, ...frameworkQueries(reference) } };
 });
 `;
 
@@ -58,12 +60,12 @@ export const executorAppSource = (
     Effect.map((generated) => ({
       toolCount: generated.toolCount + 2,
       files: SourceFiles.make([
-        { path: "index.ts", content: managementIndex() },
+        { path: "index.ts", content: managementIndex(origin) },
         ...generated.files.filter(
           (file) => file.path !== "index.ts" && file.path !== "operations.json",
         ),
         { path: "operations.json", content: JSON.stringify(generated.metadata) },
-        ...skills,
+        ...skills.filter((file) => !file.path.startsWith("skills/")),
       ]),
     })),
   );
@@ -79,7 +81,7 @@ export const defaultExecutorAppSource = (
       files: SourceFiles.make([
         {
           path: "index.ts",
-          content: managementIndex(true),
+          content: managementIndex(origin, true),
         },
         {
           path: "provider.ts",
@@ -95,7 +97,7 @@ export const provider = defineProvider({ name: "Executor", auth: {
           path: "operations.json",
           content: JSON.stringify(metadata, null, 2),
         },
-        ...skills,
+        ...skills.filter((file) => !file.path.startsWith("skills/")),
       ]),
     })),
   );

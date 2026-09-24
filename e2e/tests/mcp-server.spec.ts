@@ -154,10 +154,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           ),
         );
         expect(executorSource.id).toBe(guideDocument.deployment);
-        expect(
-          executorSource.files.find((file) => file.path === "skills/app-authoring/SKILL.md")
-            ?.content,
-        ).toBe(guideDocument.content);
+        expect(executorSource.files.some((file) => file.path.startsWith("skills/"))).toBe(false);
+        expect(executorSource.files.find((file) => file.path === "index.ts")?.content).toContain(
+          "wellKnownSkills",
+        );
         const skill = yield* client.use("Read a deployed app skill through MCP", (client, signal) =>
           client.callTool(
             { name: "skills", arguments: { app: app.slug, name: "echo" } },

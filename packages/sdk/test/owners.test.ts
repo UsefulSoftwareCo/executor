@@ -55,6 +55,7 @@ const runtime: Runtime = {
     }),
   workflow: () => Effect.die("Unexpected workflow invocation"),
   webhook: () => Effect.die("Unexpected webhook invocation"),
+  skills: () => Effect.die("This fixture does not load skills"),
   inspect: () => Effect.succeed([]),
   query: () => Effect.succeed(null),
   mutate: () => Effect.succeed(null),

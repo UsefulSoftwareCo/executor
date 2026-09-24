@@ -1,3 +1,4 @@
+import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
 import {
   drainProvisioning,
   selfHostProvisioningServices,
@@ -108,6 +109,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Layer.provide(auth.apiIdentity),
     );
     const productRoutes = Layer.mergeAll(
+      publishedSkillRoutes(skills),
       authoring,
       api,
       browserTelemetry.pipe(HttpRouter.provideRequest(auth.identity)),

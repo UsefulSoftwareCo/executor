@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
   AppId,
-  DeploymentId,
+  SkillSelection,
   AppSkillName,
   AppSkillCatalog,
   AppSkillBundle,
@@ -16,9 +16,9 @@ import {
 import { OrganizationReference, RequireOrganization } from "./organization.ts";
 
 const app = { organization: OrganizationReference, app: AppId };
-const version = { deployment: Schema.optional(DeploymentId) };
+const version = SkillSelection;
 const prefix = "/api/organizations/:organization/apps/:app/skills";
-/** Membership authorizes static instructions; account setup is not required. */
+/** App and account permissions authorize dynamic skill discovery. */
 export const HostedSkills = HttpApiGroup.make("skills")
   .add(
     HttpApiEndpoint.get("bundle", "/api/organizations/:organization/apps/:app/skill-bundle", {

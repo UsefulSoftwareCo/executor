@@ -1,3 +1,4 @@
+import { AppSkills } from "apps/contracts";
 /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
 import { RpcTarget, type RpcStub } from "capnweb";
 import { Cause, Effect, Option, Redacted, Schema, Stream } from "effect";
@@ -286,6 +287,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
           return { build, requirements, ...(ui === undefined ? {} : { ui }) };
         }).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" }))),
       asset: ({ build, path }) => workerBuildAsset(build, path).pipe(provideBlobs),
+      skills: (input) => dispatch(input, { operation: "skills" }, AppSkills, HostInspectError),
       inspect: (input) =>
         dispatch(input, { operation: "inspect" }, Schema.Array(HostedTool), HostInspectError),
       query: (input) =>

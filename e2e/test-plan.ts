@@ -1201,9 +1201,31 @@ export const scenarios = {
       ),
     },
   },
+  skillFolder: {
+    file: "skill-folder.spec.ts",
+    title: "skill folders share one loader and respect explicit catalogs",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Shared runtime behavior is covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
+  dynamicSkills: {
+    file: "dynamic-skills.spec.ts",
+    title: "dynamic skills refresh remote publications without redeployment",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Shared runtime and HTTP behavior are covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
   appSkills: {
     file: "app-skills.spec.ts",
-    title: "app skills remain static, authorized and pinned across deployments",
+    title: "bundled app skills remain authorized and pinned across deployments",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

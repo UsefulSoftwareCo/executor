@@ -6,6 +6,7 @@ import {
   type HostCallError,
   type HostDataError,
   type HostedTool,
+  type AppSkillSource,
   type HostContext,
   type WebhookCommand,
   type WorkflowCommand,
@@ -66,6 +67,14 @@ export interface Runtime<Requirements = never> {
     readonly build: BuildId;
     readonly path: string;
   }) => Effect.Effect<RuntimeAsset | undefined, RuntimeBuildUnavailable, Requirements>;
+  /** Evaluate the current app skill catalog with the same selected account context as tools. */
+  readonly skills: (
+    input: { readonly app: string; readonly build: BuildId } & HostContext,
+  ) => Effect.Effect<
+    readonly AppSkillSource[],
+    RuntimeLoadError | typeof HostInspectError.Type,
+    Requirements
+  >;
   readonly inspect: (
     input: { readonly app: string; readonly build: BuildId } & HostContext,
   ) => Effect.Effect<

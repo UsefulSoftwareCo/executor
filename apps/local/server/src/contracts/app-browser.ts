@@ -1,7 +1,8 @@
-/** Paired dashboard reads for static skills. */
+/** Paired dashboard reads for app skills under the selected profile. */
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
   AppId,
+  SkillSelection,
   AppSkillInputs,
   AppSkillCatalog,
   AppSkillBundle,
@@ -17,7 +18,7 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skillBundle", `${prefix}/skill-bundle`, {
       params,
-      query: { deployment: AppSkillInputs.list.fields.deployment },
+      query: SkillSelection,
       success: AppSkillBundle,
       error: AppSkillErrors,
     }),
@@ -25,7 +26,7 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skills", `${prefix}/skills`, {
       params,
-      query: { deployment: AppSkillInputs.list.fields.deployment },
+      query: SkillSelection,
       success: AppSkillCatalog,
       error: AppSkillErrors,
     }),
@@ -34,7 +35,7 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
     HttpApiEndpoint.get("skill", `${prefix}/skills/:name`, {
       params: { ...params, name: AppSkillInputs.read.fields.name },
       query: {
-        deployment: AppSkillInputs.read.fields.deployment,
+        ...SkillSelection,
         file: AppSkillInputs.read.fields.file,
       },
       success: AppSkillDocument,

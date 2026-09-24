@@ -21,6 +21,8 @@ NodeRuntime.runMain(
           mcp: "mcp",
           graphql: "graphql",
           openapi: "openapi",
+          skills: "skills",
+          "skills/effect": "implementation/skill-files",
           "operations/approval": "approval",
         },
         external: [],

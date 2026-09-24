@@ -66,6 +66,8 @@ const errorMessage = Match.type<HostedError>().pipe(
         ? "The source changed elsewhere. Reload it before saving again."
         : "The app source could not be saved or loaded. Check its files and try again.",
     AppNotFound: () => "This app is no longer available in this organization.",
+    SkillRevisionChanged: () =>
+      "Skills changed. Reload the skill to read its current instructions and references.",
     AppSkillNotFound: () => "This skill file is no longer available. Reload the app's skills.",
     DeploymentNotFound: () =>
       "This deployment is no longer available. Reload the app and try again.",

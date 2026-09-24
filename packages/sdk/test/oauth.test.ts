@@ -313,6 +313,7 @@ async function setup(
     mutate: () => Effect.fail(new RuntimeProtocolFailed()),
     workflow: () => Effect.die("Unexpected workflow invocation"),
     webhook: () => Effect.die("Unexpected webhook invocation"),
+    skills: () => Effect.die("This fixture does not load skills"),
     inspect: ({ accounts }) =>
       Effect.sync(() => {
         seen.push(Redacted.value(accounts));

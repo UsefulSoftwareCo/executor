@@ -1,3 +1,5 @@
+import { folderSkillsEffect } from "./skill-files.ts";
+import { AppSkills, SkillFile } from "../contracts/skills.ts";
 import { parseProviderError } from "./provider-error.ts";
 import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { toPromise } from "./authoring.ts";
@@ -120,6 +122,7 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     }
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
+      capabilities: { skills: true },
       ...(database === undefined ? {} : { database }),
     }).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
   });
@@ -264,7 +267,11 @@ function dispatch(
         get: workflowControls.get,
         list: workflowControls.list,
       };
+      const files = yield* Schema.decodeUnknownEffect(Schema.Array(SkillFile))(
+        context.files ?? [],
+      ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
       const bound = {
+        files,
         ...(yield* bindAccounts(native.accounts, declared, context).pipe(
           Effect.withSpan("app.accounts.bind"),
         )),
@@ -281,6 +288,17 @@ function dispatch(
         }),
         Effect.withSpan("app.evaluate"),
       );
+      if (request.operation === "skills") {
+        const skills =
+          definition.skills === undefined
+            ? yield* folderSkillsEffect({ files }).pipe(
+                Effect.mapError(() => new HostDeclarationInvalid()),
+              )
+            : definition.skills;
+        return yield* Schema.decodeUnknownEffect(AppSkills)(skills).pipe(
+          Effect.mapError(() => new HostDeclarationInvalid()),
+        );
+      }
       if (request.operation === "workflows") {
         return yield* Effect.forEach(Object.entries(definition.workflows ?? {}), ([name, entry]) =>
           safe(
@@ -330,6 +348,7 @@ function dispatch(
               );
               return {
                 ...accounts,
+                files,
                 fetch: yield* invocationFetch(signal),
                 signal,
                 runId: execution.runId,
@@ -403,6 +422,7 @@ function dispatch(
             definition,
             request,
             {
+              files,
               accounts: bound.accounts,
               workflows: workflowControls,
               signal: bound.signal,

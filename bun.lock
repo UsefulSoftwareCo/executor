@@ -457,6 +457,7 @@
         "@executor-js/telemetry": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "swagger-client": "3.38.2",
+        "yaml": "^2.8.2",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
@@ -598,7 +599,6 @@
         "tailwindcss-iso": "1.0.7",
         "tar": "7.5.22",
         "ws": "8.21.0",
-        "yaml": "^2.8.2",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",

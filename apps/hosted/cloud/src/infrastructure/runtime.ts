@@ -1,3 +1,4 @@
+import { AppSkills } from "apps/contracts";
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
 import { appRpcBridge, appFacetBridge } from "../implementation/app-bridge.ts";
@@ -399,6 +400,23 @@ export const cloudRuntime = Effect.fn(function* (
           ),
           Effect.withSpan("runtime.cloud.build"),
         ),
+      skills: ({ app, build, ...context }) =>
+        Effect.gen(function* () {
+          const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
+          yield* Effect.annotateCurrentSpan({
+            "executor.runtime.mode": "worker",
+            "executor.worker.identity": identity,
+          });
+          return yield* dispatch(
+            load(build),
+            { operation: "skills" },
+            context,
+            AppSkills,
+            HostInspectError,
+            build,
+            identity,
+          );
+        }).pipe(Effect.withSpan("runtime.cloud.skills")),
       inspect: ({ app, build, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;

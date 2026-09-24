@@ -16,7 +16,6 @@ import {
   AccountSelectionInvalid,
   DeploymentBuildFailed,
   BuildMemoryExceeded,
-  SkillDefinitionInvalid,
   sourceErrors,
   SourceSnapshot,
   StorageError,
@@ -45,7 +44,6 @@ export const appOperationErrors = [
   AccountSelectionInvalid,
   DeploymentBuildFailed,
   BuildMemoryExceeded,
-  SkillDefinitionInvalid,
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);

@@ -15,7 +15,7 @@ import { billingBindings } from "./infrastructure/billing.ts";
 import { registryRoutes, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
 /** Cloudflare composition edge. Alchemy owns the Effect runtime and request scopes. */
-import { executorSkillFiles } from "@executor-js/app-templates/executor";
+import { executorSkillFiles, publishedSkillRoutes } from "@executor-js/app-templates/executor";
 import authoring from "../.generated/executor-authoring.json" with { type: "json" };
 import { hideRemovedOrganizations } from "./implementation/organization-removal.ts";
 import {
@@ -276,6 +276,7 @@ export default Api.make(
         HttpRouter.provideRequest(onboarding),
       ),
       api,
+      publishedSkillRoutes(executorSkillFiles(authoring)),
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
       browserTelemetry.pipe(HttpRouter.provideRequest(auth.identity)),
