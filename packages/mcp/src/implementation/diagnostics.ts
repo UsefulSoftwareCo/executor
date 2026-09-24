@@ -14,6 +14,7 @@ export const diagnostic = (error: Error): string => {
 
 /** CodeMode transports tool errors as messages, including inside agent try/catch.
  * Decode our safe JSON projection back into structured MCP details for uncaught failures.
+ * A declared recovery action is appended to the summary line; full recovery stays in `response`.
  */
 export const executionDiagnostic = (execution: CodeMode.Result) => {
   if (execution.ok || execution.error.kind !== "ToolFailure") return execution;
@@ -21,11 +22,12 @@ export const executionDiagnostic = (execution: CodeMode.Result) => {
     execution.error.message,
   );
   if (Option.isNone(response)) return execution;
+  const { code, status, message, recovery } = response.value;
   return {
     ...execution,
     error: {
       ...execution.error,
-      message: `${response.value.code} (HTTP ${response.value.status}): ${response.value.message}`,
+      message: `${code} (HTTP ${status}): ${message}${recovery === undefined ? "" : ` Recovery: ${recovery.action}`}`,
       response: response.value,
     },
   };

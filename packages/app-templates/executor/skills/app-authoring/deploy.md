@@ -160,6 +160,12 @@ Installation disables lifecycle scripts. Do not depend on the Executor SDK in
 app code. Without a declared `apps` package, the Node SDK adapter reserves `apps`
 and Effect for the host. Native dependencies that need scripts are unsupported.
 
+Hosted builds currently run with limited memory. A build with very large
+dependencies can fail with `BuildMemoryExceeded`; no new deployment is activated.
+This limit is planned to increase. Report the failure to the user instead of
+changing the app. Executor errors include `recovery.action` for the user and
+`recovery.instructions` for agents; follow those instructions.
+
 App code runs as trusted code in the host Node process. It receives usable
 credentials for selected accounts. Forward `context.signal` to fetch or other
 interruptible operations. Cancellation and execution limits are cooperative;

@@ -211,11 +211,11 @@ const runtimeFailure = (
   >().pipe(
     Match.tagsExhaustive({
       ProviderError: (error) => appProviderFailure(state, error),
-      OpenapiResponseError: ({ code, status, message }) =>
+      OpenapiResponseError: ({ code, status, message, recovery }) =>
         new ToolCallFailed({
           ...identity,
           reason: message,
-          response: { code, status, message },
+          response: { code, status, message, ...(recovery === undefined ? {} : { recovery }) },
         }),
       WorkflowFailure: () =>
         new ToolCallFailed({ ...identity, reason: "Workflow operation failed" }),

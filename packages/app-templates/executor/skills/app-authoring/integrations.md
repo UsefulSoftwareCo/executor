@@ -87,14 +87,17 @@ literal `_tag`, and either a declared string `message` or a schema description.
 Local component references and plain `anyOf` alternatives are supported. A matching JSON failure returns its
 code, status, and message in MCP's `execution.error.response`. The message comes
 from the validated response field, or static documentation when the declaration
-has no message field. Messages are limited to 4,096 characters. Other payload
-fields, headers, and stacks are not forwarded.
+has no message field. Messages are limited to 4,096 characters. A body `recovery`
+object with non-empty `action` and `instructions` strings is also returned as
+`response.recovery`, and `error.message` ends with `Recovery: <action>`. A missing
+or malformed `recovery` is ignored. Other payload fields, headers, and stacks are
+not forwarded.
 Authentication and rate limits keep their existing provider-error handling.
 Unknown, malformed, oversized, or stalled error bodies use the generic failure.
 
 Inside an `execute` program's `catch`, CodeMode exposes only `error.message`.
-For these declared API errors it contains JSON with `code`, `status`, and
-`message`; parse it with `JSON.parse`. Other failures are ordinary diagnostic
+For these declared API errors it contains JSON with `code`, `status`,
+`message`, and an optional `recovery`; parse it with `JSON.parse`. Other failures are ordinary diagnostic
 strings, so guard that parse. A failed mutation may already have made changes;
 inspect its state before retrying. Existing imports need regenerated metadata
 and a new deployment to gain this behavior.

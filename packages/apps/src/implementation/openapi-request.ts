@@ -12,6 +12,7 @@ import {
 } from "effect/unstable/http";
 import {
   OpenapiResponseError,
+  ApiErrorRecovery,
   ApiErrorResponse,
   defaultOpenapiErrorLimits,
 } from "../contracts/api-response-error.ts";
@@ -28,6 +29,9 @@ import {
 } from "../contracts/openapi.ts";
 
 type DeclaredError = OpenapiErrorResponse & { readonly decoder: Schema.Decoder<Schema.Json> };
+
+// Recovery is optional for arbitrary APIs: a missing or malformed value keeps the declared error.
+const bodyRecovery = Schema.decodeUnknownOption(Schema.Struct({ recovery: ApiErrorRecovery }));
 
 // Read once with byte/time bounds. Unsupported or invalid responses retain the generic failure.
 function responseError(
@@ -65,10 +69,12 @@ function responseError(
                 Schema.Struct({ message: ApiErrorResponse.fields.message }),
               )(parsed.value);
         if (Option.isNone(message)) continue;
+        const recovery = bodyRecovery(parsed.value);
         return new OpenapiResponseError({
           code: candidate.code,
           status: response.status,
           message: message.value.message,
+          ...(Option.isSome(recovery) ? { recovery: recovery.value.recovery } : {}),
         });
       }
     }

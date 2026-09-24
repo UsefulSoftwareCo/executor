@@ -1,7 +1,7 @@
 import { AppSlug } from "@executor-js/sdk/core";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AppId, DeploymentId, ToolName } from "@executor-js/sdk/core";
+import { AppId, DeploymentId, ToolCallFailed, ToolName } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { defaultMcpLimits, execute, type McpBackend } from "../src/index.ts";
 
@@ -74,4 +74,47 @@ test("MCP reports native error names for inventory, discovery and calls without 
 
   for (const result of [inventory, discovery, call])
     assert.ok(!JSON.stringify(result).includes(secret));
+});
+
+test("MCP returns a declared API error's recovery to uncaught and caught tool failures", async () => {
+  const response = {
+    code: "BuildMemoryExceeded",
+    status: 422,
+    message: "The build hit the memory limit.",
+    recovery: { action: "Retry later.", instructions: "Tell the user before changing the app." },
+  };
+  const failing: McpBackend<ProviderUnavailable | ToolCallFailed> = {
+    ...backend,
+    callTool: () =>
+      Effect.fail(
+        new ToolCallFailed({
+          app,
+          deployment,
+          tool: ToolName.make("hello"),
+          reason: response.message,
+          response,
+        }),
+      ),
+  };
+  const uncaught = await Effect.runPromise(
+    execute(failing, defaultMcpLimits, "return await tools.fixture.hello({})"),
+  );
+  assert.equal(uncaught.execution.ok, false);
+  if (!uncaught.execution.ok) {
+    assert.equal(
+      uncaught.execution.error.message,
+      "BuildMemoryExceeded (HTTP 422): The build hit the memory limit. Recovery: Retry later.",
+    );
+    const error = uncaught.execution.error;
+    assert.deepEqual("response" in error ? error.response : undefined, response);
+  }
+  const caught = await Effect.runPromise(
+    execute(
+      failing,
+      defaultMcpLimits,
+      "try { await tools.fixture.hello({}) } catch (error) { return JSON.parse(error.message) }",
+    ),
+  );
+  assert.equal(caught.execution.ok, true);
+  if (caught.execution.ok) assert.deepEqual(caught.execution.value, response);
 });

@@ -13,9 +13,12 @@ import {
   openapiErrorUpstream,
   openapiSecretMarker,
   openapiMemoryMessage,
+  openapiMemoryRecovery,
+  openapiConflictRecovery,
   openapiOAuthMessage,
 } from "../support/openapi-error-upstream.ts";
 
+const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
 const Failure = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -24,7 +27,12 @@ const Failure = Schema.Struct({
       kind: Schema.String,
       message: Schema.String,
       response: Schema.optional(
-        Schema.Struct({ code: Schema.String, status: Schema.Number, message: Schema.String }),
+        Schema.Struct({
+          code: Schema.String,
+          status: Schema.Number,
+          message: Schema.String,
+          recovery: Schema.optional(Recovery),
+        }),
       ),
     }),
   }),
@@ -52,8 +60,20 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         if (memory === undefined || oauthFailure === undefined)
           return yield* Effect.die("The public API must declare memory and OAuth failures");
         for (const schema of [memory, oauthFailure]) {
-          expect(schema).toMatchObject({ properties: { message: { type: "string" } } });
-          expect(schema).toHaveProperty("required", expect.arrayContaining(["_tag", "message"]));
+          expect(schema).toMatchObject({
+            properties: {
+              message: { type: "string" },
+              recovery: {
+                type: "object",
+                properties: { action: { type: "string" }, instructions: { type: "string" } },
+                required: ["action", "instructions"],
+              },
+            },
+          });
+          expect(schema).toHaveProperty(
+            "required",
+            expect.arrayContaining(["_tag", "message", "recovery"]),
+          );
         }
         const origin = yield* openapiErrorUpstream(memory, oauthFailure);
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
@@ -111,8 +131,10 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(error.response?.code).toBe("BuildMemoryExceeded");
         expect(error.response?.status).toBe(422);
         expect(error.response?.message).toBe(openapiMemoryMessage);
-        expect(error.message).toContain("BuildMemoryExceeded");
-        expect(error.message).toContain(openapiMemoryMessage);
+        expect(error.response?.recovery).toEqual(openapiMemoryRecovery);
+        expect(error.message).toBe(
+          `BuildMemoryExceeded (HTTP 422): ${openapiMemoryMessage} Recovery: ${openapiMemoryRecovery.action}`,
+        );
         expect(JSON.stringify(known)).not.toContain(openapiSecretMarker);
         const dynamic = yield* invoke("dynamic");
         expect(dynamic.structuredContent).toMatchObject({
@@ -123,6 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                 code: "OAuthSetupFailed",
                 status: 422,
                 message: openapiOAuthMessage,
+                recovery: openapiMemoryRecovery,
               },
             },
           },
@@ -141,6 +164,25 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           },
         });
         expect(JSON.stringify(extras)).not.toContain(openapiSecretMarker);
+        // A malformed optional recovery keeps the declared error and is not forwarded.
+        const extrasError = (yield* Schema.decodeUnknownEffect(Failure)(extras.structuredContent))
+          .execution.error;
+        expect(extrasError.response).not.toHaveProperty("recovery");
+        const conflict = yield* invoke("conflict-recovery");
+        expect(conflict.structuredContent).toMatchObject({
+          execution: {
+            ok: false,
+            error: {
+              message: `Conflict (HTTP 422): Read the current revision before saving again. Recovery: ${openapiConflictRecovery.action}`,
+              response: {
+                code: "Conflict",
+                status: 422,
+                message: "Read the current revision before saving again.",
+                recovery: openapiConflictRecovery,
+              },
+            },
+          },
+        });
         // The interpreter only exposes Error.message inside catch; its JSON envelope retains the same fields.
         const caught = yield* client.use(
           "Catch the declared API error in agent code",
@@ -159,7 +201,12 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(caught.structuredContent).toMatchObject({
           execution: {
             ok: true,
-            value: { code: "BuildMemoryExceeded", status: 422, message: openapiMemoryMessage },
+            value: {
+              code: "BuildMemoryExceeded",
+              status: 422,
+              message: openapiMemoryMessage,
+              recovery: openapiMemoryRecovery,
+            },
           },
         });
         for (const [input, expectedBody, contentType] of [

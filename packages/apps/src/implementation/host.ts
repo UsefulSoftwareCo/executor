@@ -563,6 +563,9 @@ function dispatch(
                         code: response.value.code,
                         status: response.value.status,
                         message: response.value.message,
+                        ...(response.value.recovery === undefined
+                          ? {}
+                          : { recovery: response.value.recovery }),
                       })
                     : Option.isSome(failure)
                       ? failure.value

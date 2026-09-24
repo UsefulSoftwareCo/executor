@@ -52,9 +52,21 @@ const MessageField = Schema.String.pipe(
     encode: SchemaGetter.passthrough(),
   }),
 );
+// Recovery follows the same rule, so API and MCP callers receive the curated recovery.
+const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
+const RecoveryField = Recovery.pipe(
+  Schema.decodeTo(Schema.optionalKey(Recovery), {
+    decode: SchemaGetter.omit(),
+    encode: SchemaGetter.passthrough(),
+  }),
+);
+type DerivedFields = {
+  readonly message: typeof MessageField;
+  readonly recovery: typeof RecoveryField;
+};
 // Derived presentation cannot be supplied by constructor callers.
 type ErrorFields<Tag extends string, Fields extends Schema.Struct.Fields> = Omit<
-  Schema.TaggedStruct<Tag, Fields & { readonly message: typeof MessageField }>,
+  Schema.TaggedStruct<Tag, Fields & DerivedFields>,
   "~type.make.in"
 > & {
   readonly "~type.make.in": Schema.TaggedStruct<Tag, Fields>["~type.make.in"];
@@ -77,9 +89,11 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
       ? {}
       : { description: `${definition.description} ${definition.recovery.action}` };
   const DefinedError = Schema.Error<UserFacingError & { readonly _tag: Tag }>(definition.tag)(
-    Schema.TaggedStruct(definition.tag, { ...fields, message: MessageField }).annotate(
-      documentation,
-    ),
+    Schema.TaggedStruct(definition.tag, {
+      ...fields,
+      message: MessageField,
+      recovery: RecoveryField,
+    }).annotate(documentation),
     {
       httpApiStatus: definition.status,
       ...documentation,
@@ -152,8 +166,8 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
   // SAFETY: Schema.Error and TaggedStruct construct and decode the fields and literal tag.
   // The complete, type-checked descriptor set above supplies the presentation on
   // that same constructor before it escapes. This narrows its generic Self type;
-  // message is derived, omitted on decode, and required on encode. Narrowing its
-  // constructor input to payload fields prevents callers from replacing the getter.
+  // message and recovery are derived, omitted on decode, and required on encode. Narrowing
+  // the constructor input to payload fields prevents callers from replacing the getters.
   return DefinedError as unknown as ErrorClass<Tag, Fields>;
 }
 
