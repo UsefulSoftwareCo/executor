@@ -225,7 +225,7 @@ export function ToolBrowserLoading({
       </div>
       <div className="min-w-0 border-l max-[740px]:border-0">
         <AppSectionHeader>
-          <span className="-ml-2 hidden size-9 shrink-0 items-center justify-center text-muted-foreground max-[740px]:inline-flex">
+          <span className="-ml-2 hidden size-11 shrink-0 items-center justify-center text-muted-foreground max-[740px]:inline-flex">
             <HugeiconsIcon icon={SidebarLeft01Icon} size={18} aria-hidden />
           </span>
           {selected ? (

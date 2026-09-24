@@ -106,7 +106,14 @@ export function AppDetailLayout({
             </h1>
           </div>
           {(actions || setupPicker || (app === undefined && canInspectSource)) && (
-            <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 empty:hidden max-[740px]:min-h-11 max-[640px]:ml-0 max-[640px]:w-full max-[640px]:justify-start max-[640px]:gap-2">
+            <div
+              className={cn(
+                "ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 empty:hidden max-[740px]:min-h-11 max-[640px]:ml-0 max-[640px]:w-full max-[640px]:justify-start max-[640px]:gap-2",
+                // Phones give actions their own row only when some exist, so a pending
+                // placeholder there would reserve a row that most apps never fill.
+                app === undefined && "max-[640px]:hidden",
+              )}
+            >
               {app === undefined && canInspectSource ? (
                 <Skeleton className="h-9 w-28 max-[740px]:h-11" />
               ) : (
